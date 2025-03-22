@@ -236,7 +236,8 @@ export default defineConfig((/* ctx */) => {
           "/\\.quasar($|/)",
           "/node_modules($|/)",
           "/src($|/)",
-          "/dist/spa($|/)"
+          "/dist/spa($|/)",
+          "/iopaint-change($|/)"
         ],
         extraResource: [
           "public"

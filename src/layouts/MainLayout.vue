@@ -1332,7 +1332,7 @@ const openNovelLink = () => {
 };
 // 打开GitHub链接
 const openGithubLink = () => {
-  const url = "https://github.com/CuiMuxuan";
+  const url = "https://github.com/CuiMuxuan/Moonshine-Image";
   openExternalLink(url);
 };
 
