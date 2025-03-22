@@ -1,7 +1,7 @@
 // Configuration for your app
 // https://v2.quasar.dev/quasar-cli-vite/quasar-config-file
 
-import { defineConfig } from '#q-app/wrappers'
+import { defineConfig } from "#q-app/wrappers";
 
 export default defineConfig((/* ctx */) => {
   return {
@@ -11,14 +11,10 @@ export default defineConfig((/* ctx */) => {
     // app boot file (/src/boot)
     // --> boot files are part of "main.js"
     // https://v2.quasar.dev/quasar-cli-vite/boot-files
-    boot: [
-      'axios'
-    ],
+    boot: ["axios"],
 
     // https://v2.quasar.dev/quasar-cli-vite/quasar-config-file#css
-    css: [
-      'app.scss'
-    ],
+    css: ["app.scss"],
 
     // https://github.com/quasarframework/quasar/tree/dev/extras
     extras: [
@@ -30,18 +26,18 @@ export default defineConfig((/* ctx */) => {
       // 'line-awesome',
       // 'roboto-font-latin-ext', // this or either 'roboto-font', NEVER both!
 
-      'roboto-font', // optional, you are not bound to it
-      'material-icons', // optional, you are not bound to it
+      "roboto-font", // optional, you are not bound to it
+      "material-icons", // optional, you are not bound to it
     ],
 
     // Full list of options: https://v2.quasar.dev/quasar-cli-vite/quasar-config-file#build
     build: {
       target: {
-        browser: [ 'es2022', 'firefox115', 'chrome115', 'safari14' ],
-        node: 'node20'
+        browser: ["es2022", "firefox115", "chrome115", "safari14"],
+        node: "node20",
       },
 
-      vueRouterMode: 'hash', // available values: 'hash', 'history'
+      vueRouterMode: "hash", // available values: 'hash', 'history'
       // vueRouterBase,
       // vueDevtools,
       // vueOptionsAPI: false,
@@ -59,26 +55,45 @@ export default defineConfig((/* ctx */) => {
 
       // extendViteConf (viteConf) {},
       // viteVuePluginOptions: {},
-      
+
       vitePlugins: [
-        ['vite-plugin-checker', {
-          eslint: {
-            lintCommand: 'eslint -c ./eslint.config.js "./src*/**/*.{js,mjs,cjs,vue}"',
-            useFlatConfig: true
-          }
-        }, { server: false }]
-      ]
+        [
+          "vite-plugin-checker",
+          {
+            eslint: {
+              lintCommand:
+                'eslint -c ./eslint.config.js "./src*/**/*.{js,mjs,cjs,vue}"',
+              useFlatConfig: true,
+            },
+          },
+          { server: false },
+        ],
+      ],
     },
 
     // Full list of options: https://v2.quasar.dev/quasar-cli-vite/quasar-config-file#devserver
     devServer: {
       // https: true,
-      open: true // opens browser window automatically
+      open: true, // opens browser window automatically
     },
 
     // https://v2.quasar.dev/quasar-cli-vite/quasar-config-file#framework
     framework: {
-      config: {},
+      config: {
+        brand: {
+          primary: "#7758c4",
+          secondary: "#2679a6",
+          accent: "#9C27B0",
+
+          dark: "#383636",
+          "dark-page": "#121212",
+
+          positive: "#21BA45",
+          negative: "#C10015",
+          info: "#abd1d9",
+          warning: "#f0df73",
+        },
+      },
 
       // iconSet: 'material-icons', // Quasar icon set
       // lang: 'en-US', // Quasar language pack
@@ -91,7 +106,7 @@ export default defineConfig((/* ctx */) => {
       // directives: [],
 
       // Quasar plugins
-      plugins: []
+      plugins: ["Dialog", "Notify", "Loading"],
     },
 
     // animations: 'all', // --- includes all animations
@@ -99,25 +114,25 @@ export default defineConfig((/* ctx */) => {
     animations: [],
 
     // https://v2.quasar.dev/quasar-cli-vite/quasar-config-file#sourcefiles
-    // sourceFiles: {
+    sourceFiles: {
     //   rootComponent: 'src/App.vue',
     //   router: 'src/router/index',
     //   store: 'src/store/index',
     //   pwaRegisterServiceWorker: 'src-pwa/register-service-worker',
     //   pwaServiceWorker: 'src-pwa/custom-service-worker',
     //   pwaManifestFile: 'src-pwa/manifest.json',
-    //   electronMain: 'src-electron/electron-main',
-    //   electronPreload: 'src-electron/electron-preload'
+      electronMain: 'src-electron/electron-main',
+      electronPreload: 'src-electron/electron-preload'
     //   bexManifestFile: 'src-bex/manifest.json
-    // },
+    },
 
     // https://v2.quasar.dev/quasar-cli-vite/developing-ssr/configuring-ssr
     ssr: {
       prodPort: 3000, // The default port that the production server should use
-                      // (gets superseded if process.env.PORT is specified at runtime)
+      // (gets superseded if process.env.PORT is specified at runtime)
 
       middlewares: [
-        'render' // keep this as last one
+        "render", // keep this as last one
       ],
 
       // extendPackageJson (json) {},
@@ -128,7 +143,7 @@ export default defineConfig((/* ctx */) => {
       // manualStoreHydration: true,
       // manualPostHydrationTrigger: true,
 
-      pwa: false
+      pwa: false,
       // pwaOfflineHtmlFilename: 'offline.html', // do NOT use index.html as name!
 
       // pwaExtendGenerateSWOptions (cfg) {},
@@ -137,7 +152,7 @@ export default defineConfig((/* ctx */) => {
 
     // https://v2.quasar.dev/quasar-cli-vite/developing-pwa/configuring-pwa
     pwa: {
-      workboxMode: 'GenerateSW' // 'GenerateSW' or 'InjectManifest'
+      workboxMode: "GenerateSW", // 'GenerateSW' or 'InjectManifest'
       // swFilename: 'sw.js',
       // manifestFilename: 'manifest.json',
       // extendManifestJson (json) {},
@@ -155,42 +170,121 @@ export default defineConfig((/* ctx */) => {
 
     // Full list of options: https://v2.quasar.dev/quasar-cli-vite/developing-capacitor-apps/configuring-capacitor
     capacitor: {
-      hideSplashscreen: true
+      hideSplashscreen: true,
     },
 
     // Full list of options: https://v2.quasar.dev/quasar-cli-vite/developing-electron-apps/configuring-electron
     electron: {
-      // extendElectronMainConf (esbuildConf) {},
+      // extendElectronMainConf (esbuildConf) {
+      //   esbuildConf.outfile = 'electron-main.js'
+      // },
       // extendElectronPreloadConf (esbuildConf) {},
 
-      // extendPackageJson (json) {},
+      // extendPackageJson (json) {
+      //   json.main = './electron-main.js'
+      // },
 
       // Electron preload scripts (if any) from /src-electron, WITHOUT file extension
-      preloadScripts: [ 'electron-preload' ],
+      preloadScripts: ["electron-preload"],
 
       // specify the debugging port to use for the Electron app when running in development mode
       inspectPort: 5858,
 
-      bundler: 'packager', // 'packager' or 'builder'
+      bundler: "packager", // 'packager' or 'builder'
 
       packager: {
         // https://github.com/electron-userland/electron-packager/blob/master/docs/api.md#options
-
         // OS X / Mac App Store
         // appBundleId: '',
         // appCategoryType: '',
         // osxSign: '',
         // protocol: 'myapp://path',
-
         // Windows only
         // win32metadata: { ... }
+        name: "Moonshine-Image",
+        executableName: "Moonshine-Image",
+        icon: "src-electron/icons/icon.ico",
+        dir: ".",
+        out: "dist/electron/packaged",
+        overwrite: true,
+        asar: true,
+
+        // 应用信息
+        appVersion: "1.0.0",
+        appCopyright: "Copyright © 2023 CuiMuxuan",
+        appCategoryType: "public.app-category.utilities",
+
+        // Windows 特定配置
+        win32metadata: {
+          CompanyName: "CuiMuxuan",
+          FileDescription: "Moonshine 图像处理客户端",
+          OriginalFilename: "Moonshine-Image.exe",
+          ProductName: "Moonshine-Image",
+          InternalName: "Moonshine-Image"
+        },
+
+        // 下载配置 - 解决网络问题的关键
+        download: {
+          mirrorOptions:{
+            mirror: "https://npmmirror.com/mirrors/electron/"
+          }
+        },
+
+        // 忽略的文件
+        ignore: [
+          "/\\.git($|/)",
+          "/\\.quasar($|/)",
+          "/node_modules($|/)",
+          "/src($|/)",
+          "/dist/spa($|/)"
+        ],
+        extraResource: [
+          "public"
+        ]
       },
 
       builder: {
         // https://www.electron.build/configuration/configuration
 
-        appId: 'moonshine-client'
-      }
+        // 应用信息
+        appId: "com.moonshine.image",
+        productName: "Moonshine-Image",
+
+        // Windows 配置
+        win: {
+          target: ["nsis"],
+          icon: "src-electron/icons/icon.ico",
+        },
+
+        // 安装程序配置
+        nsis: {
+          oneClick: false,
+          allowToChangeInstallationDirectory: true,
+          shortcutName: "Moonshine-Image",
+        },
+
+        // 文件配置
+        files: ["dist/electron/**/*", "!node_modules/**/*"],
+
+        // 额外资源
+        extraResources: [
+          {
+            from: "public",
+            to: "public",
+          },
+        ],
+
+        // 安装后运行
+        artifactName: "Moonshine-Image-Setup-${version}.${ext}",
+        // 自动更新配置
+        publish: [
+          {
+            provider: "github", // 或其他平台
+            owner: "CuiMuxuan",
+            repo: "moonshine-image",
+          },
+        ],
+      },
     },
 
     // Full list of options: https://v2.quasar.dev/quasar-cli-vite/developing-browser-extensions/configuring-bex
@@ -206,7 +300,7 @@ export default defineConfig((/* ctx */) => {
        *
        * @example [ 'my-script.ts', 'sub-folder/my-other-script.js' ]
        */
-      extraScripts: []
-    }
-  }
-})
+      extraScripts: [],
+    },
+  };
+});
