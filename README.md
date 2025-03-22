@@ -95,5 +95,6 @@ quasar build -m electron -T win32
 - 保存结果：处理完成后，点击"下载"按钮保存处理结果
 ## 视频演示
 [点击查看视频演示](https://space.bilibili.com/589465087)
-License
-GNU General Public License v3.0
+## 许可证
+
+本项目采用 [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.html) 许可证开源。

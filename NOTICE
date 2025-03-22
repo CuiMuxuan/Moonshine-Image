@@ -1,0 +1,19 @@
+# 第三方软件声明
+
+本项目使用了以下开源软件：
+
+## Vue.js
+版权所有 (c) 2013-现在 Yuxi (Evan) You
+许可证: MIT
+
+## Quasar Framework
+版权所有 (c) 2015-现在 Quasar Framework
+许可证: MIT
+
+## Electron
+版权所有 (c) Electron contributors
+许可证: MIT
+
+## IOPaint (本项目基于此进行二次开发)
+版权所有 (c) IOPaint contributors
+许可证: Apache License 2.0

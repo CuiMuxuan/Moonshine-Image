@@ -4,6 +4,7 @@
   "description": "moonshine's image handle client",
   "productName": "moonshine-client",
   "author": "CuiMuxuan <cjh020715@163.com>",
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "main": "electron-main.js",
   "private": true,
