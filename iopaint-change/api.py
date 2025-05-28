@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional, Dict, List
 import base64 
 import io
+from tqdm import tqdm
 
 import cv2
 import numpy as np
@@ -277,8 +278,8 @@ class Api:
         return GenInfoResponse(prompt=prompt, negative_prompt=negative_prompt)
 
     def api_inpaint(self, req: InpaintRequest):
-        image, alpha_channel, infos = decode_base64_to_image(req.image)
-        mask, _, _ = decode_base64_to_image(req.mask, gray=True)
+        image, alpha_channel, infos, *_ = decode_base64_to_image(req.image)
+        mask, _, _, *_ = decode_base64_to_image(req.mask, gray=True)
 
         mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)[1]
         if image.shape[:2] != mask.shape[:2]:
@@ -288,7 +289,7 @@ class Api:
             )
 
         if req.paint_by_example_example_image:
-            paint_by_example_image, _, _ = decode_base64_to_image(
+            paint_by_example_image, _, _, *_ = decode_base64_to_image(
                 req.paint_by_example_example_image
             )
 
@@ -324,7 +325,7 @@ class Api:
             raise HTTPException(
                 status_code=422, detail="Plugin does not support output image"
             )
-        rgb_np_img, alpha_channel, infos = decode_base64_to_image(req.image)
+        rgb_np_img, alpha_channel, infos, *_ = decode_base64_to_image(req.image)
         bgr_or_rgba_np_img = self.plugins[req.name].gen_image(rgb_np_img, req)
         torch_gc()
 
@@ -440,10 +441,10 @@ class Api:
         
         start_time = time.time()
         
-        for i, (image_b64, mask_b64) in enumerate(zip(req.images, req.masks)):
+        for i, (image_b64, mask_b64) in enumerate(tqdm(zip(req.images, req.masks), total=len(req.images), desc="Batch processing")):
             try:
                 # 解码图像和蒙版
-                image, alpha_channel, infos = decode_base64_to_image(image_b64)
+                image, alpha_channel, infos, *_ = decode_base64_to_image(image_b64)
                 
                 # 处理蒙版，支持透明PNG
                 mask_data = base64.b64decode(mask_b64)
@@ -495,7 +496,6 @@ class Api:
                     "image": f"data:image/{ext};base64,{base64.b64encode(res_img_bytes).decode('utf-8')}",
                     "success": True
                 })
-                
                 # 清理GPU内存
                 torch_gc()
                 

@@ -1,85 +1,7 @@
 <template>
   <q-layout view="hHh LpR lFf">
     <q-header elevated class="bg-primary text-white" height-hint="98">
-      <q-toolbar>
-        <q-toolbar-title>
-          <q-avatar>
-            <moonshine-icon color="white" :size="24" />
-          </q-avatar>
-          Moonshine-Image
-        </q-toolbar-title>
-
-        <!-- GitHub 图标 -->
-        <q-btn flat round dense class="q-mr-sm" @click="openGithubLink">
-          <q-icon name="code" />
-          <q-tooltip>GitHub 仓库</q-tooltip>
-        </q-btn>
-
-        <!-- 赞助按钮 -->
-        <q-btn
-          flat
-          round
-          dense
-          icon="favorite"
-          class="q-mr-sm"
-          @click="showSponsorDialog = true"
-        >
-          <q-tooltip>支持作者</q-tooltip>
-        </q-btn>
-
-        <!-- 赞助对话框 -->
-        <q-dialog v-model="showSponsorDialog" persistent>
-          <q-card class="sponsor-card" style="width: 90%; max-width: 800px">
-            <q-card-section class="row items-center q-pb-none">
-              <div class="text-h6">感谢您的支持</div>
-              <q-space />
-              <q-btn icon="close" flat round dense v-close-popup />
-            </q-card-section>
-
-            <q-card-section>
-              <div class="row justify-around q-mb-md">
-                <div class="col-xs-12 col-sm-5 text-center q-pa-sm">
-                  <p class="q-mb-sm">微信支付</p>
-                  <q-img
-                    :src="getImagePath('wxPay.png')"
-                    style="width: 100%; max-width: 300px"
-                    spinner-color="primary"
-                    contain
-                  />
-                </div>
-                <div class="col-xs-12 col-sm-5 text-center q-pa-sm">
-                  <p class="q-mb-sm">支付宝</p>
-                  <q-img
-                    :src="getImagePath('Alipay.jpg')"
-                    style="width: 100%; max-width: 300px"
-                    spinner-color="primary"
-                    contain
-                  />
-                </div>
-              </div>
-
-              <q-separator class="q-my-md" />
-
-              <div class="text-center">
-                <p>或者你也可以阅读作者写的免费小说</p>
-                <q-btn
-                  color="primary"
-                  icon="menu_book"
-                  label="阅读小说"
-                  @click="openNovelLink"
-                />
-              </div>
-            </q-card-section>
-          </q-card>
-        </q-dialog>
-
-        <!-- 作者头像 -->
-        <q-avatar class="cursor-pointer" @click="openBilibiliLink">
-          <q-img :src="getImagePath('moonshine128x128.jpg')" :ratio="1" />
-          <q-tooltip>作者B站</q-tooltip>
-        </q-avatar>
-      </q-toolbar>
-
+      <main-toolbar />
       <q-btn-toggle
         v-model="currentModel"
         spread
@@ -415,11 +337,12 @@
 <script setup>
 import { ref, computed, watchEffect, onUnmounted, watch, onMounted } from "vue";
 import { useQuasar } from "quasar";
-import MoonshineIcon from "src/components/MoonshineIcon.vue";
+import MainToolbar from "src/components/MainToolbar.vue";
 import FileList from "src/components/FileList.vue";
 import FolderSelector from "src/components/FolderSelector.vue";
 import CudaStatus from "src/components/CudaStatus.vue";
 import InpaintService from "src/services/InpaintService";
+import { useEditorStore } from "../stores/editor";
 
 const $q = useQuasar();
 const leftDrawerOpen = ref(false);
@@ -444,11 +367,9 @@ const showingOriginal = ref(false); // 是否正在显示原图
 const dontShowMaxHistoryWarning = ref(false); // 是否不再显示历史记录上限警告
 const folderPath = ref("");
 const maskFolderPath = ref("");
-import { useEditorStore } from "../stores/editor";
 const store = useEditorStore();
 const isElectron = ref(false);
 const resourcesPath = ref("");
-const showSponsorDialog = ref(false);
 
 const getFileIcon = (file) => {
   const type = file.type?.split("/")[0] || "";
@@ -1319,78 +1240,8 @@ const saveMaskToFolder = async () => {
   }
 };
 
-// 打开B站链接
-const openBilibiliLink = () => {
-  const url = "https://space.bilibili.com/589465087";
-  openExternalLink(url);
-};
 
-// 打开小说链接
-const openNovelLink = () => {
-  const url = "https://fanqienovel.com/page/7458971942796659774";
-  openExternalLink(url);
-};
-// 打开GitHub链接
-const openGithubLink = () => {
-  const url = "https://github.com/CuiMuxuan/Moonshine-Image";
-  openExternalLink(url);
-};
 
-// 通用打开外部链接方法
-const openExternalLink = (url) => {
-  try {
-    // 检查是否在Electron环境
-    if (window.electron) {
-      // 尝试使用不同的方法打开链接
-      if (window.electron.openExternal) {
-        // 直接使用预定义的方法
-        window.electron.openExternal(url);
-      } else if (
-        window.electron.ipcRenderer &&
-        window.electron.ipcRenderer.invoke
-      ) {
-        // 使用 invoke 方法
-        window.electron.ipcRenderer.invoke("open-external-link", url);
-      } else if (
-        window.electron.ipcRenderer &&
-        window.electron.ipcRenderer.sendSync
-      ) {
-        // 使用 sendSync 方法
-        window.electron.ipcRenderer.sendSync("open-external-link", url);
-      } else {
-        // 回退到浏览器方式
-        window.open(url, "_blank");
-      }
-    } else {
-      // 浏览器环境，打开新标签页
-      window.open(url, "_blank");
-    }
-  } catch (error) {
-    console.error("打开外部链接失败:", error);
-    // 出错时回退到浏览器方式
-    try {
-      window.open(url, "_blank");
-    } catch (e) {
-      console.error("无法打开链接:", e);
-    }
-  }
-};
-// 获取图片路径的函数
-const getImagePath = (imageName) => {
-  if (isElectron.value && process.env.NODE_ENV === "production") {
-    // 生产环境 - Electron
-    // 使用绝对路径，确保能找到资源
-    if (resourcesPath.value) {
-      return `${resourcesPath.value}/public/images/${imageName}`;
-    } else {
-      // 备选路径
-      return `./resources/public/images/${imageName}`;
-    }
-  } else {
-    // 开发环境或浏览器环境
-    return `/images/${imageName}`;
-  }
-};
 // 监听selectedFiles变化，更新selectAll状态
 watch(selectedFiles, (newVal) => {
   if (filteredFiles.value.length > 0) {
@@ -1459,6 +1310,8 @@ watchEffect(() => {
   }
 });
 const onRejectedFiles = (rejectedEntries) => {
+  console.error("Rejected files:", rejectedEntries);
+
   // 使用 Quasar 的 Notify 插件显示错误信息
   rejectedEntries.forEach((entry) => {
     let msg;
