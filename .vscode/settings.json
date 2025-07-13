@@ -11,5 +11,8 @@
     "javascriptreact",
     "typescript",
     "vue"
-  ]
+  ],
+  "[json]": {
+    "editor.defaultFormatter": "vscode.json-language-features"
+  }
 }

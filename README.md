@@ -25,6 +25,8 @@ Moonshine 图像处理客户端
 > 注：✅ 已实现 | 🔄 正在实现 | 📝 计划实现
 
 目前项目没有独立的后端，后续开发过程中若有必要会建立独立的后端程序。
+## 快速使用
+下载压缩包并解压缩，双击 bat 一键启动脚本。
 
 ## 使用前准备
 
@@ -35,7 +37,7 @@ git clone https://github.com/Sanster/IOPaint.git
 ```
 
 2、配置后端环境：
-首先要有 Python 环境，推荐 3.10 版本的环境。
+首先要有 Python 环境，推荐 3.10 版本的环境(开发环境为3.11.5)。
 安装依赖：
 
 ```bash
@@ -58,8 +60,6 @@ iopaint start --model=lama --device=cpu --port=8080
 
 python main.py start --model=lama --device=cuda --port=8080
 ```
-## 快速使用
-下载压缩包并解压缩，双击 exe 文件。
 
 ## 开发环境
 克隆本仓库：

@@ -1,15 +1,28 @@
 import { defineBoot } from "#q-app/wrappers";
 import axios from "axios";
 import { debounce } from 'quasar';
-import appConfig from 'src/config/app.config'
-
+// 默认配置
+const defaultConfig = {
+  api: {
+    baseURL: 'http://localhost:8080',
+    timeout: 10000,
+    retries: 3
+  }
+}
 // 创建axios实例
 const api = axios.create({
-  baseURL: appConfig.api.baseURL,
+  baseURL: defaultConfig.api.baseURL,
+  timeout: defaultConfig.api.timeout,
   headers: {
     'Content-Type': 'application/json',
   }
 });
+// 动态更新配置的方法
+api.updateConfig = (config) => {
+  if (config?.general?.backendPort) {
+    api.defaults.baseURL = `http://localhost:${config.general.backendPort}`
+  }
+}
 
 // 请求拦截器
 api.interceptors.request.use(
@@ -123,7 +136,10 @@ const enhancedApi = {
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
-  }
+  },
+
+  // 更新配置方法
+  updateConfig: api.updateConfig
 };
 
 export default defineBoot(({ app }) => {

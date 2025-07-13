@@ -50,18 +50,35 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, onUnmounted, watch } from 'vue';
 import { useQuasar } from 'quasar';
 import { api } from 'src/boot/axios';
 
 const emit = defineEmits(['cuda-status-changed']);
+const props = defineProps({
+  backendRunning: {
+    type: Boolean,
+    default: false
+  }
+});
 
 const $q = useQuasar();
 const cudaAvailable = ref(false);
 const cudaInfo = ref(null);
+const checkInterval = ref(null);
 
 // 检查CUDA可用性
 const checkCUDAAvailability = async () => {
+  // 只有在后端运行时才检查CUDA
+  if (!props.backendRunning) {
+    cudaAvailable.value = false;
+    cudaInfo.value = { message: "后端服务未启动" };
+    emit('cuda-status-changed', {
+      available: false,
+      info: { message: "后端服务未启动" }
+    });
+    return;
+  }
   try {
     $q.loading.show({
       message: "正在检测CUDA可用性...",
@@ -115,14 +132,41 @@ const checkCUDAAvailability = async () => {
     $q.loading.hide();
     $q.notify({
       type: "negative",
-      message: "检测CUDA可用性失败，将使用CPU模式",
+      message: "检测CUDA可用性失败，请检查后端程序",
       position: "top",
     });
   }
 };
 
+// 监听后端状态变化
+watch(() => props.backendRunning, (newVal) => {
+  if (newVal) {
+    // 后端启动后延迟检查CUDA
+    setTimeout(() => {
+      checkCUDAAvailability();
+    }, 2000);
+
+    // 设置定期检查
+    checkInterval.value = setInterval(checkCUDAAvailability, 30000);
+  } else {
+    // 后端停止时清除检查
+    if (checkInterval.value) {
+      clearInterval(checkInterval.value);
+      checkInterval.value = null;
+    }
+    cudaAvailable.value = false;
+    cudaInfo.value = { message: "后端服务未启动" };
+  }
+});
+
 // 组件挂载时检查CUDA可用性
 onMounted(() => {
   checkCUDAAvailability();
+});
+// 组件卸载时清理
+onUnmounted(() => {
+  if (checkInterval.value) {
+    clearInterval(checkInterval.value);
+  }
 });
 </script>

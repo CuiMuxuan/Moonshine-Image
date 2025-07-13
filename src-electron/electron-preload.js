@@ -40,8 +40,19 @@ contextBridge.exposeInMainWorld('electron', {
     // 保存应用配置
     saveAppConfig: (configData) => ipcRenderer.invoke('save-app-config', configData),
     // 获取应用配置
-    getAppConfig: () => ipcRenderer.invoke('get-app-config')
-    // 可以根据需要添加其他 ipcRenderer 方法
+    getAppConfig: () => ipcRenderer.invoke('get-app-config'),
+    // 后端管理相关 API
+    checkPython: () => ipcRenderer.invoke('check-python'),
+    checkProject: () => ipcRenderer.invoke('check-project'),
+    checkVenv: () => ipcRenderer.invoke('check-venv'),
+    checkDependencies: () => ipcRenderer.invoke('check-dependencies'),
+    installPython: () => ipcRenderer.invoke('install-python'),
+    setProjectPath: (path) => ipcRenderer.invoke('set-project-path', path),
+    createVenv: () => ipcRenderer.invoke('create-venv'),
+    installDependencies: () => ipcRenderer.invoke('install-dependencies'),
+    startBackendService: (config) => ipcRenderer.invoke('start-backend-service', config),
+    stopBackendService: () => ipcRenderer.invoke('stop-backend-service'),
+    executeCommand: (options) => ipcRenderer.invoke('execute-command', options)
   },
   // 获取资源路径的方法
   getResourcesPath: () => {

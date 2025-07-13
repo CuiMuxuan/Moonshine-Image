@@ -113,7 +113,28 @@ const containerStyle = computed(() => ({
   width: "100%",
   height: "100%",
 }));
-// 修改图片加载处理
+
+// 获取画布数据的方法
+const getCanvasData = () => {
+  if (!maskerRef.value) {
+    return props.mask?.data || null;
+  }
+  try {
+    // 从 ImageMasker 组件获取蒙版的base64数据
+    const maskData = maskerRef.value.getMaskData?.();
+    return maskData || props.mask?.data || null;
+  } catch (error) {
+    console.error('获取蒙版数据失败:', error);
+    return props.mask?.data || null;
+  }
+};
+
+const getSelection = () => {
+  // 返回当前图片的URL
+  return imageUrl.value || null;
+};
+
+// 图片加载处理
 const onImageLoad = () => {
   if (!imageRef.value || !imageContainer.value) return;
 
@@ -275,10 +296,16 @@ provide(
   "image-editor",
   ref({
     resetView,
+    getCanvasData,
+    getSelection,
   })
 );
 // 暴露方法给父组件
-defineExpose({ resetView });
+defineExpose({
+  resetView,
+  getCanvasData,
+  getSelection
+});
 </script>
 
 <style scoped>

@@ -25,6 +25,10 @@
       <q-tooltip>支持作者</q-tooltip>
     </q-btn>
 
+    <!-- 后端管理按钮插槽 -->
+    <slot name="backend"></slot>
+    <!-- 设置按钮插槽 -->
+    <slot name="settings"></slot>
     <!-- 赞助对话框 -->
     <q-dialog v-model="showSponsorDialog" persistent>
       <q-card class="sponsor-card" style="width: 90%; max-width: 800px">
