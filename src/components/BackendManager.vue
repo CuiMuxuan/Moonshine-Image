@@ -510,6 +510,7 @@ const backendConfig = reactive({
   modelPath: configStore.config.general.modelPath || "",
   projectPath: configStore.config.general.backendProjectPath || "",
   modelDir: configStore.config.general.modelDir || "",
+  pythonType: "standard"
 });
 
 // 选项
@@ -784,11 +785,19 @@ const setupEnvironment = async () => {
     // 创建虚拟环境
     if (!environmentStatus.venv) {
       addTerminalLog("创建虚拟环境...", "info");
-      // 传递项目路径参数
-      const venvResult = await window.electron.ipcRenderer.invoke(
-        "create-venv",
-        projectPath.value
-      );
+
+      let venvResult;
+      if (backendConfig.pythonType === 'conda') {
+        // 使用 conda 创建环境
+        venvResult = await window.electron.ipcRenderer.invoke('create-conda-venv');
+      } else {
+        // 使用传统 venv 创建环境
+        venvResult = await window.electron.ipcRenderer.invoke(
+          "create-venv",
+          projectPath.value
+        );
+      }
+
       if (venvResult.success) {
         environmentStatus.venv = true;
         venvStatus.value = "已创建";
@@ -801,11 +810,19 @@ const setupEnvironment = async () => {
 
     // 安装依赖
     addTerminalLog("安装依赖包...", "info");
-    // 传递项目路径参数
-    const depsResult = await window.electron.ipcRenderer.invoke(
-      "install-dependencies",
-      projectPath.value
-    );
+
+    let depsResult;
+    if (backendConfig.pythonType === 'conda') {
+      // 使用 conda 安装依赖
+      depsResult = await window.electron.ipcRenderer.invoke('install-conda-dependencies');
+    } else {
+      // 使用传统方式安装依赖
+      depsResult = await window.electron.ipcRenderer.invoke(
+        "install-dependencies",
+        projectPath.value
+      );
+    }
+
     if (depsResult.success) {
       environmentStatus.dependencies = true;
       environmentStatus.configured = true;
