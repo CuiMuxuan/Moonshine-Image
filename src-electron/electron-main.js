@@ -11,6 +11,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import fs from "fs";
+import https from "https";
 import { spawn, exec } from "child_process";
 import { promisify } from "util";
 const execAsync = promisify(exec);
@@ -425,21 +426,260 @@ ipcMain.handle("select-folder", async (event, options = {}) => {
 });
 
 // IPC 处理程序 - 检查 Python 环境
-ipcMain.handle("check-python", async () => {
+ipcMain.handle("check-python", async (event) => {
+  const sendLog = (message, type = 'info') => {
+    event.sender.send('backend-output', { message, type });
+  };
+
   try {
-    const { stdout } = await execAsync("python --version");
-    return {
-      success: true,
-      version: stdout.trim(),
-    };
+    // 获取系统环境变量
+    const systemEnv = { ...process.env };
+    sendLog('正在检测 Python 环境...', 'info');
+
+    // Windows 系统特殊处理
+    if (os.platform() === 'win32') {
+      // 尝试多种 Python 命令
+      const pythonCommands = ['python', 'py', 'python3'];
+      sendLog(`尝试检测 Python 命令: ${pythonCommands.join(', ')}`, 'info');
+
+      for (const cmd of pythonCommands) {
+        try {
+          sendLog(`正在尝试命令: ${cmd} --version`, 'info');
+          const { stdout } = await execAsync(`${cmd} --version`, {
+            env: systemEnv,
+            shell: true,
+            timeout: 10000
+          });
+          if (stdout) {
+            sendLog(`✓ 命令 ${cmd} 执行成功: ${stdout.trim()}`, 'success');
+            return {
+              success: true,
+              version: stdout.trim(),
+              type: 'python',
+              command: cmd
+            };
+          }
+        } catch (cmdError) {
+          sendLog(`✗ 命令 ${cmd} 失败: ${cmdError.message}`, 'warning');
+          continue;
+        }
+      }
+
+      // 尝试从常见安装路径查找 Python
+      const commonPaths = [
+        'C:\\Python311\\python.exe',
+        'C:\\Python310\\python.exe',
+        'C:\\Python39\\python.exe',
+        'C:\\Users\\' + os.userInfo().username + '\\AppData\\Local\\Programs\\Python\\Python311\\python.exe',
+        'C:\\Users\\' + os.userInfo().username + '\\AppData\\Local\\Programs\\Python\\Python310\\python.exe'
+      ];
+
+      sendLog('尝试从常见安装路径查找 Python...', 'info');
+      for (const pythonPath of commonPaths) {
+        try {
+          sendLog(`检查路径: ${pythonPath}`, 'info');
+          if (fs.existsSync(pythonPath)) {
+            sendLog(`✓ 找到 Python 可执行文件: ${pythonPath}`, 'success');
+            const { stdout } = await execAsync(`"${pythonPath}" --version`, {
+              env: systemEnv,
+              shell: true,
+              timeout: 10000
+            });
+            if (stdout) {
+              sendLog(`✓ Python 版本检测成功: ${stdout.trim()}`, 'success');
+              return {
+                success: true,
+                version: stdout.trim(),
+                type: 'python',
+                path: pythonPath
+              };
+            }
+          } else {
+            sendLog(`✗ 路径不存在: ${pythonPath}`, 'warning');
+          }
+        } catch (pathError) {
+          sendLog(`✗ 路径检测失败 ${pythonPath}: ${pathError.message}`, 'warning');
+          continue;
+        }
+      }
+    } else {
+      // Unix-like 系统
+      sendLog('检测 Unix-like 系统的 Python 环境...', 'info');
+      try {
+        sendLog('尝试命令: python --version', 'info');
+        const { stdout: pythonStdout } = await execAsync("python --version", {
+          env: systemEnv,
+          shell: true,
+          timeout: 10000
+        });
+        if (pythonStdout) {
+          sendLog(`✓ python 命令成功: ${pythonStdout.trim()}`, 'success');
+          return {
+            success: true,
+            version: pythonStdout.trim(),
+            type: 'python'
+          };
+        }
+      } catch (pythonError) {
+        sendLog(`✗ python 命令失败: ${pythonError.message}`, 'warning');
+        try {
+          sendLog('尝试命令: python3 --version', 'info');
+          const { stdout: python3Stdout } = await execAsync("python3 --version", {
+            env: systemEnv,
+            shell: true,
+            timeout: 10000
+          });
+          if (python3Stdout) {
+            sendLog(`✓ python3 命令成功: ${python3Stdout.trim()}`, 'success');
+            return {
+              success: true,
+              version: python3Stdout.trim(),
+              type: 'python'
+            };
+          }
+        } catch (python3Error) {
+          sendLog(`✗ python3 命令失败: ${python3Error.message}`, 'warning');
+          // 继续尝试 conda
+        }
+      }
+    }
+
+    // 尝试检测 conda
+    sendLog('尝试检测 conda 环境...', 'info');
+    try {
+      const { stdout: condaStdout } = await execAsync("conda -V", {
+        env: systemEnv,
+        shell: true,
+        timeout: 10000
+      });
+      if (condaStdout) {
+        sendLog(`✓ 找到 conda: ${condaStdout.trim()}`, 'success');
+        try {
+          // 检查 moonshine-image 环境是否存在
+          sendLog('检查 moonshine-image 环境...', 'info');
+          const { stdout: envCheckStdout } = await execAsync("conda env list", {
+            env: systemEnv,
+            shell: true,
+            timeout: 10000
+          });
+
+          if (!envCheckStdout.includes('moonshine-image')) {
+            // 创建 moonshine-image 环境
+            sendLog('创建 moonshine-image conda 环境...', 'info');
+            await execAsync("conda create -n moonshine-image python=3.11.5 -y", {
+              env: systemEnv,
+              shell: true,
+              timeout: 300000
+            });
+            sendLog('✓ moonshine-image 环境创建成功', 'success');
+          } else {
+            sendLog('✓ moonshine-image 环境已存在', 'success');
+          }
+
+          // 激活环境并检查 Python 版本
+          sendLog('激活 moonshine-image 环境并检查 Python 版本...', 'info');
+          const activateCmd = os.platform() === 'win32'
+            ? "conda activate moonshine-image && python --version"
+            : "source activate moonshine-image && python --version";
+
+          const { stdout: envPythonStdout } = await execAsync(activateCmd, {
+            env: systemEnv,
+            shell: true,
+            timeout: 30000
+          });
+
+          sendLog(`✓ conda 环境 Python 版本: ${envPythonStdout.trim()}`, 'success');
+          return {
+            success: true,
+            version: envPythonStdout.trim(),
+            type: 'conda'
+          };
+        } catch (envError) {
+          sendLog(`✗ conda 环境操作失败: ${envError.message}`, 'error');
+          return {
+            success: false,
+            error: `找到 conda (${condaStdout.trim()})，但创建或激活环境失败: ${envError.message}`
+          };
+        }
+      }
+    } catch (condaError) {
+      sendLog(`✗ conda 检测失败: ${condaError.message}`, 'warning');
+      sendLog('未检测到可用的 Python 环境', 'error');
+      return {
+        success: false,
+        error: `未检测到可用的 Python 环境。请确保 Python 已正确安装并添加到系统 PATH 中。详细错误: ${condaError.message}`
+      };
+    }
   } catch (error) {
+    sendLog(`Python 环境检测过程中发生错误: ${error.message}`, 'error');
     return {
       success: false,
-      error: error.message,
+      error: `Python 环境检测失败: ${error.message}`
     };
   }
 });
 
+// IPC 处理程序 - 设置 Python 环境变量
+ipcMain.handle('set-python-env', async (event, pythonPath) => {
+  try {
+    const currentEnv = process.env.PATH || '';
+    // 检查路径是否已存在于 PATH 中
+    if (!currentEnv.includes(pythonPath)) {
+      // Windows 系统下添加路径到环境变量
+      process.env.PATH = `${pythonPath};${currentEnv}`;
+    }
+    return { success: true, message: 'Python 环境变量设置成功' };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// IPC 处理程序 - 检查 conda 虚拟环境
+ipcMain.handle('check-conda-venv', async () => {
+  try {
+    // 获取系统环境变量
+    const systemEnv = { ...process.env };
+
+    // 检查 moonshine-image 环境是否存在
+    const { stdout } = await execAsync('conda env list', {
+      env: systemEnv,
+      shell: true,
+      timeout: 10000
+    });
+
+    const envExists = stdout.includes('moonshine-image');
+    return {
+      success: envExists,
+      message: envExists ? 'conda 虚拟环境已存在' : 'conda 虚拟环境不存在'
+    };
+  } catch (error) {
+    return { success: false, error: `检查 conda 虚拟环境失败: ${error.message}` };
+  }
+});
+
+// IPC 处理程序 - 检查 conda 依赖
+ipcMain.handle('check-conda-dependencies', async () => {
+  try {
+    // 获取系统环境变量
+    const systemEnv = { ...process.env };
+
+    // 激活 moonshine-image 环境并检查依赖
+    const activateCmd = os.platform() === 'win32'
+      ? 'conda activate moonshine-image && conda list'
+      : 'source activate moonshine-image && conda list';
+
+    const { stdout } = await execAsync(activateCmd, {
+      env: systemEnv,
+      shell: true,
+      timeout: 30000
+    });
+
+    // 简单判断依赖是否已安装，可根据实际需求修改判断逻辑
+    return { success: stdout.split('\n').length > 10, message: stdout };
+  } catch (error) {
+    return { success: false, error: `检查 conda 依赖失败: ${error.message}` };
+  }
+});
 // IPC 处理程序 - 检查项目
 ipcMain.handle("check-project", async (event, selectPath) => {
   try {
@@ -573,7 +813,9 @@ ipcMain.handle("check-dependencies", async () => {
     }
 
     const venvPath = path.join(projectPath, "venv");
-    const sitePackagesPath = path.join(venvPath, "Lib", "site-packages");
+    const sitePackagesPath = os.platform() === 'win32'
+      ? path.join(venvPath, "Lib", "site-packages")
+      : path.join(venvPath, "lib", "python3.11", "site-packages");
 
     if (fs.existsSync(sitePackagesPath)) {
       const packages = fs.readdirSync(sitePackagesPath);
@@ -594,10 +836,6 @@ ipcMain.handle("check-dependencies", async () => {
 // IPC 处理程序 - 安装 Python
 ipcMain.handle("install-python", async () => {
   try {
-    const os = require("os");
-    const https = require("https");
-    const fs = require("fs");
-    const { execAsync } = require("child_process");
     // Python 3.11.5 下载链接
     const pythonUrls = {
       win32: "https://www.python.org/ftp/python/3.11.5/python-3.11.5-amd64.exe",
@@ -630,6 +868,8 @@ ipcMain.handle("install-python", async () => {
           response.pipe(file);
           file.on("finish", () => {
             file.close();
+            // 发送下载路径到前端
+            mainWindow.webContents.send('python-install-path', filePath);
             resolve();
           });
         })
@@ -638,6 +878,7 @@ ipcMain.handle("install-python", async () => {
           reject(err);
         });
     });
+
     // 执行安装
     if (platform === "win32") {
       // Windows 静默安装
@@ -676,14 +917,41 @@ ipcMain.handle("create-venv", async (event, projectPath) => {
       return { success: false, error: "项目路径未设置" };
     }
 
+    // 获取系统环境变量
+    const systemEnv = { ...process.env };
+
     // 发送开始消息
     mainWindow.webContents.send("backend-output", {
       type: "info",
       message: "开始创建虚拟环境...",
     });
-    await execAsync("python -m venv ./venv", {
-      cwd: workingPath,
-    });
+
+    // 尝试多种 Python 命令
+    const pythonCommands = os.platform() === 'win32' ? ['python', 'py', 'python3'] : ['python', 'python3'];
+    let success = false;
+    let lastError = null;
+
+    for (const cmd of pythonCommands) {
+      try {
+        await execAsync(`${cmd} -m venv ./venv`, {
+          cwd: workingPath,
+          env: systemEnv,
+          shell: true,
+          timeout: 60000
+        });
+        success = true;
+        break;
+      } catch (error) {
+        lastError = error;
+        console.log(`使用 ${cmd} 创建虚拟环境失败:`, error.message);
+        continue;
+      }
+    }
+
+    if (!success) {
+      throw lastError || new Error('所有 Python 命令都失败了');
+    }
+
     // 发送成功消息
     mainWindow.webContents.send("backend-output", {
       type: "success",
@@ -713,7 +981,9 @@ ipcMain.handle("install-dependencies", async (event, projectPath) => {
       return { success: false, error: "项目路径未设置" };
     }
 
-    const venvPython = path.join(workingPath, "venv", "Scripts", "python.exe");
+    const venvPython = os.platform() === 'win32'
+      ? path.join(workingPath, "venv", "Scripts", "python.exe")
+      : path.join(workingPath, "venv", "bin", "python");
     // const pipCommand = `"${venvPython}" -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`;
 
     // 发送开始消息
@@ -799,7 +1069,9 @@ ipcMain.handle("start-backend-service", async (event, config) => {
       return { success: false, error: "项目路径未设置" };
     }
 
-    const venvPython = path.join(projectPath, "venv", "Scripts", "python.exe");
+    const venvPython = os.platform() === 'win32'
+      ? path.join(projectPath, "venv", "Scripts", "python.exe")
+      : path.join(projectPath, "venv", "bin", "python");
     const args = [
       "main.py",
       "start",
@@ -915,8 +1187,13 @@ ipcMain.handle("check-backend-status", async () => {
 // IPC 处理程序 - 执行命令
 ipcMain.handle("execute-command", async (event, { command, cwd }) => {
   try {
+    // 获取系统环境变量
+    const systemEnv = { ...process.env };
+
     const { stdout, stderr } = await execAsync(command, {
       cwd: cwd || projectPath,
+      env: systemEnv,
+      shell: true,
       timeout: 30000, // 30秒超时
     });
 
