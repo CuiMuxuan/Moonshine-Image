@@ -618,10 +618,15 @@ const checkEnvironment = async () => {
     if (pythonResult.success) {
       environmentStatus.python = true;
       pythonVersion.value = pythonResult.version;
+      if (pythonResult.type === 'conda') {
+        // 设置后续使用 conda 环境
+        backendConfig.pythonType = 'conda';
+      }
       addTerminalLog(`Python 环境检测成功: ${pythonResult.version}`, "success");
     } else {
       environmentStatus.python = false;
-      addTerminalLog("Python 环境检测失败", "error");
+      addTerminalLog(`Python 环境检测失败: ${pythonResult.error}`, "error");
+      addTerminalLog(`没有检测到可用的 python 环境，请确保环境变量中存在 python 解释器，若尚未安装 python，请点击左侧安装 python 按钮尝试安装，若自动安装失败，则浏览器打开此网址：https://www.python.org/ftp/python/3.11.5/python-3.11.5-amd64.exe，然后运行下载的exe程序以手动安装 python3.11.5，注意勾选添加路径到环境变量的选项。`, "info");
     }
 
     // 检查项目路径
@@ -648,16 +653,15 @@ const checkEnvironment = async () => {
 
     // 检查虚拟环境
     if (environmentStatus.project) {
-      const venvResult = await window.electron.ipcRenderer.invoke("check-venv");
+      const venvCheckFunc = backendConfig.pythonType === 'conda' ? 'check-conda-venv' : 'check-venv';
+      const venvResult = await window.electron.ipcRenderer.invoke(venvCheckFunc);
       if (venvResult.success) {
         environmentStatus.venv = true;
         venvStatus.value = "已创建";
         addTerminalLog("虚拟环境检测成功", "success");
-
-        // 检查依赖
-        const depsResult = await window.electron.ipcRenderer.invoke(
-          "check-dependencies"
-        );
+        // 修改依赖检查逻辑
+        const depsCheckFunc = backendConfig.pythonType === 'conda' ? 'check-conda-dependencies' : 'check-dependencies';
+        const depsResult = await window.electron.ipcRenderer.invoke(depsCheckFunc);
         if (depsResult.success) {
           environmentStatus.dependencies = true;
           environmentStatus.configured = true;
@@ -690,6 +694,8 @@ const installPython = async () => {
     const result = await window.electron.ipcRenderer.invoke("install-python");
     if (result.success) {
       addTerminalLog("Python 安装成功", "success");
+      // 现在可以在async函数中安全使用await
+      await window.electron.ipcRenderer.invoke("set-python-env", result.path);
       await checkEnvironment();
     } else {
       addTerminalLog(`Python 安装失败: ${result.error}`, "error");
@@ -931,6 +937,10 @@ onMounted(() => {
   }
   if (window.electron && window.electron.ipcRenderer) {
     window.electron.ipcRenderer.on('backend-output', handleBackendOutput);
+    // 监听Python安装路径消息
+    window.electron.ipcRenderer.on('python-install-path', (event, path) => {
+      addTerminalLog(`安装包已下载至: ${path}`, 'info');
+    });
   }
 });
 onUnmounted(() => {
