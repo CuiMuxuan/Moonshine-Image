@@ -17,7 +17,7 @@ import { promisify } from "util";
 const execAsync = promisify(exec);
 // 后端服务进程
 let backendProcess = null;
-let projectPath = "";
+global.projectPath = "";
 // 默认配置
 const DEFAULT_CONFIG = {
   general: {
@@ -685,7 +685,7 @@ ipcMain.handle("check-project", async (event, selectPath) => {
   try {
     let checkPath = selectPath;
     // 设置全局项目路径
-    projectPath = checkPath;
+    global.projectPath = checkPath;
 
     // 如果没有提供路径，使用默认逻辑
     if (!checkPath) {
@@ -753,7 +753,7 @@ ipcMain.handle("check-project", async (event, selectPath) => {
     }
 
     // 设置全局项目路径
-    projectPath = checkPath;
+    global.projectPath = checkPath;
 
     return {
       success: true,
@@ -771,7 +771,7 @@ ipcMain.handle("check-project", async (event, selectPath) => {
 ipcMain.handle("set-project-path", async (event, selectPath) => {
   try {
     if (fs.existsSync(selectPath)) {
-      projectPath = selectPath;
+      global.projectPath = selectPath;
       return { success: true };
     }
     return {
@@ -789,11 +789,11 @@ ipcMain.handle("set-project-path", async (event, selectPath) => {
 // IPC 处理程序 - 检查虚拟环境
 ipcMain.handle("check-venv", async () => {
   try {
-    if (!projectPath) {
+    if (!global.projectPath) {
       return { success: false, error: "项目路径未设置" };
     }
 
-    const venvPath = path.join(projectPath, "venv");
+    const venvPath = path.join(global.projectPath, "venv");
     return {
       success: fs.existsSync(venvPath),
     };
@@ -808,11 +808,11 @@ ipcMain.handle("check-venv", async () => {
 // IPC 处理程序 - 检查依赖
 ipcMain.handle("check-dependencies", async () => {
   try {
-    if (!projectPath) {
+    if (!global.projectPath) {
       return { success: false, error: "项目路径未设置" };
     }
 
-    const venvPath = path.join(projectPath, "venv");
+    const venvPath = path.join(global.projectPath, "venv");
     const sitePackagesPath = os.platform() === 'win32'
       ? path.join(venvPath, "Lib", "site-packages")
       : path.join(venvPath, "lib", "python3.11", "site-packages");
@@ -970,7 +970,41 @@ ipcMain.handle("create-venv", async (event, projectPath) => {
     };
   }
 });
+// IPC 处理程序 - 创建 conda 虚拟环境
+ipcMain.handle('create-conda-venv', async (event) => {
+  const sendLog = (message, type = 'info') => {
+    event.sender.send('backend-output', { message, type });
+  };
 
+  try {
+    const systemEnv = { ...process.env };
+    sendLog('正在创建 conda 虚拟环境...', 'info');
+
+    // 检查 moonshine-image 环境是否已存在
+    const { stdout: envListStdout } = await execAsync('conda env list', {
+      env: systemEnv,
+      shell: true,
+      timeout: 10000
+    });
+
+    if (!envListStdout.includes('moonshine-image')) {
+      sendLog('创建 moonshine-image conda 环境...', 'info');
+      await execAsync('conda create -n moonshine-image python=3.11.5 -y', {
+        env: systemEnv,
+        shell: true,
+        timeout: 300000
+      });
+      sendLog('✓ moonshine-image 环境创建成功', 'success');
+    } else {
+      sendLog('✓ moonshine-image 环境已存在', 'success');
+    }
+
+    return { success: true };
+  } catch (error) {
+    sendLog(`conda 虚拟环境创建失败: ${error.message}`, 'error');
+    return { success: false, error: error.message };
+  }
+});
 // IPC 处理程序 - 安装依赖
 ipcMain.handle("install-dependencies", async (event, projectPath) => {
   try {
@@ -1054,7 +1088,57 @@ ipcMain.handle("install-dependencies", async (event, projectPath) => {
     };
   }
 });
+// IPC 处理程序 - 安装 conda 依赖
+ipcMain.handle('install-conda-dependencies', async (event) => {
+  const sendLog = (message, type = 'info') => {
+    event.sender.send('backend-output', { message, type });
+  };
 
+  try {
+    if (!global.projectPath) {
+      return { success: false, error: '项目路径未设置' };
+    }
+
+    const systemEnv = { ...process.env };
+    sendLog('开始安装 conda 环境依赖...', 'info');
+
+    // 激活环境并安装依赖
+    const activateAndInstallCmd = os.platform() === 'win32'
+      ? `conda activate moonshine-image && pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`
+      : `source activate moonshine-image && pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`;
+
+    const installProcess = spawn('cmd', ['/c', activateAndInstallCmd], {
+      cwd: global.projectPath,
+      stdio: 'pipe',
+      env: systemEnv,
+      shell: true
+    });
+
+    // 监听输出
+    installProcess.stdout.on('data', (data) => {
+      sendLog(data.toString(), 'info');
+    });
+
+    installProcess.stderr.on('data', (data) => {
+      sendLog(data.toString(), 'warning');
+    });
+
+    return new Promise((resolve) => {
+      installProcess.on('close', (code) => {
+        if (code === 0) {
+          sendLog('conda 环境依赖安装成功', 'success');
+          resolve({ success: true });
+        } else {
+          sendLog(`conda 环境依赖安装失败，退出码: ${code}`, 'error');
+          resolve({ success: false, error: `安装失败，退出码: ${code}` });
+        }
+      });
+    });
+  } catch (error) {
+    sendLog(`conda 环境依赖安装失败: ${error.message}`, 'error');
+    return { success: false, error: error.message };
+  }
+});
 // IPC 处理程序 - 启动后端服务
 ipcMain.handle("start-backend-service", async (event, config) => {
   try {
@@ -1065,13 +1149,13 @@ ipcMain.handle("start-backend-service", async (event, config) => {
       };
     }
 
-    if (!projectPath) {
+    if (!global.projectPath) {
       return { success: false, error: "项目路径未设置" };
     }
 
     const venvPython = os.platform() === 'win32'
-      ? path.join(projectPath, "venv", "Scripts", "python.exe")
-      : path.join(projectPath, "venv", "bin", "python");
+      ? path.join(global.projectPath, "venv", "Scripts", "python.exe")
+      : path.join(global.projectPath, "venv", "bin", "python");
     const args = [
       "main.py",
       "start",
@@ -1084,7 +1168,7 @@ ipcMain.handle("start-backend-service", async (event, config) => {
       args.push(`--model-dir=${config.modelDir}`);
     }
     backendProcess = spawn(venvPython, args, {
-      cwd: projectPath,
+      cwd: global.projectPath,
       stdio: "pipe",
     });
 
@@ -1191,7 +1275,7 @@ ipcMain.handle("execute-command", async (event, { command, cwd }) => {
     const systemEnv = { ...process.env };
 
     const { stdout, stderr } = await execAsync(command, {
-      cwd: cwd || projectPath,
+      cwd: cwd || global.projectPath,
       env: systemEnv,
       shell: true,
       timeout: 30000, // 30秒超时
