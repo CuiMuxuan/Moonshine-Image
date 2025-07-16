@@ -1,5 +1,5 @@
 <template>
-  <q-dialog v-model="showDialog" persistent>
+  <q-dialog v-model="showDialog" persistent class="settings-dialog">
     <q-card style="min-width: 600px; max-width: 800px">
       <q-card-section class="row items-center q-pb-none">
         <div class="text-h6">全局设置</div>
@@ -16,7 +16,7 @@
           indicator-color="primary"
           align="justify"
         >
-          <q-tab name="general" label="常规设置" />
+          <q-tab name="general" label="后端设置" />
           <q-tab name="files" label="文件管理" />
           <q-tab name="advanced" label="高级设置" />
         </q-tabs>
@@ -24,70 +24,70 @@
         <q-separator />
 
         <q-tab-panels v-model="activeTab" animated>
-<q-tab-panel name="general">
-  <div class="q-gutter-md">
-    <q-input
-      v-model.number="localConfig.general.backendPort"
-      label="后端端口号"
-      type="number"
-      :min="1024"
-      :max="65535"
-      :error="portError"
-      :error-message="portErrorMessage"
-      @update:model-value="validatePort"
-    />
+          <q-tab-panel name="general">
+            <div class="q-gutter-md">
+              <q-input
+                v-model.number="localConfig.general.backendPort"
+                label="后端端口号"
+                type="number"
+                :min="1024"
+                :max="65535"
+                :error="portError"
+                :error-message="portErrorMessage"
+                @update:model-value="validatePort"
+              />
 
-    <q-select
-      v-model="localConfig.general.launchMode"
-      label="启动方式"
-      :options="[
-        { label: 'CUDA 加速', value: 'cuda' },
-        { label: 'CPU 模式', value: 'cpu' },
-      ]"
-      emit-value
-      map-options
-    />
+              <q-select
+                v-model="localConfig.general.launchMode"
+                label="启动方式"
+                :options="[
+                  { label: 'CUDA 加速', value: 'cuda' },
+                  { label: 'CPU 模式', value: 'cpu' },
+                ]"
+                emit-value
+                map-options
+              />
 
-    <q-input
-      v-model="localConfig.general.backendProjectPath"
-      label="后端项目路径"
-      readonly
-    >
-      <template v-slot:append>
-        <q-btn
-          round
-          dense
-          flat
-          icon="folder"
-          @click="selectBackendProjectPath"
-        />
-      </template>
-    </q-input>
+              <q-input
+                v-model="localConfig.general.backendProjectPath"
+                label="后端项目路径"
+                readonly
+              >
+                <template v-slot:append>
+                  <q-btn
+                    round
+                    dense
+                    flat
+                    icon="folder"
+                    @click="selectBackendProjectPath"
+                  />
+                </template>
+              </q-input>
 
-    <q-input
-      v-model="localConfig.general.modelPath"
-      label="模型文件路径"
-      readonly
-    >
-      <template v-slot:append>
-        <q-btn
-          round
-          dense
-          flat
-          icon="folder"
-          @click="selectModelPath"
-        />
-      </template>
-    </q-input>
+              <q-input
+                v-model="localConfig.general.modelPath"
+                label="模型文件路径"
+                readonly
+              >
+                <template v-slot:append>
+                  <q-btn
+                    round
+                    dense
+                    flat
+                    icon="folder"
+                    @click="selectModelPath"
+                  />
+                </template>
+              </q-input>
 
-    <q-select
-      v-model="localConfig.general.defaultModel"
-      label="默认模型"
-      :options="['lama', 'big-lama', 'ldm', 'zits', 'mat', 'fcf']"
-    />
-  </div>
-</q-tab-panel>
-          <!-- 常规设置 -->
+              <q-select
+                v-model="localConfig.general.defaultModel"
+                label="默认模型"
+                :options="['lama', 'big-lama', 'ldm', 'zits', 'mat', 'fcf']"
+              />
+            </div>
+          </q-tab-panel>
+          <!-- 后端设置 -->
           <q-tab-panel name="general">
             <div class="q-gutter-md">
               <q-input
@@ -227,7 +227,7 @@
   </q-dialog>
 
   <!-- 确认对话框 -->
-  <q-dialog v-model="showConfirmDialog" persistent>
+  <q-dialog v-model="showConfirmDialog" persistent class="confirm-dialog">
     <q-card>
       <q-card-section class="row items-center">
         <q-avatar icon="warning" color="orange" text-color="white" />
@@ -333,7 +333,7 @@ const selectModelPath = async () => {
   if (window.electron) {
     try {
       const result = await window.electron.ipcRenderer.invoke("select-folder", {
-        title: "选择模型文件夹"
+        title: "选择模型文件夹",
       });
 
       if (!result.canceled && result.filePaths.length > 0) {
@@ -393,14 +393,17 @@ const selectBackendProjectPath = async () => {
   if (window.electron) {
     try {
       const result = await window.electron.ipcRenderer.invoke("select-folder", {
-        title: "选择后端项目路径"
+        title: "选择后端项目路径",
       });
 
       if (!result.canceled && result.filePaths.length > 0) {
         const selectedPath = result.filePaths[0];
 
         // 检查选择的路径是否有效
-        const checkResult = await window.electron.ipcRenderer.invoke('check-project', selectedPath);
+        const checkResult = await window.electron.ipcRenderer.invoke(
+          "check-project",
+          selectedPath
+        );
 
         if (checkResult.success) {
           localConfig.value.general.backendProjectPath = selectedPath;
@@ -449,13 +452,13 @@ const doSaveSettings = async () => {
   saving.value = true;
   try {
     const serializableConfig = JSON.parse(JSON.stringify(localConfig.value));
-    console.log('准备保存的配置:', serializableConfig);
+    console.log("准备保存的配置:", serializableConfig);
     // 先保存到 Electron 配置文件
     const electronResult = await window.electron.ipcRenderer.invoke(
       "save-app-config",
       serializableConfig
     );
-    console.log('Electron保存结果:', electronResult);
+    console.log("Electron保存结果:", electronResult);
 
     if (!electronResult.success) {
       throw new Error(electronResult.error);
@@ -509,3 +512,30 @@ const confirmAction = () => {
   }
 };
 </script>
+<style scoped>
+/* 设置对话框层级 - 最高层级 */
+.settings-dialog {
+  z-index: 3000 !important;
+}
+
+:deep(.settings-dialog .q-dialog) {
+  z-index: 3000 !important;
+}
+
+:deep(.settings-dialog .q-dialog__backdrop) {
+  z-index: 3000 !important;
+}
+
+/* 确认对话框层级 - 比设置对话框更高 */
+.confirm-dialog {
+  z-index: 3100 !important;
+}
+
+:deep(.confirm-dialog .q-dialog) {
+  z-index: 3100 !important;
+}
+
+:deep(.confirm-dialog .q-dialog__backdrop) {
+  z-index: 3100 !important;
+}
+</style>

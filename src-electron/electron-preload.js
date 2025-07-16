@@ -33,10 +33,12 @@ import { contextBridge, ipcRenderer } from 'electron';
 contextBridge.exposeInMainWorld('electron', {
   ipcRenderer: {
     invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
+    send: (channel, ...args) => ipcRenderer.send(channel, ...args),
     on: (channel, listener) => {
       ipcRenderer.on(channel, listener);
       return () => ipcRenderer.removeListener(channel, listener);
     },
+    removeListener: (channel, listener) => ipcRenderer.removeListener(channel, listener),
     // 保存应用配置
     saveAppConfig: (configData) => ipcRenderer.invoke('save-app-config', configData),
     // 获取应用配置

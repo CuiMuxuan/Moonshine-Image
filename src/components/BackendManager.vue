@@ -454,6 +454,7 @@
 <script setup>
 import { ref, reactive, onMounted, onUnmounted, nextTick, watch } from "vue";
 import { useConfigStore } from "src/stores/config";
+import { api } from "src/boot/axios";
 
 // Props
 const props = defineProps({
@@ -845,7 +846,10 @@ const startService = async () => {
   serviceLoading.value = true;
   serviceStatus.value = "starting";
   serviceStatusText.value = "启动中...";
-  addTerminalLog("启动后端服务...", "info");
+  addTerminalLog(
+    `启动后端服务... 端口: ${backendConfig.port}, 设备: ${backendConfig.device}, 模型: ${backendConfig.model}`,
+    "info"
+  );
 
   try {
     const result = await window.electron.ipcRenderer.invoke(
@@ -863,6 +867,16 @@ const startService = async () => {
       serviceStatusText.value = "运行中";
       addTerminalLog(
         `后端服务启动成功，端口: ${backendConfig.port}`,
+        "success"
+      );
+      // 更新 axios 的端口配置
+      api.updateConfig({
+        general: {
+          backendPort: backendConfig.port
+        }
+      });
+      addTerminalLog(
+        `已更新前端 API 端口配置为: ${backendConfig.port}`,
         "success"
       );
     } else {
@@ -968,13 +982,22 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.backend-dialog .q-dialog__inner {
-  padding: 5vh 5vw;
+/* 后端管理对话框层级 - 最高层级 */
+.backend-dialog {
+  z-index: 3000 !important;
+}
+
+:deep(.backend-dialog .q-dialog) {
+  z-index: 3000 !important;
+}
+
+:deep(.backend-dialog .q-dialog__backdrop) {
+  z-index: 3000 !important;
 }
 
 .backend-manager-card {
   width: 90vw;
-  height: 90vh;
+  height: 80vh;
   max-width: 1600px;
   max-height: 1000px;
   border-radius: 12px;
@@ -983,7 +1006,7 @@ onUnmounted(() => {
 }
 
 .backend-content {
-  height: calc(90vh - 60px);
+  height: calc(80vh - 60px);
   max-height: calc(1000px - 60px);
 }
 
