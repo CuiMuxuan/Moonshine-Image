@@ -1,5 +1,15 @@
 <template>
   <q-page class="flex">
+    <!-- 页面禁用覆盖层 -->
+    <div
+      v-if="isPageDisabled"
+      class="page-disabled-overlay"
+      @click.stop.prevent
+      @mousedown.stop.prevent
+      @mouseup.stop.prevent
+      @keydown.stop.prevent
+      @keyup.stop.prevent
+    ></div>
     <!-- 左侧文件浏览器 -->
     <file-explorer
       v-model:drawer-open="leftDrawerOpen"
@@ -7,6 +17,7 @@
       :selected-file="selectedFile"
       :selected-files="selectedFiles"
       :file-urls="fileUrls"
+      :class="{ 'pointer-events-none': isPageDisabled }"
       @update:selected-file="selectedFile = $event"
       @toggle-selection="toggleFileSelection"
       @remove-file="removeFile"
@@ -14,7 +25,7 @@
 
     <!-- 右侧设置面板 -->
     <q-drawer show-if-above v-model="rightDrawerOpen" side="right" bordered>
-      <div class="q-pa-md">
+      <div class="q-pa-md" :class="{ 'pointer-events-none': isPageDisabled }">
         <div class="text-h6 q-mb-md flex items-center">
           <q-icon name="settings" class="q-mr-sm" />
           运行设置
@@ -106,7 +117,7 @@
 
             <q-item>
               <q-item-section>
-                <cuda-status @cuda-status-changed="handleCudaStatusChanged" />
+  <cuda-status @cuda-status-changed="handleCudaStatusChanged" :backend-running="backendRunning" />
               </q-item-section>
             </q-item>
           </q-list>
@@ -140,7 +151,7 @@
     <!-- 主工作区 -->
     <div class="col flex row">
       <div class="col">
-        <workspace :selected-file="selectedFile">
+        <workspace :selected-file="selectedFile" :class="{ 'pointer-events-none': isPageDisabled }">
           <ImageEditor
             v-if="selectedFile && selectedFile.type.startsWith('image/')"
             ref="editorRef"
@@ -162,6 +173,7 @@
         :show-mask-tools="showMaskTools"
         :has-processed-images="!!processedImages[selectedFile?.name]?.length"
         type="image"
+        :class="{ 'pointer-events-none': isPageDisabled }"
         @toggle-file-explorer="leftDrawerOpen = !leftDrawerOpen"
         @update:files="files = $event"
         @rejected-files="onRejectedFiles"
@@ -186,6 +198,7 @@ import {
   onMounted,
   onUnmounted,
   watchEffect,
+  inject
 } from "vue";
 import { useQuasar } from "quasar";
 import { useEditorStore } from "src/stores/editor";
@@ -215,6 +228,8 @@ const currentModel = ref("lama");
 const showMaskTools = ref(true);
 const actionScope = ref({ label: "仅当前文件", value: "current" });
 const selectAll = ref(false);
+const exportPath = ref("");
+const imageFolderName = ref("");
 const savePath = ref("");
 const folderPath = ref("");
 const maskFolderPath = ref("");
@@ -229,8 +244,18 @@ const masks = ref({});
 const cudaAvailable = ref(false);
 const cudaInfo = ref({});
 const dontShowMaxHistoryWarning = ref(false);
+const dontShowBackendWarning = ref(false);
 const isElectron = ref(false);
 const resourcesPath = ref("");
+const props = defineProps({
+  backendRunning: {
+    type: Boolean,
+    default: false
+  }
+})
+const backendRunning = computed(() => props.backendRunning)
+const loadingControl = inject('loadingControl');
+const isPageDisabled = ref(false);
 
 // 提供编辑器引用
 provide("editor-ref", editorRef);
@@ -259,6 +284,7 @@ const fileUrls = computed(() => {
 const fileUrl = computed(() => {
   return selectedFile.value ? fileUrls.value[selectedFile.value.name] : null;
 });
+
 
 // 切换文件选择
 const toggleFileSelection = (file) => {
@@ -456,8 +482,16 @@ const resizeMaskData = (
 };
 
 // 运行当前模型
-const runCurrentModel = () => {
+const runCurrentModel = async () => {
   if (!selectedFile.value) return;
+  // 检查后端服务状态
+  if (!backendRunning.value && !dontShowBackendWarning.value) {
+    const userChoice = await showBackendWarningDialog();
+    if (userChoice === 'return') {
+      return; // 用户选择返回，不执行后续操作
+    }
+    // 用户选择继续，继续执行后续操作
+  }
 
   switch (currentModel.value) {
     case "lama":
@@ -476,6 +510,51 @@ const runCurrentModel = () => {
         position: "top",
       });
   }
+};
+// 显示后端服务警告对话框
+const showBackendWarningDialog = () => {
+  return new Promise((resolve) => {
+    $q.dialog({
+      title: "后端服务检查",
+      message: "未检测到Moonshine-Image具有后端服务子进程，请检查后端服务是否已开启，并选择继续运行本次任务处理或返回开启后端？",
+      persistent: true,
+      ok: {
+        label: "继续",
+        color: "primary",
+        push: true
+      },
+      cancel: {
+        label: "返回",
+        color: "negative",
+        push: true
+      },
+      options: {
+        type: "checkbox",
+        model: [],
+        items: [
+          {
+            label: "不再提醒",
+            value: "dont_show",
+            color: "primary"
+          }
+        ]
+      }
+    })
+    .onOk((data) => {
+      // 检查是否勾选了不再提醒
+      if (data && data.includes("dont_show")) {
+        dontShowBackendWarning.value = true;
+      }
+      resolve('continue'); // 用户选择继续
+    })
+    .onCancel((data) => {
+      // 检查是否勾选了不再提醒
+      if (data && data.includes("dont_show")) {
+        dontShowBackendWarning.value = true;
+      }
+      resolve('return'); // 用户选择返回
+    });
+  });
 };
 
 // OCR处理函数
@@ -579,10 +658,14 @@ const runRemoveModel = async () => {
   }
 
   try {
-    // 显示加载状态
-    $q.loading.show({
-      message: `正在处理 ${filesToProcess.length} 张图像，请稍候...`,
-    });
+    if (backendRunning.value) {
+      // 后端服务已启动，显示处理进度信息
+      loadingControl.show(`正在处理 ${filesToProcess.length} 张图像，你可以打开终端管理页面查看进度`);
+    } else {
+      // 后端服务未启动，显示普通加载状态
+      loadingControl.show(`正在处理 ${filesToProcess.length} 张图像，请稍候...`);
+    }
+    isPageDisabled.value = true;
 
     // 准备批量处理的数据
     const images = [];
@@ -739,15 +822,19 @@ const runRemoveModel = async () => {
     });
     console.error("图像处理失败:", error);
   } finally {
-    $q.loading.hide();
+    loadingControl.hide();
+    isPageDisabled.value = false;
   }
 };
 const processFolderImages = async () => {
   try {
     // 显示加载状态
-    $q.loading.show({
-      message: "正在准备处理文件夹中的图像...",
-    });
+    if (backendRunning.value) {
+      loadingControl.show('正在批量处理文件夹图像，你可以打开终端管理页面查看进度');
+    } else {
+      loadingControl.show('正在批量处理文件夹图像，请稍候...');
+    }
+    isPageDisabled.value = true;
 
     // 实现文件夹处理逻辑
     const folderData = {
@@ -780,7 +867,8 @@ const processFolderImages = async () => {
     });
     console.error("处理文件夹失败:", error);
   } finally {
-    $q.loading.hide();
+    loadingControl.hide();
+    isPageDisabled.value = false;
   }
 };
 // 下载按钮点击事件处理函数
@@ -828,9 +916,8 @@ const downloadProcessedImages = async () => {
   }
 
   try {
-    $q.loading.show({
-      message: `正在保存 ${filesToDownload.length} 张图像，请稍候...`,
-    });
+    loadingControl.show(`正在保存 ${filesToDownload.length} 张图像，请稍候...`);
+    isPageDisabled.value = true;
 
     let successCount = 0;
     let errorCount = 0;
@@ -930,9 +1017,6 @@ const downloadProcessedImages = async () => {
         errorCount++;
       }
     }
-
-    $q.loading.hide();
-
     // 显示结果通知
     if (successCount > 0) {
       $q.notify({
@@ -950,13 +1034,15 @@ const downloadProcessedImages = async () => {
       });
     }
   } catch (error) {
-    $q.loading.hide();
     $q.notify({
       type: "negative",
       message: `保存图像失败: ${error.message}`,
       position: "top",
     });
     console.error("保存图像失败:", error);
+  } finally {
+    loadingControl.hide();
+    isPageDisabled.value = false;
   }
 };
 // 检查CUDA可用性
@@ -1226,13 +1312,14 @@ const onRejectedFiles = (rejectedEntries) => {
 };
 onMounted(() => {
   // 监听配置更新事件
-  const handleConfigUpdate = (event) => {
-    const newConfig = event.detail.config;
+  const handleConfigUpdate = () => {
     // 更新保存路径
-    const exportPath = newConfig.fileManagement.exportPath;
-    const imageFolderName = newConfig.fileManagement.imageFolderName;
+    exportPath.value = configStore.config.fileManagement.downloadPath;
+    imageFolderName.value = configStore.config.fileManagement.imageFolderName;
     savePath.value =
-      exportPath && imageFolderName ? `${exportPath}\\${imageFolderName}` : "";
+      exportPath.value && imageFolderName.value
+        ? `${exportPath.value}\\${imageFolderName.value}`
+        : "";
   };
 
   window.addEventListener("config-updated", handleConfigUpdate);
@@ -1251,10 +1338,10 @@ onMounted(async () => {
     // 配置加载失败时，保持默认的空字符串，用户可手动设置
   } finally {
     // 配置加载完成后，初始化保存路径
-    const exportPath = configStore.config.fileManagement.downloadPath;
-    const imageFolderName = configStore.config.fileManagement.imageFolderName;
-    if (exportPath && imageFolderName) {
-      savePath.value = `${exportPath}\\${imageFolderName}`;
+    exportPath.value = configStore.config.fileManagement.downloadPath;
+    imageFolderName.value = configStore.config.fileManagement.imageFolderName;
+    if (exportPath.value && imageFolderName.value) {
+      savePath.value = `${exportPath.value}\\${imageFolderName.value}`;
     }
   }
   // 检查是否存在状态文件
@@ -1583,3 +1670,20 @@ onUnmounted(() => {
   store.cleanupUrls();
 });
 </script>
+<style scoped>
+.page-disabled-overlay {
+  position: fixed;
+  top: 50px; /* 设置为头部高度，避免遮住头部工具栏 */
+  left: 0;
+  width: 100vw;
+  height: calc(100vh - 50px); /* 减去头部高度 */
+  background-color: rgba(0, 0, 0, 0.1);
+  z-index: 9999;
+  cursor: not-allowed;
+}
+
+.pointer-events-none {
+  pointer-events: none;
+  user-select: none;
+}
+</style>

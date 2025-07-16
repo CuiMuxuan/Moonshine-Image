@@ -5,14 +5,12 @@ import { debounce } from 'quasar';
 const defaultConfig = {
   api: {
     baseURL: 'http://localhost:8080',
-    timeout: 10000,
     retries: 3
   }
 }
 // 创建axios实例
 const api = axios.create({
   baseURL: defaultConfig.api.baseURL,
-  timeout: defaultConfig.api.timeout,
   headers: {
     'Content-Type': 'application/json',
   }

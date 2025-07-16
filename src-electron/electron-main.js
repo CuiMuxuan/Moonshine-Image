@@ -451,7 +451,7 @@ ipcMain.handle("check-python", async (event) => {
             timeout: 10000
           });
           if (stdout) {
-            sendLog(`✓ 命令 ${cmd} 执行成功: ${stdout.trim()}`, 'success');
+            sendLog(`✓ 命令 ${cmd} --version执行成功: ${stdout.trim()}`, 'success');
             return {
               success: true,
               version: stdout.trim(),
@@ -1292,13 +1292,6 @@ ipcMain.handle("execute-command", async (event, { command, cwd }) => {
     };
   }
 });
-
-// 应用退出时清理后端进程
-app.on("before-quit", () => {
-  if (backendProcess) {
-    backendProcess.kill("SIGTERM");
-  }
-});
 // 获取文件MIME类型的辅助函数
 function getMimeType(filePath) {
   const ext = path.extname(filePath).toLowerCase();
@@ -1408,7 +1401,6 @@ async function createWindow() {
 
   // Set Content Security Policy
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    const apiPort = globalConfig.general.backendPort;
     callback({
       responseHeaders: {
         ...details.responseHeaders,
@@ -1418,11 +1410,7 @@ async function createWindow() {
             "style-src 'self' 'unsafe-inline'; " +
             "img-src 'self' data: blob:; " +
             "font-src 'self'; " +
-            "connect-src 'self' http://localhost:" +
-            apiPort +
-            " http://127.0.0.1:" +
-            apiPort +
-            " data:; " +
+            "connect-src 'self' http://localhost:* http://127.0.0.1:* data:; " +
             "object-src 'none';",
         ],
       },
@@ -1453,8 +1441,86 @@ app.whenReady().then(() => {
   loadAppConfig();
   createWindow();
 });
+app.on("before-quit", async (event) => {
+  if (backendProcess && !backendProcess.killed) {
+    event.preventDefault(); // 阻止立即退出
+    try {
+      // 检查进程是否仍然存在
+      if (backendProcess.pid) {
+        // 发送终止信号
+        if (process.platform === 'win32') {
+          // Windows 使用 taskkill
+          const { spawn } = require('child_process');
+          spawn('taskkill', ['/pid', backendProcess.pid, '/f', '/t']);
+        } else {
+          // Unix-like 系统使用 SIGTERM
+          backendProcess.kill('SIGTERM');
+        }
+
+        // 等待进程退出，最多等待5秒
+        const exitPromise = new Promise((resolve) => {
+          if (backendProcess) {
+            backendProcess.on('exit', () => {
+              console.log("后端进程已退出");
+              resolve();
+            });
+            backendProcess.on('error', (error) => {
+              console.log("后端进程退出时出错:", error.message);
+              resolve();
+            });
+          } else {
+            resolve();
+          }
+        });
+
+        const timeoutPromise = new Promise((resolve) => {
+          setTimeout(() => {
+            console.log("等待后端进程退出超时");
+            resolve();
+          }, 5000);
+        });
+
+        await Promise.race([exitPromise, timeoutPromise]);
+
+        // 如果进程仍在运行，强制终止
+        if (backendProcess && !backendProcess.killed && backendProcess.pid) {
+          console.log("强制终止后端进程");
+          if (process.platform === 'win32') {
+            const { spawn } = require('child_process');
+            spawn('taskkill', ['/pid', backendProcess.pid, '/f', '/t']);
+          } else {
+            backendProcess.kill('SIGKILL');
+          }
+        }
+      }
+
+      backendProcess = null;
+    } catch (error) {
+      console.error("关闭后端服务时出错:", error);
+      // 即使出错也要清理进程引用
+      backendProcess = null;
+    }
+
+    app.quit();
+  }
+});
 
 app.on("window-all-closed", () => {
+  // 确保后端进程被清理
+  if (backendProcess && !backendProcess.killed) {
+    try {
+      if (process.platform === 'win32') {
+        const { spawn } = require('child_process');
+        spawn('taskkill', ['/pid', backendProcess.pid, '/f', '/t']);
+      } else {
+        backendProcess.kill('SIGKILL');
+      }
+    } catch (error) {
+      console.error("清理后端进程时出错:", error);
+    }
+    backendProcess = null;
+  }
+
   if (platform !== "darwin") {
     app.quit();
   }
