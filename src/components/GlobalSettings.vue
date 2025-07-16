@@ -83,7 +83,7 @@
               <q-select
                 v-model="localConfig.general.defaultModel"
                 label="默认模型"
-                :options="['lama', 'big-lama', 'ldm', 'zits', 'mat', 'fcf']"
+                :options="['lama']"
               />
             </div>
           </q-tab-panel>

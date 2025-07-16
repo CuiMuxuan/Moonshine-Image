@@ -24,6 +24,8 @@ const DEFAULT_CONFIG = {
     backendPort: 8080,
     launchMode: "cuda", // 'cuda' | 'cpu'
     modelPath: "",
+    backendProjectPath: "",
+    defaultModel: "lama",
   },
   fileManagement: {
     downloadPath: "",
@@ -144,6 +146,9 @@ function createDefaultConfig() {
       "hub",
       "checkpoints"
     );
+    const appDir = path.dirname(app.getAppPath());
+    DEFAULT_CONFIG.general.backendProjectPath = path.join(appDir, "IOPaint");
+    DEFAULT_CONFIG.general.defaultModel = "lama";
     fs.writeFileSync(configPath, JSON.stringify(DEFAULT_CONFIG, null, 2));
     globalConfig = { ...DEFAULT_CONFIG };
 
@@ -692,7 +697,6 @@ ipcMain.handle("check-project", async (event, selectPath) => {
       // 检查同级目录下的 IOPaint 文件夹
       const appDir = path.dirname(app.getAppPath());
       const iopaintPath = path.join(appDir, "IOPaint");
-      console.log(iopaintPath);
       if (fs.existsSync(iopaintPath)) {
         checkPath = iopaintPath;
       } else {
