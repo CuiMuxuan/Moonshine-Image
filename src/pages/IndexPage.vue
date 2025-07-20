@@ -13,14 +13,14 @@
     <!-- 左侧文件浏览器 -->
     <file-explorer
       v-model:drawer-open="leftDrawerOpen"
-      :files="files"
-      :selected-file="selectedFile"
+      :files="fileManagerStore.files"
+      :selected-file="currentFile"
       :selected-files="selectedFiles"
       :file-urls="fileUrls"
       :class="{ 'pointer-events-none': isPageDisabled }"
-      @update:selected-file="selectedFile = $event"
+      @update:selected-file="handleFileSelection"
       @toggle-selection="toggleFileSelection"
-      @remove-file="removeFile"
+      @remove-file="handleRemoveFile"
     />
 
     <!-- 右侧设置面板 -->
@@ -88,11 +88,7 @@
                   color="primary"
                   icon="content_copy"
                   label="当前蒙版作用于选中文件"
-                  :disable="
-                    selectedFiles.length === 0 ||
-                    !currentMask ||
-                    !currentMask.data
-                  "
+                  :disable="selectedFiles.length === 0 || !currentMask?.data"
                   @click="applyCurrentMaskToSelected"
                 />
               </q-item-section>
@@ -117,7 +113,10 @@
 
             <q-item>
               <q-item-section>
-  <cuda-status @cuda-status-changed="handleCudaStatusChanged" :backend-running="backendRunning" />
+                <cuda-status
+                  @cuda-status-changed="handleCudaStatusChanged"
+                  :backend-running="backendRunning"
+                />
               </q-item-section>
             </q-item>
           </q-list>
@@ -151,14 +150,19 @@
     <!-- 主工作区 -->
     <div class="col flex row">
       <div class="col">
-        <workspace :selected-file="selectedFile" :class="{ 'pointer-events-none': isPageDisabled }">
+        <workspace
+          :selected-file="currentFile"
+          :class="{ 'pointer-events-none': isPageDisabled }"
+        >
           <ImageEditor
-            v-if="selectedFile && selectedFile.type.startsWith('image/')"
+            v-if="
+              currentFile && currentFile.originalFile?.type.startsWith('image/')
+            "
             ref="editorRef"
-            :selected-file="selectedFile"
+            :selected-file="currentFile.originalFile"
             :show-masker="showMaskTools"
-            :mask="currentMask"
-            :image-url="fileUrl"
+            :mask="currentFile.mask"
+            :image-url="currentDisplayUrl"
             @loaded="handleImageLoaded"
             @update:mask="handleMaskUpdate"
           />
@@ -167,15 +171,14 @@
 
       <!-- 底部工具栏 -->
       <processing-toolbar
-        :files="files"
-        :selected-file="selectedFile"
+        :files="fileManagerStore.files"
+        :selected-file="currentFile?.originalFile"
         :current-model="currentModel"
         :show-mask-tools="showMaskTools"
-        :has-processed-images="!!processedImages[selectedFile?.name]?.length"
+        :has-processed-images="hasProcessedImages"
         type="image"
         :class="{ 'pointer-events-none': isPageDisabled }"
         @toggle-file-explorer="leftDrawerOpen = !leftDrawerOpen"
-        @update:files="files = $event"
         @rejected-files="onRejectedFiles"
         @toggle-mask-tools="showMaskTools = !showMaskTools"
         @show-original="showOriginalImage"
@@ -198,32 +201,30 @@ import {
   onMounted,
   onUnmounted,
   watchEffect,
-  inject
+  inject,
+  nextTick
 } from "vue";
 import { useQuasar } from "quasar";
-import { useEditorStore } from "src/stores/editor";
 import { useConfigStore } from "src/stores/config";
 import { useAppStateStore } from "src/stores/appState";
-import InpaintService from "src/services/InpaintService";
+import { useFileManagerStore } from "src/stores/fileManager";
+import InpaintService from "src/services/ImageProcessingService";
 import ImageEditor from "../components/ImageEditor.vue";
 import FileExplorer from "../components/FileExplorer.vue";
 import Workspace from "../components/Workspace.vue";
 import ModelSelector from "../components/ModelSelector.vue";
-import ProcessingToolbar from "../components/ProcessingToolbar.vue";
+import ProcessingToolbar from "../components/ImageProcessingToolbar.vue";
 import FolderSelector from "../components/FolderSelector.vue";
 import CudaStatus from "../components/CudaStatus.vue";
 import { onBeforeRouteLeave } from "vue-router";
 
 const $q = useQuasar();
-const store = useEditorStore();
 const configStore = useConfigStore();
 const appStateStore = useAppStateStore();
+const fileManagerStore = useFileManagerStore();
 
 const leftDrawerOpen = ref(false);
 const rightDrawerOpen = ref(false);
-const files = ref([]);
-const selectedFile = ref(null);
-const selectedFiles = ref([]);
 const currentModel = ref("lama");
 const showMaskTools = ref(true);
 const actionScope = ref({ label: "仅当前文件", value: "current" });
@@ -235,12 +236,9 @@ const folderPath = ref("");
 const maskFolderPath = ref("");
 const ocrLang = ref("中文");
 const autoLayout = ref(true);
-const currentMask = ref(null);
-const processedImages = ref({});
 const editorRef = ref(null);
 const isImageLoaded = ref(false);
 const showingOriginal = ref(false);
-const masks = ref({});
 const cudaAvailable = ref(false);
 const cudaInfo = ref({});
 const dontShowMaxHistoryWarning = ref(false);
@@ -250,50 +248,41 @@ const resourcesPath = ref("");
 const props = defineProps({
   backendRunning: {
     type: Boolean,
-    default: false
-  }
-})
-const backendRunning = computed(() => props.backendRunning)
-const loadingControl = inject('loadingControl');
+    default: false,
+  },
+});
+const backendRunning = computed(() => props.backendRunning);
+const loadingControl = inject("loadingControl");
 const isPageDisabled = ref(false);
+const currentFile = computed(() => fileManagerStore.currentFile);
+const selectedFiles = computed(() => fileManagerStore.selectedFiles);
+const currentDisplayUrl = computed(() => {
+  const displayImage = fileManagerStore.getCurrentDisplayImage;
+  return displayImage?.displayUrl || null;
+});
+const currentMask = computed(() => {
+  return currentFile.value?.mask || null;
+});
+const hasProcessedImages = computed(() => {
+  return currentFile.value?.history?.length > 1 || false;
+});
 
 // 提供编辑器引用
 provide("editor-ref", editorRef);
 provide("image-editor", editorRef);
 
-// 计算属性
-const filteredFiles = computed(() =>
-  files.value.filter((f) => f.type.startsWith("image/"))
-);
-
 const fileUrls = computed(() => {
   const urls = {};
-  filteredFiles.value.forEach((file) => {
-    if (!urls[file.name]) {
-      if (!showingOriginal.value && processedImages.value[file.name]?.length) {
-        const history = processedImages.value[file.name];
-        urls[file.name] = history[history.length - 1];
-      } else {
-        urls[file.name] = URL.createObjectURL(file);
-      }
-    }
+  fileManagerStore.files.forEach((file) => {
+    const latestImage = file.history[file.history.length - 1];
+    urls[file.name] = latestImage?.displayUrl || null;
   });
   return urls;
 });
 
-const fileUrl = computed(() => {
-  return selectedFile.value ? fileUrls.value[selectedFile.value.name] : null;
-});
-
-
 // 切换文件选择
 const toggleFileSelection = (file) => {
-  const index = selectedFiles.value.findIndex((f) => f.name === file.name);
-  if (index === -1) {
-    selectedFiles.value.push(file);
-  } else {
-    selectedFiles.value.splice(index, 1);
-  }
+  fileManagerStore.toggleFileSelection(file.id);
 };
 
 const handleModelChange = (model) => {
@@ -305,55 +294,27 @@ const handleModelChange = (model) => {
   });
 };
 
+// 处理全选
 const handleSelectAll = (val) => {
-  if (val) {
-    selectedFiles.value = [...filteredFiles.value];
-  } else {
-    selectedFiles.value = [];
-  }
+  fileManagerStore.selectAllFiles(val);
 };
 
 const handleImageLoaded = () => {
   isImageLoaded.value = true;
 };
-
 const handleMaskUpdate = (maskData) => {
-  if (selectedFile.value) {
-    masks.value[selectedFile.value.name] = maskData;
-    currentMask.value = maskData;
-  }
-};
-// 更新蒙版数据
-// const updateMask = (fileName, maskData) => {
-//   if (masks.value[fileName]) {
-//     masks.value[fileName] = maskData;
-//     // 如果当前选中的文件就是被更新的文件，直接更新currentMask
-//     if (selectedFile.value && selectedFile.value.name === fileName) {
-//       currentMask.value = maskData;
-//     }
-//   }
-// };
-
-// 删除文件时同时删除对应的蒙版
-const removeFile = (index) => {
-  const removed = files.value.splice(index, 1)[0];
-  // 删除对应的蒙版
-  if (removed && masks.value[removed.name]) {
-    delete masks.value[removed.name];
-  }
-
-  if (selectedFile.value?.name === removed.name) {
-    selectedFile.value = filteredFiles.value[0] || null;
+  if (fileManagerStore.currentFile) {
+    fileManagerStore.updateFileMask(fileManagerStore.currentFile.id, maskData);
   }
 };
 
 // 确认删除选中文件时同时删除对应的蒙版
 const confirmDeleteSelected = () => {
-  if (selectedFiles.value.length === 0) return;
+  if (fileManagerStore.selectedFiles.length === 0) return;
 
   $q.dialog({
     title: "确认删除",
-    message: `确定要删除选中的 ${selectedFiles.value.length} 个文件吗？`,
+    message: `确定要删除选中的 ${fileManagerStore.selectedFiles.length} 个文件吗？`,
     cancel: {
       label: "取消",
       color: "info",
@@ -365,74 +326,68 @@ const confirmDeleteSelected = () => {
     persistent: true,
   }).onOk(() => {
     // 删除选中的文件
-    const filesToRemove = selectedFiles.value.map((f) => f.name);
-
-    // 同时删除对应的蒙版
-    filesToRemove.forEach((fileName) => {
-      if (masks.value[fileName]) {
-        delete masks.value[fileName];
-      }
+    const selectedIds = [...fileManagerStore.selectedFileIds];
+    selectedIds.forEach((fileId) => {
+      fileManagerStore.removeFile(fileId);
     });
-
-    files.value = files.value.filter((f) => !filesToRemove.includes(f.name));
-
-    // 如果当前选中的文件被删除，重新选择第一个文件
-    if (selectedFile.value && filesToRemove.includes(selectedFile.value.name)) {
-      selectedFile.value = filteredFiles.value[0] || null;
-    }
-
-    // 清空选中文件列表
-    selectedFiles.value = [];
   });
 };
 
 // 选中文件适应当前蒙版
 const applyCurrentMaskToSelected = async () => {
-  if (!selectedFile.value || !currentMask.value || !currentMask.value.data) {
+  const currentMaskData = fileManagerStore.currentFile?.mask;
+  if (!currentMaskData || !currentMaskData.displayUrl) {
     return;
   }
 
-  // 获取当前蒙版
-  const sourceMask = currentMask.value;
-
   // 应用到所有选中文件
-  for (const file of selectedFiles.value) {
-    if (
-      file.name !== selectedFile.value.name &&
-      file.type.startsWith("image/")
-    ) {
+  for (const file of fileManagerStore.selectedFiles) {
+    if (file.id !== fileManagerStore.currentFile.id) {
       try {
-        // 获取目标图片的尺寸
-        const targetDimensions = await getImageDimensions(file);
-
-        // 调整蒙版大小
-        const resizedMaskData = await resizeMaskData(
-          sourceMask.data,
-          sourceMask.width,
-          sourceMask.height,
-          targetDimensions.width,
-          targetDimensions.height
+        // 获取目标图片的尺寸并调整蒙版
+        const resizedMaskData = await resizeMaskForFile(
+          file,
+          currentMaskData.displayUrl
         );
-
-        // 更新蒙版数据
-        masks.value[file.name] = {
-          data: resizedMaskData,
-          width: targetDimensions.width,
-          height: targetDimensions.height,
-        };
+        fileManagerStore.updateFileMask(file.id, resizedMaskData);
       } catch (error) {
         console.error(`调整蒙版失败: ${file.name}`, error);
       }
     }
   }
-
-  $q.notify({
-    type: "positive",
-    message: "已将当前蒙版应用到选中文件",
-    position: "top",
-  });
 };
 
+// 为指定文件调整蒙版大小
+const resizeMaskForFile = async (targetFile, sourceMaskUrl) => {
+  try {
+    // 获取目标图片的尺寸
+    const targetDimensions = await getImageDimensions(targetFile.originalFile);
+
+    // 获取源蒙版的尺寸
+    const sourceDimensions = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        resolve({ width: img.naturalWidth, height: img.naturalHeight });
+      };
+      img.onerror = () => reject(new Error("无法加载蒙版图像"));
+      img.src = sourceMaskUrl;
+    });
+
+    // 调整蒙版大小
+    const resizedMask = await resizeMaskData(
+      sourceMaskUrl,
+      sourceDimensions.width,
+      sourceDimensions.height,
+      targetDimensions.width,
+      targetDimensions.height
+    );
+
+    return resizedMask;
+  } catch (error) {
+    console.error("调整蒙版大小失败:", error);
+    throw error;
+  }
+};
 // 获取图片尺寸的辅助函数
 const getImageDimensions = (file) => {
   return new Promise((resolve, reject) => {
@@ -483,11 +438,11 @@ const resizeMaskData = (
 
 // 运行当前模型
 const runCurrentModel = async () => {
-  if (!selectedFile.value) return;
+  if (!currentFile.value) return;
   // 检查后端服务状态
   if (!backendRunning.value && !dontShowBackendWarning.value) {
     const userChoice = await showBackendWarningDialog();
-    if (userChoice === 'return') {
+    if (userChoice === "return") {
       return; // 用户选择返回，不执行后续操作
     }
     // 用户选择继续，继续执行后续操作
@@ -516,17 +471,18 @@ const showBackendWarningDialog = () => {
   return new Promise((resolve) => {
     $q.dialog({
       title: "后端服务检查",
-      message: "未检测到Moonshine-Image具有后端服务子进程，请检查后端服务是否已开启，并选择继续运行本次任务处理或返回开启后端？",
+      message:
+        "未检测到Moonshine-Image具有后端服务子进程，请检查后端服务是否已开启，并选择继续运行本次任务处理或返回开启后端？",
       persistent: true,
       ok: {
         label: "继续",
         color: "primary",
-        push: true
+        push: true,
       },
       cancel: {
         label: "返回",
         color: "negative",
-        push: true
+        push: true,
       },
       options: {
         type: "checkbox",
@@ -535,25 +491,25 @@ const showBackendWarningDialog = () => {
           {
             label: "不再提醒",
             value: "dont_show",
-            color: "primary"
-          }
-        ]
-      }
+            color: "primary",
+          },
+        ],
+      },
     })
-    .onOk((data) => {
-      // 检查是否勾选了不再提醒
-      if (data && data.includes("dont_show")) {
-        dontShowBackendWarning.value = true;
-      }
-      resolve('continue'); // 用户选择继续
-    })
-    .onCancel((data) => {
-      // 检查是否勾选了不再提醒
-      if (data && data.includes("dont_show")) {
-        dontShowBackendWarning.value = true;
-      }
-      resolve('return'); // 用户选择返回
-    });
+      .onOk((data) => {
+        // 检查是否勾选了不再提醒
+        if (data && data.includes("dont_show")) {
+          dontShowBackendWarning.value = true;
+        }
+        resolve("continue"); // 用户选择继续
+      })
+      .onCancel((data) => {
+        // 检查是否勾选了不再提醒
+        if (data && data.includes("dont_show")) {
+          dontShowBackendWarning.value = true;
+        }
+        resolve("return"); // 用户选择返回
+      });
   });
 };
 
@@ -578,6 +534,7 @@ const startRepair = () => {
 const runRemoveModel = async () => {
   // 确定要处理的文件列表
   let filesToProcess = [];
+
   if (actionScope.value.value === "folder") {
     // 检查文件夹路径和保存路径是否存在
     if (!folderPath.value) {
@@ -597,6 +554,7 @@ const runRemoveModel = async () => {
       });
       return;
     }
+
     if (!maskFolderPath.value) {
       $q.notify({
         type: "negative",
@@ -605,7 +563,8 @@ const runRemoveModel = async () => {
       });
       return;
     }
-    if (!currentMask.value || !currentMask.value.data) {
+
+    if (!fileManagerStore.currentFile?.mask?.data) {
       $q.notify({
         type: "negative",
         message: "请先创建一个蒙版作为模板",
@@ -629,16 +588,19 @@ const runRemoveModel = async () => {
     return;
   } else if (
     actionScope.value.value === "selected" &&
-    selectedFiles.value.length > 0
+    fileManagerStore.selectedFiles.length > 0
   ) {
     // 处理所有选中的文件
-    filesToProcess = selectedFiles.value.filter(
-      (file) => file.type.startsWith("image/") && masks.value[file.name]?.data
+    filesToProcess = fileManagerStore.selectedFiles.filter(
+      (file) => file.originalFile?.type.startsWith("image/") && file.mask?.data
     );
   } else {
     // 只处理当前选中的文件
-    if (selectedFile.value && currentMask.value && currentMask.value.data) {
-      filesToProcess = [selectedFile.value];
+    if (
+      fileManagerStore.currentFile &&
+      fileManagerStore.currentFile.mask?.data
+    ) {
+      filesToProcess = [fileManagerStore.currentFile];
     }
   }
 
@@ -653,155 +615,31 @@ const runRemoveModel = async () => {
 
   // 检查每个文件的历史记录限制
   for (const file of filesToProcess) {
-    const proceed = await checkHistoryLimit(file.name);
+    const proceed = await checkHistoryLimit(file.id);
     if (!proceed) return;
   }
 
   try {
     if (backendRunning.value) {
-      // 后端服务已启动，显示处理进度信息
-      loadingControl.show(`正在处理 ${filesToProcess.length} 张图像，你可以打开终端管理页面查看进度`);
+      loadingControl.show(
+        `正在处理 ${filesToProcess.length} 张图像，你可以打开终端管理页面查看进度`
+      );
     } else {
-      // 后端服务未启动，显示普通加载状态
-      loadingControl.show(`正在处理 ${filesToProcess.length} 张图像，请稍候...`);
+      loadingControl.show(
+        `正在处理 ${filesToProcess.length} 张图像，请稍候...`
+      );
     }
     isPageDisabled.value = true;
 
-    // 准备批量处理的数据
-    const images = [];
-    const masksList = [];
-    const fileNames = [];
+    // 准备批量处理数据
+    const requestData = await fileManagerStore.prepareBatchInpaintData(
+      filesToProcess
+    );
 
-    // 从文件和蒙版中提取base64数据
-    for (const file of filesToProcess) {
-      try {
-        // 获取图像的base64 - 使用最新处理后的图片或原图
-        let imageBase64;
-        if (processedImages.value[file.name]?.length) {
-          // 检查是否有存储的 blob
-          if (
-            processedImages.value[file.name + "_blobs"]?.[
-              processedImages.value[file.name].length - 1
-            ]
-          ) {
-            // 直接使用存储的 blob 对象
-            const blob =
-              processedImages.value[file.name + "_blobs"][
-                processedImages.value[file.name].length - 1
-              ];
-            imageBase64 = await InpaintService.fileToBase64(
-              new File([blob], file.name, { type: "image/png" })
-            );
-          } else {
-            // 如果没有存储 blob（兼容旧数据），使用原图
-            imageBase64 = await InpaintService.fileToBase64(file);
-          }
-        } else {
-          // 使用原图
-          imageBase64 = await InpaintService.fileToBase64(file);
-        }
-
-        images.push(imageBase64);
-
-        // 获取对应的蒙版
-        const mask = masks.value[file.name];
-        if (mask && mask.data) {
-          masksList.push(mask.data);
-          fileNames.push(file.name);
-        } else {
-          // 如果没有蒙版，跳过这个文件
-          images.pop();
-          continue;
-        }
-      } catch (err) {
-        console.error(`处理文件 ${file.name} 时出错:`, err);
-      }
-    }
-
-    if (images.length === 0) {
-      throw new Error("没有有效的图像和蒙版可以处理");
-    }
-
-    // 构造请求体
-    const requestData = {
-      images: images.map((img) => InpaintService.getBase64FromDataURL(img)),
-      masks: masksList.map((mask) => InpaintService.getBase64FromDataURL(mask)),
-    };
-
-    // 调用批量处理API
+    // 调用API
     const response = await InpaintService.performBatchInpainting(requestData);
-
     // 处理返回的结果
     if (response.results && response.results.length > 0) {
-      // 处理结果并更新历史记录
-      for (let i = 0; i < response.results.length; i++) {
-        const result = response.results[i];
-        if (result.success) {
-          const fileName = fileNames[i];
-
-          // 将 base64 转换为 Blob 对象
-          const base64Data = result.image.split(",")[1];
-          const byteCharacters = atob(base64Data);
-          const byteArrays = [];
-
-          for (let offset = 0; offset < byteCharacters.length; offset += 512) {
-            const slice = byteCharacters.slice(offset, offset + 512);
-            const byteNumbers = new Array(slice.length);
-            for (let i = 0; i < slice.length; i++) {
-              byteNumbers[i] = slice.charCodeAt(i);
-            }
-            const byteArray = new Uint8Array(byteNumbers);
-            byteArrays.push(byteArray);
-          }
-
-          const blob = new Blob(byteArrays, { type: "image/png" });
-          // 创建处理后图片的URL
-          const resultImageUrl = URL.createObjectURL(blob);
-          // 初始化历史记录数组（如果不存在）
-          if (!processedImages.value[fileName]) {
-            processedImages.value[fileName] = [];
-          }
-          const historyLimit = configStore.config.advanced.imageHistoryLimit;
-          const maxProcessedCount = historyLimit - 1; // 减去原图
-
-          // 初始化 blob 存储数组（如果不存在）
-          if (!processedImages.value[fileName + "_blobs"]) {
-            processedImages.value[fileName + "_blobs"] = [];
-          }
-          // 如果历史记录达到上限，删除最早的非原图记录
-          if (processedImages.value[fileName].length >= maxProcessedCount) {
-            URL.revokeObjectURL(processedImages.value[fileName][0]); // 释放 URL
-            processedImages.value[fileName].shift();
-            processedImages.value[fileName + "_blobs"].shift(); // 同时删除对应的 blob
-          }
-
-          // 添加新的处理记录
-          processedImages.value[fileName].push(resultImageUrl);
-          processedImages.value[fileName + "_blobs"].push(blob); // 存储 blob 对象
-
-          // 重置原始文件的蒙版
-          if (masks.value[fileName]) {
-            // 创建新的蒙版对象，确保 Vue 能检测到变化
-            const newMask = {
-              data: null,
-              width: masks.value[fileName].width,
-              height: masks.value[fileName].height,
-            };
-            masks.value[fileName] = newMask;
-
-            // 如果是当前选中的文件，更新当前蒙版
-            if (selectedFile.value && selectedFile.value.name === fileName) {
-              currentMask.value = { ...newMask };
-            }
-          }
-        }
-      }
-      // 强制刷新视图 - 先显示原图再切回处理后的图片
-      showingOriginal.value = true;
-      setTimeout(() => {
-        showingOriginal.value = false;
-      }, 50);
-
       // 显示成功通知
       $q.notify({
         type: "positive",
@@ -826,13 +664,16 @@ const runRemoveModel = async () => {
     isPageDisabled.value = false;
   }
 };
+
 const processFolderImages = async () => {
   try {
     // 显示加载状态
     if (backendRunning.value) {
-      loadingControl.show('正在批量处理文件夹图像，你可以打开终端管理页面查看进度');
+      loadingControl.show(
+        "正在批量处理文件夹图像，你可以打开终端管理页面查看进度"
+      );
     } else {
-      loadingControl.show('正在批量处理文件夹图像，请稍候...');
+      loadingControl.show("正在批量处理文件夹图像，请稍候...");
     }
     isPageDisabled.value = true;
 
@@ -873,176 +714,56 @@ const processFolderImages = async () => {
 };
 // 下载按钮点击事件处理函数
 const downloadProcessedImages = async () => {
-  // 确定要下载的文件列表
   let filesToDownload = [];
+
   if (
     actionScope.value.value === "selected" &&
-    selectedFiles.value.length > 0
+    fileManagerStore.selectedFiles.length > 0
   ) {
-    // 下载所有选中的文件
-    filesToDownload = selectedFiles.value.filter(
-      (file) =>
-        file.type.startsWith("image/") &&
-        processedImages.value[file.name]?.length
+    filesToDownload = fileManagerStore.selectedFiles.filter(
+      (file) => file.history?.length > 1
     );
   } else {
-    // 只下载当前选中的文件
     if (
-      selectedFile.value &&
-      processedImages.value[selectedFile.value.name]?.length
+      fileManagerStore.currentFile &&
+      fileManagerStore.currentFile.history?.length > 1
     ) {
-      filesToDownload = [selectedFile.value];
+      filesToDownload = [fileManagerStore.currentFile];
     }
   }
 
   if (filesToDownload.length === 0) {
     $q.notify({
-      type: "negative",
+      type: "info",
       message: "没有可下载的处理后图像",
       position: "top",
     });
     return;
   }
 
-  // 检查保存路径是否存在
-  if (!savePath.value) {
-    $q.notify({
-      type: "negative",
-      message: "请先在设置面板中选择保存路径或在全局配置中设置导出路径",
-      position: "top",
-    });
-    rightDrawerOpen.value = true;
-    return;
-  }
+  // 使用 fileManagerStore.saveFile 保存文件
+  for (const file of filesToDownload) {
+    const fileName = file.name;
+    const fileNameWithoutExt =
+      fileName.substring(0, fileName.lastIndexOf(".")) || fileName;
+    const fileExt = fileName.substring(fileName.lastIndexOf(".")) || ".png";
+    const newFileName = `${fileNameWithoutExt}_processed${fileExt}`;
+    const fullPath = `${savePath.value}\\${newFileName}`;
 
-  try {
-    loadingControl.show(`正在保存 ${filesToDownload.length} 张图像，请稍候...`);
-    isPageDisabled.value = true;
-
-    let successCount = 0;
-    let errorCount = 0;
-
-    // 检查是否在 Electron 环境中
-    const isElectron = !!window.electron;
-
-    for (const file of filesToDownload) {
-      try {
-        const fileName = file.name;
-        // 获取最新处理后的图片
-        if (processedImages.value[fileName]?.length) {
-          const latestProcessedIndex =
-            processedImages.value[fileName].length - 1;
-
-          // 获取 blob 对象
-          let blob;
-          if (
-            processedImages.value[fileName + "_blobs"]?.[latestProcessedIndex]
-          ) {
-            // 使用存储的 blob
-            blob =
-              processedImages.value[fileName + "_blobs"][latestProcessedIndex];
-          } else {
-            // 如果没有存储的 blob，从 URL 获取
-            const response = await fetch(
-              processedImages.value[fileName][latestProcessedIndex]
-            );
-            blob = await response.blob();
-          }
-
-          // 处理文件名（添加后缀以避免重名）
-          const fileNameWithoutExt =
-            fileName.substring(0, fileName.lastIndexOf(".")) || fileName;
-          const fileExt =
-            fileName.substring(fileName.lastIndexOf(".")) || ".png";
-          const newFileName = `${fileNameWithoutExt}_processed${fileExt}`;
-
-          if (isElectron) {
-            try {
-              // Electron 环境：使用 Node.js API 保存文件
-              // 检查是否支持 save-file 方法
-              if (typeof window.electron.ipcRenderer.invoke !== "function") {
-                throw new Error("当前 Electron 版本不支持 invoke 方法");
-              }
-
-              // 使用更通用的 saveFile 方法名称
-              const methodName = window.electron.ipcRenderer.hasHandler
-                ? window.electron.ipcRenderer.hasHandler("save-file")
-                  ? "save-file"
-                  : "saveFile"
-                : "saveFile";
-              const fullPath = await window.electron.ipcRenderer.invoke(
-                methodName,
-                {
-                  filePath: `${savePath.value}\\${newFileName}`,
-                  blob: await blob.arrayBuffer(),
-                }
-              );
-
-              if (fullPath) {
-                successCount++;
-              } else {
-                throw new Error("保存文件失败，未返回路径");
-              }
-            } catch (electronError) {
-              console.error(
-                "Electron 保存失败，回退到浏览器下载:",
-                electronError
-              );
-              // 回退到浏览器下载方式
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement("a");
-              a.href = url;
-              a.download = newFileName;
-              document.body.appendChild(a);
-              a.click();
-              document.body.removeChild(a);
-              URL.revokeObjectURL(url);
-              successCount++;
-            }
-          } else {
-            // 浏览器环境：使用下载链接
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = newFileName;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            successCount++;
-          }
-        }
-      } catch (error) {
-        console.error(`保存文件 ${file.name} 时出错:`, error);
-        errorCount++;
-      }
-    }
-    // 显示结果通知
-    if (successCount > 0) {
+    try {
+      await fileManagerStore.saveFile(file.id, fullPath);
       $q.notify({
         type: "positive",
-        message: `成功保存了 ${successCount} 张图像${
-          errorCount > 0 ? `，${errorCount} 张保存失败` : ""
-        }`,
+        message: `已保存: ${newFileName}`,
         position: "top",
       });
-    } else {
+    } catch (error) {
       $q.notify({
         type: "negative",
-        message: "所有图像保存失败",
+        message: `保存失败: ${fileName}，${error.message}`,
         position: "top",
       });
     }
-  } catch (error) {
-    $q.notify({
-      type: "negative",
-      message: `保存图像失败: ${error.message}`,
-      position: "top",
-    });
-    console.error("保存图像失败:", error);
-  } finally {
-    loadingControl.hide();
-    isPageDisabled.value = false;
   }
 };
 // 检查CUDA可用性
@@ -1053,33 +774,28 @@ const handleCudaStatusChanged = (status) => {
 // 撤销处理
 const undoProcessing = () => {
   if (
-    !selectedFile.value ||
-    !processedImages.value[selectedFile.value.name]?.length
+    !fileManagerStore.currentFile ||
+    fileManagerStore.currentFile.history?.length <= 1
   )
     return;
 
-  const fileName = selectedFile.value.name;
-  const history = processedImages.value[fileName];
+  const success = fileManagerStore.undoProcessing(
+    fileManagerStore.currentFile.id
+  );
 
-  // 移除最新的处理记录
-  history.pop();
-
-  // 如果没有处理记录了，清空历史
-  if (history.length === 0) {
-    delete processedImages.value[fileName];
+  if (success) {
+    $q.notify({
+      type: "info",
+      message: "已撤销最近的处理",
+      position: "top",
+    });
   }
-
-  $q.notify({
-    type: "info",
-    message: "已撤销最近的处理",
-    position: "top",
-  });
 };
 // 显示原图
 const showOriginalImage = () => {
   if (
-    selectedFile.value &&
-    processedImages.value[selectedFile.value.name]?.length
+    fileManagerStore.currentFile &&
+    fileManagerStore.currentFile.history?.length > 1
   ) {
     showingOriginal.value = true;
   }
@@ -1090,12 +806,14 @@ const showProcessedImage = () => {
 };
 
 // 检查是否需要显示历史记录上限警告
-const checkHistoryLimit = (fileName) => {
+const checkHistoryLimit = (fileId) => {
   if (dontShowMaxHistoryWarning.value) return Promise.resolve(true);
 
+  const file = fileManagerStore.files.find((f) => f.id === fileId);
   const historyLimit = configStore.config.advanced.imageHistoryLimit;
   const maxProcessedCount = historyLimit - 1; // 减去原图
-  if (processedImages.value[fileName]?.length >= maxProcessedCount) {
+
+  if (file?.history?.length >= maxProcessedCount) {
     return new Promise((resolve) => {
       $q.dialog({
         title: "历史记录上限提醒",
@@ -1134,13 +852,14 @@ const checkHistoryLimit = (fileName) => {
   return Promise.resolve(true);
 };
 const saveMaskToFolder = async () => {
-  if (!currentMask.value || !currentMask.value.data || !maskFolderPath.value) {
+  const currentMask = fileManagerStore.currentFile?.mask;
+  if (!currentMask || !currentMask.data || !maskFolderPath.value) {
     throw new Error("蒙版数据或蒙版文件夹路径不存在");
   }
 
   try {
     // 将蒙版数据转换为 Blob
-    const response = await fetch(currentMask.value.data);
+    const response = await fetch(currentMask.displayUrl);
     const blob = await response.blob();
 
     // 保存蒙版文件
@@ -1183,73 +902,39 @@ const saveMaskToFolder = async () => {
     throw error;
   }
 };
-
 // 监听selectedFiles变化，更新selectAll状态
 watch(
-  selectedFiles,
+  () => fileManagerStore.selectedFiles,
   (newVal) => {
-    if (filteredFiles.value.length > 0) {
-      selectAll.value = newVal.length === filteredFiles.value.length;
+    if (fileManagerStore.files.length > 0) {
+      selectAll.value =
+        newVal.length ===
+        fileManagerStore.files.filter((f) =>
+          f.originalFile?.type.startsWith("image/")
+        ).length;
     } else {
       selectAll.value = false;
     }
-    appStateStore.updatePageState("image", {
-      fileExplorer: {
-        ...appStateStore.appState.imageState.fileExplorer,
-        selectedFilesList: newVal,
-      },
-    });
   },
   { deep: true }
 );
-// 监听selectedFile变化，更新当前蒙版
-watch(selectedFile, (newFile) => {
-  if (newFile && newFile.type.startsWith("image/")) {
-    currentMask.value = masks.value[newFile.name];
-  } else {
-    currentMask.value = null;
-  }
-});
-// 监听文件变化，为新文件创建蒙版
+
+// 监听当前文件变化
 watch(
-  files,
-  (newFiles) => {
-    if (appStateStore.appState.isInitialized) {
-      appStateStore.setInitialized(false);
+  () => fileManagerStore.currentFile,
+  (newFile) => {
+    if (newFile) {
+      // 更新应用状态等逻辑
+      appStateStore.updatePageState("image", {
+        fileExplorer: {
+          ...appStateStore.appState.imageState.fileExplorer,
+          currentFileId: newFile.id,
+        },
+      });
     }
-    // 更新当前页面的文件状态
-    appStateStore.updatePageState("image", {
-      fileExplorer: {
-        ...appStateStore.appState.imageState.fileExplorer,
-        selectedFiles: newFiles,
-      },
-    });
-    newFiles.forEach((file) => {
-      if (!masks.value[file.name] && file.type.startsWith("image/")) {
-        // 为新文件创建空白蒙版
-        masks.value[file.name] = {
-          data: null, // 初始为空，将在ImageEditor中创建
-          width: 0,
-          height: 0,
-        };
-        // 检查文件大小，如果超过配置中的警告大小则显示警告
-        const fileSizeMB = file.size / (1024 * 1024);
-        const warningSize = configStore.config.advanced.imageWarningSize;
-        if (fileSizeMB > warningSize) {
-          $q.notify({
-            type: "warning",
-            message: `文件 "${file.name}" 大小为 ${fileSizeMB.toFixed(
-              2
-            )}MB，过大的文件可能导致绘制蒙版时卡顿。`,
-            position: "top",
-            timeout: 5000,
-          });
-        }
-      }
-    });
-  },
-  { deep: true }
+  }
 );
+
 // 监听 actionScope 变化，当首次选择 folder 时提示选择文件夹
 watch(
   () => actionScope.value,
@@ -1271,23 +956,11 @@ watch(
     }
   }
 );
-// 监听蒙版变化，更新appState中的蒙版信息
-watch(
-  masks,
-  (newMasks) => {
-    Object.keys(newMasks).forEach((fileName) => {
-      const file = files.value.find((f) => f.name === fileName);
-      if (file && file.path && newMasks[fileName]) {
-        appStateStore.updateFileMask("image", file.path, newMasks[fileName]);
-      }
-    });
-  },
-  { deep: true }
-);
 
+// 自动选择第一个文件
 watchEffect(() => {
-  if (!selectedFile.value && filteredFiles.value.length > 0) {
-    selectedFile.value = filteredFiles.value[0];
+  if (!fileManagerStore.currentFile && fileManagerStore.files.length > 0) {
+    fileManagerStore.setCurrentFile(fileManagerStore.files[0].id);
   }
 });
 const onRejectedFiles = (rejectedEntries) => {
@@ -1310,364 +983,201 @@ const onRejectedFiles = (rejectedEntries) => {
     });
   });
 };
-onMounted(() => {
-  // 监听配置更新事件
-  const handleConfigUpdate = () => {
-    // 更新保存路径
-    exportPath.value = configStore.config.fileManagement.downloadPath;
-    imageFolderName.value = configStore.config.fileManagement.imageFolderName;
-    savePath.value =
-      exportPath.value && imageFolderName.value
-        ? `${exportPath.value}\\${imageFolderName.value}`
-        : "";
-  };
 
-  window.addEventListener("config-updated", handleConfigUpdate);
-
-  // 在 onUnmounted 中清理
-  onUnmounted(() => {
-    window.removeEventListener("config-updated", handleConfigUpdate);
-  });
-});
-onMounted(async () => {
-  try {
-    // 加载配置
-    await configStore.loadConfig();
-  } catch (error) {
-    console.error("配置加载失败:", error);
-    // 配置加载失败时，保持默认的空字符串，用户可手动设置
-  } finally {
-    // 配置加载完成后，初始化保存路径
-    exportPath.value = configStore.config.fileManagement.downloadPath;
-    imageFolderName.value = configStore.config.fileManagement.imageFolderName;
-    if (exportPath.value && imageFolderName.value) {
-      savePath.value = `${exportPath.value}\\${imageFolderName.value}`;
-    }
-  }
-  // 检查是否存在状态文件
-  if (window.electron) {
-    try {
-      const hasState = await window.electron.ipcRenderer.invoke(
-        "check-app-state-exists"
-      );
-      if (hasState) {
-        // 询问用户是否加载上次的状态
-        $q.dialog({
-          title: "发现上次的工作状态",
-          message: "检测到上次未完成的工作，是否恢复上次的状态？",
-          cancel: {
-            label: "重新开始",
-            color: "negative",
-          },
-          ok: {
-            label: "恢复状态",
-            color: "primary",
-          },
-          persistent: true,
-        })
-          .onOk(async () => {
-            // 用户选择恢复状态
-            await loadPreviousState();
-          })
-          .onCancel(async () => {
-            // 用户选择重新开始，清除状态
-            await appStateStore.restart();
-          });
-      }
-    } catch (error) {
-      console.error("检查状态文件失败:", error);
-    }
-  }
-
-  // 检测是否在 Electron 环境中
-  isElectron.value = !!window.electron;
-
-  // 如果在 Electron 环境中，获取资源路径
-  if (isElectron.value && window.electron) {
-    try {
-      // 使用 IPC 从主进程获取资源路径
-      if (window.electron.ipcRenderer && window.electron.ipcRenderer.invoke) {
-        resourcesPath.value = await window.electron.ipcRenderer.invoke(
-          "get-resources-path"
-        );
-      } else {
-        // 备选路径
-        resourcesPath.value = "./resources";
-      }
-    } catch (error) {
-      console.error("获取资源路径失败:", error);
-      resourcesPath.value = "./resources";
-    }
-  }
-});
-
-// 加载上次状态的函数
-const loadPreviousState = async () => {
-  try {
-    const stateResult = await appStateStore.loadState();
-    if (stateResult.success && !stateResult.noData) {
-      // 恢复图像状态
-      const imageState = appStateStore.appState.imageState;
-      // 恢复文件状态 - 优先使用 selectedFilesList 中的路径信息
-      if (
-        imageState.fileExplorer.selectedFilesList &&
-        imageState.fileExplorer.selectedFilesList.length > 0
-      ) {
-        try {
-          // 解析 selectedFilesList（JSON字符串格式）
-          const filesList =
-            typeof imageState.fileExplorer.selectedFilesList === "string"
-              ? JSON.parse(imageState.fileExplorer.selectedFilesList)
-              : imageState.fileExplorer.selectedFilesList;
-
-          // 提取所有文件路径
-          const filePaths = filesList.map((item) => item.path).filter(Boolean);
-
-          if (filePaths.length > 0) {
-            // 使用 appStateStore 的 recreateFilesFromPaths 函数重新创建文件对象
-            const missingFiles = [];
-            const recreatedFiles = [];
-
-            for (const filePath of filePaths) {
-              try {
-                const result = await window.electron.ipcRenderer.invoke(
-                  "read-file",
-                  filePath
-                );
-
-                if (result.success) {
-                  // 创建新的File对象
-                  const uint8Array = new Uint8Array(result.data.buffer);
-                  const blob = new Blob([uint8Array], {
-                    type: result.data.type,
-                  });
-                  const file = new File([blob], result.data.name, {
-                    type: result.data.type,
-                    lastModified: result.data.lastModified,
-                  });
-
-                  // 添加路径信息
-                  Object.defineProperty(file, "path", {
-                    value: filePath,
-                    writable: false,
-                  });
-
-                  recreatedFiles.push(file);
-                } else {
-                  console.warn(`文件读取失败: ${result.error}`);
-                  missingFiles.push(filePath);
-                }
-              } catch (error) {
-                console.error(`读取文件失败 ${filePath}:`, error);
-                missingFiles.push(filePath);
-              }
-            }
-
-            // 设置重新创建的文件列表
-            files.value = recreatedFiles;
-
-            // 如果有文件丢失，显示提示
-            if (missingFiles.length > 0) {
-              $q.notify({
-                type: "warning",
-                message: `有 ${missingFiles.length} 个文件已不存在，已从列表中移除`,
-                position: "top",
-              });
-            }
-          }
-        } catch (error) {
-          console.error("解析 selectedFilesList 失败:", error);
-          // 如果解析失败，尝试使用原有的 selectedFiles（作为备选方案）
-          if (
-            imageState.fileExplorer.selectedFiles &&
-            imageState.fileExplorer.selectedFiles.length > 0
-          ) {
-            files.value = imageState.fileExplorer.selectedFiles;
-          }
-        }
-      } else if (
-        imageState.fileExplorer.selectedFiles &&
-        imageState.fileExplorer.selectedFiles.length > 0
-      ) {
-        // 备选方案：使用原有的 selectedFiles
-        files.value = imageState.fileExplorer.selectedFiles;
-      }
-
-      // 根据保存的 selectedFileName 恢复当前选中文件
-      if (imageState.ui?.selectedFileName && files.value.length > 0) {
-        const targetFile = files.value.find(
-          (f) => f.name === imageState.ui.selectedFileName
-        );
-        selectedFile.value = targetFile || files.value[0];
-      } else if (files.value.length > 0) {
-        selectedFile.value = files.value[0];
-      }
-
-      // 恢复选中文件状态 - 根据文件名匹配
-      if (
-        imageState.fileExplorer.selectedFilesList &&
-        imageState.fileExplorer.selectedFilesList.length > 0
-      ) {
-        try {
-          const filesList =
-            typeof imageState.fileExplorer.selectedFilesList === "string"
-              ? JSON.parse(imageState.fileExplorer.selectedFilesList)
-              : imageState.fileExplorer.selectedFilesList;
-
-          // 根据文件名匹配选中的文件
-          selectedFiles.value = files.value.filter((file) =>
-            filesList.some((savedFile) => savedFile.name === file.name)
-          );
-        } catch (error) {
-          console.error("恢复选中文件状态失败:", error);
-          selectedFiles.value = [];
-        }
-      }
-      // 恢复蒙版状态 - 修复路径和名称的映射问题
-      if (imageState.fileExplorer.fileMasks) {
-        // 清空现有蒙版
-        masks.value = {};
-
-        // 遍历保存的蒙版数据（按文件路径保存）
-        Object.keys(imageState.fileExplorer.fileMasks).forEach((filePath) => {
-          // 根据文件路径找到对应的文件
-          const file = files.value.find((f) => f.path === filePath);
-          if (file) {
-            // 按文件名存储蒙版（因为组件中使用文件名作为key）
-            masks.value[file.name] =
-              imageState.fileExplorer.fileMasks[filePath];
-          } else {
-            // 如果找不到对应路径的文件，尝试按文件名匹配
-            const fileName = filePath.split(/[\\/]/).pop(); // 提取文件名
-            const fileByName = files.value.find((f) => f.name === fileName);
-            if (fileByName) {
-              masks.value[fileByName.name] =
-                imageState.fileExplorer.fileMasks[filePath];
-            }
-          }
-        });
-
-        // 恢复当前蒙版
-        if (selectedFile.value && masks.value[selectedFile.value.name]) {
-          currentMask.value = masks.value[selectedFile.value.name];
-        }
-      }
-    }
-  } catch (error) {
-    console.error("状态加载失败:", error);
-    $q.notify({
-      type: "negative",
-      message: "状态恢复失败: " + error.message,
-      position: "top",
-    });
+// 处理文件选择
+const handleFileSelection = (file) => {
+  if (file && file.id) {
+    fileManagerStore.setCurrentFile(file.id);
   }
 };
-// 在路由离开前保存当前页面状态
-onBeforeRouteLeave(async (to, from, next) => {
-  // 如果是初始化状态，直接允许切换，不显示提示框
-  if (appStateStore.appState.isInitialized) {
-    next();
-    return;
-  }
-  // 如果当前有上传的文件，提醒用户过程图片会丢失
-  if (files.value.length > 0) {
-    // 检查是否有过程图片
-    const hasProcessedImages = Object.keys(processedImages.value).some(
-      (fileName) => processedImages.value[fileName]?.length > 0
+
+// 处理文件移除
+const handleRemoveFile = (index) => {
+  const file = fileManagerStore.files[index];
+  if (file) {
+    fileManagerStore.removeFile(file.id);
+
+    // 从选中列表中移除
+    const selectedIndex = selectedFiles.value.findIndex(
+      (f) => f.id === file.id
     );
+    if (selectedIndex !== -1) {
+      selectedFiles.value.splice(selectedIndex, 1);
+    }
+  }
+};
 
-    if (hasProcessedImages) {
-      const shouldContinue = await new Promise((resolve) => {
-        $q.dialog({
-          title: "切换页面提醒",
-          message:
-            "当前的工作状态保存只能保存原始图片和当前蒙版信息，过程图片在切换页面时会丢失，是否切换页面？",
-          cancel: {
-            label: "取消",
-            color: "info",
-          },
-          ok: {
-            color: "primary",
-            label: "确认切换",
-          },
-          persistent: true,
-        })
-          .onOk(() => {
-            resolve(true);
-          })
-          .onCancel(() => {
-            resolve(false);
-          });
+// 页面离开时的状态保存
+const savePageState = async () => {
+  try {
+    // 保存fileManager状态
+    appStateStore.saveFileManagerState("image", fileManagerStore);
+
+    // 保存UI状态
+    const uiState = {
+      leftDrawerOpen: leftDrawerOpen.value,
+      rightDrawerOpen: rightDrawerOpen.value,
+      currentModel: currentModel.value,
+      showMaskTools: showMaskTools.value,
+      actionScope: actionScope.value,
+      selectAll: selectAll.value,
+      savePath: savePath.value,
+      folderPath: folderPath.value,
+      maskFolderPath: maskFolderPath.value,
+      ocrLang: ocrLang.value,
+      autoLayout: autoLayout.value,
+      showingOriginal: showingOriginal.value,
+      dontShowMaxHistoryWarning: dontShowMaxHistoryWarning.value,
+      dontShowBackendWarning: dontShowBackendWarning.value,
+    };
+    appStateStore.saveUIState("image", uiState);
+
+    // 持久化到磁盘
+    const result = await appStateStore.saveState();
+    if (result.success) {
+      console.log("页面状态已保存");
+    } else {
+      console.error("保存页面状态失败:", result.error);
+    }
+  } catch (error) {
+    console.error("保存页面状态失败:", error);
+  }
+};
+
+// 页面进入时的状态恢复
+const restorePageState = async () => {
+  try {
+    // 恢复fileManager状态
+    const savedFileManagerState = appStateStore.restoreFileManagerState("image");
+    if (savedFileManagerState) {
+      // fileManagerStore.restoreFromState(savedFileManagerState);
+      // 如果有当前文件，确保正确选中
+      if (fileManagerStore.currentFileId) {
+        const currentFile = fileManagerStore.files.find(
+          f => f.id === fileManagerStore.currentFileId
+        );
+        if (currentFile) {
+          // 触发文件选择事件，确保UI状态同步
+          handleFileSelection(currentFile);
+        }
+      }
+    }
+    // 恢复UI状态
+    const savedUIState = appStateStore.restoreUIState("image");
+    if (savedUIState) {
+      // 使用nextTick确保状态更新的正确时机
+      await nextTick(() => {
+        leftDrawerOpen.value = savedUIState.leftDrawerOpen ?? false;
+        rightDrawerOpen.value = savedUIState.rightDrawerOpen ?? false;
+        currentModel.value = savedUIState.currentModel || "lama";
+        showMaskTools.value = savedUIState.showMaskTools ?? true;
+        actionScope.value = savedUIState.actionScope || {
+          label: "仅当前文件",
+          value: "current",
+        };
+        selectAll.value = savedUIState.selectAll ?? false;
+        savePath.value = savedUIState.savePath || "";
+        folderPath.value = savedUIState.folderPath || "";
+        maskFolderPath.value = savedUIState.maskFolderPath || "";
+        ocrLang.value = savedUIState.ocrLang || "中文";
+        autoLayout.value = savedUIState.autoLayout ?? true;
+        showingOriginal.value = savedUIState.showingOriginal ?? false;
+        dontShowMaxHistoryWarning.value = savedUIState.dontShowMaxHistoryWarning ?? false;
+        dontShowBackendWarning.value = savedUIState.dontShowBackendWarning ?? false;
       });
+      await nextTick();
+      // 应用恢复后的状态副作用
+      if (selectAll.value) {
+        fileManagerStore.selectAllFiles(true);
+      }
+    }
+  } catch (error) {
+    console.error("恢复页面状态失败:", error);
+  }
+};
 
-      if (!shouldContinue) {
-        next(false); // 阻止路由切换
-        return;
+onMounted(async () => {
+  // 1. 首先加载配置
+  await configStore.loadConfig();
+
+  // 2. 然后初始化fileManager配置（使用正确的配置）
+  fileManagerStore.initProcessingConfig();
+
+  // 3. 恢复页面状态
+  await restorePageState();
+
+  // 4. 应用配置到UI状态
+  if (configStore.config.fileManagement) {
+    if (configStore.config.fileManagement.imageFolderName) {
+      imageFolderName.value = configStore.config.fileManagement.imageFolderName;
+    }
+    if (configStore.config.fileManagement.downloadPath) {
+      exportPath.value = configStore.config.fileManagement.downloadPath;
+      if (!savePath.value) {
+        savePath.value = configStore.config.fileManagement.downloadPath;
       }
     }
   }
 
-  // 保存当前工作区状态
-  const workspaceState = {
-    canvasData: editorRef.value?.getCanvasData?.() || null,
-    selection: editorRef.value?.getSelection?.() || null,
-  };
+  // 5. 设置配置更新监听器
+  if (window.electron) {
+    isElectron.value = true;
 
-  // 保存UI状态
-  const uiState = {
-    leftDrawerOpen: leftDrawerOpen.value,
-    rightDrawerOpen: rightDrawerOpen.value,
-    currentModel: currentModel.value,
-    showMaskTools: showMaskTools.value,
-    actionScope: actionScope.value,
-    selectAll: selectAll.value,
-    savePath: savePath.value,
-    folderPath: folderPath.value,
-    maskFolderPath: maskFolderPath.value,
-    ocrLang: ocrLang.value,
-    autoLayout: autoLayout.value,
-    selectedFileName: selectedFile.value?.name || null,
-  };
+    // 获取资源路径
+    try {
+      resourcesPath.value = await window.electron.ipcRenderer.invoke(
+        "get-resources-path"
+      );
+    } catch (error) {
+      console.error("获取资源路径失败:", error);
+    }
 
-  // 更新页面状态 - 移除不需要的字段
-  appStateStore.updatePageState("image", {
-    workspace: workspaceState,
-    ui: uiState,
-    fileExplorer: {
-      selectedFilesList: JSON.stringify(
-        files.value.map((f) => ({ name: f.name, path: f.path }))
-      ), // 只保存文件名和路径的映射
-      fileMasks: Object.fromEntries(
-        Object.entries(masks.value)
-          .map(([fileName, mask]) => {
-            const file = files.value.find((f) => f.name === fileName);
-            return file?.path ? [file.path, mask] : null;
-          })
-          .filter(Boolean)
-      ),
-    },
+    // 监听配置更新
+    window.electron.ipcRenderer.on("config-updated", (event, config) => {
+      if (config.fileManagement && config.fileManagement.imageFolderName) {
+        imageFolderName.value = config.fileManagement.imageFolderName;
+      }
+      if (config.fileManagement && config.fileManagement.downloadPath) {
+        exportPath.value = config.fileManagement.downloadPath;
+        savePath.value = config.fileManagement.downloadPath;
+      }
+    });
+  }
+
+  // 6. 应用恢复后的状态副作用
+  await nextTick(() => {
+    // 确保selectAll状态正确应用
+    if (selectAll.value) {
+      fileManagerStore.selectAllFiles(true);
+    }
   });
+});
 
-  // 保存状态
-  await appStateStore.saveState();
-  next(); // 允许路由切换
+// 在路由离开前保存当前页面状态
+onBeforeRouteLeave(async (to, from, next) => {
+  // 保存当前页面状态
+  await savePageState();
+  next();
 });
 // 在组件卸载时清理资源
-onUnmounted(() => {
-  // 释放原始文件的URL
-  Object.values(fileUrls.value).forEach((url) => {
-    URL.revokeObjectURL(url);
-  });
+onUnmounted(async () => {
+  // 保存状态
+  await savePageState();
 
-  // 释放处理后图片的URL
-  Object.keys(processedImages.value).forEach((fileName) => {
-    processedImages.value[fileName].forEach((url) => {
-      URL.revokeObjectURL(url);
+  // 清理资源
+  fileManagerStore.files.forEach((file) => {
+    if (file.image?.displayUrl && file.image.displayUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(file.image.displayUrl);
+    }
+    file.history?.forEach((historyItem) => {
+      if (
+        historyItem.displayUrl &&
+        historyItem.displayUrl.startsWith("blob:")
+      ) {
+        URL.revokeObjectURL(historyItem.displayUrl);
+      }
     });
   });
-
-  // 清理 store 中的 URL
-  store.cleanupUrls();
 });
 </script>
 <style scoped>

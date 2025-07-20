@@ -48,9 +48,11 @@ import {
 } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { useEditorStore } from "../stores/editor";
+import { useFileManagerStore } from "../stores/fileManager";
 import ImageMasker from "./ImageMasker.vue";
 
 const store = useEditorStore();
+const fileManagerStore = useFileManagerStore();
 const imageContainer = ref(null);
 const imageRef = ref(null);
 const maskerRef = ref(null);
@@ -85,15 +87,36 @@ const props = defineProps({
 const emit = defineEmits(["loaded", "update:mask"]);
 const imageUrl = computed(() => {
   if (props.imageUrl) {
-    // 优先使用父组件传入的 URL（可能是处理后的图片）
+    // 优先使用父组件传入的 URL
     return props.imageUrl;
-  } else if (props.selectedFile) {
-    // 如果没有传入 URL 但有文件，则创建新的 URL
+  }
+
+  // 从fileManager获取当前显示的图片
+  const currentDisplayImage = fileManagerStore.getCurrentDisplayImage;
+  if (currentDisplayImage) {
+    if (currentDisplayImage.type === 'path' && currentDisplayImage.displayUrl) {
+      // 文件路径模式 - 在Electron环境中处理
+      if (window.electron) {
+        // 使用Electron的文件协议或转换为可访问的URL
+        return `atom://${currentDisplayImage.data.replace(/\\/g, '/')}`;
+      } else {
+        // 浏览器环境，回退到base64
+        console.warn('文件路径模式仅在Electron环境中支持，回退到base64模式');
+        return null;
+      }
+    } else if (currentDisplayImage.type === 'base64') {
+      // base64模式
+      return currentDisplayImage.displayUrl;
+    }
+  }
+
+  // 兼容旧逻辑
+  if (props.selectedFile) {
     const url = URL.createObjectURL(props.selectedFile);
-    // 存储到 store 中以便后续管理
     store.setImageUrl(url);
     return url;
   }
+
   return store.imageUrl;
 });
 const mode = computed(() => store.mode);

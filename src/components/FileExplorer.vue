@@ -45,6 +45,7 @@ const emit = defineEmits([
   'toggle-selection',
   'remove-file'
 ])
+
 // 使用计算属性处理双向绑定
 const drawerModel = computed({
   get() {
