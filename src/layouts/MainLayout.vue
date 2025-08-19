@@ -44,9 +44,7 @@
       />
     </q-page-container>
     <!-- 内部加载组件 -->
-    <q-inner-loading
-      :showing="loadingState.showing"
-    >
+    <q-inner-loading :showing="loadingState.showing">
       <q-spinner-gears size="50px" color="primary" />
       <span class="text-h6 text-primary">{{ loadingState.message }}</span>
     </q-inner-loading>

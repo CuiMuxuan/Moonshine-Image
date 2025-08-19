@@ -18,12 +18,16 @@
   "dependencies": {
     "@quasar/extras": "^1.16.4",
     "@vueuse/core": "^12.8.2",
+    "@webav/av-canvas": "^1.1.17",
+    "@webav/av-cliper": "^1.1.17",
     "axios": "^1.2.1",
+    "lodash-es": "^4.17.21",
     "pinia": "^3.0.1",
     "quasar": "^2.16.0",
     "uuid": "^11.1.0",
     "vue": "^3.4.18",
-    "vue-router": "^4.0.0"
+    "vue-router": "^4.0.0",
+    "vue3-moveable": "^0.28.0"
   },
   "devDependencies": {
     "@electron/packager": "^18.3.6",

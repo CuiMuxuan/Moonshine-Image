@@ -5,17 +5,17 @@ const routes = [
     children: [
       {
         path: "",
-        redirect: "/image"
+        redirect: "/image",
       },
       {
         path: "image",
         component: () => import("pages/IndexPage.vue"),
-        props: true
+        props: true,
       },
       {
         path: "video",
         component: () => import("pages/VideoPage.vue"),
-        props: true
+        props: true,
       },
     ],
   },

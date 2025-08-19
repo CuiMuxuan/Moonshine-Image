@@ -1,4 +1,3 @@
-/* eslint-disable no-unused-vars */
 import {
   app,
   BrowserWindow,
@@ -7,7 +6,7 @@ import {
   session,
   Menu,
   shell,
-  protocol
+  protocol,
 } from "electron";
 import path from "node:path";
 import os from "node:os";
@@ -104,8 +103,10 @@ function validateConfig(config) {
     }
 
     // 验证图片处理方式
-    if (config.advanced?.imageProcessingMethod &&
-        !["base64", "path"].includes(config.advanced.imageProcessingMethod)) {
+    if (
+      config.advanced?.imageProcessingMethod &&
+      !["base64", "path"].includes(config.advanced.imageProcessingMethod)
+    ) {
       return false;
     }
     return true;
@@ -1431,8 +1432,8 @@ ipcMain.handle("get-file-stats", async (event, filePath) => {
         size: stats.size,
         name: path.basename(filePath),
         lastModified: stats.mtime.getTime(),
-        type: getMimeType(filePath)
-      }
+        type: getMimeType(filePath),
+      },
     };
   } catch (error) {
     console.error("获取文件统计信息失败:", error);
@@ -1452,25 +1453,27 @@ ipcMain.handle("read-file-with-progress", async (event, filePath) => {
     const chunkSize = Math.max(1024 * 64, Math.floor(fileSize / 100)); // 至少64KB，最多100个进度更新
 
     return new Promise((resolve, reject) => {
-      const stream = fs.createReadStream(filePath, { highWaterMark: chunkSize });
+      const stream = fs.createReadStream(filePath, {
+        highWaterMark: chunkSize,
+      });
       const chunks = [];
       let bytesRead = 0;
 
-      stream.on('data', (chunk) => {
+      stream.on("data", (chunk) => {
         chunks.push(chunk);
         bytesRead += chunk.length;
 
         // 发送进度更新
         const progress = Math.round((bytesRead / fileSize) * 100);
-        event.sender.send('file-read-progress', {
+        event.sender.send("file-read-progress", {
           filePath,
           bytesRead,
           totalSize: fileSize,
-          progress
+          progress,
         });
       });
 
-      stream.on('end', () => {
+      stream.on("end", () => {
         const buffer = Buffer.concat(chunks);
         resolve({
           success: true,
@@ -1481,11 +1484,11 @@ ipcMain.handle("read-file-with-progress", async (event, filePath) => {
             lastModified: stats.mtime.getTime(),
             buffer: Array.from(buffer),
             path: filePath,
-          }
+          },
         });
       });
 
-      stream.on('error', (error) => {
+      stream.on("error", (error) => {
         console.error("文件读取失败:", error);
         reject({ success: false, error: error.message });
       });
@@ -1496,236 +1499,48 @@ ipcMain.handle("read-file-with-progress", async (event, filePath) => {
   }
 });
 // 保存临时视频文件
-ipcMain.handle('save-temp-video', async (event, { fileName, buffer }) => {
+ipcMain.handle("save-temp-video", async (event, { fileName, buffer }) => {
   try {
-    const tempDir = path.join(app.getPath('temp'), 'moonshine-videos')
+    const tempDir = path.join(app.getPath("temp"), "moonshine-videos");
     if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true })
+      fs.mkdirSync(tempDir, { recursive: true });
     }
 
-    const tempPath = path.join(tempDir, `${Date.now()}_${fileName}`)
-    fs.writeFileSync(tempPath, Buffer.from(buffer))
+    const tempPath = path.join(tempDir, `${Date.now()}_${fileName}`);
+    fs.writeFileSync(tempPath, Buffer.from(buffer));
 
-    return tempPath
+    return tempPath;
   } catch (error) {
-    console.error('保存临时视频文件失败:', error)
-    throw error
+    console.error("保存临时视频文件失败:", error);
+    throw error;
   }
-})
+});
 
 // 清理临时文件
-ipcMain.handle('cleanup-temp-file', async (event, filePath) => {
+ipcMain.handle("cleanup-temp-file", async (event, filePath) => {
   try {
     if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath)
+      fs.unlinkSync(filePath);
     }
   } catch (error) {
-    console.error('清理临时文件失败:', error)
+    console.error("清理临时文件失败:", error);
   }
-})
-// 获取FFmpeg路径
-ipcMain.handle('get-ffmpeg-path', async () => {
-  try {
-    // 检查系统中是否有FFmpeg
-    const { spawn } = require('child_process')
-    return new Promise((resolve, reject) => {
-      const ffmpeg = spawn('ffmpeg', ['-version'])
-      ffmpeg.on('close', (code) => {
-        if (code === 0) {
-          resolve('ffmpeg') // 系统PATH中有ffmpeg
-        } else {
-          reject(new Error('FFmpeg not found in system PATH'))
-        }
-      })
-      ffmpeg.on('error', () => {
-        reject(new Error('FFmpeg not found'))
-      })
-    })
-  } catch (error) {
-    throw new Error('FFmpeg initialization failed'+error)
-  }
-})
-
-// 获取视频信息
-ipcMain.handle('get-video-info', async (event, videoPath) => {
-    const { spawn } = require('child_process')
-    return new Promise((resolve, reject) => {
-      const ffprobe = spawn('ffprobe', [
-        '-v', 'quiet',
-        '-print_format', 'json',
-        '-show_format',
-        '-show_streams',
-        videoPath
-      ])
-
-      let output = ''
-      ffprobe.stdout.on('data', (data) => {
-        output += data.toString()
-      })
-
-      ffprobe.on('close', (code) => {
-        if (code === 0) {
-          try {
-            const info = JSON.parse(output)
-            const videoStream = info.streams.find(s => s.codec_type === 'video')
-            const audioStream = info.streams.find(s => s.codec_type === 'audio')
-
-            if (videoStream) {
-              const frameRate = eval(videoStream.r_frame_rate) || 30
-              resolve({
-                duration: parseFloat(info.format.duration),
-                frameRate: frameRate,
-                width: videoStream.width,
-                height: videoStream.height,
-                hasAudio: !!audioStream
-              })
-            } else {
-              reject(new Error('No video stream found'))
-            }
-          } catch (parseError) {
-            reject(new Error('Failed to parse video info'+parseError))
-          }
-        } else {
-          reject(new Error('FFprobe failed'))
-        }
-      })
-
-      ffprobe.on('error', (error) => {
-        reject(error)
-      })
-    })
-})
-
-// 提取视频帧
-ipcMain.handle('extract-video-frame', async (event, { videoPath, timestamp, format = 'png' }) => {
-    const { spawn } = require('child_process')
-    const tempDir = path.join(app.getPath('temp'), 'moonshine-frames')
-
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true })
-    }
-
-    const outputPath = path.join(tempDir, `frame_${Date.now()}.${format}`)
-
-    return new Promise((resolve, reject) => {
-      const ffmpeg = spawn('ffmpeg', [
-        '-i', videoPath,
-        '-ss', timestamp.toString(),
-        '-vframes', '1',
-        '-f', 'image2',
-        '-y',
-        outputPath
-      ])
-
-      ffmpeg.on('close', (code) => {
-        if (code === 0 && fs.existsSync(outputPath)) {
-          try {
-            const frameData = fs.readFileSync(outputPath, 'base64')
-            // 清理临时文件
-            fs.unlinkSync(outputPath)
-            resolve(frameData)
-          } catch (readError) {
-            reject(new Error('Failed to read extracted frame'+readError))
-          }
-        } else {
-          reject(new Error('Frame extraction failed'))
-        }
-      })
-
-      ffmpeg.on('error', (error) => {
-        reject(error)
-      })
-    })
-})
-
-// 批量提取所有帧
-ipcMain.handle('extract-all-frames', async (event, { videoPath, outputDir, format = 'png' }) => {
-    const { spawn } = require('child_process')
-
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true })
-    }
-
-    const framePattern = path.join(outputDir, `frame_%06d.${format}`)
-
-    return new Promise((resolve, reject) => {
-      const ffmpeg = spawn('ffmpeg', [
-        '-i', videoPath,
-        '-vf', 'fps=fps=source',
-        '-y',
-        framePattern
-      ])
-
-      ffmpeg.on('close', (code) => {
-        if (code === 0) {
-          const frames = fs.readdirSync(outputDir)
-            .filter(f => f.startsWith('frame_'))
-            .map(f => path.join(outputDir, f))
-          resolve({ frames, count: frames.length })
-        } else {
-          reject(new Error('Batch frame extraction failed'))
-        }
-      })
-
-      ffmpeg.on('error', (error) => {
-        reject(error)
-      })
-    })
-})
-
-// 合成视频
-ipcMain.handle('compose-video', async (event, options) => {
-    const { spawn } = require('child_process')
-    const { framesDir, outputPath, frameRate, width, height, quality, preserveAudio, originalVideoPath } = options
-
-    const framePattern = path.join(framesDir, 'frame_%06d.png')
-
-    let ffmpegArgs = [
-      '-framerate', frameRate.toString(),
-      '-i', framePattern,
-      '-c:v', 'libx264',
-      '-crf', quality.toString(),
-      '-pix_fmt', 'yuv420p'
-    ]
-
-    if (preserveAudio && originalVideoPath) {
-      ffmpegArgs.push('-i', originalVideoPath, '-c:a', 'copy', '-map', '0:v:0', '-map', '1:a:0')
-    }
-
-    ffmpegArgs.push('-y', outputPath)
-
-    return new Promise((resolve, reject) => {
-      const ffmpeg = spawn('ffmpeg', ffmpegArgs)
-
-      ffmpeg.on('close', (code) => {
-        if (code === 0) {
-          resolve({ outputPath, success: true })
-        } else {
-          reject(new Error('Video composition failed'))
-        }
-      })
-
-      ffmpeg.on('error', (error) => {
-        reject(error)
-      })
-    })
-})
-
+});
 // 清理临时文件
-ipcMain.handle('cleanup-temp-files', async (event, tempDir) => {
+ipcMain.handle("cleanup-temp-files", async (event, tempDir) => {
   try {
     if (fs.existsSync(tempDir)) {
-      const files = fs.readdirSync(tempDir)
+      const files = fs.readdirSync(tempDir);
       for (const file of files) {
-        const filePath = path.join(tempDir, file)
-        fs.unlinkSync(filePath)
+        const filePath = path.join(tempDir, file);
+        fs.unlinkSync(filePath);
       }
-      fs.rmdirSync(tempDir)
+      fs.rmdirSync(tempDir);
     }
   } catch (error) {
-    console.error('清理临时文件失败:', error)
+    console.error("清理临时文件失败:", error);
   }
-})
+});
 // 获取文件MIME类型的辅助函数
 function getMimeType(filePath) {
   const ext = path.extname(filePath).toLowerCase();
@@ -1758,8 +1573,8 @@ async function createWindow() {
    */
   mainWindow = new BrowserWindow({
     icon: path.resolve(currentDir, "icons/icon.png"), // tray icon
-    width: 1000,
-    height: 600,
+    width: 1080,
+    height: 720,
     useContentSize: true,
     webPreferences: {
       contextIsolation: true,
@@ -1843,8 +1658,9 @@ async function createWindow() {
           "default-src 'self' data:; " +
             "script-src 'self' 'unsafe-inline'; " +
             "style-src 'self' 'unsafe-inline'; " +
+            "worker-src 'self' blob:; " +
             "img-src 'self' data: blob: atom:; " +
-          "media-src 'self' data: blob: atom:; " +
+            "media-src 'self' data: blob: atom:; " +
             "font-src 'self'; " +
             "connect-src 'self' http://localhost:* http://127.0.0.1:* data:; " +
             "object-src 'none';",
@@ -1875,7 +1691,7 @@ async function createWindow() {
 
 app.whenReady().then(() => {
   // 注册atom协议用于本地文件访问
-  protocol.registerFileProtocol('atom', (request, callback) => {
+  protocol.registerFileProtocol("atom", (request, callback) => {
     try {
       let url = request.url.substr(7); // 移除 'atom://' 前缀
 
@@ -1883,23 +1699,27 @@ app.whenReady().then(() => {
       url = decodeURIComponent(url);
 
       // 修复Windows路径格式：添加冒号
-      if (process.platform === 'win32' && url.match(/^[A-Za-z]\//) && !url.includes(':')) {
-        url = url.charAt(0) + ':' + url.slice(1);
+      if (
+        process.platform === "win32" &&
+        url.match(/^[A-Za-z]\//) &&
+        !url.includes(":")
+      ) {
+        url = url.charAt(0) + ":" + url.slice(1);
       }
 
       const filePath = path.normalize(url);
 
-      console.log('尝试访问文件:', filePath);
+      console.log("尝试访问文件:", filePath);
 
       // 安全检查：确保文件存在
       if (fs.existsSync(filePath)) {
         callback({ path: filePath });
       } else {
-        console.error('文件不存在:', filePath);
+        console.error("文件不存在:", filePath);
         callback({ error: -6 }); // FILE_NOT_FOUND
       }
     } catch (error) {
-      console.error('协议处理错误:', error);
+      console.error("协议处理错误:", error);
       callback({ error: -2 }); // GENERIC_FAILURE
     }
   });

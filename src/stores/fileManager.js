@@ -80,7 +80,7 @@ export const useFileManagerStore = defineStore("fileManager", {
     },
 
     // 添加文件并初始化
-    async addFile(file) {
+    async addFile(file, progressCallback = null) {
       const fileId = uuidv4();
       const configStore = useConfigStore();
 
@@ -100,9 +100,13 @@ export const useFileManagerStore = defineStore("fileManager", {
             ? `atom://${file.path.replace(/\\/g, "/")}`
             : `file://${file.path}`,
         };
+        // 路径模式下模拟进度完成
+        if (progressCallback) {
+          progressCallback(1.0);
+        }
       } else {
-        // base64模式：转换为base64
-        const base64 = await this.fileToBase64(file);
+        // base64模式：转换为base64，传递进度回调
+        const base64 = await this.fileToBase64(file, progressCallback);
         imageData = {
           type: "base64",
           data: base64.split(",")[1], // 去掉data:image前缀
@@ -179,11 +183,13 @@ export const useFileManagerStore = defineStore("fileManager", {
         !resultData.startsWith("data:")
       ) {
         // 路径模式的结果
-        const normalizedPath = resultData.replace(/\\/g, '/');
+        const normalizedPath = resultData.replace(/\\/g, "/");
         historyItem = {
           type: "path",
           data: resultData,
-          displayUrl: window.electron ? `atom://${normalizedPath}` : `file://${resultData}`,
+          displayUrl: window.electron
+            ? `atom://${normalizedPath}`
+            : `file://${resultData}`,
           timestamp: new Date().toISOString(),
         };
       } else {
@@ -287,11 +293,31 @@ export const useFileManagerStore = defineStore("fileManager", {
     },
 
     // 工具方法：文件转base64
-    fileToBase64(file) {
+    fileToBase64(file, progressCallback = null) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
+
+        // 如果提供了进度回调，监听progress事件
+        if (progressCallback && typeof progressCallback === "function") {
+          reader.onprogress = (event) => {
+            if (event.lengthComputable) {
+              const progress = event.loaded / event.total;
+              progressCallback(progress);
+            }
+          };
+
+          // 开始时调用一次进度回调
+          progressCallback(0);
+        }
+
         reader.readAsDataURL(file);
-        reader.onload = () => resolve(reader.result);
+        reader.onload = () => {
+          // 完成时确保进度为100%
+          if (progressCallback) {
+            progressCallback(1.0);
+          }
+          resolve(reader.result);
+        };
         reader.onerror = (error) => reject(error);
       });
     },
@@ -363,13 +389,14 @@ export const useFileManagerStore = defineStore("fileManager", {
         // 统一使用正斜杠格式进行路径拼接
         if (window.electron) {
           // 在 Electron 环境中，先使用 path.join 然后标准化为正斜杠
-          const joinedPath = window.electron.path?.join(tempPath, imageFolderName) ||
+          const joinedPath =
+            window.electron.path?.join(tempPath, imageFolderName) ||
             `${tempPath}${window.electron.path?.sep || "/"}${imageFolderName}`;
           // 将所有反斜杠替换为正斜杠，确保路径格式统一
-          fullTempPath = joinedPath.replace(/\\/g, '/');
+          fullTempPath = joinedPath.replace(/\\/g, "/");
         } else {
           // 在浏览器环境中直接使用正斜杠拼接
-          const normalizedTempPath = tempPath.replace(/\\/g, '/');
+          const normalizedTempPath = tempPath.replace(/\\/g, "/");
           fullTempPath = `${normalizedTempPath}/${imageFolderName}`;
         }
       }

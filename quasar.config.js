@@ -52,10 +52,8 @@ export default defineConfig((/* ctx */) => {
       // minify: false,
       // polyfillModulePreload: true,
       // distDir
-
-      // extendViteConf (viteConf) {},
       // viteVuePluginOptions: {},
-
+      // extendViteConf (viteConf) {},
       vitePlugins: [
         [
           "vite-plugin-checker",
@@ -115,15 +113,15 @@ export default defineConfig((/* ctx */) => {
 
     // https://v2.quasar.dev/quasar-cli-vite/quasar-config-file#sourcefiles
     sourceFiles: {
-    //   rootComponent: 'src/App.vue',
-    //   router: 'src/router/index',
-    //   store: 'src/store/index',
-    //   pwaRegisterServiceWorker: 'src-pwa/register-service-worker',
-    //   pwaServiceWorker: 'src-pwa/custom-service-worker',
-    //   pwaManifestFile: 'src-pwa/manifest.json',
-      electronMain: 'src-electron/electron-main',
-      electronPreload: 'src-electron/electron-preload'
-    //   bexManifestFile: 'src-bex/manifest.json
+      //   rootComponent: 'src/App.vue',
+      //   router: 'src/router/index',
+      //   store: 'src/store/index',
+      //   pwaRegisterServiceWorker: 'src-pwa/register-service-worker',
+      //   pwaServiceWorker: 'src-pwa/custom-service-worker',
+      //   pwaManifestFile: 'src-pwa/manifest.json',
+      electronMain: "src-electron/electron-main",
+      electronPreload: "src-electron/electron-preload",
+      //   bexManifestFile: 'src-bex/manifest.json
     },
 
     // https://v2.quasar.dev/quasar-cli-vite/developing-ssr/configuring-ssr
@@ -220,14 +218,14 @@ export default defineConfig((/* ctx */) => {
           FileDescription: "Moonshine 图像处理客户端",
           OriginalFilename: "Moonshine-Image.exe",
           ProductName: "Moonshine-Image",
-          InternalName: "Moonshine-Image"
+          InternalName: "Moonshine-Image",
         },
 
         // 下载配置 - 解决网络问题的关键
         download: {
-          mirrorOptions:{
-            mirror: "https://npmmirror.com/mirrors/electron/"
-          }
+          mirrorOptions: {
+            mirror: "https://npmmirror.com/mirrors/electron/",
+          },
         },
 
         // 忽略的文件
@@ -237,11 +235,9 @@ export default defineConfig((/* ctx */) => {
           "/node_modules($|/)",
           "/src($|/)",
           "/dist/spa($|/)",
-          "/iopaint-change($|/)"
+          "/iopaint-change($|/)",
         ],
-        extraResource: [
-          "public"
-        ]
+        extraResource: ["public"],
       },
 
       builder: {
