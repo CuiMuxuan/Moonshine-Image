@@ -203,6 +203,43 @@
                 :min="1"
                 :max="500"
               />
+
+              <!-- 图片处理方式选择 -->
+              <div class="row items-center q-gutter-md">
+                <div class="col-4">
+                  <q-item-label class="text-subtitle2"
+                    >图片处理方式</q-item-label
+                  >
+                  <q-item-label caption>
+                    选择图片处理的内存使用策略
+                  </q-item-label>
+                </div>
+                <div class="col">
+                  <q-select
+                    v-model="localConfig.advanced.imageProcessingMethod"
+                    :options="imageProcessingOptions"
+                    emit-value
+                    map-options
+                    outlined
+                    dense
+                    :disable="!canChangeImageProcessingMethod"
+                  >
+                    <template v-slot:hint>
+                      <div class="text-caption">
+                        {{ getImageProcessingHint() }}
+                      </div>
+                    </template>
+                  </q-select>
+                  <!-- 添加禁用提示 -->
+                  <div
+                    v-if="!canChangeImageProcessingMethod"
+                    class="text-caption text-orange q-mt-xs"
+                  >
+                    <q-icon name="warning" size="xs" class="q-mr-xs" />
+                    当前有文件正在处理中，无法更改图片处理方式
+                  </div>
+                </div>
+              </div>
             </div>
           </q-tab-panel>
         </q-tab-panels>
@@ -247,11 +284,25 @@ import { ref, computed, watch } from "vue";
 import { useQuasar } from "quasar";
 import { useConfigStore } from "src/stores/config";
 import { useAppStateStore } from "src/stores/appState";
+import { useFileManagerStore } from "src/stores/fileManager";
 
 const $q = useQuasar();
 const configStore = useConfigStore();
 const appStateStore = useAppStateStore();
+const fileManagerStore = useFileManagerStore();
 
+const imageProcessingOptions = [
+  {
+    label: "Base64编码 (默认)",
+    value: "base64",
+    description: "将图片转换为Base64编码传输，兼容性好但内存占用较高",
+  },
+  {
+    label: "文件路径 (节省内存)",
+    value: "path",
+    description: "直接使用文件路径处理，大幅减少内存占用，适合大文件",
+  },
+];
 const props = defineProps({
   modelValue: {
     type: Boolean,
@@ -266,6 +317,10 @@ const showDialog = computed({
   set: (val) => emit("update:modelValue", val),
 });
 
+// 检查是否可以更改图片处理方式
+const canChangeImageProcessingMethod = computed(() => {
+  return fileManagerStore.files.length === 0;
+});
 const activeTab = ref("general");
 const saving = ref(false);
 const showConfirmDialog = ref(false);
@@ -282,6 +337,12 @@ const localConfig = ref({
 // 验证状态
 const portError = ref(false);
 const portErrorMessage = ref("");
+
+const getImageProcessingHint = () => {
+  const method = localConfig.value.advanced?.imageProcessingMethod || "base64";
+  const option = imageProcessingOptions.find((opt) => opt.value === method);
+  return option ? option.description : "";
+};
 
 // 监听配置变化
 watch(
@@ -453,6 +514,7 @@ const doSaveSettings = async () => {
   try {
     const serializableConfig = JSON.parse(JSON.stringify(localConfig.value));
     console.log("准备保存的配置:", serializableConfig);
+
     // 先保存到 Electron 配置文件
     const electronResult = await window.electron.ipcRenderer.invoke(
       "save-app-config",
@@ -467,6 +529,19 @@ const doSaveSettings = async () => {
     // 然后更新 Pinia store
     const storeResult = await configStore.saveConfig(localConfig.value);
     if (storeResult.success) {
+      // 同步fileManager的processingConfig
+      if (localConfig.value.advanced?.imageProcessingMethod) {
+        const processingMethod =
+        localConfig.value.advanced.imageProcessingMethod;
+        fileManagerStore.processingConfig.imageType = processingMethod;
+        fileManagerStore.processingConfig.responseType = processingMethod;
+
+        console.log("已同步fileManager处理配置:", {
+          imageType: processingMethod,
+          responseType: processingMethod,
+        });
+      }
+
       $q.notify({
         type: "positive",
         message: "设置保存成功",

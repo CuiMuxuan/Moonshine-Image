@@ -26,7 +26,6 @@
         :color="currentRoute === 'video' ? 'white' : 'primary'"
         :text-color="currentRoute === 'video' ? 'primary' : 'white'"
         class="nav-btn"
-        disable
         @click="handleRouteChange('video')"
       >
         <q-icon name="videocam" class="nav-icon" />

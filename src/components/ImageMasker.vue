@@ -133,9 +133,11 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch, inject, nextTick } from "vue";
 import { useEditorStore } from "../stores/editor";
+import { useFileManagerStore } from "../stores/fileManager";
 import { useEventListener } from "@vueuse/core";
 
 const editor = inject("image-editor", { value: null });
+const fileManagerStore = useFileManagerStore();
 const props = defineProps({
   scale: {
     type: Number,
@@ -215,7 +217,20 @@ const initCanvas = () => {
         ctx.value.clearRect(0, 0, canvas.width, canvas.height);
         saveInitialState();
       };
-      img.src = props.mask.data;
+      // 根据mask类型设置图片源
+      if (props.mask.type === 'path' && props.mask.displayUrl) {
+        // 文件路径模式，使用displayUrl
+        img.src = props.mask.displayUrl;
+      } else if (props.mask.type === 'base64') {
+        // base64模式
+        const base64Data = props.mask.data.startsWith('data:')
+          ? props.mask.data
+          : `data:image/png;base64,${props.mask.data}`;
+        img.src = base64Data;
+      } else {
+        // 兼容旧格式
+        img.src = props.mask.data;
+      }
       return; // 异步加载，提前返回
     } else {
       // 如果没有有效的蒙版数据，创建空白蒙版
@@ -233,7 +248,7 @@ const initCanvas = () => {
 const toggleMaskVisibility = (visible) => {
   maskVisible.value = visible;
 };
-// 提取保存初始状态的逻辑为单独函数
+// 保存初始状态
 const saveInitialState = () => {
   const canvas = maskCanvas.value;
   if (!canvas || !ctx.value || canvas.width <= 0 || canvas.height <= 0) return;
@@ -586,13 +601,19 @@ const emitMask = throttle(() => {
   // 使用toDataURL代替getImageData，减少数据量
   const dataUrl = maskCanvas.value.toDataURL("image/png", 0.8); // 使用压缩率0.8
 
+  // 更新fileManager store中的mask
+  if (fileManagerStore.currentFileId) {
+    fileManagerStore.updateFileMask(fileManagerStore.currentFileId, dataUrl);
+  }
+
   emit("update:mask", {
     data: dataUrl,
     width: maskCanvas.value.width,
     height: maskCanvas.value.height,
   });
 }, 100);
-// 添加updateMask方法，供外部调用
+
+// updateMask方法，供外部调用
 const updateMask = (newMask) => {
   if (!ctx.value || !maskCanvas.value) return;
 
@@ -809,7 +830,14 @@ watch(
 watch(
   () => props.mask,
   (newMask) => {
-    if (!props.show || !ctx.value || !newMask) return;
+    if (!props.show || !ctx.value) return;
+
+    // 如果newMask为null，清空画布
+    if (!newMask) {
+      ctx.value.clearRect(0, 0, maskCanvas.value.width, maskCanvas.value.height);
+      saveState();
+      return;
+    }
 
     if (newMask instanceof ImageData) {
       ctx.value.putImageData(newMask, 0, 0);
@@ -832,7 +860,7 @@ watch(
         );
         saveState();
       };
-      img.src = newMask.data;
+      img.src = newMask.displayUrl;
     }
   }
 );

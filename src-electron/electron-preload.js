@@ -27,10 +27,12 @@
  *   }
  * }
  */
-import { contextBridge, ipcRenderer } from 'electron';
+const { contextBridge, ipcRenderer } = require("electron");
+const fs = require('fs').promises
+const path = require('path')
 
 // 暴露 Electron API 给渲染进程
-contextBridge.exposeInMainWorld('electron', {
+contextBridge.exposeInMainWorld("electron", {
   ipcRenderer: {
     invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
     send: (channel, ...args) => ipcRenderer.send(channel, ...args),
@@ -38,35 +40,62 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.on(channel, listener);
       return () => ipcRenderer.removeListener(channel, listener);
     },
-    removeListener: (channel, listener) => ipcRenderer.removeListener(channel, listener),
+    removeListener: (channel, listener) =>
+      ipcRenderer.removeListener(channel, listener),
     // 保存应用配置
-    saveAppConfig: (configData) => ipcRenderer.invoke('save-app-config', configData),
+    saveAppConfig: (configData) =>
+      ipcRenderer.invoke("save-app-config", configData),
     // 获取应用配置
-    getAppConfig: () => ipcRenderer.invoke('get-app-config'),
+    getAppConfig: () => ipcRenderer.invoke("get-app-config"),
     // 后端管理相关 API
-    checkPython: () => ipcRenderer.invoke('check-python'),
-    checkProject: () => ipcRenderer.invoke('check-project'),
-    checkVenv: () => ipcRenderer.invoke('check-venv'),
-    checkDependencies: () => ipcRenderer.invoke('check-dependencies'),
-    installPython: () => ipcRenderer.invoke('install-python'),
-    setProjectPath: (path) => ipcRenderer.invoke('set-project-path', path),
-    createVenv: () => ipcRenderer.invoke('create-venv'),
-    installDependencies: () => ipcRenderer.invoke('install-dependencies'),
-    startBackendService: (config) => ipcRenderer.invoke('start-backend-service', config),
-    stopBackendService: () => ipcRenderer.invoke('stop-backend-service'),
-    executeCommand: (options) => ipcRenderer.invoke('execute-command', options)
+    checkPython: () => ipcRenderer.invoke("check-python"),
+    checkProject: () => ipcRenderer.invoke("check-project"),
+    checkVenv: () => ipcRenderer.invoke("check-venv"),
+    checkDependencies: () => ipcRenderer.invoke("check-dependencies"),
+    installPython: () => ipcRenderer.invoke("install-python"),
+    setProjectPath: (path) => ipcRenderer.invoke("set-project-path", path),
+    createVenv: () => ipcRenderer.invoke("create-venv"),
+    installDependencies: () => ipcRenderer.invoke("install-dependencies"),
+    startBackendService: (config) =>
+      ipcRenderer.invoke("start-backend-service", config),
+    stopBackendService: () => ipcRenderer.invoke("stop-backend-service"),
+    executeCommand: (options) => ipcRenderer.invoke("execute-command", options),
+    copyFile: async (src, dest) => {
+      return await fs.copyFile(src, dest);
+    },
+
+    readdir: async (dirPath) => {
+      return await fs.readdir(dirPath);
+    },
+
+    writeFile: async (filePath, data) => {
+      return await fs.writeFile(filePath, data);
+    },
+
+    writeFileBase64: async (filePath, base64Content) => {
+      const buffer = Buffer.from(base64Content, "base64");
+      return await fs.writeFile(filePath, buffer);
+    },
+
+    joinPath: (...paths) => {
+      return path.join(...paths);
+    },
+
+    saveFile: async (options) => {
+      return await ipcRenderer.invoke("save-file", options);
+    },
   },
   // 获取资源路径的方法
   getResourcesPath: () => {
     try {
       // 在预加载脚本中，我们无法直接访问 app 对象
       // 使用 ipcRenderer 向主进程请求资源路径
-      return ipcRenderer.invoke('get-resources-path');
+      return ipcRenderer.invoke("get-resources-path");
     } catch (error) {
-      console.error('获取资源路径失败:', error);
-      return './resources';
+      console.error("获取资源路径失败:", error);
+      return "./resources";
     }
   },
   // 打开外部链接
-  openExternal: (url) => ipcRenderer.invoke('open-external-link', url)
+  openExternal: (url) => ipcRenderer.invoke("open-external-link", url),
 });

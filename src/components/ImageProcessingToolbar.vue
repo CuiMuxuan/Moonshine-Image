@@ -68,7 +68,6 @@
           :accept="fileAccept"
           :multiple="true"
           label="选择文件"
-          icon="attach_file"
           color="primary"
           class="full-width"
           @rejected="$emit('rejected-files', $event)"

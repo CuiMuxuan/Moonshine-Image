@@ -23,6 +23,7 @@ export class ConfigManager {
       maxConcurrentTasks: 3,
       enableDebugMode: false,
       logLevel: "info",
+      imageProcessingMethod: "base64",
     },
     ui: {
       theme: "auto",
@@ -30,6 +31,23 @@ export class ConfigManager {
       confirmBeforeExit: true,
       autoSaveInterval: 30000,
     },
+    video: {
+      // 视频处理配置
+      maxFrameCount: 10000,           // 最大帧数限制
+      frameExtractionFormat: "png",   // 帧提取格式
+      defaultFrameRate: 30,           // 默认帧率
+      maxKeyframes: 100,              // 最大关键帧数
+      autoNextFrameInterval: 0.1,     // 自动下一帧间隔（秒）
+      tempFramesPath: "",             // 临时帧存储路径
+      supportedFormats: ["mp4", "mov", "avi", "mkv", "wmv"],
+      // 性能优化配置
+      maxConcurrentFrameProcessing: 4, // 最大并发帧处理数
+      enableFrameSkipping: true,       // 启用帧跳过优化
+      memoryOptimization: true,        // 内存优化模式
+      // 自动保存配置
+      autoSaveInterval: 30,            // 自动保存间隔（秒）
+      maxDraftRetention: 7,            // 草稿保留天数
+    }
   };
 
   static validateConfig(config) {
@@ -81,6 +99,11 @@ export class ConfigManager {
       }
     });
 
+    // 验证图片处理方式
+    if (config.advanced?.imageProcessingMethod &&
+        !["base64", "path"].includes(config.advanced.imageProcessingMethod)) {
+      errors.push("图片处理方式必须是 base64 或 path");
+    }
     return errors;
   }
 

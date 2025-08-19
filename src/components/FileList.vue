@@ -2,10 +2,10 @@
   <q-list bordered>
     <q-item
       v-for="(file, index) in filteredFiles"
-      :key="file.name"
+      :key="file.id"
       clickable
-      :active="selectedFile?.name === file.name"
-      @click="$emit('update:selectedFile', file)"
+      :active="selectedFile?.id === file.id"
+      @click="$emit('update:selected-file', file)"
       active-class="bg-blue-1 text-primary"
     >
       <q-item-section avatar>
@@ -20,7 +20,7 @@
       <q-item-section avatar>
         <q-avatar square>
           <img
-            :src="fileUrls[file.name]"
+            :src="getFileDisplayUrl(file)"
             style="width: 100%; height: 100%; object-fit: cover"
             @error="(e) => (e.target.src = getFileIcon(file))"
           />
@@ -70,15 +70,15 @@ const props = defineProps({
   }
 });
 
-const emit = defineEmits(['update:selectedFile', 'remove-file', 'toggle-selection']);
+const emit = defineEmits(['update:selected-file', 'remove-file', 'toggle-selection']);
 
 const filteredFiles = computed(() =>
-  props.files.filter((f) => f.type.startsWith("image/"))
-);
+  props.files.filter((f) => f.type && f.type.startsWith("image/"))
+)
 
 const isFileSelected = (file) => {
-  return props.selectedFiles.some(f => f.name === file.name);
-};
+  return props.selectedFiles.some(f => f.id === file.id)
+}
 
 const toggleFileSelection = (file) => {
   emit('toggle-selection', file);
@@ -95,6 +95,18 @@ const getFileIcon = (file) => {
       application: "insert_drive_file",
     }[type] || "insert_drive_file"
   );
+};
+const getFileDisplayUrl = (file) => {
+  const url = props.fileUrls[file.name];
+
+  // 如果是文件路径且在Electron环境中
+  if (url && url.startsWith('file://') && window.electron) {
+    // 转换为Electron可访问的协议
+    const filePath = url.replace('file://', '');
+    return `atom://${filePath.replace(/\\/g, '/')}`;
+  }
+
+  return url;
 };
 </script>
 
