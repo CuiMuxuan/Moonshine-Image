@@ -2,6 +2,7 @@
 .thumbs.db
 node_modules
 
+/IOPaint
 # Quasar core related directories
 .quasar
 /dist
