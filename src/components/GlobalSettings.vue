@@ -527,6 +527,7 @@ const doSaveSettings = async () => {
     }
 
     // 然后更新 Pinia store
+    const previousPort = configStore.config.general.backendPort;
     const storeResult = await configStore.saveConfig(localConfig.value);
     if (storeResult.success) {
       // 同步fileManager的processingConfig
@@ -551,8 +552,7 @@ const doSaveSettings = async () => {
 
       // 只有在端口号改变时才需要重新加载页面
       const portChanged =
-        localConfig.value.general.backendPort !==
-        configStore.config.general.backendPort;
+        localConfig.value.general.backendPort !== previousPort;
 
       if (portChanged) {
         $q.notify({

@@ -1,7 +1,7 @@
 import random
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Literal, List
+from typing import Optional, Literal, List, Any
 
 from loguru import logger
 
@@ -512,12 +512,56 @@ class BatchInpaintItem(BaseModel):
     mask: str = Field(..., description="Mask data (base64 or file path)")
 
 class BatchInpaintRequest(BaseModel):
-    data: List[BatchInpaintItem] = Field(..., description="List of batch inpaint items")
-    image_type: Literal["base64", "path"] = Field("base64", description="Type of image input: base64 or path")
-    mask_type: Literal["base64", "path"] = Field("base64", description="Type of mask input: base64 or path")
+    data: List[BatchInpaintItem] = Field(
+        default_factory=list, description="List of batch inpaint items"
+    )
+    image_type: Literal["base64", "path"] = Field(
+        "base64", description="Type of image input: base64 or path"
+    )
+    mask_type: Literal["base64", "path"] = Field(
+        "base64", description="Type of mask input: base64 or path"
+    )
     temp_path: Optional[str] = Field(None, description="Temporary path for processing")
-    response_type: Literal["base64", "path"] = Field("base64", description="Type of response: base64 or path")
-    
+    response_type: Literal["base64", "path"] = Field(
+        "base64", description="Type of response: base64 or path"
+    )
+
+    # Legacy compatibility: old clients still send images/masks.
+    images: Optional[List[str]] = Field(
+        default=None, exclude=True, description="Legacy image list"
+    )
+    masks: Optional[List[str]] = Field(
+        default=None, exclude=True, description="Legacy mask list"
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_payload(cls, values: Any):
+        if not isinstance(values, dict):
+            return values
+
+        has_data = isinstance(values.get("data"), list) and len(values["data"]) > 0
+        if has_data:
+            return values
+
+        images = values.get("images")
+        masks = values.get("masks")
+        if images is None and masks is None:
+            return values
+        if not isinstance(images, list) or not isinstance(masks, list):
+            raise ValueError("images and masks must both be arrays")
+        if len(images) != len(masks):
+            raise ValueError("Number of images and masks must be the same")
+
+        values["data"] = [
+            {"id": f"legacy_{index}", "image": image, "mask": masks[index]}
+            for index, image in enumerate(images)
+        ]
+        values.setdefault("image_type", "base64")
+        values.setdefault("mask_type", "base64")
+        values.setdefault("response_type", "base64")
+        return values
+
     @model_validator(mode="after")
     def validate_field(cls, values: "BatchInpaintRequest"):
         if len(values.data) == 0:

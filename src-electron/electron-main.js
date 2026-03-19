@@ -59,6 +59,314 @@ const DEFAULT_CONFIG = {
 // 全局配置对象
 let globalConfig = { ...DEFAULT_CONFIG };
 
+const TARGET_PYTHON_VERSION = "3.11.5";
+const MIN_SYSTEM_PYTHON_MINOR = 10;
+const MAX_SYSTEM_PYTHON_MINOR = 12;
+
+function quoteArg(arg) {
+  return `"${String(arg).replace(/"/g, '\\"')}"`;
+}
+
+async function execCommand(command, options = {}) {
+  return execAsync(command, {
+    env: { ...process.env },
+    shell: true,
+    ...options,
+  });
+}
+
+function parsePythonVersion(text) {
+  const match = String(text || "").match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) {
+    return null;
+  }
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    text: `${match[1]}.${match[2]}.${match[3]}`,
+  };
+}
+
+function isSystemPythonVersionSupported(versionInfo) {
+  return (
+    versionInfo &&
+    versionInfo.major === 3 &&
+    versionInfo.minor >= MIN_SYSTEM_PYTHON_MINOR &&
+    versionInfo.minor <= MAX_SYSTEM_PYTHON_MINOR
+  );
+}
+
+function getDefaultBackendProjectPath() {
+  const appDir = path.dirname(app.getAppPath());
+  return path.join(appDir, "IOPaint");
+}
+
+function getVenvPythonPathByVenvPath(venvPath) {
+  return os.platform() === "win32"
+    ? path.join(venvPath, "Scripts", "python.exe")
+    : path.join(venvPath, "bin", "python");
+}
+
+function getProjectVenvInfo(projectPath) {
+  const candidates = [".venv", "venv"];
+  for (const candidateName of candidates) {
+    const candidatePath = path.join(projectPath, candidateName);
+    if (!fs.existsSync(candidatePath)) {
+      continue;
+    }
+
+    if (!fs.statSync(candidatePath).isDirectory()) {
+      return {
+        exists: true,
+        valid: false,
+        venvName: candidateName,
+        venvPath: candidatePath,
+        error: `${candidateName} 存在，但不是目录。`,
+      };
+    }
+
+    const pythonPath = getVenvPythonPathByVenvPath(candidatePath);
+    const pyvenvCfgPath = path.join(candidatePath, "pyvenv.cfg");
+    const isValid = fs.existsSync(pythonPath) && fs.existsSync(pyvenvCfgPath);
+    if (!isValid) {
+      return {
+        exists: true,
+        valid: false,
+        venvName: candidateName,
+        venvPath: candidatePath,
+        pythonPath,
+        error: `${candidateName} 存在，但不是有效的 Python 虚拟环境。`,
+      };
+    }
+
+    return {
+      exists: true,
+      valid: true,
+      venvName: candidateName,
+      venvPath: candidatePath,
+      pythonPath,
+    };
+  }
+
+  return {
+    exists: false,
+    valid: false,
+  };
+}
+
+async function getPythonVersionFromCommand(pythonCommand, options = {}) {
+  try {
+    const { stdout, stderr } = await execCommand(`${pythonCommand} --version`, {
+      timeout: 15000,
+      ...options,
+    });
+    const combined = `${stdout || ""}\n${stderr || ""}`.trim();
+    const version = parsePythonVersion(combined);
+    if (!version) {
+      return {
+        success: false,
+        error: `无法从输出中解析 Python 版本: ${combined}`,
+      };
+    }
+    return { success: true, version };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message || "Python 版本检测命令执行失败。",
+    };
+  }
+}
+
+async function detectSystemPython() {
+  const commandCandidates =
+    os.platform() === "win32"
+      ? ["python", "py -3", "py", "python3"]
+      : ["python3", "python"];
+
+  for (const cmd of commandCandidates) {
+    const versionResult = await getPythonVersionFromCommand(cmd);
+    if (versionResult.success) {
+      return {
+        success: true,
+        command: cmd,
+        version: versionResult.version,
+      };
+    }
+  }
+
+  if (os.platform() === "win32") {
+    const userName = os.userInfo().username;
+    const pathCandidates = [
+      "C:\\Python311\\python.exe",
+      "C:\\Python310\\python.exe",
+      `C:\\Users\\${userName}\\AppData\\Local\\Programs\\Python\\Python311\\python.exe`,
+      `C:\\Users\\${userName}\\AppData\\Local\\Programs\\Python\\Python310\\python.exe`,
+    ];
+
+    for (const pythonPath of pathCandidates) {
+      if (!fs.existsSync(pythonPath)) {
+        continue;
+      }
+      const versionResult = await getPythonVersionFromCommand(
+        quoteArg(pythonPath)
+      );
+      if (versionResult.success) {
+        return {
+          success: true,
+          command: quoteArg(pythonPath),
+          version: versionResult.version,
+          path: pythonPath,
+        };
+      }
+    }
+  }
+
+  return {
+    success: false,
+    error: "未检测到系统 Python 可执行文件。",
+  };
+}
+
+async function detectConda() {
+  try {
+    const { stdout, stderr } = await execCommand("conda --version", {
+      timeout: 15000,
+    });
+    const message = `${stdout || ""}\n${stderr || ""}`.trim();
+    if (!message) {
+      return { success: false, error: "Conda 命令返回为空。" };
+    }
+    return { success: true, version: message };
+  } catch (error) {
+    return { success: false, error: error.message || "未检测到 Conda。" };
+  }
+}
+
+async function createProjectVenvWithPython(projectPath, pythonCommand, sendLog) {
+  sendLog?.(`正在使用 ${pythonCommand} 创建项目虚拟环境...`, "info");
+  await execCommand(`${pythonCommand} -m venv .venv`, {
+    cwd: projectPath,
+    timeout: 180000,
+  });
+
+  const venvInfo = getProjectVenvInfo(projectPath);
+  if (!venvInfo.exists || !venvInfo.valid) {
+    throw new Error("虚拟环境创建结束，但 .venv 无效。");
+  }
+  return venvInfo;
+}
+
+async function bootstrapProjectVenvWithConda(projectPath, sendLog) {
+  const tempEnvName = `moonshine-image-bootstrap-${Date.now()}`;
+  let createdTempEnv = false;
+  try {
+    sendLog?.(
+      `正在创建临时 conda 环境 (${tempEnvName})，Python 版本 ${TARGET_PYTHON_VERSION}...`,
+      "info"
+    );
+    await execCommand(
+      `conda create -n ${tempEnvName} python=${TARGET_PYTHON_VERSION} -y`,
+      { timeout: 600000 }
+    );
+    createdTempEnv = true;
+
+    sendLog?.("正在通过 conda 的 Python 在后端项目中创建 .venv ...", "info");
+    await execCommand(`conda run -n ${tempEnvName} python -m venv .venv`, {
+      cwd: projectPath,
+      timeout: 600000,
+    });
+
+    const venvInfo = getProjectVenvInfo(projectPath);
+    if (!venvInfo.exists || !venvInfo.valid) {
+      throw new Error("Conda 引导创建完成，但 .venv 无效。");
+    }
+    return venvInfo;
+  } finally {
+    if (createdTempEnv) {
+      try {
+        sendLog?.(`正在删除临时 conda 环境 (${tempEnvName})...`, "info");
+        await execCommand(`conda env remove -n ${tempEnvName} -y`, {
+          timeout: 180000,
+        });
+      } catch (cleanupError) {
+        sendLog?.(
+          `删除临时 conda 环境失败: ${cleanupError.message}`,
+          "warning"
+        );
+      }
+    }
+  }
+}
+
+function buildManualVenvGuide(projectPath) {
+  const safeProjectPath = projectPath || "<后端项目路径>";
+  return {
+    downloadUrl:
+      "https://www.python.org/ftp/python/3.11.5/python-3.11.5-amd64.exe",
+    commands: [
+      `cd /d "${safeProjectPath}"`,
+      "py -3.11 -m venv .venv",
+      ".\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple",
+    ],
+  };
+}
+
+function validateProjectPath(inputPath) {
+  const defaultProjectPath = getDefaultBackendProjectPath();
+  const defaultProjectParentPath = path.dirname(defaultProjectPath);
+  let checkPath = inputPath;
+  if (!checkPath) {
+    const defaultPath = defaultProjectPath;
+    if (fs.existsSync(defaultPath)) {
+      checkPath = defaultPath;
+    } else {
+      return {
+        success: false,
+        code: "PROJECT_NOT_SELECTED",
+        error: "未检测到后端项目路径。",
+        defaultProjectPath,
+        defaultProjectParentPath,
+      };
+    }
+  }
+
+  if (!fs.existsSync(checkPath)) {
+    return {
+      success: false,
+      code: "PROJECT_PATH_NOT_FOUND",
+      error: `后端项目路径不存在: ${checkPath}`,
+      currentCheckPath: checkPath,
+      defaultProjectPath,
+      defaultProjectParentPath,
+    };
+  }
+
+  const requiredFiles = ["requirements.txt", "main.py"];
+  const requiredDirs = ["iopaint"];
+  const missingFiles = requiredFiles.filter(
+    (fileName) => !fs.existsSync(path.join(checkPath, fileName))
+  );
+  const missingDirs = requiredDirs.filter((dirName) => {
+    const dirPath = path.join(checkPath, dirName);
+    return !fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory();
+  });
+
+  if (missingFiles.length > 0 || missingDirs.length > 0) {
+    return {
+      success: false,
+      code: "PROJECT_STRUCTURE_INVALID",
+      error: "后端项目结构不完整。",
+      missingFiles,
+      missingDirs,
+      defaultProjectPath,
+      defaultProjectParentPath,
+    };
+  }
+
+  return { success: true, path: checkPath };
+}
+
 // 获取配置文件路径
 function getConfigPath() {
   const userDataPath = app.getPath("userData");
@@ -277,15 +585,17 @@ ipcMain.handle("load-app-state", async () => {
   }
 });
 
+function clearAppStateFile() {
+  const statePath = path.join(app.getPath("userData"), "app-state.json");
+  if (fs.existsSync(statePath)) {
+    fs.unlinkSync(statePath);
+  }
+}
+
 // IPC 处理程序 - 清除状态
 ipcMain.handle("clear-app-state", async () => {
   try {
-    const statePath = path.join(app.getPath("userData"), "app-state.json");
-
-    if (fs.existsSync(statePath)) {
-      fs.unlinkSync(statePath);
-    }
-
+    clearAppStateFile();
     return { success: true };
   } catch (error) {
     console.error("清除状态失败:", error);
@@ -304,7 +614,7 @@ ipcMain.handle("check-app-state-exists", async () => {
 });
 
 // IPC 处理程序 - 保存文件
-ipcMain.handle("save-file", async (event, { filePath, blob }) => {
+const saveFileHandler = async (event, { filePath, blob }) => {
   try {
     // 确保目录存在
     const directory = path.dirname(filePath);
@@ -330,35 +640,10 @@ ipcMain.handle("save-file", async (event, { filePath, blob }) => {
     console.error("保存文件失败:", error);
     throw error;
   }
-});
+};
+ipcMain.handle("save-file", saveFileHandler);
 // 添加别名处理程序，以提高兼容性
-ipcMain.handle("saveFile", async (event, { filePath, blob }) => {
-  try {
-    // 确保目录存在
-    const directory = path.dirname(filePath);
-    if (!fs.existsSync(directory)) {
-      fs.mkdirSync(directory, { recursive: true });
-    }
-
-    // 检查文件是否已存在
-    if (fs.existsSync(filePath)) {
-      // 如果文件已存在，添加时间戳避免覆盖
-      const fileExt = path.extname(filePath);
-      const baseName = path.basename(filePath, fileExt);
-      const dirName = path.dirname(filePath);
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      filePath = path.join(dirName, `${baseName}_${timestamp}${fileExt}`);
-    }
-
-    // 将 ArrayBuffer 写入文件
-    fs.writeFileSync(filePath, Buffer.from(blob));
-
-    return filePath;
-  } catch (error) {
-    console.error("保存文件失败:", error);
-    throw error;
-  }
-});
+ipcMain.handle("saveFile", saveFileHandler);
 // IPC 处理程序 - 选择目录
 ipcMain.handle("select-directory", async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
@@ -800,82 +1085,18 @@ ipcMain.handle("check-conda-dependencies", async () => {
   }
 });
 // IPC 处理程序 - 检查项目
+// IPC 婢跺嫮鎮婄粙瀣碍 - 濡偓閺屻儵銆嶉惄?
 ipcMain.handle("check-project", async (event, selectPath) => {
   try {
-    let checkPath = selectPath;
-    // 设置全局项目路径
-    global.projectPath = checkPath;
-
-    // 如果没有提供路径，使用默认逻辑
-    if (!checkPath) {
-      // 检查同级目录下的 IOPaint 文件夹
-      const appDir = path.dirname(app.getAppPath());
-      const iopaintPath = path.join(appDir, "IOPaint");
-      if (fs.existsSync(iopaintPath)) {
-        checkPath = iopaintPath;
-      } else {
-        return {
-          success: false,
-          error: "未找到 IOPaint 项目",
-        };
-      }
+    const result = validateProjectPath(selectPath || global.projectPath);
+    if (!result.success) {
+      return result;
     }
 
-    // 检查路径是否存在
-    if (!fs.existsSync(checkPath)) {
-      return {
-        success: false,
-        error: "项目路径不存在",
-      };
-    }
-
-    // 检查必要文件
-    const requiredFiles = ["requirements.txt", "main.py"];
-
-    const requiredDirs = ["iopaint"];
-
-    const missingFiles = [];
-    const missingDirs = [];
-
-    // 检查文件
-    for (const file of requiredFiles) {
-      const filePath = path.join(checkPath, file);
-      if (!fs.existsSync(filePath)) {
-        missingFiles.push(file);
-      }
-    }
-
-    // 检查目录
-    for (const dir of requiredDirs) {
-      const dirPath = path.join(checkPath, dir);
-      if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
-        missingDirs.push(dir);
-      }
-    }
-
-    if (missingFiles.length > 0 || missingDirs.length > 0) {
-      let errorMsg = "项目结构不完整：";
-      if (missingFiles.length > 0) {
-        errorMsg += `\n缺少文件: ${missingFiles.join(", ")}`;
-      }
-      if (missingDirs.length > 0) {
-        errorMsg += `\n缺少目录: ${missingDirs.join(", ")}`;
-      }
-
-      return {
-        success: false,
-        error: errorMsg,
-        missingFiles,
-        missingDirs,
-      };
-    }
-
-    // 设置全局项目路径
-    global.projectPath = checkPath;
-
+    global.projectPath = result.path;
     return {
       success: true,
-      path: checkPath,
+      path: result.path,
     };
   } catch (error) {
     return {
@@ -885,7 +1106,147 @@ ipcMain.handle("check-project", async (event, selectPath) => {
   }
 });
 
-// IPC 处理程序 - 设置项目路径
+ipcMain.handle("prepare-project-python", async (event, selectPath) => {
+  const sendLog = (message, type = "info") => {
+    event.sender.send("backend-output", { message, type });
+  };
+
+  try {
+    const projectResult = validateProjectPath(selectPath || global.projectPath);
+    if (!projectResult.success) {
+      return projectResult;
+    }
+
+    global.projectPath = projectResult.path;
+    const workingPath = projectResult.path;
+    sendLog(`后端项目路径：${workingPath}`, "info");
+
+    const existingVenv = getProjectVenvInfo(workingPath);
+    if (existingVenv.exists) {
+      if (!existingVenv.valid) {
+        const manualGuide = buildManualVenvGuide(workingPath);
+        return {
+          success: false,
+          code: "INVALID_PROJECT_VENV",
+          error:
+            "后端项目中存在虚拟环境目录，但不是有效虚拟环境，请手动处理。",
+          manualGuide,
+          venvPath: existingVenv.venvPath,
+          venvName: existingVenv.venvName,
+        };
+      }
+
+      const versionResult = await getPythonVersionFromCommand(
+        quoteArg(existingVenv.pythonPath)
+      );
+      return {
+        success: true,
+        path: workingPath,
+        pythonVersion: versionResult.success ? versionResult.version.text : "",
+        pythonSource: "项目虚拟环境",
+        venvPath: existingVenv.venvPath,
+        venvName: existingVenv.venvName,
+        pythonPath: existingVenv.pythonPath,
+      };
+    }
+
+    const systemPython = await detectSystemPython();
+    if (systemPython.success) {
+      if (!isSystemPythonVersionSupported(systemPython.version)) {
+        const manualGuide = buildManualVenvGuide(workingPath);
+        return {
+          success: false,
+          code: "SYSTEM_PYTHON_UNSUPPORTED",
+          error: `检测到系统 Python 版本 ${systemPython.version.text}。支持范围为 3.10.x 到 3.12.x，请手动在后端项目中创建 Python ${TARGET_PYTHON_VERSION} 的 .venv。`,
+          manualGuide,
+          detectedPythonVersion: systemPython.version.text,
+        };
+      }
+
+      const venvInfo = await createProjectVenvWithPython(
+        workingPath,
+        systemPython.command,
+        sendLog
+      );
+      const versionResult = await getPythonVersionFromCommand(
+        quoteArg(venvInfo.pythonPath)
+      );
+      return {
+        success: true,
+        path: workingPath,
+        pythonVersion: versionResult.success ? versionResult.version.text : "",
+        pythonSource: "系统 Python 创建的虚拟环境",
+        venvPath: venvInfo.venvPath,
+        venvName: venvInfo.venvName,
+        pythonPath: venvInfo.pythonPath,
+      };
+    }
+
+    const condaResult = await detectConda();
+    if (condaResult.success) {
+      const venvInfo = await bootstrapProjectVenvWithConda(workingPath, sendLog);
+      const versionResult = await getPythonVersionFromCommand(
+        quoteArg(venvInfo.pythonPath)
+      );
+      return {
+        success: true,
+        path: workingPath,
+        pythonVersion: versionResult.success ? versionResult.version.text : "",
+        pythonSource: "conda 引导创建的虚拟环境",
+        venvPath: venvInfo.venvPath,
+        venvName: venvInfo.venvName,
+        pythonPath: venvInfo.pythonPath,
+      };
+    }
+
+    sendLog(
+      `未检测到系统 Python 和 conda，正在尝试安装 Python ${TARGET_PYTHON_VERSION}...`,
+      "warning"
+    );
+    const installResult = await installPython3115(sendLog);
+    if (installResult.success) {
+      const detectedAfterInstall = await detectSystemPython();
+      if (
+        detectedAfterInstall.success &&
+        isSystemPythonVersionSupported(detectedAfterInstall.version)
+      ) {
+        const venvInfo = await createProjectVenvWithPython(
+          workingPath,
+          detectedAfterInstall.command,
+          sendLog
+        );
+        const versionResult = await getPythonVersionFromCommand(
+          quoteArg(venvInfo.pythonPath)
+        );
+        return {
+          success: true,
+          path: workingPath,
+          pythonVersion: versionResult.success ? versionResult.version.text : "",
+          pythonSource: "安装 Python 后创建的虚拟环境",
+          venvPath: venvInfo.venvPath,
+          venvName: venvInfo.venvName,
+          pythonPath: venvInfo.pythonPath,
+        };
+      }
+    }
+
+    const manualGuide = buildManualVenvGuide(workingPath);
+    return {
+      success: false,
+      code: "PYTHON_AUTO_SETUP_FAILED",
+      error: `自动准备 Python 环境失败。请手动安装 Python ${TARGET_PYTHON_VERSION}，并在后端项目中创建 .venv。`,
+      manualGuide,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      code: "PREPARE_PROJECT_PYTHON_FAILED",
+      error: error.message,
+    };
+  }
+});
+
+// IPC set project path
 ipcMain.handle("set-project-path", async (event, selectPath) => {
   try {
     if (fs.existsSync(selectPath)) {
@@ -894,7 +1255,7 @@ ipcMain.handle("set-project-path", async (event, selectPath) => {
     }
     return {
       success: false,
-      error: "路径不存在",
+      error: "后端项目路径不存在。",
     };
   } catch (error) {
     return {
@@ -903,17 +1264,20 @@ ipcMain.handle("set-project-path", async (event, selectPath) => {
     };
   }
 });
-
-// IPC 处理程序 - 检查虚拟环境
 ipcMain.handle("check-venv", async () => {
   try {
     if (!global.projectPath) {
-      return { success: false, error: "项目路径未设置" };
+      return { success: false, error: "后端项目路径未设置。" };
     }
 
-    const venvPath = path.join(global.projectPath, "venv");
+    const venvInfo = getProjectVenvInfo(global.projectPath);
     return {
-      success: fs.existsSync(venvPath),
+      success: venvInfo.exists && venvInfo.valid,
+      exists: venvInfo.exists,
+      valid: venvInfo.valid,
+      venvPath: venvInfo.venvPath,
+      venvName: venvInfo.venvName,
+      error: venvInfo.valid ? undefined : venvInfo.error,
     };
   } catch (error) {
     return {
@@ -923,27 +1287,30 @@ ipcMain.handle("check-venv", async () => {
   }
 });
 
-// IPC 处理程序 - 检查依赖
+// IPC 婢跺嫮鎮婄粙瀣碍 - 濡偓閺屻儰绶风挧?
 ipcMain.handle("check-dependencies", async () => {
   try {
     if (!global.projectPath) {
-      return { success: false, error: "项目路径未设置" };
+      return { success: false, error: "后端项目路径未设置。" };
     }
 
-    const venvPath = path.join(global.projectPath, "venv");
-    const sitePackagesPath =
-      os.platform() === "win32"
-        ? path.join(venvPath, "Lib", "site-packages")
-        : path.join(venvPath, "lib", "python3.11", "site-packages");
-
-    if (fs.existsSync(sitePackagesPath)) {
-      const packages = fs.readdirSync(sitePackagesPath);
-      return {
-        success: packages.length > 200, // 简单判断依赖是否已安装
-      };
+    const venvInfo = getProjectVenvInfo(global.projectPath);
+    if (!venvInfo.exists || !venvInfo.valid) {
+      return { success: false };
     }
 
-    return { success: false };
+    try {
+      await execCommand(
+        `${quoteArg(venvInfo.pythonPath)} -c "import fastapi,uvicorn,numpy,PIL"`,
+        {
+          cwd: global.projectPath,
+          timeout: 30000,
+        }
+      );
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
   } catch (error) {
     return {
       success: false,
@@ -952,10 +1319,9 @@ ipcMain.handle("check-dependencies", async () => {
   }
 });
 
-// IPC 处理程序 - 安装 Python
-ipcMain.handle("install-python", async () => {
+// IPC 婢跺嫮鎮婄粙瀣碍 - 鐎瑰顥?Python
+async function installPython3115(sendLog) {
   try {
-    // Python 3.11.5 下载链接
     const pythonUrls = {
       win32: "https://www.python.org/ftp/python/3.11.5/python-3.11.5-amd64.exe",
       darwin:
@@ -967,19 +1333,18 @@ ipcMain.handle("install-python", async () => {
     if (!downloadUrl) {
       return {
         success: false,
-        error: "不支持的操作系统，请手动安装 Python 3.11.5",
+        error: `当前操作系统暂不支持自动安装，请手动安装 Python ${TARGET_PYTHON_VERSION}。`,
       };
     }
-    // 创建下载目录
+
     const downloadDir = path.join(os.tmpdir(), "python-installer");
     if (!fs.existsSync(downloadDir)) {
       fs.mkdirSync(downloadDir, { recursive: true });
     }
-
     const fileName = path.basename(downloadUrl);
     const filePath = path.join(downloadDir, fileName);
 
-    // 下载Python安装包
+    sendLog?.(`正在下载 Python 安装包: ${downloadUrl}`, "info");
     await new Promise((resolve, reject) => {
       const file = fs.createWriteStream(filePath);
       https
@@ -987,8 +1352,9 @@ ipcMain.handle("install-python", async () => {
           response.pipe(file);
           file.on("finish", () => {
             file.close();
-            // 发送下载路径到前端
-            mainWindow.webContents.send("python-install-path", filePath);
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send("python-install-path", filePath);
+            }
             resolve();
           });
         })
@@ -998,27 +1364,27 @@ ipcMain.handle("install-python", async () => {
         });
     });
 
-    // 执行安装
+    sendLog?.("Python 安装包下载完成，正在执行安装...", "info");
     if (platform === "win32") {
-      // Windows 静默安装
-      await execAsync(
-        `"${filePath}" /quiet InstallAllUsers=1 PrependPath=1 Include_test=0`
+      await execCommand(
+        `${quoteArg(filePath)} /quiet InstallAllUsers=1 PrependPath=1 Include_test=0`,
+        { timeout: 600000 }
       );
     } else if (platform === "darwin") {
-      // macOS 安装
-      await execAsync(`sudo installer -pkg "${filePath}" -target /`);
+      await execCommand(`sudo installer -pkg ${quoteArg(filePath)} -target /`, {
+        timeout: 600000,
+      });
     } else {
-      // Linux 编译安装（简化版）
       return {
         success: false,
-        error: "Linux系统请手动安装 Python 3.11.5",
+        error: `Linux 暂不支持自动安装，请手动安装 Python ${TARGET_PYTHON_VERSION}。`,
       };
     }
-    // 清理安装文件
+
     fs.unlink(filePath, () => {});
     return {
       success: true,
-      message: "Python 3.11.5 安装成功",
+      message: `Python ${TARGET_PYTHON_VERSION} 安装完成。`,
     };
   } catch (error) {
     return {
@@ -1026,73 +1392,72 @@ ipcMain.handle("install-python", async () => {
       error: error.message,
     };
   }
+}
+
+ipcMain.handle("install-python", async () => {
+  return installPython3115();
 });
 
-// IPC 处理程序 - 创建虚拟环境
+// IPC create venv
 ipcMain.handle("create-venv", async (event, projectPath) => {
+  const sendLog = (message, type = "info") => {
+    event.sender.send("backend-output", { message, type });
+  };
+
   try {
-    const workingPath = projectPath || global.projectPath;
-    if (!workingPath) {
-      return { success: false, error: "项目路径未设置" };
+    const projectResult = validateProjectPath(projectPath || global.projectPath);
+    if (!projectResult.success) {
+      return projectResult;
     }
 
-    // 获取系统环境变量
-    const systemEnv = { ...process.env };
-
-    // 发送开始消息
-    mainWindow.webContents.send("backend-output", {
-      type: "info",
-      message: "开始创建虚拟环境...",
-    });
-
-    // 尝试多种 Python 命令
-    const pythonCommands =
-      os.platform() === "win32"
-        ? ["python", "py", "python3"]
-        : ["python", "python3"];
-    let success = false;
-    let lastError = null;
-
-    for (const cmd of pythonCommands) {
-      try {
-        await execAsync(`${cmd} -m venv ./venv`, {
-          cwd: workingPath,
-          env: systemEnv,
-          shell: true,
-          timeout: 60000,
-        });
-        success = true;
-        break;
-      } catch (error) {
-        lastError = error;
-        console.log(`使用 ${cmd} 创建虚拟环境失败:`, error.message);
-        continue;
+    global.projectPath = projectResult.path;
+    const workingPath = projectResult.path;
+    const venvInfo = getProjectVenvInfo(workingPath);
+    if (venvInfo.exists) {
+      if (!venvInfo.valid) {
+        return {
+          success: false,
+          code: "INVALID_PROJECT_VENV",
+          error:
+            "后端项目中存在虚拟环境目录，但不是有效虚拟环境，请手动处理。",
+          manualGuide: buildManualVenvGuide(workingPath),
+        };
       }
+      return {
+        success: true,
+        message: "项目虚拟环境已存在。",
+      };
     }
 
-    if (!success) {
-      throw lastError || new Error("所有 Python 命令都失败了");
+    const systemPython = await detectSystemPython();
+    if (!systemPython.success) {
+      return {
+        success: false,
+        code: "SYSTEM_PYTHON_NOT_FOUND",
+        error: "未检测到系统 Python。",
+      };
     }
 
-    // 发送成功消息
-    mainWindow.webContents.send("backend-output", {
-      type: "success",
-      message: "虚拟环境创建成功",
-    });
+    if (!isSystemPythonVersionSupported(systemPython.version)) {
+      return {
+        success: false,
+        code: "SYSTEM_PYTHON_UNSUPPORTED",
+        error: `检测到系统 Python 版本 ${systemPython.version.text}，请手动创建 Python ${TARGET_PYTHON_VERSION} 的 .venv。`,
+        manualGuide: buildManualVenvGuide(workingPath),
+      };
+    }
+
+    await createProjectVenvWithPython(workingPath, systemPython.command, sendLog);
     return { success: true };
   } catch (error) {
-    // 发送错误消息
-    mainWindow.webContents.send("backend-output", {
-      type: "error",
-      message: `虚拟环境创建失败: ${error.message}`,
-    });
     return {
       success: false,
       error: error.message,
     };
   }
 });
-// IPC 处理程序 - 创建 conda 虚拟环境
+
+// IPC create conda venv
 ipcMain.handle("create-conda-venv", async (event) => {
   const sendLog = (message, type = "info") => {
     event.sender.send("backend-output", { message, type });
@@ -1137,10 +1502,15 @@ ipcMain.handle("install-dependencies", async (event, projectPath) => {
       return { success: false, error: "项目路径未设置" };
     }
 
-    const venvPython =
-      os.platform() === "win32"
-        ? path.join(workingPath, "venv", "Scripts", "python.exe")
-        : path.join(workingPath, "venv", "bin", "python");
+    const venvInfo = getProjectVenvInfo(workingPath);
+    if (!venvInfo.exists || !venvInfo.valid) {
+      return {
+        success: false,
+        error: "项目虚拟环境缺失或无效，请先创建或修复 .venv。",
+      };
+    }
+
+    const venvPython = venvInfo.pythonPath;
     // const pipCommand = `"${venvPython}" -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`;
 
     // 发送开始消息
@@ -1277,10 +1647,15 @@ ipcMain.handle("start-backend-service", async (event, config) => {
       return { success: false, error: "项目路径未设置" };
     }
 
-    const venvPython =
-      os.platform() === "win32"
-        ? path.join(global.projectPath, "venv", "Scripts", "python.exe")
-        : path.join(global.projectPath, "venv", "bin", "python");
+    const venvInfo = getProjectVenvInfo(global.projectPath);
+    if (!venvInfo.exists || !venvInfo.valid) {
+      return {
+        success: false,
+        error: "项目虚拟环境缺失或无效，请先创建或修复 .venv。",
+      };
+    }
+
+    const venvPython = venvInfo.pythonPath;
     const args = [
       "main.py",
       "start",
@@ -1632,7 +2007,7 @@ async function createWindow() {
           {
             label: "清除状态",
             click: async () => {
-              await ipcMain.emit("clear-app-state");
+              clearAppStateFile();
               mainWindow.webContents.send("state-cleared");
             },
           },
@@ -1735,7 +2110,6 @@ app.on("before-quit", async (event) => {
         // 发送终止信号
         if (process.platform === "win32") {
           // Windows 使用 taskkill
-          const { spawn } = require("child_process");
           spawn("taskkill", ["/pid", backendProcess.pid, "/f", "/t"]);
         } else {
           // Unix-like 系统使用 SIGTERM
@@ -1771,7 +2145,6 @@ app.on("before-quit", async (event) => {
         if (backendProcess && !backendProcess.killed && backendProcess.pid) {
           console.log("强制终止后端进程");
           if (process.platform === "win32") {
-            const { spawn } = require("child_process");
             spawn("taskkill", ["/pid", backendProcess.pid, "/f", "/t"]);
           } else {
             backendProcess.kill("SIGKILL");
@@ -1795,7 +2168,6 @@ app.on("window-all-closed", () => {
   if (backendProcess && !backendProcess.killed) {
     try {
       if (process.platform === "win32") {
-        const { spawn } = require("child_process");
         spawn("taskkill", ["/pid", backendProcess.pid, "/f", "/t"]);
       } else {
         backendProcess.kill("SIGKILL");

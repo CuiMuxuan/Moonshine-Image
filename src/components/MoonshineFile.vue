@@ -63,6 +63,7 @@
       <!-- 文件数量指示器 -->
       <div
         v-if="fileManagerStore.files.length > 0"
+        ref="fileIndicatorRef"
         class="file-indicator"
         @mouseenter="handleMouseEnter"
         @mouseleave="handleMouseLeave"
@@ -86,8 +87,9 @@
 
         <!-- 悬浮文件列表 -->
         <q-card
-          v-show="showFileList"
+          v-show="showFileList && canShowFloatingList"
           class="file-list-popup bg-deep-purple-2"
+          :style="popupStyle"
           @mouseenter="handleMouseEnter"
           @mouseleave="handleMouseLeave"
           bordered
@@ -99,10 +101,7 @@
             </div>
             <q-separator class="q-mb-xs" />
             <q-scroll-area
-              :style="`height: ${Math.min(
-                fileManagerStore.files.length * 60,
-                300
-              )}px; max-height: 50vh;`"
+              :style="scrollAreaStyle"
               class="file-list-container"
               :thumb-style="thumbStyle"
               :bar-style="barStyle"
@@ -178,7 +177,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useQuasar } from "quasar";
 import { useFileManagerStore } from "src/stores/fileManager";
 
@@ -220,6 +219,14 @@ const emit = defineEmits(["file-added", "file-removed"]);
 
 const fileInput = ref(null);
 const showFileList = ref(false);
+const fileIndicatorRef = ref(null);
+const viewportWidth = ref(window.innerWidth);
+const viewportHeight = ref(window.innerHeight);
+const POPUP_MARGIN = 12;
+const POPUP_MAX_WIDTH = 560;
+const POPUP_MIN_WIDTH = 300;
+const POPUP_MIN_SCREEN_WIDTH = 560;
+const POPUP_MIN_SCREEN_HEIGHT = 420;
 // 上传进度相关状态
 const showUploadProgress = ref(false);
 const canCancelUpload = ref(true);
@@ -230,9 +237,102 @@ const uploadStatus = ref({
 });
 let hideTimeout = null;
 
+const canShowFloatingList = computed(() => {
+  return (
+    viewportWidth.value >= POPUP_MIN_SCREEN_WIDTH &&
+    viewportHeight.value >= POPUP_MIN_SCREEN_HEIGHT
+  );
+});
+
+const popupWidth = computed(() => {
+  const available = Math.max(0, viewportWidth.value - POPUP_MARGIN * 2);
+  const minWidth = Math.min(POPUP_MIN_WIDTH, available);
+  return Math.max(minWidth, Math.min(POPUP_MAX_WIDTH, available));
+});
+
+const popupMaxHeight = computed(() => {
+  return Math.max(160, Math.min(360, Math.floor(viewportHeight.value * 0.55)));
+});
+
+const popupEstimatedHeight = computed(() => {
+  const listHeight = Math.min(
+    fileManagerStore.files.length * 60,
+    popupMaxHeight.value
+  );
+  const estimated = listHeight + 64;
+  return Math.min(estimated, viewportHeight.value - POPUP_MARGIN * 2);
+});
+
+const popupStyle = computed(() => {
+  const width = popupWidth.value;
+  const height = popupEstimatedHeight.value;
+  const minWidth = Math.min(POPUP_MIN_WIDTH, width);
+
+  const baseStyle = {
+    width: `${width}px`,
+    minWidth: `${minWidth}px`,
+    maxWidth: `${width}px`,
+    left: `${POPUP_MARGIN}px`,
+    top: `${POPUP_MARGIN}px`,
+  };
+
+  const rect = fileIndicatorRef.value?.getBoundingClientRect();
+  if (!rect) {
+    return baseStyle;
+  }
+
+  let left = rect.right - width;
+  left = Math.max(
+    POPUP_MARGIN,
+    Math.min(left, viewportWidth.value - width - POPUP_MARGIN)
+  );
+
+  const canOpenUp = rect.top >= height + POPUP_MARGIN;
+  let top = canOpenUp ? rect.top - height - 8 : rect.bottom + 8;
+  top = Math.max(
+    POPUP_MARGIN,
+    Math.min(top, viewportHeight.value - height - POPUP_MARGIN)
+  );
+
+  return {
+    ...baseStyle,
+    left: `${Math.round(left)}px`,
+    top: `${Math.round(top)}px`,
+  };
+});
+
+const scrollAreaStyle = computed(() => {
+  const height = Math.min(
+    fileManagerStore.files.length * 60,
+    popupMaxHeight.value
+  );
+  return `height: ${height}px; max-height: ${popupMaxHeight.value}px;`;
+});
+
+const updateViewport = () => {
+  viewportWidth.value = window.innerWidth;
+  viewportHeight.value = window.innerHeight;
+};
+
 // 初始化处理配置
 onMounted(() => {
   fileManagerStore.initProcessingConfig();
+  updateViewport();
+  window.addEventListener("resize", updateViewport);
+});
+
+onUnmounted(() => {
+  window.removeEventListener("resize", updateViewport);
+  if (hideTimeout) {
+    clearTimeout(hideTimeout);
+    hideTimeout = null;
+  }
+});
+
+watch(canShowFloatingList, (canShow) => {
+  if (!canShow) {
+    showFileList.value = false;
+  }
 });
 // Quasar滚动条样式
 const thumbStyle = {
@@ -264,7 +364,14 @@ const handleMouseEnter = () => {
     clearTimeout(hideTimeout);
     hideTimeout = null;
   }
+  if (!canShowFloatingList.value) {
+    showFileList.value = false;
+    return;
+  }
   showFileList.value = true;
+  nextTick(() => {
+    updateViewport();
+  });
 };
 
 // 选择文件
@@ -618,17 +725,14 @@ defineExpose({
 }
 
 .file-list-popup {
-  position: absolute;
-  bottom: 100%;
-  right: 0;
-  min-width: 450px;
-  max-width: 50vw;
+  position: fixed;
   z-index: 1000;
   box-shadow: 0 8px 24px rgba(156, 39, 176, 0.3);
   border-radius: 12px;
   border: 2px solid rgba(156, 39, 176, 0.2);
   backdrop-filter: blur(10px);
   animation: slideUp 0.3s ease-out;
+  overflow: hidden;
 }
 
 @keyframes slideUp {

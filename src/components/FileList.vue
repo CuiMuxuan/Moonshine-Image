@@ -1,7 +1,7 @@
 <template>
   <q-list bordered>
     <q-item
-      v-for="(file, index) in filteredFiles"
+      v-for="file in filteredFiles"
       :key="file.id"
       clickable
       :active="selectedFile?.id === file.id"
@@ -41,7 +41,7 @@
           flat
           icon="delete"
           color="negative"
-          @click.stop="$emit('remove-file', index)"
+          @click.stop="$emit('remove-file', file.id)"
         />
       </q-item-section>
     </q-item>
@@ -97,11 +97,13 @@ const getFileIcon = (file) => {
   );
 };
 const getFileDisplayUrl = (file) => {
-  const url = props.fileUrls[file.name];
+  const history = Array.isArray(file?.history) ? file.history : [];
+  const latestImage = history[history.length - 1];
+  const url = props.fileUrls[file.id] || latestImage?.displayUrl;
 
-  // 如果是文件路径且在Electron环境中
+  // 濡傛灉鏄枃浠惰矾寰勪笖鍦‥lectron鐜涓?
   if (url && url.startsWith('file://') && window.electron) {
-    // 转换为Electron可访问的协议
+    // 杞崲涓篍lectron鍙闂殑鍗忚
     const filePath = url.replace('file://', '');
     return `atom://${filePath.replace(/\\/g, '/')}`;
   }
@@ -111,7 +113,7 @@ const getFileDisplayUrl = (file) => {
 </script>
 
 <style scoped>
-/* 添加自定义间距 */
+/* 娣诲姞鑷畾涔夐棿璺?*/
 .q-item {
   margin: 4px 0;
   border-radius: 4px;

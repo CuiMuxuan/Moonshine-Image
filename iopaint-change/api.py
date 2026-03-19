@@ -425,6 +425,14 @@ class Api:
             callback=diffuser_callback,
         )
 
+    @staticmethod
+    def _normalize_base64_payload(value: str) -> str:
+        if value.startswith("data:image/") or value.startswith(
+            "data:application/octet-stream;base64,"
+        ):
+            return value.split(";")[1].split(",")[1]
+        return value
+
     def api_batch_inpaint(self, req: BatchInpaintRequest):
         """
         批量处理多个图像和蒙版
@@ -442,7 +450,9 @@ class Api:
         
         start_time = time.time()
         
-        for i, item in enumerate(tqdm(req.data, desc="Batch processing")):
+        for i, item in enumerate(
+            tqdm(req.data, total=len(req.data), desc="Batch processing")
+        ):
             try:
                 # 根据image_type解码图像
                 if req.image_type == "base64":
@@ -452,7 +462,9 @@ class Api:
                 
                 # 根据mask_type处理蒙版
                 if req.mask_type == "base64":
-                    mask_data = base64.b64decode(item.mask)
+                    mask_data = base64.b64decode(
+                        self._normalize_base64_payload(item.mask)
+                    )
                     mask_pil = Image.open(io.BytesIO(mask_data))
                 else:  # path
                     if not os.path.exists(item.mask):
@@ -482,7 +494,7 @@ class Api:
                 
                 # 设置当前图像的请求参数
                 if req.image_type == "base64":
-                    inpaint_req.image = item.image
+                    inpaint_req.image = self._normalize_base64_payload(item.image)
                 else:
                     # 将路径图像转换为base64用于处理
                     with open(item.image, 'rb') as f:
@@ -490,7 +502,7 @@ class Api:
                     inpaint_req.image = base64.b64encode(img_bytes).decode('utf-8')
                 
                 if req.mask_type == "base64":
-                    inpaint_req.mask = item.mask
+                    inpaint_req.mask = self._normalize_base64_payload(item.mask)
                 else:
                     # 将路径蒙版转换为base64用于处理
                     with open(item.mask, 'rb') as f:
@@ -536,6 +548,8 @@ class Api:
                     "id": item.id,
                     "index": i,
                     "result": result_data,
+                    # Backward compatibility for older frontend response parsing.
+                    "image": result_data,
                     "success": True
                 })
                 

@@ -109,9 +109,10 @@
                 :label="$q.screen.gt.sm ? '对比原图' : ''"
                 class="col-auto"
                 :disable="!selectedFile || !hasProcessedImages"
-                @mousedown="$emit('show-original')"
-                @mouseup="$emit('show-processed')"
-                @mouseleave="$emit('show-processed')"
+                @pointerdown="$emit('show-original')"
+                @pointerup="$emit('show-processed')"
+                @pointerleave="$emit('show-processed')"
+                @pointercancel="$emit('show-processed')"
               >
                 <q-tooltip v-if="!$q.screen.gt.sm">对比原图</q-tooltip>
               </q-btn>

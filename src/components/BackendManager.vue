@@ -510,8 +510,7 @@ const backendConfig = reactive({
   model: configStore.config.general.defaultModel || "lama",
   modelPath: configStore.config.general.modelPath || "",
   projectPath: configStore.config.general.backendProjectPath || "",
-  modelDir: configStore.config.general.modelDir || "",
-  pythonType: "standard"
+  modelDir: configStore.config.general.modelDir || ""
 });
 
 // 选项
@@ -607,81 +606,144 @@ const addTerminalLog = (message, type = "info") => {
   });
 };
 
+const persistConfig = async (nextConfig) => {
+  const serializableConfig = JSON.parse(JSON.stringify(nextConfig));
+  const electronResult = await window.electron.ipcRenderer.invoke(
+    "save-app-config",
+    serializableConfig
+  );
+  if (!electronResult?.success) {
+    throw new Error(electronResult?.error || "配置持久化失败");
+  }
+
+  const storeResult = await configStore.saveConfig(nextConfig);
+  if (!storeResult?.success) {
+    if (Array.isArray(storeResult?.errors) && storeResult.errors.length > 0) {
+      throw new Error(storeResult.errors.join("; "));
+    }
+    throw new Error(storeResult?.error || "配置更新失败");
+  }
+};
+
+const appendProjectPathGuidance = (result) => {
+  if (!result || !["PROJECT_NOT_SELECTED", "PROJECT_PATH_NOT_FOUND"].includes(result.code)) {
+    return;
+  }
+
+  if (result.defaultProjectParentPath) {
+    addTerminalLog(
+      `请将 IOPaint 后端项目移动到 ${result.defaultProjectParentPath} 路径下。`,
+      "warning"
+    );
+  } else {
+    addTerminalLog("请将 IOPaint 后端项目移动到默认后端目录下。", "warning");
+  }
+
+  addTerminalLog(
+    "或退出后端管理页面 → 打开全局设置 → 后端设置 → 后端项目路径→ 点击图标选择路径",
+    "warning"
+  );
+};
+
 // 检查环境
 const checkEnvironment = async () => {
   checking.value = true;
-  addTerminalLog("开始环境检测...", "info");
+  environmentStatus.error = false;
+  addTerminalLog("开始检测后端环境...", "info");
 
   try {
-    // 检查 Python 环境
-    const pythonResult = await window.electron.ipcRenderer.invoke(
-      "check-python"
-    );
-    if (pythonResult.success) {
-      environmentStatus.python = true;
-      pythonVersion.value = pythonResult.version;
-      if (pythonResult.type === 'conda') {
-        // 设置后续使用 conda 环境
-        backendConfig.pythonType = 'conda';
-      }
-      addTerminalLog(`Python 环境检测成功: ${pythonResult.version}`, "success");
-    } else {
-      environmentStatus.python = false;
-      addTerminalLog(`Python 环境检测失败: ${pythonResult.error}`, "error");
-      addTerminalLog(`没有检测到可用的 python 环境，请确保环境变量中存在 python 解释器，若尚未安装 python，请点击左侧安装 python 按钮尝试安装，若自动安装失败，则浏览器打开此网址：https://www.python.org/ftp/python/3.11.5/python-3.11.5-amd64.exe，然后运行下载的exe程序以手动安装 python3.11.5，注意勾选添加路径到环境变量的选项。`, "info");
-    }
-
-    // 检查项目路径
     const projectResult = await window.electron.ipcRenderer.invoke(
       "check-project",
       backendConfig.projectPath
     );
-    if (projectResult.success) {
-      environmentStatus.project = true;
-      projectPath.value = projectResult.path;
-      // 更新配置中的项目路径
-      if (!backendConfig.projectPath) {
-        backendConfig.projectPath = projectResult.path;
-        // 保存到配置文件
-        const newConfig = { ...configStore.config };
-        newConfig.general.backendProjectPath = projectResult.path;
-        await configStore.saveConfig(newConfig);
-      }
-      addTerminalLog(`项目路径检测成功: ${projectResult.path}`, "success");
-    } else {
+
+    if (!projectResult.success) {
+      environmentStatus.python = false;
       environmentStatus.project = false;
-      addTerminalLog(`项目路径检测失败: ${projectResult.error}`, "error");
+      environmentStatus.venv = false;
+      environmentStatus.dependencies = false;
+      environmentStatus.configured = false;
+      pythonVersion.value = "";
+      venvStatus.value = "未创建";
+      dependenciesStatus.value = "未安装";
+      currentStep.value = 1;
+      addTerminalLog(`后端项目检测失败：${projectResult.error}`, "error");
+      appendProjectPathGuidance(projectResult);
+      return;
     }
 
-    // 检查虚拟环境
-    if (environmentStatus.project) {
-      const venvCheckFunc = backendConfig.pythonType === 'conda' ? 'check-conda-venv' : 'check-venv';
-      const venvResult = await window.electron.ipcRenderer.invoke(venvCheckFunc);
-      if (venvResult.success) {
-        environmentStatus.venv = true;
-        venvStatus.value = "已创建";
-        addTerminalLog("虚拟环境检测成功", "success");
-        // 修改依赖检查逻辑
-        const depsCheckFunc = backendConfig.pythonType === 'conda' ? 'check-conda-dependencies' : 'check-dependencies';
-        const depsResult = await window.electron.ipcRenderer.invoke(depsCheckFunc);
-        if (depsResult.success) {
-          environmentStatus.dependencies = true;
-          environmentStatus.configured = true;
-          dependenciesStatus.value = "已安装";
-          addTerminalLog("依赖检测成功", "success");
-          currentStep.value = 3;
-        } else {
-          dependenciesStatus.value = "未安装";
-          currentStep.value = 2;
-        }
-      } else {
-        venvStatus.value = "未创建";
-        currentStep.value = 2;
+    environmentStatus.project = true;
+    projectPath.value = projectResult.path;
+    if (backendConfig.projectPath !== projectResult.path) {
+      backendConfig.projectPath = projectResult.path;
+      const newConfig = { ...configStore.config };
+      newConfig.general.backendProjectPath = projectResult.path;
+      await persistConfig(newConfig);
+    }
+    addTerminalLog(`后端项目检测成功：${projectResult.path}`, "success");
+
+    const prepareResult = await window.electron.ipcRenderer.invoke(
+      "prepare-project-python",
+      projectResult.path
+    );
+
+    if (!prepareResult.success) {
+      environmentStatus.python = false;
+      environmentStatus.venv = false;
+      environmentStatus.dependencies = false;
+      environmentStatus.configured = false;
+      pythonVersion.value = "";
+      venvStatus.value = "未创建";
+      dependenciesStatus.value = "未安装";
+      currentStep.value = 1;
+      addTerminalLog(
+        `Python 环境准备失败：${prepareResult.error || "未知错误"}`,
+        "error"
+      );
+      appendProjectPathGuidance(prepareResult);
+
+      if (prepareResult.manualGuide?.downloadUrl) {
+        addTerminalLog(
+          `手动下载链接：${prepareResult.manualGuide.downloadUrl}`,
+          "warning"
+        );
       }
+      if (Array.isArray(prepareResult.manualGuide?.commands)) {
+        addTerminalLog("手动执行命令：", "info");
+        prepareResult.manualGuide.commands.forEach((command) => {
+          addTerminalLog(command, "info");
+        });
+      }
+      return;
+    }
+
+    environmentStatus.python = true;
+    environmentStatus.venv = true;
+    pythonVersion.value = prepareResult.pythonVersion
+      ? `Python ${prepareResult.pythonVersion}`
+      : "已检测到 Python";
+    venvStatus.value = `已就绪（${prepareResult.venvName || ".venv"}）`;
+    addTerminalLog(
+      `Python 环境已就绪（来源：${prepareResult.pythonSource || "项目虚拟环境"}）`,
+      "success"
+    );
+
+    const depsResult = await window.electron.ipcRenderer.invoke("check-dependencies");
+    if (depsResult.success) {
+      environmentStatus.dependencies = true;
+      environmentStatus.configured = true;
+      dependenciesStatus.value = "已安装";
+      addTerminalLog("依赖已安装。", "success");
+      currentStep.value = 3;
+    } else {
+      environmentStatus.dependencies = false;
+      environmentStatus.configured = false;
+      dependenciesStatus.value = "未安装";
+      currentStep.value = 2;
     }
   } catch (error) {
     environmentStatus.error = true;
-    addTerminalLog(`环境检测失败: ${error.message}`, "error");
+    addTerminalLog(`环境检测失败：${error.message}`, "error");
   } finally {
     checking.value = false;
   }
@@ -695,15 +757,13 @@ const installPython = async () => {
   try {
     const result = await window.electron.ipcRenderer.invoke("install-python");
     if (result.success) {
-      addTerminalLog("Python 安装成功", "success");
-      // 现在可以在async函数中安全使用await
-      await window.electron.ipcRenderer.invoke("set-python-env", result.path);
+      addTerminalLog("Python 安装完成。", "success");
       await checkEnvironment();
     } else {
-      addTerminalLog(`Python 安装失败: ${result.error}`, "error");
+      addTerminalLog(`Python 安装失败：${result.error}`, "error");
     }
   } catch (error) {
-    addTerminalLog(`Python 安装失败: ${error.message}`, "error");
+    addTerminalLog(`Python 安装失败：${error.message}`, "error");
   } finally {
     installing.python = false;
   }
@@ -739,7 +799,7 @@ const selectProjectPath = async () => {
           // 保存到配置文件
           const newConfig = { ...configStore.config };
           newConfig.general.backendProjectPath = selectedPath;
-          await configStore.saveConfig(newConfig);
+          await persistConfig(newConfig);
 
           addTerminalLog(`项目路径设置成功: ${selectedPath}`, "success");
           await checkEnvironment();
@@ -768,7 +828,7 @@ const selectModelDir = async () => {
       // 保存到配置文件
       const newConfig = { ...configStore.config };
       newConfig.general.modelDir = selectedPath;
-      await configStore.saveConfig(newConfig);
+      await persistConfig(newConfig);
 
       addTerminalLog(`模型目录设置成功: ${selectedPath}`, "success");
     }
@@ -780,62 +840,62 @@ const selectModelDir = async () => {
 const setupEnvironment = async () => {
   installing.dependencies = true;
   installProgress.value = 0;
-  addTerminalLog("开始配置环境...", "info");
+  addTerminalLog("开始配置后端环境...", "info");
 
   try {
-    // 创建虚拟环境
-    if (!environmentStatus.venv) {
-      addTerminalLog("创建虚拟环境...", "info");
+    const prepareResult = await window.electron.ipcRenderer.invoke(
+      "prepare-project-python",
+      projectPath.value || backendConfig.projectPath
+    );
 
-      let venvResult;
-      if (backendConfig.pythonType === 'conda') {
-        // 使用 conda 创建环境
-        venvResult = await window.electron.ipcRenderer.invoke('create-conda-venv');
-      } else {
-        // 使用传统 venv 创建环境
-        venvResult = await window.electron.ipcRenderer.invoke(
-          "create-venv",
-          projectPath.value
+    if (!prepareResult.success) {
+      appendProjectPathGuidance(prepareResult);
+      if (prepareResult.manualGuide?.downloadUrl) {
+        addTerminalLog(
+          `手动下载链接：${prepareResult.manualGuide.downloadUrl}`,
+          "warning"
         );
       }
-
-      if (venvResult.success) {
-        environmentStatus.venv = true;
-        venvStatus.value = "已创建";
-        addTerminalLog("虚拟环境创建成功", "success");
-        installProgress.value = 50;
-      } else {
-        throw new Error(venvResult.error);
+      if (Array.isArray(prepareResult.manualGuide?.commands)) {
+        addTerminalLog("手动执行命令：", "info");
+        prepareResult.manualGuide.commands.forEach((command) => {
+          addTerminalLog(command, "info");
+        });
       }
+      throw new Error(prepareResult.error || "Python 环境准备失败。");
     }
 
-    // 安装依赖
-    addTerminalLog("安装依赖包...", "info");
-
-    let depsResult;
-    if (backendConfig.pythonType === 'conda') {
-      // 使用 conda 安装依赖
-      depsResult = await window.electron.ipcRenderer.invoke('install-conda-dependencies');
-    } else {
-      // 使用传统方式安装依赖
-      depsResult = await window.electron.ipcRenderer.invoke(
-        "install-dependencies",
-        projectPath.value
-      );
+    environmentStatus.project = true;
+    environmentStatus.python = true;
+    environmentStatus.venv = true;
+    if (prepareResult.path) {
+      projectPath.value = prepareResult.path;
     }
+    pythonVersion.value = prepareResult.pythonVersion
+      ? `Python ${prepareResult.pythonVersion}`
+      : pythonVersion.value;
+    venvStatus.value = `已就绪（${prepareResult.venvName || ".venv"}）`;
+    addTerminalLog("虚拟环境已就绪。", "success");
+    installProgress.value = 50;
+
+    addTerminalLog("开始安装依赖...", "info");
+    const depsResult = await window.electron.ipcRenderer.invoke(
+      "install-dependencies",
+      projectPath.value || backendConfig.projectPath
+    );
 
     if (depsResult.success) {
       environmentStatus.dependencies = true;
       environmentStatus.configured = true;
       dependenciesStatus.value = "已安装";
-      addTerminalLog("依赖安装成功", "success");
+      addTerminalLog("依赖安装成功。", "success");
       installProgress.value = 100;
       currentStep.value = 3;
     } else {
       throw new Error(depsResult.error);
     }
   } catch (error) {
-    addTerminalLog(`环境配置失败: ${error.message}`, "error");
+    addTerminalLog(`环境配置失败：${error.message}`, "error");
   } finally {
     installing.dependencies = false;
   }

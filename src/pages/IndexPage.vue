@@ -257,6 +257,15 @@ const isPageDisabled = ref(false);
 const currentFile = computed(() => fileManagerStore.currentFile);
 const selectedFiles = computed(() => fileManagerStore.selectedFiles);
 const currentDisplayUrl = computed(() => {
+  const file = fileManagerStore.currentFile;
+  if (!file || !file.history?.length) {
+    return null;
+  }
+
+  if (showingOriginal.value) {
+    return file.history[0]?.displayUrl || null;
+  }
+
   const displayImage = fileManagerStore.getCurrentDisplayImage;
   return displayImage?.displayUrl || null;
 });
@@ -275,7 +284,7 @@ const fileUrls = computed(() => {
   const urls = {};
   fileManagerStore.files.forEach((file) => {
     const latestImage = file.history[file.history.length - 1];
-    urls[file.name] = latestImage?.displayUrl || null;
+    urls[file.id] = latestImage?.displayUrl || null;
   });
   return urls;
 });
@@ -987,13 +996,14 @@ const onRejectedFiles = (rejectedEntries) => {
 // 处理文件选择
 const handleFileSelection = (file) => {
   if (file && file.id) {
+    showingOriginal.value = false;
     fileManagerStore.setCurrentFile(file.id);
   }
 };
 
 // 处理文件移除
-const handleRemoveFile = (index) => {
-  const file = fileManagerStore.files[index];
+const handleRemoveFile = (fileId) => {
+  const file = fileManagerStore.files.find((item) => item.id === fileId);
   if (file) {
     fileManagerStore.removeFile(file.id);
 
