@@ -28,6 +28,7 @@
         :show-toolbar="showMasker"
         :scale="scale"
         :mask="mask"
+        :visible-area-insets="visibleAreaInsets"
         @update:mask="$emit('update:mask', $event)"
         @update:drawing-mode="updateDrawingMode"
         @update:ctrl-pressed="updateCtrlPressed"
@@ -38,15 +39,16 @@
 
 <script setup>
 import {
-  ref,
   computed,
+  nextTick,
   onMounted,
   onUnmounted,
-  watch,
-  nextTick,
   provide,
+  ref,
+  watch,
 } from "vue";
 import { useEventListener } from "@vueuse/core";
+
 import { useEditorStore } from "../stores/editor";
 import { useFileManagerStore } from "../stores/fileManager";
 import ImageMasker from "./ImageMasker.vue";
@@ -59,10 +61,7 @@ const maskerRef = ref(null);
 const isImageLoaded = ref(false);
 const isDrawingMode = ref(false);
 const isDragging = ref(false);
-
-const initialScale = ref(1);
-const initialOffsetX = ref(0);
-const initialOffsetY = ref(0);
+const hasManualViewportChange = ref(false);
 const isCtrlPressed = ref(false);
 
 const props = defineProps({
@@ -81,36 +80,39 @@ const props = defineProps({
   imageUrl: {
     type: String,
     default: null,
-  }
+  },
+  visibleAreaInsets: {
+    type: Object,
+    default: () => ({
+      left: 0,
+      right: 0,
+      top: 0,
+      bottom: 0,
+    }),
+  },
 });
 
 const emit = defineEmits(["loaded", "update:mask"]);
 const imageUrl = computed(() => {
   if (props.imageUrl) {
-    // 优先使用父组件传入的 URL
     return props.imageUrl;
   }
 
-  // 从fileManager获取当前显示的图片
   const currentDisplayImage = fileManagerStore.getCurrentDisplayImage;
   if (currentDisplayImage) {
-    if (currentDisplayImage.type === 'path' && currentDisplayImage.displayUrl) {
-      // 文件路径模式 - 在Electron环境中处理
+    if (currentDisplayImage.type === "path" && currentDisplayImage.displayUrl) {
       if (window.electron) {
-        // 使用Electron的文件协议或转换为可访问的URL
-        return `atom://${currentDisplayImage.data.replace(/\\/g, '/')}`;
-      } else {
-        // 浏览器环境，回退到base64
-        console.warn('文件路径模式仅在Electron环境中支持，回退到base64模式');
-        return null;
+        return `atom://${currentDisplayImage.data.replace(/\\/g, "/")}`;
       }
-    } else if (currentDisplayImage.type === 'base64') {
-      // base64模式
+      console.warn("文件路径模式仅在 Electron 环境中支持，回退到 base64 模式");
+      return null;
+    }
+
+    if (currentDisplayImage.type === "base64") {
       return currentDisplayImage.displayUrl;
     }
   }
 
-  // 兼容旧逻辑
   if (props.selectedFile) {
     const url = URL.createObjectURL(props.selectedFile);
     store.setImageUrl(url);
@@ -119,10 +121,10 @@ const imageUrl = computed(() => {
 
   return store.imageUrl;
 });
+
 const mode = computed(() => store.mode);
 const scale = computed(() => store.scale);
 
-// 图片样式
 const imageStyle = computed(() => ({
   transform: `scale(${scale.value})`,
   left: `${store.offsetX}px`,
@@ -137,89 +139,121 @@ const containerStyle = computed(() => ({
   height: "100%",
 }));
 
-// 获取画布数据的方法
 const getCanvasData = () => {
   if (!maskerRef.value) {
     return props.mask?.data || null;
   }
+
   try {
-    // 从 ImageMasker 组件获取蒙版的base64数据
     const maskData = maskerRef.value.getMaskData?.();
     return maskData || props.mask?.data || null;
   } catch (error) {
-    console.error('获取蒙版数据失败:', error);
+    console.error("获取蒙版数据失败:", error);
     return props.mask?.data || null;
   }
 };
 
-const getSelection = () => {
-  // 返回当前图片的URL
-  return imageUrl.value || null;
+const getSelection = () => imageUrl.value || null;
+
+const getVisibleViewport = () => {
+  const container = imageContainer.value;
+  if (!container) {
+    return null;
+  }
+
+  const width = container.clientWidth;
+  const height = container.clientHeight;
+  const leftInset = Math.max(0, Number(props.visibleAreaInsets?.left || 0));
+  const rightInset = Math.max(0, Number(props.visibleAreaInsets?.right || 0));
+  const topInset = Math.max(0, Number(props.visibleAreaInsets?.top || 0));
+  const bottomInset = Math.max(0, Number(props.visibleAreaInsets?.bottom || 0));
+
+  const safeWidth = Math.max(1, width - leftInset - rightInset);
+  const safeHeight = Math.max(1, height - topInset - bottomInset);
+
+  return {
+    width,
+    height,
+    safeWidth,
+    safeHeight,
+    leftInset,
+    rightInset,
+    topInset,
+    bottomInset,
+  };
 };
 
-// 图片加载处理
+const computeFitViewport = () => {
+  const img = imageRef.value;
+  const viewport = getVisibleViewport();
+  if (!img || !viewport) return null;
+
+  const imageWidth = img.naturalWidth || store.imageWidth || 1;
+  const imageHeight = img.naturalHeight || store.imageHeight || 1;
+  const scaleX = viewport.safeWidth / imageWidth;
+  const scaleY = viewport.safeHeight / imageHeight;
+  const nextScale = Math.min(scaleX, scaleY);
+  const offsetX = viewport.leftInset + (viewport.safeWidth - imageWidth * nextScale) / 2;
+  const offsetY = viewport.topInset + (viewport.safeHeight - imageHeight * nextScale) / 2;
+
+  return {
+    scale: nextScale,
+    offsetX,
+    offsetY,
+  };
+};
+
+const applyFitViewport = () => {
+  const fitViewport = computeFitViewport();
+  if (!fitViewport) return false;
+
+  store.setScale(fitViewport.scale);
+  store.setOffset(fitViewport.offsetX, fitViewport.offsetY);
+  return true;
+};
+
+const initializeEmptyMaskIfNeeded = () => {
+  const img = imageRef.value;
+  if (!img || !props.mask || props.mask.data) return;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  emit("update:mask", {
+    data: canvas.toDataURL(),
+    width: img.naturalWidth,
+    height: img.naturalHeight,
+  });
+};
+
 const onImageLoad = () => {
   if (!imageRef.value || !imageContainer.value) return;
 
   nextTick(() => {
     const img = imageRef.value;
-    const container = imageContainer.value;
-
-    if (!img || !container) return;
+    if (!img) return;
 
     store.setImageSize(img.naturalWidth, img.naturalHeight);
-
-    // 计算初始缩放比例以适应容器
-    const containerRatio = container.clientWidth / container.clientHeight;
-    const imageRatio = img.naturalWidth / img.naturalHeight;
-
-    let scale = 1;
-    if (imageRatio > containerRatio) {
-      scale = container.clientWidth / img.naturalWidth;
-    } else {
-      scale = container.clientHeight / img.naturalHeight;
-    }
-
-    // 居中图片
-    const offsetX = (container.clientWidth - img.naturalWidth * scale) / 2;
-    const offsetY = (container.clientHeight - img.naturalHeight * scale) / 2;
-
-    // 保存初始值
-    initialScale.value = scale;
-    initialOffsetX.value = offsetX;
-    initialOffsetY.value = offsetY;
-
-    store.setScale(scale);
-    store.setOffset(offsetX, offsetY);
-    // 如果没有蒙版数据，创建初始蒙版
-    if (props.mask && !props.mask.data) {
-      const canvas = document.createElement('canvas');
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      const ctx = canvas.getContext('2d');
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      // 发送初始蒙版数据
-      emit('update:mask', {
-        data: canvas.toDataURL(),
-        width: img.naturalWidth,
-        height: img.naturalHeight
-      });
-    }
+    hasManualViewportChange.value = false;
+    applyFitViewport();
+    initializeEmptyMaskIfNeeded();
 
     isImageLoaded.value = true;
     emit("loaded");
   });
 };
 
-useEventListener(window, "keydown", (e) => {
-  if (e.key === "Control") {
+useEventListener(window, "keydown", (event) => {
+  if (event.key === "Control") {
     isCtrlPressed.value = true;
   }
 });
 
-useEventListener(window, "keyup", (e) => {
-  if (e.key === "Control") {
+useEventListener(window, "keyup", (event) => {
+  if (event.key === "Control") {
     isCtrlPressed.value = false;
   }
 });
@@ -234,33 +268,41 @@ watch([() => store.scale, () => store.offsetX, () => store.offsetY], () => {
   }
 });
 
-// 监听蒙版变化，处理蒙版调整
-watch(() => props.mask, (newMask) => {
-  if (newMask && isImageLoaded.value) {
-    // 确保图片已加载
-    nextTick(() => {
-      if (maskerRef.value) {
-        // 通知masker组件更新蒙版
-      }
-    });
+watch(
+  () => props.mask,
+  () => {
+    if (isImageLoaded.value) {
+      nextTick(() => {
+        if (maskerRef.value) {
+          // Mask state is managed inside ImageMasker watchers.
+        }
+      });
+    }
+  },
+  { deep: true }
+);
+
+watch(
+  () => imageUrl.value,
+  () => {
+    isImageLoaded.value = false;
+    hasManualViewportChange.value = false;
   }
-}, { deep: true });
+);
 
-
-// 事件处理
-const onWheel = (e) => {
-  e.preventDefault();
+const onWheel = (event) => {
+  event.preventDefault();
+  hasManualViewportChange.value = true;
 
   const container = imageContainer.value;
   const rect = container.getBoundingClientRect();
-  const mouseX = e.clientX - rect.left;
-  const mouseY = e.clientY - rect.top;
+  const mouseX = event.clientX - rect.left;
+  const mouseY = event.clientY - rect.top;
 
-  // 计算鼠标相对于图片的位置
   const relativeX = (mouseX - store.offsetX) / scale.value;
   const relativeY = (mouseY - store.offsetY) / scale.value;
 
-  if (e.deltaY < 0) {
+  if (event.deltaY < 0) {
     store.zoomIn(relativeX, relativeY);
   } else {
     store.zoomOut(relativeX, relativeY);
@@ -270,19 +312,21 @@ const onWheel = (e) => {
 const updateCtrlPressed = (pressed) => {
   isCtrlPressed.value = pressed;
 };
-const updateDrawingMode = (mode) => {
-  isDrawingMode.value = mode;
+
+const updateDrawingMode = (modeValue) => {
+  isDrawingMode.value = modeValue;
 };
 
-const onPointerDown = (e) => {
+const onPointerDown = (event) => {
   if (isDrawingMode.value || isCtrlPressed.value) return;
 
+  hasManualViewportChange.value = true;
   isDragging.value = true;
-  const startX = e.clientX - store.offsetX;
-  const startY = e.clientY - store.offsetY;
+  const startX = event.clientX - store.offsetX;
+  const startY = event.clientY - store.offsetY;
 
-  const onPointerMove = (e) => {
-    store.setOffset(e.clientX - startX, e.clientY - startY);
+  const onPointerMove = (moveEvent) => {
+    store.setOffset(moveEvent.clientX - startX, moveEvent.clientY - startY);
   };
 
   const onPointerUp = () => {
@@ -295,26 +339,23 @@ const onPointerDown = (e) => {
   window.addEventListener("pointerup", onPointerUp);
 };
 
-// 生命周期
 onMounted(() => {
   if (imageRef.value && imageRef.value.complete) {
     onImageLoad();
   }
 });
 
-// 在组件卸载时清理资源
 onUnmounted(() => {
-  // 只清理组件内部创建的 URL，不清理外部传入的 URL
   if (imageRef.value && !props.imageUrl) {
     URL.revokeObjectURL(imageRef.value.src);
   }
 });
 
-// 添加重置方法
 const resetView = () => {
-  store.setScale(initialScale.value);
-  store.setOffset(initialOffsetX.value, initialOffsetY.value);
+  hasManualViewportChange.value = false;
+  applyFitViewport();
 };
+
 provide(
   "image-editor",
   ref({
@@ -323,11 +364,11 @@ provide(
     getSelection,
   })
 );
-// 暴露方法给父组件
+
 defineExpose({
   resetView,
   getCanvasData,
-  getSelection
+  getSelection,
 });
 </script>
 
@@ -335,15 +376,18 @@ defineExpose({
 .absolute {
   position: absolute;
 }
+
 .inset-0 {
   top: 0;
   right: 0;
   bottom: 0;
   left: 0;
 }
+
 .overflow-hidden {
   overflow: hidden;
 }
+
 .editor-grid-bg {
   background-image: linear-gradient(45deg, #f0f0f0 25%, transparent 25%),
     linear-gradient(-45deg, #f0f0f0 25%, transparent 25%),
@@ -354,12 +398,23 @@ defineExpose({
   background-color: #ffffff;
   position: relative;
 }
+
+:global(body.body--dark) .editor-grid-bg {
+  background-image: linear-gradient(45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.04) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.04) 75%);
+  background-color: #121212;
+}
+
 .cursor-grab {
   cursor: grab !important;
 }
+
 .cursor-grabbing {
   cursor: grabbing !important;
 }
+
 .cursor-none {
   cursor: none !important;
 }

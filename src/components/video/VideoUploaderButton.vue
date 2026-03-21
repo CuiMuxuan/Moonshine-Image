@@ -1,28 +1,22 @@
-<template>
+﻿<template>
   <q-file
     v-model="model"
-    accept="video/mp4"
+    :accept="acceptValue"
     max-files="1"
     filled
     label="选择视频文件"
     @update:model-value="handleFileChange"
   >
-    <template v-slot:before>
+    <template #before>
       <q-icon name="folder_open" />
     </template>
 
-    <template v-slot:hint>
-      仅支持MP4格式视频文件
+    <template #hint>
+      支持 {{ supportedFormatText }} 视频
     </template>
 
-    <template v-if="model" v-slot:file="{ file }">
-      <q-chip
-        removable
-        @remove="removeFile"
-        color="primary"
-        text-color="white"
-        icon="movie"
-      >
+    <template #file="{ file }">
+      <q-chip removable color="primary" text-color="white" icon="movie" @remove="removeFile">
         <div class="ellipsis relative-position">
           {{ file.name }}
           <q-tooltip>{{ file.name }} ({{ formatFileSize(file.size) }})</q-tooltip>
@@ -33,66 +27,69 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted } from 'vue'
-import { useVideoManagerStore } from '../../stores/videoManager'
+import { computed, onMounted, ref, watch } from "vue";
+import { useVideoManagerStore } from "src/stores/videoManager";
+import { useConfigStore } from "src/stores/config";
 
-// 使用视频管理状态
-const videoManagerStore = useVideoManagerStore()
+const videoStore = useVideoManagerStore();
+const configStore = useConfigStore();
+const model = ref(null);
+const fallbackFormats = ["mp4", "mov", "avi", "mkv", "wmv"];
+const supportedFormats = computed(
+  () => configStore.config.video?.supportedFormats || fallbackFormats
+);
+const acceptValue = computed(() => supportedFormats.value.map((ext) => `.${ext}`).join(","));
+const supportedFormatText = computed(() =>
+  supportedFormats.value.map((ext) => ext.toUpperCase()).join(" / ")
+);
 
-// 本地文件模型
-const model = ref(null)
-
-// 组件挂载时恢复状态
 onMounted(() => {
-  if (videoManagerStore.videoFile) {
-    model.value = videoManagerStore.videoFile
+  if (videoStore.videoFile) {
+    model.value = videoStore.videoFile;
   }
-})
+});
 
-// 处理文件变化
 const handleFileChange = async (file) => {
-  if (file) {
-    // 验证文件类型
-    if (file.type !== 'video/mp4') {
-      console.warn('仅支持MP4格式的视频文件')
-      model.value = null
-      return
-    }
-
-    // 设置到状态管理中
-    await videoManagerStore.setVideoFile(file)
-  } else {
-    // 清除状态管理中的文件
-    videoManagerStore.clearVideoFile()
+  if (!file) {
+    videoStore.clearVideoFile();
+    return;
   }
-}
 
-// 移除文件
+  const extension = String(file.name || "")
+    .split(".")
+    .pop()
+    ?.toLowerCase();
+  if (!extension || !supportedFormats.value.includes(extension)) {
+    model.value = null;
+    return;
+  }
+
+  await videoStore.setVideoFile(file, {
+    resetEditor: true,
+    resetHistory: true,
+    isReplacementSource: false,
+    sourcePath: file.path || "",
+    sourceName: file.name || "",
+  });
+};
+
 const removeFile = () => {
-  model.value = null
-  videoManagerStore.clearVideoFile()
-}
+  model.value = null;
+  videoStore.clearVideoFile();
+};
 
-// 格式化文件大小
 const formatFileSize = (bytes) => {
-  if (bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
-}
+  if (!bytes) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
+};
 
-// 监听状态管理中的文件变化，同步到本地模型
 watch(
-  () => videoManagerStore.videoFile,
+  () => videoStore.videoFile,
   (newFile) => {
-    if (!newFile && model.value) {
-      model.value = null
-    }
+    if (!newFile) model.value = null;
   }
-)
+);
 </script>
-
-<style scoped>
-/* 可以添加自定义样式 */
-</style>

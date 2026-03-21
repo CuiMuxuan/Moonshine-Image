@@ -1,5 +1,7 @@
 import asyncio
+import json
 import os
+import shutil
 import threading
 import time
 import traceback
@@ -43,8 +45,6 @@ from iopaint.helper import (
     concat_alpha_channel,
     gen_frontend_mask,
     adjust_mask,
-    save_image_to_path,
-    decode_path_to_image,
 )
 from iopaint.model.utils import torch_gc
 from iopaint.model_manager import ModelManager
@@ -66,10 +66,9 @@ from iopaint.schema import (
     ModelInfo,
     InteractiveSegModel,
     RealESRGANModel,
-    BatchInpaintRequest,
+    BatchInpaintRequest, 
     BatchInpaintByFolderRequest,
-    VideoInpaintRequest,
-    VideoProcessingConfig
+    VideoBatchInpaintRequest,
 )
 
 CURRENT_DIR = Path(__file__).parent.absolute().resolve()
@@ -183,6 +182,10 @@ class Api:
         self.add_api_route("/api/v1/batch_inpaint", self.api_batch_inpaint, methods=["POST"])
         self.add_api_route("/api/v1/check_cuda", self.api_check_cuda, methods=["GET"])
         self.add_api_route("/api/v1/batch_inpaint_by_folder", self.api_batch_inpaint_by_folder, methods=["POST"])
+        self.add_api_route("/api/v1/video_batch_inpaint", self.api_video_batch_inpaint, methods=["POST"])
+        
+        # self.app.mount("/", StaticFiles(directory=WEB_APP_DIR, html=True), name="assets")
+        # fmt: on
 
         global global_sio
         self.sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
@@ -433,151 +436,166 @@ class Api:
             return value.split(";")[1].split(",")[1]
         return value
 
+    def _decode_item_image(self, image_value: str, image_type: str):
+        if image_type == "base64":
+            return decode_base64_to_image(image_value)
+
+        if not os.path.exists(image_value):
+            raise FileNotFoundError(f"Image file not found: {image_value}")
+        with open(image_value, "rb") as image_file:
+            image_b64 = base64.b64encode(image_file.read()).decode("utf-8")
+        return decode_base64_to_image(image_b64)
+
+    def _decode_item_mask(self, mask_value: str, mask_type: str):
+        if mask_type == "base64":
+            encoded_mask = self._normalize_base64_payload(mask_value)
+            mask_data = base64.b64decode(encoded_mask)
+            mask_pil = Image.open(io.BytesIO(mask_data))
+        else:
+            if not os.path.exists(mask_value):
+                raise FileNotFoundError(f"Mask file not found: {mask_value}")
+            mask_pil = Image.open(mask_value)
+
+        if mask_pil.mode == "RGBA":
+            _, _, _, alpha = mask_pil.split()
+            mask = np.array(alpha)
+            mask[mask > 0] = 255
+            mask[mask == 0] = 0
+        else:
+            mask = np.array(mask_pil.convert("L"))
+            mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)[1]
+        return mask
+
+    @staticmethod
+    def _save_result_image(result_bytes: bytes, item_id: str, temp_path: Optional[str]):
+        output_name = f"result_{item_id}.png"
+        if temp_path:
+            os.makedirs(temp_path, exist_ok=True)
+            output_path = os.path.join(temp_path, output_name)
+        else:
+            output_path = output_name
+
+        with open(output_path, "wb") as output_file:
+            output_file.write(result_bytes)
+        return output_path
+
     def api_batch_inpaint(self, req: BatchInpaintRequest):
-        """
-        批量处理多个图像和蒙版
-        """
+        """Process a batch of image and mask pairs in one request."""
         if len(req.data) == 0:
             raise HTTPException(
                 status_code=400,
                 detail="Empty data list",
             )
-            
+
         results = []
-        
-        # 创建一个InpaintRequest对象，复用BatchInpaintRequest的参数
+
+        # Create one InpaintRequest and reuse the shared batch params.
         inpaint_req = InpaintRequest()
-        
+
         start_time = time.time()
-        
+
         for i, item in enumerate(
             tqdm(req.data, total=len(req.data), desc="Batch processing")
         ):
+            item_id = item.id or f"item_{i}"
             try:
-                # 根据image_type解码图像
-                if req.image_type == "base64":
-                    image, alpha_channel, infos = decode_base64_to_image(item.image)
-                else:  # path
-                    image, alpha_channel, infos = decode_path_to_image(item.image)
-                
-                # 根据mask_type处理蒙版
-                if req.mask_type == "base64":
-                    mask_data = base64.b64decode(
-                        self._normalize_base64_payload(item.mask)
-                    )
-                    mask_pil = Image.open(io.BytesIO(mask_data))
-                else:  # path
-                    if not os.path.exists(item.mask):
-                        raise FileNotFoundError(f"Mask file not found: {item.mask}")
-                    mask_pil = Image.open(item.mask)
-                
-                # 处理蒙版，支持透明PNG
-                if mask_pil.mode == 'RGBA':
-                    # 从RGBA图像中提取Alpha通道作为蒙版
-                    _, _, _, alpha = mask_pil.split()
-                    mask = np.array(alpha)
-                    # 二值化处理：不透明(>0)的区域设为白色(255)，透明(=0)的区域设为黑色(0)
-                    mask[mask > 0] = 255
-                    mask[mask == 0] = 0
-                else:
-                    # 如果没有Alpha通道，则按原来的方式处理
-                    mask = np.array(mask_pil.convert("L"))
-                    mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)[1]
-                
+                image, alpha_channel, infos, *_ = self._decode_item_image(
+                    item.image, req.image_type
+                )
+                mask = self._decode_item_mask(item.mask, req.mask_type)
+
                 if image.shape[:2] != mask.shape[:2]:
-                    logger.warning(f"Item {item.id} image size({image.shape[:2]}) and mask size({mask.shape[:2]}) not match. Resizing mask.")
+                    logger.warning(
+                        f"Item {item_id} image size({image.shape[:2]}) and mask size({mask.shape[:2]}) not match. Resizing mask."
+                    )
                     mask = cv2.resize(
                         mask,
                         (image.shape[1], image.shape[0]),
                         interpolation=cv2.INTER_NEAREST,
                     )
-                
-                # 设置当前图像的请求参数
+
                 if req.image_type == "base64":
                     inpaint_req.image = self._normalize_base64_payload(item.image)
                 else:
-                    # 将路径图像转换为base64用于处理
-                    with open(item.image, 'rb') as f:
-                        img_bytes = f.read()
-                    inpaint_req.image = base64.b64encode(img_bytes).decode('utf-8')
-                
+                    with open(item.image, "rb") as image_file:
+                        inpaint_req.image = base64.b64encode(image_file.read()).decode(
+                            "utf-8"
+                        )
+
                 if req.mask_type == "base64":
                     inpaint_req.mask = self._normalize_base64_payload(item.mask)
                 else:
-                    # 将路径蒙版转换为base64用于处理
-                    with open(item.mask, 'rb') as f:
-                        mask_bytes = f.read()
-                    inpaint_req.mask = base64.b64encode(mask_bytes).decode('utf-8')
-                
-                # 处理图像
+                    with open(item.mask, "rb") as mask_file:
+                        inpaint_req.mask = base64.b64encode(mask_file.read()).decode(
+                            "utf-8"
+                        )
+
                 rgb_np_img = self.model_manager(image, mask, inpaint_req)
-                
-                # 转换颜色空间
+
                 rgb_np_img = cv2.cvtColor(rgb_np_img.astype(np.uint8), cv2.COLOR_BGR2RGB)
                 rgb_res = concat_alpha_channel(rgb_np_img, alpha_channel)
-                
-                # 根据response_type处理结果
-                if req.response_type == "base64":
-                    # 转换为base64
-                    ext = "png"
-                    res_img_bytes = pil_to_bytes(
-                        Image.fromarray(rgb_res),
-                        ext=ext,
-                        quality=self.config.quality,
-                        infos=infos,
+
+                ext = "png"
+                res_img_bytes = pil_to_bytes(
+                    Image.fromarray(rgb_res),
+                    ext=ext,
+                    quality=self.config.quality,
+                    infos=infos,
+                )
+
+                if req.response_type == "path":
+                    result_data = self._save_result_image(
+                        res_img_bytes, item_id, req.temp_path
                     )
-                    result_data = f"data:image/{ext};base64,{base64.b64encode(res_img_bytes).decode('utf-8')}"
-                else:  # path
-                    # 保存到文件
-                    if req.temp_path:
-                        output_path = os.path.join(req.temp_path, f"result_{item.id}.png")
-                    else:
-                        output_path = f"result_{item.id}.png"
-                    
-                    result_path = save_image_to_path(
-                        rgb_res,
-                        output_path,
-                        quality=self.config.quality,
-                        infos=infos,
-                        alpha_channel=None  # alpha_channel已经在concat_alpha_channel中处理
+                else:
+                    result_data = (
+                        f"data:image/{ext};base64,"
+                        f"{base64.b64encode(res_img_bytes).decode('utf-8')}"
                     )
-                    result_data = result_path
-                
-                # 将结果添加到列表中
-                results.append({
-                    "id": item.id,
-                    "index": i,
-                    "result": result_data,
-                    # Backward compatibility for older frontend response parsing.
-                    "image": result_data,
-                    "success": True
-                })
-                
-                # 清理GPU内存
+
+                results.append(
+                    {
+                        "id": item_id,
+                        "index": i,
+                        "result": result_data,
+                        # Backward compatibility for older frontend response parsing.
+                        "image": result_data,
+                        "success": True,
+                    }
+                )
                 torch_gc()
-                
+
             except Exception as e:
-                logger.error(f"Error processing item {item.id}: {str(e)}")
-                results.append({
-                    "id": item.id,
-                    "index": i,
-                    "error": str(e),
-                    "success": False
-                })
-        
+                logger.error(f"Error processing item {item_id}: {str(e)}")
+                results.append(
+                    {
+                        "id": item_id,
+                        "index": i,
+                        "error": str(e),
+                        "success": False,
+                    }
+                )
+
         total_time = time.time() - start_time
-        logger.info(f"Batch processing completed in {total_time:.2f}s for {len(req.data)} items")
-        
-        return JSONResponse(content=jsonable_encoder({
-            "results": results,
-            "total_time": total_time,
-            "processed_count": len(results),
-            "success_count": sum(1 for r in results if r.get("success", False))
-        }))
+        logger.info(
+            f"Batch processing completed in {total_time:.2f}s for {len(req.data)} images"
+        )
+
+        return JSONResponse(
+            content=jsonable_encoder(
+                {
+                    "results": results,
+                    "total_time": total_time,
+                    "processed_count": len(results),
+                    "success_count": sum(
+                        1 for result in results if result.get("success", False)
+                    ),
+                }
+            )
+        )
+
     def api_check_cuda(self):
-        """
-        检查CUDA是否可用及相关信息
-        """
+        """Return basic CUDA availability and device information."""
         cuda_info = {
             "cuda_available": torch.cuda.is_available(),
             "cuda_device_count": torch.cuda.device_count(),
@@ -597,12 +615,12 @@ class Api:
                 if hasattr(torch.cuda, 'get_device_capability'):
                     cuda_info["device_capability"] = torch.cuda.get_device_capability(current_device)
                 
-                # 获取显存信息
+                # Query total CUDA memory when device properties are available.
                 if hasattr(torch.cuda, 'get_device_properties'):
                     props = torch.cuda.get_device_properties(current_device)
                     cuda_info["total_memory_mb"] = props.total_memory / (1024 * 1024)
                 
-                # 获取当前可用显存
+                # Refresh cache stats after empty_cache for a rough reserved-memory snapshot.
                 torch.cuda.empty_cache()
                 cuda_info["free_memory_mb"] = torch.cuda.memory_reserved(current_device) / (1024 * 1024)
             except Exception as e:
@@ -610,26 +628,24 @@ class Api:
         
         return JSONResponse(content=jsonable_encoder(cuda_info))
     def api_batch_inpaint_by_folder(self, req: BatchInpaintByFolderRequest):
-        """
-        批量处理文件夹中的图像和蒙版
-        调用batch_processing.py中的batch_inpaint方法
-        """
+        """Process images from an image folder and masks from a mask folder.
+        This wraps the existing batch_processing.batch_inpaint workflow."""
         try:
             from iopaint.batch_processing import batch_inpaint
             
-            # 将字符串路径转换为Path对象
+            # Resolve request paths.
             image_path = Path(req.image_folder)
             mask_path = Path(req.mask_folder)
             output_path = Path(req.output_folder)
 
-            # 创建设备对象
+            # Build torch device from the requested backend device string.
             device = torch.device(req.device)
             
-            # 调用batch_inpaint函数处理图像
+            # Run the existing folder-based batch inpaint pipeline.
             start_time = time.time()
             
             processed_count = batch_inpaint(
-                model="lama",  # 固定使用lama模型
+                model="lama",  # Keep current default model for folder mode.
                 device=device,
                 image=image_path,
                 mask=mask_path,
@@ -640,7 +656,7 @@ class Api:
             
             return JSONResponse(content=jsonable_encoder({
                 "success": True,
-                "message": "批量处理完成",
+                "message": "Batch processing completed",
                 "total_time": total_time,
                 "processed_count": processed_count,
                 "image_folder": str(image_path),
@@ -649,7 +665,7 @@ class Api:
             }))
             
         except Exception as e:
-            logger.error(f"批量处理失败: {str(e)}")
+            logger.error(f"Batch processing failed: {str(e)}")
             return JSONResponse(
                 status_code=500,
                 content=jsonable_encoder({
@@ -657,142 +673,219 @@ class Api:
                     "error": str(e)
                 })
             )
-    
-    def api_video_inpaint(self, req: VideoInpaintRequest):
-        """视频修复处理"""
-        try:
-            # 验证输入文件
-            if not os.path.exists(req.video_path):
-                raise HTTPException(status_code=400, detail=f"Video file not found: {req.video_path}")
-            
-            # 创建临时目录
-            temp_dir = Path(req.temp_path)
-            temp_dir.mkdir(parents=True, exist_ok=True)
-            
-            frames_dir = temp_dir / "frames"
-            processed_dir = temp_dir / "processed"
-            audio_path = temp_dir / "audio.aac"
-            
-            frames_dir.mkdir(exist_ok=True)
-            processed_dir.mkdir(exist_ok=True)
-            
-            start_time = time.time()
-            
-            # 1. 提取音频
-            logger.info("Extracting audio...")
-            has_audio = extract_audio(req.video_path, str(audio_path))
-            
-            # 2. 提取视频帧
-            logger.info("Extracting frames...")
-            frame_paths, original_fps = extract_frames(
-                req.video_path, 
-                str(frames_dir), 
-                req.processing_config.frame_format
+
+    @staticmethod
+    def _load_image_from_path(image_path: str):
+        if not os.path.exists(image_path):
+            raise FileNotFoundError(f"Image file not found: {image_path}")
+
+        image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+        if image is None:
+            raise ValueError(f"Failed to decode image: {image_path}")
+
+        alpha_channel = None
+        if image.ndim == 3 and image.shape[2] == 4:
+            rgba_image = cv2.cvtColor(image, cv2.COLOR_BGRA2RGBA)
+            alpha_channel = rgba_image[:, :, 3]
+            image = rgba_image[:, :, :3]
+        elif image.ndim == 3:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        elif image.ndim == 2:
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+
+        return image, alpha_channel
+
+    @staticmethod
+    def _load_mask_from_path(mask_path: str, keep_grayscale: bool):
+        if not os.path.exists(mask_path):
+            raise FileNotFoundError(f"Mask file not found: {mask_path}")
+
+        mask_image = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)
+        if mask_image is None:
+            raise ValueError(f"Failed to decode mask: {mask_path}")
+
+        if mask_image.ndim == 3 and mask_image.shape[2] == 4:
+            mask = mask_image[:, :, 3]
+        elif mask_image.ndim == 3:
+            mask = cv2.cvtColor(mask_image, cv2.COLOR_BGR2GRAY)
+        else:
+            mask = mask_image
+
+        if not keep_grayscale:
+            mask = np.where(mask > 0, 255, 0).astype(np.uint8)
+
+        return mask
+
+    def _save_processed_frame(self, output_path: str, bgr_result: np.ndarray, alpha_channel):
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        rgb_result = cv2.cvtColor(bgr_result.astype(np.uint8), cv2.COLOR_BGR2RGB)
+
+        file_ext = os.path.splitext(output_path)[1].lower().lstrip(".") or "png"
+        supports_alpha = file_ext in {"png", "webp", "tiff", "tif"}
+
+        if alpha_channel is not None and alpha_channel.shape[:2] != rgb_result.shape[:2]:
+            alpha_channel = cv2.resize(
+                alpha_channel,
+                (rgb_result.shape[1], rgb_result.shape[0]),
+                interpolation=cv2.INTER_NEAREST,
             )
-            
-            fps = req.processing_config.fps or original_fps
-            total_frames = len(frame_paths)
-            
-            logger.info(f"Extracted {total_frames} frames at {original_fps} fps")
-            
-            # 3. 处理每一帧
-            def process_frame(frame_info):
-                frame_index, frame_path = frame_info
-                
-                try:
-                    # 加载帧图像
-                    frame_image, alpha_channel, infos = decode_path_to_image(frame_path)
-                    frame_shape = frame_image.shape[:2]
-                    
-                    # 获取当前帧的所有蒙版
-                    frame_masks = get_frame_masks(frame_index, req.masks, frame_shape)
-                    
-                    if not frame_masks:
-                        # 没有蒙版，直接复制原帧
-                        processed_path = processed_dir / f"processed_frame_{frame_index:06d}.png"
-                        save_image_to_path(frame_image, str(processed_path), infos=infos, alpha_channel=alpha_channel)
-                        return frame_index, True, None
-                    
-                    # 合并蒙版
-                    combined_mask = combine_masks(frame_masks)
-                    
-                    # 创建InpaintRequest
-                    inpaint_req = InpaintRequest(
-                        prompt=req.prompt,
-                        negative_prompt=req.negative_prompt,
-                        sd_steps=req.sd_steps,
-                        sd_guidance_scale=req.sd_guidance_scale,
-                        sd_strength=req.sd_strength,
-                        sd_seed=req.sd_seed
+
+        serializable_result = (
+            concat_alpha_channel(rgb_result, alpha_channel)
+            if alpha_channel is not None and supports_alpha
+            else rgb_result
+        )
+
+        result_bytes = pil_to_bytes(
+            Image.fromarray(serializable_result),
+            ext=file_ext,
+            quality=self.config.quality,
+            infos={},
+        )
+
+        with open(output_path, "wb") as output_file:
+            output_file.write(result_bytes)
+
+    @staticmethod
+    def _prune_failure_snapshots(failure_root: str, retention: int):
+        if not os.path.isdir(failure_root):
+            return
+
+        snapshots = []
+        for name in os.listdir(failure_root):
+            full_path = os.path.join(failure_root, name)
+            if os.path.isdir(full_path):
+                snapshots.append(full_path)
+
+        snapshots.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        for stale_path in snapshots[retention:]:
+            shutil.rmtree(stale_path, ignore_errors=True)
+
+    def _dump_failed_batch_snapshot(
+        self,
+        req: VideoBatchInpaintRequest,
+        failed_items: List[Dict],
+        batch_start_time: float,
+    ):
+        failure_root = req.options.failure_root
+        if not failure_root:
+            return None
+
+        os.makedirs(failure_root, exist_ok=True)
+        batch_name = req.options.batch_id or f"batch_{int(batch_start_time)}"
+        snapshot_dir = os.path.join(
+            failure_root,
+            f"{batch_name}_{int(batch_start_time * 1000)}",
+        )
+        os.makedirs(snapshot_dir, exist_ok=True)
+
+        frames_dir = os.path.join(snapshot_dir, "frames")
+        masks_dir = os.path.join(snapshot_dir, "masks")
+        os.makedirs(frames_dir, exist_ok=True)
+        os.makedirs(masks_dir, exist_ok=True)
+
+        for frame_item in req.frames:
+            if os.path.exists(frame_item.image_path):
+                shutil.copy2(
+                    frame_item.image_path,
+                    os.path.join(frames_dir, os.path.basename(frame_item.image_path)),
+                )
+            if os.path.exists(frame_item.mask_path):
+                shutil.copy2(
+                    frame_item.mask_path,
+                    os.path.join(masks_dir, os.path.basename(frame_item.mask_path)),
+                )
+
+        request_path = os.path.join(snapshot_dir, "request_snapshot.json")
+        with open(request_path, "w", encoding="utf-8") as fp:
+            fp.write(json.dumps(req.model_dump(mode="json"), ensure_ascii=False, indent=2))
+
+        errors_path = os.path.join(snapshot_dir, "errors.json")
+        with open(errors_path, "w", encoding="utf-8") as fp:
+            fp.write(json.dumps(failed_items, ensure_ascii=False, indent=2))
+
+        self._prune_failure_snapshots(
+            failure_root, req.options.failure_retention
+        )
+        return snapshot_dir
+
+    def api_video_batch_inpaint(self, req: VideoBatchInpaintRequest):
+        """
+        Process one video frame batch using frame/mask file paths.
+        """
+        start_time = time.time()
+        results = []
+        failed_items = []
+
+        for item in req.frames:
+            try:
+                image, alpha_channel = self._load_image_from_path(item.image_path)
+                mask = self._load_mask_from_path(
+                    item.mask_path, req.options.keep_mask_grayscale
+                )
+
+                if image.shape[:2] != mask.shape[:2]:
+                    mask = cv2.resize(
+                        mask,
+                        (image.shape[1], image.shape[0]),
+                        interpolation=cv2.INTER_NEAREST,
                     )
-                    
-                    # 执行修复
-                    processed_image = self.model_manager(frame_image, combined_mask, inpaint_req)
-                    
-                    # 转换颜色空间并保存
-                    processed_image = cv2.cvtColor(processed_image.astype(np.uint8), cv2.COLOR_BGR2RGB)
-                    processed_image = concat_alpha_channel(processed_image, alpha_channel)
-                    
-                    processed_path = processed_dir / f"processed_frame_{frame_index:06d}.png"
-                    save_image_to_path(processed_image, str(processed_path), infos=infos)
-                    
-                    return frame_index, True, None
-                    
-                except Exception as e:
-                    logger.error(f"Error processing frame {frame_index}: {str(e)}")
-                    return frame_index, False, str(e)
-            
-            # 并行处理帧
-            logger.info(f"Processing {total_frames} frames with {req.processing_config.max_workers} workers...")
-            
-            processed_count = 0
-            failed_frames = []
-            
-            with ThreadPoolExecutor(max_workers=req.processing_config.max_workers) as executor:
-                frame_infos = list(enumerate(frame_paths))
-                future_to_frame = {executor.submit(process_frame, info): info for info in frame_infos}
-                
-                for future in tqdm(as_completed(future_to_frame), total=len(frame_infos), desc="Processing frames"):
-                    frame_index, success, error = future.result()
-                    
-                    if success:
-                        processed_count += 1
-                    else:
-                        failed_frames.append({"frame": frame_index, "error": error})
-                    
-                    # 清理GPU内存
-                    torch_gc()
-            
-            # 4. 重新组装视频
-            logger.info("Reassembling video...")
-            reassemble_video(
-                str(processed_dir),
-                str(audio_path) if has_audio else "",
-                req.output_path,
-                fps,
-                req.processing_config
+
+                inpaint_req = req.options.inpaint.model_copy(deep=True)
+                inpaint_req.image = ""
+                inpaint_req.mask = ""
+
+                processed_bgr = self.model_manager(image, mask, inpaint_req)
+                self._save_processed_frame(
+                    item.output_path, processed_bgr.astype(np.uint8), alpha_channel
+                )
+                torch_gc()
+
+                results.append(
+                    {
+                        "frame_index": item.frame_index,
+                        "output_path": item.output_path,
+                        "success": True,
+                    }
+                )
+            except Exception as error:
+                failed = {
+                    "frame_index": item.frame_index,
+                    "image_path": item.image_path,
+                    "mask_path": item.mask_path,
+                    "output_path": item.output_path,
+                    "success": False,
+                    "error": str(error),
+                }
+                failed_items.append(failed)
+                results.append(failed)
+
+                logger.error(
+                    f"Video batch frame {item.frame_index} failed: {str(error)}"
+                )
+                if req.options.stop_on_error:
+                    break
+
+        failure_snapshot_dir = None
+        if len(failed_items) > 0:
+            failure_snapshot_dir = self._dump_failed_batch_snapshot(
+                req=req,
+                failed_items=failed_items,
+                batch_start_time=start_time,
             )
-            
-            # 5. 清理临时文件
-            if req.processing_config.temp_cleanup:
-                import shutil
-                shutil.rmtree(temp_dir)
-            
-            total_time = time.time() - start_time
-            
-            logger.info(f"Video processing completed in {total_time:.2f}s")
-            
-            return JSONResponse(content=jsonable_encoder({
-                "success": True,
-                "output_path": req.output_path,
-                "total_frames": total_frames,
-                "processed_frames": processed_count,
-                "failed_frames": failed_frames,
-                "processing_time": total_time,
-                "fps": fps,
-                "has_audio": has_audio
-            }))
-            
-        except Exception as e:
-            logger.error(f"Video processing failed: {str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
+
+        batch_time = time.time() - start_time
+        return JSONResponse(
+            content=jsonable_encoder(
+                {
+                    "processed_count": len(results),
+                    "success_count": sum(
+                        1 for it in results if it.get("success", False)
+                    ),
+                    "failed_count": len(failed_items),
+                    "batch_time": batch_time,
+                    "failure_snapshot_dir": failure_snapshot_dir,
+                    "results": results,
+                }
+            )
+        )

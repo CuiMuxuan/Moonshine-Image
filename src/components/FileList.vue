@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <q-list bordered>
     <q-item
       v-for="file in filteredFiles"
@@ -101,11 +101,11 @@ const getFileDisplayUrl = (file) => {
   const latestImage = history[history.length - 1];
   const url = props.fileUrls[file.id] || latestImage?.displayUrl;
 
-  // 濡傛灉鏄枃浠惰矾寰勪笖鍦‥lectron鐜涓?
+  // Convert local file URLs to the custom atom:// protocol that Electron can load.
   if (url && url.startsWith('file://') && window.electron) {
-    // 杞崲涓篍lectron鍙闂殑鍗忚
     const filePath = url.replace('file://', '');
-    return `atom://${filePath.replace(/\\/g, '/')}`;
+    // Replace file:// with atom:// so renderer-side previews can access local files.
+    return `atom://${filePath}`;
   }
 
   return url;
@@ -113,7 +113,7 @@ const getFileDisplayUrl = (file) => {
 </script>
 
 <style scoped>
-/* 娣诲姞鑷畾涔夐棿璺?*/
+/* File list item styling */
 .q-item {
   margin: 4px 0;
   border-radius: 4px;

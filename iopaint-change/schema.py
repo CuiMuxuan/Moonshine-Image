@@ -511,6 +511,7 @@ class BatchInpaintItem(BaseModel):
     image: str = Field(..., description="Image data (base64 or file path)")
     mask: str = Field(..., description="Mask data (base64 or file path)")
 
+
 class BatchInpaintRequest(BaseModel):
     data: List[BatchInpaintItem] = Field(
         default_factory=list, description="List of batch inpaint items"
@@ -521,7 +522,9 @@ class BatchInpaintRequest(BaseModel):
     mask_type: Literal["base64", "path"] = Field(
         "base64", description="Type of mask input: base64 or path"
     )
-    temp_path: Optional[str] = Field(None, description="Temporary path for processing")
+    temp_path: Optional[str] = Field(
+        None, description="Temporary path for processing path responses"
+    )
     response_type: Literal["base64", "path"] = Field(
         "base64", description="Type of response: base64 or path"
     )
@@ -566,76 +569,59 @@ class BatchInpaintRequest(BaseModel):
     def validate_field(cls, values: "BatchInpaintRequest"):
         if len(values.data) == 0:
             raise ValueError("Data list cannot be empty")
-        
-        # 检查ID唯一性
-        ids = [item.id for item in values.data]
-        if len(ids) != len(set(ids)):
+
+        item_ids = [item.id for item in values.data]
+        if len(item_ids) != len(set(item_ids)):
             raise ValueError("All item IDs must be unique")
-        
         return values
+
+
 class BatchInpaintByFolderRequest(BaseModel):
     device: str
     image_folder: str
     mask_folder: str
     output_folder: str
     concat: bool = False
-    
-class VideoMaskOffset(BaseModel):
-    """蒙版在特定帧的位置偏移"""
-    frame_index: int = Field(..., description="帧索引")
-    offset_x: int = Field(0, description="X轴偏移量")
-    offset_y: int = Field(0, description="Y轴偏移量")
-    scale_x: float = Field(1.0, description="X轴缩放比例")
-    scale_y: float = Field(1.0, description="Y轴缩放比例")
-    rotation: float = Field(0.0, description="旋转角度（度）")
-    opacity: float = Field(1.0, description="蒙版透明度", ge=0.0, le=1.0)
 
-class VideoMask(BaseModel):
-    """视频蒙版定义"""
-    id: str = Field(..., description="蒙版唯一标识")
-    mask_data: str = Field(..., description="蒙版数据（base64或路径）")
-    mask_type: Literal["base64", "path"] = Field("base64", description="蒙版数据类型")
-    start_frame: int = Field(..., description="起始帧索引")
-    end_frame: int = Field(..., description="结束帧索引")
-    offsets: List[VideoMaskOffset] = Field(default_factory=list, description="各帧的位置偏移")
-    interpolate_offsets: bool = Field(True, description="是否在未指定偏移的帧间进行插值")
 
-class VideoProcessingConfig(BaseModel):
-    """视频处理配置"""
-    fps: Optional[float] = Field(None, description="输出视频帧率，None表示保持原始帧率")
-    quality: int = Field(23, description="视频质量（CRF值，越小质量越高）", ge=0, le=51)
-    audio_codec: str = Field("aac", description="音频编码格式")
-    video_codec: str = Field("libx264", description="视频编码格式")
-    preserve_audio: bool = Field(True, description="是否保留原始音频")
-    temp_cleanup: bool = Field(True, description="处理完成后是否清理临时文件")
-    max_workers: int = Field(4, description="并行处理的最大工作线程数", ge=1, le=16)
-    frame_format: str = Field("png", description="临时帧图像格式")
+class VideoBatchFrameItem(BaseModel):
+    frame_index: int = Field(..., ge=0, description="0-based frame index")
+    image_path: str = Field(..., description="Input frame file path")
+    mask_path: str = Field(..., description="Input mask file path")
+    output_path: str = Field(..., description="Output frame file path")
 
-class VideoInpaintRequest(BaseModel):
-    """视频修复请求"""
-    video_path: str = Field(..., description="输入视频文件路径")
-    output_path: str = Field(..., description="输出视频文件路径")
-    temp_path: str = Field(..., description="临时文件存储路径")
-    masks: List[VideoMask] = Field(..., description="蒙版列表")
-    processing_config: VideoProcessingConfig = Field(default_factory=VideoProcessingConfig, description="处理配置")
-    
+
+class VideoBatchInpaintOptions(BaseModel):
+    inpaint: InpaintRequest = Field(
+        default_factory=InpaintRequest, description="Per-frame inpaint options"
+    )
+    keep_mask_grayscale: bool = Field(
+        True, description="Use mask alpha/grayscale as intensity"
+    )
+    stop_on_error: bool = Field(True, description="Stop current batch on first failure")
+    batch_id: Optional[str] = Field(None, description="Client side batch identifier")
+    failure_root: Optional[str] = Field(
+        None, description="Directory used to keep failed batch snapshots"
+    )
+    failure_retention: int = Field(
+        3, ge=1, le=50, description="How many failure snapshots to keep"
+    )
+
+
+class VideoBatchInpaintRequest(BaseModel):
+    frames: List[VideoBatchFrameItem] = Field(
+        default_factory=list, description="Frames in current batch"
+    )
+    options: VideoBatchInpaintOptions = Field(
+        default_factory=VideoBatchInpaintOptions
+    )
+
     @model_validator(mode="after")
-    def validate_paths(cls, values: "VideoInpaintRequest"):
-        # 验证路径
-        if not values.video_path or not values.video_path.strip():
-            raise ValueError("Video path cannot be empty")
-        if not values.output_path or not values.output_path.strip():
-            raise ValueError("Output path cannot be empty")
-        if not values.temp_path or not values.temp_path.strip():
-            raise ValueError("Temp path cannot be empty")
-        
-        # 验证蒙版
-        if not values.masks:
-            raise ValueError("At least one mask is required")
-        
-        # 检查蒙版ID唯一性
-        mask_ids = [mask.id for mask in values.masks]
-        if len(mask_ids) != len(set(mask_ids)):
-            raise ValueError("All mask IDs must be unique")
-        
+    def validate_fields(cls, values: "VideoBatchInpaintRequest"):
+        if len(values.frames) == 0:
+            raise ValueError("frames cannot be empty")
+
+        frame_indexes = [item.frame_index for item in values.frames]
+        if len(frame_indexes) != len(set(frame_indexes)):
+            raise ValueError("frame_index must be unique in one batch")
         return values

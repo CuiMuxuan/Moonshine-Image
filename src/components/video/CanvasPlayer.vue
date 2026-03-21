@@ -2,94 +2,76 @@
   <div class="canvas-player fit row flex-center">
     <div
       v-if="videoStore.hasVideoFile"
-      ref="canvasWrapper"
-      class="canvas-wrapper"
+      class="canvas-stage"
       :style="playerSize"
-    ></div>
+    >
+      <div ref="canvasWrapper" class="canvas-wrapper"></div>
+      <div class="canvas-overlay-layer">
+        <slot name="overlay"></slot>
+      </div>
+    </div>
     <div v-else class="empty-state fit column flex-center" :style="playerSize">
       <div class="empty-content text-center">
         <q-icon name="videocam_off" size="64px" color="grey-5" />
-        <p class="text-grey-5 q-mt-md">请选择视频文件</p>
+        <p class="text-grey-5 q-mt-md">
+          Upload a video from the left panel to start editing.
+        </p>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch, nextTick, computed } from "vue";
-import { useVideoManagerStore } from "../../stores/videoManager";
+import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import { AVCanvas } from "@webav/av-canvas";
-import { VisibleSprite, MP4Clip } from "@webav/av-cliper";
+import { MP4Clip, VisibleSprite } from "@webav/av-cliper";
+
+import { useVideoManagerStore } from "../../stores/videoManager";
 
 const videoStore = useVideoManagerStore();
-const canvasWrapper = ref(null);
 
-// 本地状态管理 - 模仿 video-editor.tsx 的状态管理方式
-// 避免将WebAV对象存储在响应式ref中，防止Vue代理包装导致私有字段访问问题
+const canvasWrapper = ref(null);
 let avCvs = null;
 let visibleSprite = null;
 let videoSprite = null;
-const videoWidth = ref(0);
-const videoHeight = ref(0);
-const videoDuration = ref(0);
+let loadVersion = 0;
+let pendingCanvasSetup = null;
+let canvasSetupPromise = null;
 
-// 计算播放器尺寸样式 - 根据视频宽高比固定容器宽高比
+const createDeferred = () => {
+  let resolve;
+  const promise = new Promise((nextResolve) => {
+    resolve = nextResolve;
+  });
+
+  return {
+    promise,
+    resolve,
+  };
+};
+
+const createReadyState = (version) => ({
+  version,
+  settled: false,
+  ready: false,
+  error: null,
+  deferred: createDeferred(),
+});
+
+let playerReadyState = createReadyState(loadVersion);
+
 const playerSize = computed(() => {
-  // 如果有视频文件，使用视频的宽高比来计算容器尺寸
-  if (videoStore.hasVideoFile && videoStore.videoWidth > 0 && videoStore.videoHeight > 0) {
-    const videoAspectRatio = videoStore.videoWidth / videoStore.videoHeight;
-
-    // 如果有容器尺寸，根据视频宽高比计算适合的显示尺寸
-    if (videoStore.playerWidth > 0 && videoStore.playerHeight > 0) {
-      const containerAspectRatio = videoStore.playerWidth / videoStore.playerHeight;
-
-      let displayWidth, displayHeight;
-
-      if (videoAspectRatio > containerAspectRatio) {
-        // 视频更宽，以容器宽度为准
-        displayWidth = videoStore.playerWidth;
-        displayHeight = videoStore.playerWidth / videoAspectRatio;
-      } else {
-        // 视频更高，以容器高度为准
-        displayHeight = videoStore.playerHeight;
-        displayWidth = videoStore.playerHeight * videoAspectRatio;
-      }
-
-      return {
-        width: Math.floor(displayWidth) + "px",
-        height: Math.floor(displayHeight) + "px",
-      };
-    }
-
-    // 如果没有容器尺寸，使用视频原始尺寸的缩放版本
-    const maxWidth = 800; // 最大宽度限制
-    const maxHeight = 600; // 最大高度限制
-
-    let displayWidth = videoStore.videoWidth;
-    let displayHeight = videoStore.videoHeight;
-
-    // 如果视频尺寸超过最大限制，按比例缩放
-    if (displayWidth > maxWidth) {
-      displayHeight = (displayHeight * maxWidth) / displayWidth;
-      displayWidth = maxWidth;
-    }
-
-    if (displayHeight > maxHeight) {
-      displayWidth = (displayWidth * maxHeight) / displayHeight;
-      displayHeight = maxHeight;
-    }
-
+  if (videoStore.hasVideoFile && videoStore.displayWidth > 0 && videoStore.displayHeight > 0) {
     return {
-      width: Math.floor(displayWidth) + "px",
-      height: Math.floor(displayHeight) + "px",
+      width: `${videoStore.displayWidth}px`,
+      height: `${videoStore.displayHeight}px`,
     };
   }
 
-  // 没有视频文件时，使用容器尺寸或默认尺寸
   if (videoStore.playerWidth > 0 && videoStore.playerHeight > 0) {
     return {
-      width: videoStore.playerWidth + "px",
-      height: videoStore.playerHeight + "px",
+      width: `${videoStore.playerWidth}px`,
+      height: `${videoStore.playerHeight}px`,
     };
   }
 
@@ -99,142 +81,253 @@ const playerSize = computed(() => {
   };
 });
 
-// 创建视频剪辑 - 模仿 video-editor.tsx 的创建方式
-const createVideoClip = async (file) => {
-  try {
-    // 销毁之前的MP4Clip实例
-    if (videoSprite) {
-      try {
-        videoSprite.destroy();
-      } catch (error) {
-        console.warn("销毁之前的MP4Clip时出错:", error);
-      }
+const destroyVideoClip = () => {
+  if (videoSprite) {
+    try {
+      videoSprite.destroy();
+    } catch (error) {
+      console.warn("Failed to destroy MP4Clip:", error);
     }
-
-    const stream = file.stream();
-    const clip = new MP4Clip(stream, {
-      __unsafe_hardwareAcceleration__: "no-preference",
-    });
-
-    // 等待clip准备完成以获取视频信息
-    const { duration, width, height } = await clip.ready;
-
-    videoWidth.value = width;
-    videoHeight.value = height;
-    videoDuration.value = Math.round(duration / 1e6);
-    videoSprite = clip;
-
-    // 更新store中的视频信息
-    videoStore.setVideoInfo(width, height, Math.round(duration / 1e6));
-
-    // 重新计算显示尺寸
-    if (videoStore.playerWidth > 0 && videoStore.playerHeight > 0) {
-      videoStore.calculateDisplaySize(
-        videoStore.playerWidth,
-        videoStore.playerHeight
-      );
-    }
-
-    return clip;
-  } catch (error) {
-    console.error("创建视频剪辑失败:", error);
-    throw error;
+    videoSprite = null;
   }
 };
 
-// 创建AVCanvas实例 - 使用固定尺寸避免频繁重建
-const createCanvas = async () => {
-  if (!canvasWrapper.value || !videoStore.hasVideoFile) {
-    return;
-  }
-
-  // 确认DOM元素存在且是HTMLElement
-  if (!(canvasWrapper.value instanceof HTMLElement)) {
-    console.error(
-      "canvasWrapper.value不是有效的HTMLElement:",
-      canvasWrapper.value
-    );
-    return;
-  }
-
-  // 如果AVCanvas已存在且有视频精灵，不需要重建
-  if (avCvs && visibleSprite) {
-    return;
-  }
-
-  // 销毁现有实例
-  if (avCvs) {
-    avCvs.destroy();
-    avCvs = null;
-  }
-  visibleSprite = null;
-
-  try {
-    // 使用视频的实际尺寸创建AVCanvas，避免比例扭曲
-    // 如果没有视频信息，使用默认尺寸
-    const canvasWidth = videoWidth.value || 1280;
-    const canvasHeight = videoHeight.value || 720;
-    
-    const cvs = new AVCanvas(canvasWrapper.value, {
-      bgColor: "#000",
-      width: canvasWidth,
-      height: canvasHeight,
-    });
-
-    avCvs = cvs;
-
-    // 设置事件监听
-    cvs.on("timeupdate", (time) => {
-      const timeInSeconds = time / 1e6;
-      videoStore.setCurrentTime(timeInSeconds);
-    });
-
-    cvs.on("playing", () => {
-      videoStore.setIsPlaying(true);
-    });
-
-    cvs.on("paused", () => {
-      videoStore.setIsPlaying(false);
-    });
-
-    // 如果有视频剪辑，创建并添加视频精灵到画布
-    if (videoSprite) {
-      try {
-        // 直接创建 VisibleSprite
-        const sprite = new VisibleSprite(videoSprite);
-        await cvs.addSprite(sprite);
-
-        // 保存创建的精灵
-        visibleSprite = sprite;
-      } catch (error) {
-        console.error("创建或添加视频精灵失败:", error);
-        throw error;
-      }
-    }
-  } catch (error) {
-    console.error("创建AVCanvas失败:", error);
-  }
-};
-
-// 销毁AVCanvas实例 - 模仿 video-editor.tsx 的销毁方式
 const destroyCanvas = () => {
-  if (avCvs) {
-    // 直接销毁，不捕获异常，模仿参考代码的方式
-    avCvs.destroy();
-    avCvs = null;
+  const currentCanvas = avCvs;
+  avCvs = null;
+
+  if (currentCanvas) {
+    try {
+      currentCanvas.pause?.();
+      currentCanvas.destroy();
+    } catch (error) {
+      console.warn("Failed to destroy AVCanvas:", error);
+    }
   }
+
   visibleSprite = null;
+  videoStore.setIsPlaying(false);
+
+  if (canvasWrapper.value instanceof HTMLElement) {
+    canvasWrapper.value.innerHTML = "";
+  }
 };
 
-// 播放控制方法 - 模仿 video-editor.tsx 的实现
+const startReadyCycle = (version) => {
+  pendingCanvasSetup = null;
+  playerReadyState = createReadyState(version);
+};
+
+const finishReadyCycle = (version, error = null) => {
+  if (playerReadyState.version !== version || playerReadyState.settled) return;
+  playerReadyState.settled = true;
+  playerReadyState.error =
+    error instanceof Error ? error : error ? new Error(String(error)) : null;
+  playerReadyState.ready = !playerReadyState.error;
+  playerReadyState.deferred.resolve();
+};
+
+const waitForReady = async (timeoutMs = 8000) => {
+  if (!videoStore.hasVideoFile) return;
+
+  const state = playerReadyState;
+  if (
+    state.ready &&
+    state.version === loadVersion &&
+    !state.error &&
+    avCvs &&
+    visibleSprite &&
+    videoSprite
+  ) {
+    return;
+  }
+
+  let timerId = null;
+  try {
+    await Promise.race([
+      state.deferred.promise,
+      new Promise((_, reject) => {
+        timerId = window.setTimeout(() => {
+          reject(new Error("Video player initialization timed out."));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timerId !== null) {
+      window.clearTimeout(timerId);
+    }
+  }
+
+  if (state !== playerReadyState) {
+    await waitForReady(timeoutMs);
+    return;
+  }
+
+  if (state.error) {
+    throw state.error;
+  }
+
+  if (!state.ready || !avCvs || !visibleSprite || !videoSprite) {
+    throw new Error("Video player is not ready.");
+  }
+};
+
+const createVideoClip = async (file, version) => {
+  const stream = file.stream();
+  const clip = new MP4Clip(stream, {
+    __unsafe_hardwareAcceleration__: "no-preference",
+    audio: { volume: videoStore.isMuted ? 0 : 1 },
+  });
+
+  const { duration, width, height } = await clip.ready;
+  if (version !== loadVersion) {
+    clip.destroy();
+    return null;
+  }
+
+  videoStore.setVideoInfo(width, height, duration / 1e6);
+  if (videoStore.playerWidth > 0 && videoStore.playerHeight > 0) {
+    videoStore.calculateDisplaySize(videoStore.playerWidth, videoStore.playerHeight);
+  }
+  videoSprite = clip;
+  return clip;
+};
+
+const createCanvas = async (version) => {
+  if (!canvasWrapper.value || !videoStore.hasVideoFile || !videoSprite) return;
+  if (!(canvasWrapper.value instanceof HTMLElement)) return;
+  if (version !== loadVersion) return;
+
+  const canvasWidth = videoStore.videoWidth || 1280;
+  const canvasHeight = videoStore.videoHeight || 720;
+
+  const nextCanvas = new AVCanvas(canvasWrapper.value, {
+    bgColor: "#000",
+    width: canvasWidth,
+    height: canvasHeight,
+  });
+  const currentVersion = version;
+
+  nextCanvas.on("timeupdate", (time) => {
+    if (currentVersion !== loadVersion) return;
+    videoStore.setCurrentTime(time / 1e6);
+  });
+  nextCanvas.on("playing", () => {
+    if (currentVersion !== loadVersion) return;
+    videoStore.setIsPlaying(true);
+  });
+  nextCanvas.on("paused", () => {
+    if (currentVersion !== loadVersion) return;
+    videoStore.setIsPlaying(false);
+  });
+
+  const nextSprite = new VisibleSprite(videoSprite);
+  await nextCanvas.addSprite(nextSprite);
+
+  if (currentVersion !== loadVersion) {
+    try {
+      nextCanvas.destroy();
+    } catch (error) {
+      console.warn("Failed to destroy stale AVCanvas:", error);
+    }
+    return;
+  }
+
+  avCvs = nextCanvas;
+  visibleSprite = nextSprite;
+};
+
+const maybeCompletePendingCanvasSetup = async () => {
+  if (canvasSetupPromise) {
+    await canvasSetupPromise;
+    return;
+  }
+
+  const pending = pendingCanvasSetup;
+  if (!pending || pending.version !== loadVersion) return;
+  if (!(canvasWrapper.value instanceof HTMLElement)) return;
+  if (!(videoStore.playerWidth > 0 && videoStore.playerHeight > 0) || !videoSprite) return;
+
+  canvasSetupPromise = (async () => {
+    try {
+      await nextTick();
+      await createCanvas(pending.version);
+      if (pending.version !== loadVersion) return;
+      if (!avCvs || !visibleSprite) return;
+
+      await previewFrame(pending.restoreTime);
+      if (pending.version !== loadVersion) return;
+
+      pendingCanvasSetup = null;
+      finishReadyCycle(pending.version);
+    } catch (error) {
+      pendingCanvasSetup = null;
+      finishReadyCycle(pending.version, error);
+      console.warn("Failed to finish player setup:", error);
+    }
+  })();
+
+  try {
+    await canvasSetupPromise;
+  } finally {
+    canvasSetupPromise = null;
+  }
+};
+
+const queueCanvasSetup = async (version, restoreTime = 0) => {
+  pendingCanvasSetup = {
+    version,
+    restoreTime,
+  };
+  await maybeCompletePendingCanvasSetup();
+};
+
+const loadVideoIntoPlayer = async (file, version, restoreTime = 0) => {
+  startReadyCycle(version);
+  destroyCanvas();
+  destroyVideoClip();
+
+  try {
+    const clip = await createVideoClip(file, version);
+    if (!clip || version !== loadVersion) return;
+    await queueCanvasSetup(version, restoreTime);
+  } catch (error) {
+    if (version !== loadVersion) return;
+    pendingCanvasSetup = null;
+    finishReadyCycle(version, error);
+    console.warn("Failed to load video player:", error);
+  }
+};
+
+const rebuildPlayer = async ({ keepTime = true, keepPlaying = false } = {}) => {
+  if (!videoStore.videoFile) return false;
+
+  const version = ++loadVersion;
+  const restoreTime = keepTime ? videoStore.currentTime : 0;
+  try {
+    await loadVideoIntoPlayer(videoStore.videoFile, version, restoreTime);
+    await waitForReady();
+    if (version !== loadVersion) return false;
+    if (keepPlaying) {
+      play();
+    }
+    return true;
+  } catch (error) {
+    console.warn("Failed to rebuild player:", error);
+    return false;
+  }
+};
+
 const play = () => {
-  if (avCvs && videoStore.hasVideoFile && visibleSprite) {
-    // 确保有视频精灵才能播放，支持播放倍速
-    console.log("播放倍速设置为:", videoStore.playbackRate);
+  if (!avCvs || !videoStore.hasVideoFile || !visibleSprite) return;
+  try {
     avCvs.play({
       start: videoStore.currentTime * 1e6,
       playbackRate: videoStore.playbackRate,
     });
+  } catch (error) {
+    console.warn("Failed to play video:", error);
+    videoStore.setIsPlaying(false);
   }
 };
 
@@ -244,11 +337,13 @@ const pause = () => {
   }
 };
 
-const togglePlayPause = () => {
-  if (avCvs == null || !videoStore.hasVideoFile || !visibleSprite) {
-    return;
-  }
+const stop = () => {
+  pause();
+  previewFrame(0);
+};
 
+const togglePlayPause = () => {
+  if (!avCvs || !videoStore.hasVideoFile || !visibleSprite) return;
   if (videoStore.isPlaying) {
     pause();
   } else {
@@ -256,119 +351,95 @@ const togglePlayPause = () => {
   }
 };
 
-// 预览指定时间的帧 - 模仿 video-editor.tsx 的实现
-const previewFrame = (timeInSeconds) => {
+const previewFrame = async (timeInSeconds) => {
   if (avCvs && videoStore.hasVideoFile && visibleSprite) {
-    avCvs.previewFrame(timeInSeconds * 1e6);
-    videoStore.setCurrentTime(timeInSeconds);
+    const safeTime = Math.max(0, Math.min(videoStore.videoDuration, timeInSeconds));
+    const activeCanvas = avCvs;
+
+    try {
+      await activeCanvas.previewFrame(safeTime * 1e6);
+      if (activeCanvas !== avCvs) return;
+      videoStore.setCurrentTime(safeTime);
+    } catch (error) {
+      if (activeCanvas !== avCvs) return;
+      console.warn("Failed to preview frame:", error);
+    }
   }
 };
 
-// 跳转到上一帧（约33ms前）
 const previousFrame = () => {
   if (!videoStore.hasVideoFile) return;
-  const frameTime = 1 / 30; // 假设30fps
+  const frameTime = 1 / Math.max(videoStore.sourceFrameRate || 30, 1);
   const newTime = Math.max(0, videoStore.currentTime - frameTime);
   previewFrame(newTime);
-  // 如果正在播放，暂停播放
   if (videoStore.isPlaying) {
     pause();
   }
 };
 
-// 跳转到下一帧（约33ms后）
 const nextFrame = () => {
   if (!videoStore.hasVideoFile) return;
-  const frameTime = 1 / 30; // 假设30fps
-  const newTime = Math.min(
-    videoStore.videoDuration,
-    videoStore.currentTime + frameTime
-  );
+  const frameTime = 1 / Math.max(videoStore.sourceFrameRate || 30, 1);
+  const newTime = Math.min(videoStore.videoDuration, videoStore.currentTime + frameTime);
   previewFrame(newTime);
-  // 如果正在播放，暂停播放
   if (videoStore.isPlaying) {
     pause();
   }
 };
 
-// 跳转到指定时间
-const seekTo = (timeInSeconds) => {
-  if (!videoStore.hasVideoFile) return;
-  const clampedTime = Math.max(
-    0,
-    Math.min(videoStore.videoDuration, timeInSeconds)
-  );
-  previewFrame(clampedTime);
+const seekTo = async (timeInSeconds) => {
+  if (!videoStore.hasVideoFile) return false;
+
+  try {
+    await waitForReady();
+    await previewFrame(Math.max(0, Math.min(videoStore.videoDuration, timeInSeconds)));
+    return true;
+  } catch (error) {
+    console.warn("Failed to seek video:", error);
+    return false;
+  }
 };
 
-// 监听视频文件变化，创建视频剪辑
 watch(
   () => videoStore.videoFile,
   async (newFile) => {
+    const version = ++loadVersion;
     if (newFile) {
-      try {
-        await createVideoClip(newFile);
-        // 如果播放器尺寸已经准备好，立即创建画布
-        if (videoStore.playerWidth > 0 && videoStore.playerHeight > 0) {
-          setTimeout(() => {
-            createCanvas();
-          }, 100);
-        }
-      } catch (error) {
-        console.error("处理视频文件失败:", error);
-        // 清理状态
-        videoSprite = null;
-        videoWidth.value = 0;
-        videoHeight.value = 0;
-        videoDuration.value = 0;
-      }
+      await loadVideoIntoPlayer(newFile, version, 0);
     } else {
-      // 清理所有状态 - 模仿 decode-video.tsx 的清理方式
+      startReadyCycle(version);
       destroyCanvas();
-      // 销毁MP4Clip实例
-      if (videoSprite) {
-        try {
-          videoSprite.destroy();
-        } catch (error) {
-          console.warn("销毁MP4Clip时出错:", error);
-        }
-      }
-      videoSprite = null;
-      videoWidth.value = 0;
-      videoHeight.value = 0;
-      videoDuration.value = 0;
-      // 清理store中的视频信息
+      destroyVideoClip();
+      pendingCanvasSetup = null;
       videoStore.clearVideoInfo();
     }
-  }
+  },
+  { immediate: true }
 );
 
-// 监听播放器尺寸变化，仅重新计算显示尺寸，不重建AVCanvas
 watch(
-  [() => videoStore.playerWidth, () => videoStore.playerHeight],
+  canvasWrapper,
+  async () => {
+    await maybeCompletePendingCanvasSetup();
+  },
+  { flush: "post" }
+);
+
+watch(
+  () => [videoStore.playerWidth, videoStore.playerHeight],
   async ([newWidth, newHeight]) => {
     if (newWidth > 0 && newHeight > 0) {
-      // 重新计算显示尺寸
       videoStore.calculateDisplaySize(newWidth, newHeight);
-
-      // 如果还没有创建AVCanvas，则创建一次
-      if (videoStore.hasVideoFile && videoSprite && !avCvs) {
-        await nextTick();
-        createCanvas();
-      }
+      await maybeCompletePendingCanvasSetup();
     }
   }
 );
 
-// 监听播放倍速变化，如果正在播放则重新开始播放以应用新倍速
 watch(
   () => videoStore.playbackRate,
-  (newRate) => {
-    console.log("播放倍速变化为:", newRate);
+  () => {
     if (videoStore.isPlaying && avCvs && visibleSprite) {
-      // 暂停当前播放
       avCvs.pause();
-      // 重新开始播放以应用新的倍速
       setTimeout(() => {
         play();
       }, 50);
@@ -376,40 +447,44 @@ watch(
   }
 );
 
-// 暴露方法给父组件使用
+watch(
+  () => videoStore.isMuted,
+  async (muted, previous) => {
+    if (muted === previous || !videoStore.videoFile) return;
+    await rebuildPlayer({
+      keepTime: true,
+      keepPlaying: videoStore.isPlaying,
+    });
+  }
+);
+
 defineExpose({
   play,
   pause,
+  stop,
   togglePlayPause,
   previewFrame,
   previousFrame,
   nextFrame,
   seekTo,
-  // 暴露视频信息
-  videoWidth: () => videoWidth.value,
-  videoHeight: () => videoHeight.value,
-  videoDuration: () => videoDuration.value,
-});
-
-onMounted(() => {
-  // 组件挂载时等待视频文件设置后通过watch监听器创建
+  rebuildPlayer,
+  waitForReady,
 });
 
 onUnmounted(() => {
   destroyCanvas();
-  // 销毁MP4Clip实例
-  if (videoSprite) {
-    try {
-      videoSprite.destroy();
-    } catch (error) {
-      console.warn("组件卸载时销毁MP4Clip出错:", error);
-    }
-  }
+  destroyVideoClip();
 });
 </script>
 
 <style scoped>
 .canvas-wrapper {
+  position: absolute;
+  inset: 0;
+}
+
+.canvas-stage {
+  position: relative;
   background-color: #000;
   border-radius: 4px;
   overflow: hidden;
@@ -418,7 +493,12 @@ onUnmounted(() => {
 .canvas-wrapper :deep(canvas) {
   width: 100% !important;
   height: 100% !important;
-  object-fit: scale-down;
+}
+
+.canvas-overlay-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
 }
 
 .empty-state {

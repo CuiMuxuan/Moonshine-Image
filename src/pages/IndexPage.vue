@@ -1,5 +1,5 @@
 <template>
-  <q-page class="flex">
+  <q-page class="flex image-page">
     <!-- 页面禁用覆盖层 -->
     <div
       v-if="isPageDisabled"
@@ -12,6 +12,7 @@
     ></div>
     <!-- 左侧文件浏览器 -->
     <file-explorer
+      ref="leftDrawerRef"
       v-model:drawer-open="leftDrawerOpen"
       :files="fileManagerStore.files"
       :selected-file="currentFile"
@@ -24,7 +25,7 @@
     />
 
     <!-- 右侧设置面板 -->
-    <q-drawer show-if-above v-model="rightDrawerOpen" side="right" bordered>
+    <q-drawer ref="rightDrawerRef" show-if-above v-model="rightDrawerOpen" side="right" bordered>
       <div class="q-pa-md" :class="{ 'pointer-events-none': isPageDisabled }">
         <div class="text-h6 q-mb-md flex items-center">
           <q-icon name="settings" class="q-mr-sm" />
@@ -149,7 +150,7 @@
 
     <!-- 主工作区 -->
     <div class="col flex row">
-      <div class="col">
+      <div ref="imageStageRef" class="col">
         <workspace
           :selected-file="currentFile"
           :class="{ 'pointer-events-none': isPageDisabled }"
@@ -163,6 +164,7 @@
             :show-masker="showMaskTools"
             :mask="currentFile.mask"
             :image-url="currentDisplayUrl"
+            :visible-area-insets="visibleAreaInsets"
             @loaded="handleImageLoaded"
             @update:mask="handleMaskUpdate"
           />
@@ -223,8 +225,33 @@ const configStore = useConfigStore();
 const appStateStore = useAppStateStore();
 const fileManagerStore = useFileManagerStore();
 
-const leftDrawerOpen = ref(false);
-const rightDrawerOpen = ref(false);
+const getDefaultDrawerState = () => {
+  const viewportWidth =
+    window.innerWidth || document.documentElement?.clientWidth || $q.screen.width || 0;
+
+  if (viewportWidth >= 1680) {
+    return {
+      left: true,
+      right: true,
+    };
+  }
+
+  if (viewportWidth >= 1280) {
+    return {
+      left: true,
+      right: false,
+    };
+  }
+
+  return {
+    left: false,
+    right: false,
+  };
+};
+
+const defaultDrawerState = getDefaultDrawerState();
+const leftDrawerOpen = ref(defaultDrawerState.left);
+const rightDrawerOpen = ref(defaultDrawerState.right);
 const currentModel = ref("lama");
 const showMaskTools = ref(true);
 const actionScope = ref({ label: "仅当前文件", value: "current" });
@@ -245,6 +272,37 @@ const dontShowMaxHistoryWarning = ref(false);
 const dontShowBackendWarning = ref(false);
 const isElectron = ref(false);
 const resourcesPath = ref("");
+const leftDrawerRef = ref(null);
+const rightDrawerRef = ref(null);
+const imageStageRef = ref(null);
+const visibleAreaInsets = ref({
+  left: 0,
+  right: 0,
+  top: 0,
+  bottom: 0,
+});
+
+const joinRendererPath = (...parts) => {
+  const normalizedParts = parts.filter((part) => typeof part === "string" && part.length > 0);
+  if (normalizedParts.length === 0) return "";
+  if (window.electron?.ipcRenderer?.joinPath) {
+    return window.electron.ipcRenderer.joinPath(...normalizedParts);
+  }
+  return normalizedParts.join("/").replace(/\/+/g, "/");
+};
+
+const getManagedImageOutputPath = (downloadPath, folderName) => {
+  if (!downloadPath) return "";
+  return joinRendererPath(downloadPath, folderName || "images");
+};
+
+const syncManagedImageOutputPath = (fileManagement = {}) => {
+  const nextImageFolderName = fileManagement.imageFolderName || "images";
+  const nextDownloadPath = fileManagement.downloadPath || "";
+  imageFolderName.value = nextImageFolderName;
+  exportPath.value = nextDownloadPath;
+  savePath.value = getManagedImageOutputPath(nextDownloadPath, nextImageFolderName);
+};
 const props = defineProps({
   backendRunning: {
     type: Boolean,
@@ -310,6 +368,9 @@ const handleSelectAll = (val) => {
 
 const handleImageLoaded = () => {
   isImageLoaded.value = true;
+  nextTick(() => {
+    updateVisibleAreaInsets();
+  });
 };
 const handleMaskUpdate = (maskData) => {
   if (fileManagerStore.currentFile) {
@@ -757,7 +818,7 @@ const downloadProcessedImages = async () => {
       fileName.substring(0, fileName.lastIndexOf(".")) || fileName;
     const fileExt = fileName.substring(fileName.lastIndexOf(".")) || ".png";
     const newFileName = `${fileNameWithoutExt}_processed${fileExt}`;
-    const fullPath = `${savePath.value}\\${newFileName}`;
+    const fullPath = joinRendererPath(savePath.value, newFileName);
 
     try {
       await fileManagerStore.saveFile(file.id, fullPath);
@@ -1017,6 +1078,75 @@ const handleRemoveFile = (fileId) => {
   }
 };
 
+const unwrapElement = (target) => {
+  if (target?.$el instanceof HTMLElement) {
+    return target.$el;
+  }
+
+  return target instanceof HTMLElement ? target : null;
+};
+
+const resolveDrawerElement = (target) => {
+  const host = unwrapElement(target);
+  if (!host) return null;
+
+  if (host.classList?.contains("q-drawer")) {
+    return host;
+  }
+
+  return host.querySelector(".q-drawer");
+};
+
+const getDrawerOverlapInset = (containerRect, drawerEl, side, isOpen) => {
+  if (!isOpen || !containerRect || !drawerEl) return 0;
+
+  const rect = drawerEl.getBoundingClientRect();
+  const style = window.getComputedStyle(drawerEl);
+
+  if (
+    rect.width <= 1 ||
+    rect.height <= 1 ||
+    style.display === "none" ||
+    style.visibility === "hidden" ||
+    style.opacity === "0"
+  ) {
+    return 0;
+  }
+
+  if (rect.bottom <= containerRect.top || rect.top >= containerRect.bottom) {
+    return 0;
+  }
+
+  if (side === "left") {
+    return Math.max(0, Math.min(containerRect.width, rect.right - containerRect.left));
+  }
+
+  return Math.max(0, Math.min(containerRect.width, containerRect.right - rect.left));
+};
+
+const updateVisibleAreaInsets = () => {
+  const containerEl = unwrapElement(imageStageRef.value);
+  if (!containerEl) return;
+
+  const containerRect = containerEl.getBoundingClientRect();
+  visibleAreaInsets.value = {
+    left: getDrawerOverlapInset(
+      containerRect,
+      resolveDrawerElement(leftDrawerRef.value),
+      "left",
+      leftDrawerOpen.value
+    ),
+    right: getDrawerOverlapInset(
+      containerRect,
+      resolveDrawerElement(rightDrawerRef.value),
+      "right",
+      rightDrawerOpen.value
+    ),
+    top: 0,
+    bottom: 0,
+  };
+};
+
 // 页面离开时的状态保存
 const savePageState = async () => {
   try {
@@ -1077,8 +1207,8 @@ const restorePageState = async () => {
     if (savedUIState) {
       // 使用nextTick确保状态更新的正确时机
       await nextTick(() => {
-        leftDrawerOpen.value = savedUIState.leftDrawerOpen ?? false;
-        rightDrawerOpen.value = savedUIState.rightDrawerOpen ?? false;
+        leftDrawerOpen.value = savedUIState.leftDrawerOpen ?? defaultDrawerState.left;
+        rightDrawerOpen.value = savedUIState.rightDrawerOpen ?? defaultDrawerState.right;
         currentModel.value = savedUIState.currentModel || "lama";
         showMaskTools.value = savedUIState.showMaskTools ?? true;
         actionScope.value = savedUIState.actionScope || {
@@ -1096,6 +1226,7 @@ const restorePageState = async () => {
         dontShowBackendWarning.value = savedUIState.dontShowBackendWarning ?? false;
       });
       await nextTick();
+      updateVisibleAreaInsets();
       // 应用恢复后的状态副作用
       if (selectAll.value) {
         fileManagerStore.selectAllFiles(true);
@@ -1118,15 +1249,7 @@ onMounted(async () => {
 
   // 4. 应用配置到UI状态
   if (configStore.config.fileManagement) {
-    if (configStore.config.fileManagement.imageFolderName) {
-      imageFolderName.value = configStore.config.fileManagement.imageFolderName;
-    }
-    if (configStore.config.fileManagement.downloadPath) {
-      exportPath.value = configStore.config.fileManagement.downloadPath;
-      if (!savePath.value) {
-        savePath.value = configStore.config.fileManagement.downloadPath;
-      }
-    }
+    syncManagedImageOutputPath(configStore.config.fileManagement);
   }
 
   // 5. 设置配置更新监听器
@@ -1144,12 +1267,8 @@ onMounted(async () => {
 
     // 监听配置更新
     window.electron.ipcRenderer.on("config-updated", (event, config) => {
-      if (config.fileManagement && config.fileManagement.imageFolderName) {
-        imageFolderName.value = config.fileManagement.imageFolderName;
-      }
-      if (config.fileManagement && config.fileManagement.downloadPath) {
-        exportPath.value = config.fileManagement.downloadPath;
-        savePath.value = config.fileManagement.downloadPath;
+      if (config.fileManagement) {
+        syncManagedImageOutputPath(config.fileManagement);
       }
     });
   }
@@ -1160,7 +1279,10 @@ onMounted(async () => {
     if (selectAll.value) {
       fileManagerStore.selectAllFiles(true);
     }
+    updateVisibleAreaInsets();
   });
+
+  window.addEventListener("resize", updateVisibleAreaInsets);
 });
 
 // 在路由离开前保存当前页面状态
@@ -1171,6 +1293,7 @@ onBeforeRouteLeave(async (to, from, next) => {
 });
 // 在组件卸载时清理资源
 onUnmounted(async () => {
+  window.removeEventListener("resize", updateVisibleAreaInsets);
   // 保存状态
   await savePageState();
 
@@ -1189,21 +1312,39 @@ onUnmounted(async () => {
     });
   });
 });
+
+watch(
+  [leftDrawerOpen, rightDrawerOpen, currentFile, showMaskTools],
+  async () => {
+    await nextTick();
+    updateVisibleAreaInsets();
+  },
+  {
+    flush: "post",
+  }
+);
 </script>
 <style scoped>
 .page-disabled-overlay {
-  position: fixed;
+  position: absolute;
   top: 50px; /* 设置为头部高度，避免遮住头部工具栏 */
   left: 0;
   width: 100vw;
+  top: 0;
+  width: 100%;
   height: calc(100vh - 50px); /* 减去头部高度 */
   background-color: rgba(0, 0, 0, 0.1);
-  z-index: 9999;
+  z-index: 1200;
+  height: 100%;
   cursor: not-allowed;
 }
 
 .pointer-events-none {
   pointer-events: none;
   user-select: none;
+}
+
+.image-page {
+  position: relative;
 }
 </style>

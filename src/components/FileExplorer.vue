@@ -1,5 +1,5 @@
 <template>
-  <q-drawer show-if-above v-model="drawerModel" side="left" elevated>
+  <q-drawer show-if-above overlay bordered v-model="drawerModel" side="left" elevated>
     <file-list
       :files="files"
       :selected-file="selectedFile"

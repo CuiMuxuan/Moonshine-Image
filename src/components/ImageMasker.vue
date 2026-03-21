@@ -1,5 +1,5 @@
 <template>
-  <div v-if="show" class="absolute inset-0">
+  <div v-if="show" ref="rootRef" class="absolute inset-0">
     <canvas
       ref="maskCanvas"
       class="absolute"
@@ -15,7 +15,7 @@
         left: `${store.offsetX}px`,
         top: `${store.offsetY}px`,
         pointerEvents: isDrawingMode || isCtrlPressed ? 'auto' : 'none',
-        opacity: maskVisible ? 1 : 0,
+        opacity: maskVisible ? brushAlpha : 0,
         transition: 'opacity 0.15s ease',
       }"
       @pointerdown="onPointerDown"
@@ -24,15 +24,14 @@
       @pointerout="handlePointerOut"
     ></canvas>
 
-    <!-- 自定义画笔光标 -->
     <div
       v-if="(isDrawingMode || isCtrlPressed) && cursorPosition"
       class="absolute rounded-full pointer-events-none custom-cursor"
       :style="{
         width: `${brushSize}px`,
         height: `${brushSize}px`,
-        backgroundColor: brushColor + '80', // 添加透明度
-        border: '1px solid white',
+        backgroundColor: toRgba(brushColor, brushAlpha),
+        border: '1px solid rgba(255, 255, 255, 0.9)',
         transform: 'translate(-50%, -50%)',
         left: `${cursorPosition.x}px`,
         top: `${cursorPosition.y}px`,
@@ -41,10 +40,10 @@
       }"
     ></div>
 
-    <!-- 工具栏 -->
     <div
       v-show="showToolbar"
-      class="absolute bg-deep-purple-2 rounded-pill shadow-lg toolbar-container"
+      ref="toolbarRef"
+      class="absolute toolbar-container app-floating-toolbar"
       :style="{
         left: `${toolbarPosition.x}px`,
         top: `${toolbarPosition.y}px`,
@@ -54,19 +53,16 @@
       @pointerdown.stop
     >
       <div
-        class="toolbar-handle bg-primary text-white text-center text-xs py-1 rounded-t-pill cursor-move"
+        class="toolbar-handle bg-primary text-white text-center text-xs py-1 cursor-move"
         @mousedown.stop="startDragToolbar"
         @pointerdown.stop
       >
         绘制工具拖动区域
       </div>
-      <q-bar class="q-px-md rounded-b-pill bg-deep-purple-2">
+
+      <q-bar class="q-px-md rounded-b-pill app-floating-toolbar-bar">
         <q-btn-group flat class="rounded-pill overflow-hidden">
-          <q-btn
-            :color="isDrawingMode ? 'primary' : 'grey'"
-            icon="brush"
-            @click="toggleDrawing"
-          >
+          <q-btn :color="isDrawingMode ? 'primary' : 'grey'" icon="brush" @click="toggleDrawing">
             <q-tooltip>绘制 (Ctrl/B)</q-tooltip>
           </q-btn>
 
@@ -78,9 +74,9 @@
                     <div
                       class="mr-2 rounded-full"
                       :style="{
-                        width: `${brushSize}px`,
-                        height: `${brushSize}px`,
-                        backgroundColor: brushColor,
+                        width: `${Math.max(10, brushSize)}px`,
+                        height: `${Math.max(10, brushSize)}px`,
+                        backgroundColor: toRgba(brushColor, brushAlpha),
                         minWidth: '10px',
                         minHeight: '10px',
                       }"
@@ -88,7 +84,7 @@
                     <q-slider
                       v-model="brushSize"
                       :min="1"
-                      :max="100"
+                      :max="120"
                       label
                       label-always
                       class="flex-1"
@@ -100,7 +96,23 @@
           </q-btn-dropdown>
 
           <q-btn-dropdown color="primary" icon="palette">
-            <q-color v-model="brushColor" />
+            <div class="q-pa-sm">
+              <q-color v-model="brushColor" />
+            </div>
+          </q-btn-dropdown>
+
+          <q-btn-dropdown color="primary" icon="opacity">
+            <div class="alpha-panel q-pa-md">
+              <div class="text-caption q-mb-sm">透明度</div>
+              <q-slider
+                v-model="brushAlpha"
+                :min="0.05"
+                :max="1"
+                :step="0.05"
+                label
+                label-always
+              />
+            </div>
           </q-btn-dropdown>
         </q-btn-group>
 
@@ -114,7 +126,7 @@
             <q-tooltip>清除</q-tooltip>
           </q-btn>
           <q-btn icon="undo" :disable="!canUndo" @click="undo">
-            <q-tooltip>撤销(Ctrl+Z)</q-tooltip>
+            <q-tooltip>撤销 (Ctrl+Z)</q-tooltip>
           </q-btn>
           <q-btn
             icon="visibility_off"
@@ -131,13 +143,18 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch, inject, nextTick } from "vue";
-import { useEditorStore } from "../stores/editor";
-import { useFileManagerStore } from "../stores/fileManager";
+import { inject, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 
+import { DEFAULT_IMAGE_BRUSH, normalizeBrushConfig } from "src/config/ConfigManager";
+import { useConfigStore } from "src/stores/config";
+import { useEditorStore } from "../stores/editor";
+import { useFileManagerStore } from "../stores/fileManager";
+
 const editor = inject("image-editor", { value: null });
+const configStore = useConfigStore();
 const fileManagerStore = useFileManagerStore();
+
 const props = defineProps({
   scale: {
     type: Number,
@@ -155,453 +172,166 @@ const props = defineProps({
     type: Object,
     default: null,
   },
+  visibleAreaInsets: {
+    type: Object,
+    default: () => ({
+      left: 0,
+      right: 0,
+      top: 0,
+      bottom: 0,
+    }),
+  },
 });
 
+const emit = defineEmits(["update:mask", "update:drawing-mode", "update:ctrl-pressed"]);
+
 const store = useEditorStore();
+const rootRef = ref(null);
+const toolbarRef = ref(null);
 const maskCanvas = ref(null);
 const ctx = ref(null);
 const isDrawing = ref(false);
-const brushSize = ref(20);
-const brushColor = ref("#1976D2");
+const brushSize = ref(DEFAULT_IMAGE_BRUSH.size);
+const brushColor = ref(DEFAULT_IMAGE_BRUSH.color);
+const brushAlpha = ref(DEFAULT_IMAGE_BRUSH.alpha);
 const lastPoint = ref(null);
 const isCtrlPressed = ref(false);
 const cursorPosition = ref(null);
-
-// 撤销重做相关
 const history = ref([]);
 const historyIndex = ref(-1);
 const canUndo = ref(false);
-// 记录每次操作的起始索引
 const operationStartIndices = ref([0]);
-// 临时绘制缓存
 const tempCanvas = ref(null);
 const tempCtx = ref(null);
-
-// 工具栏拖拽相关
-const toolbarPosition = ref({ x: 20, y: 20 }); // 初始位置
+const toolbarPosition = ref({ x: 20, y: 20 });
 const isDraggingToolbar = ref(false);
 const dragOffset = ref({ x: 0, y: 0 });
-
+const hasManualToolbarPosition = ref(false);
 const maskVisible = ref(true);
-// 初始化画布
-const initCanvas = () => {
-  const canvas = maskCanvas.value;
-  if (!store.imageWidth || !store.imageHeight) return;
+const isDrawingMode = ref(false);
 
-  canvas.width = store.imageWidth;
-  canvas.height = store.imageHeight;
-  ctx.value = canvas.getContext("2d", { willReadFrequently: true });
-
-  // 设置全局透明度合成模式，保留透明度
-  ctx.value.globalCompositeOperation = "source-over";
-
-  // 清空画布
-  ctx.value.clearRect(0, 0, canvas.width, canvas.height);
-
-  // 处理不同类型的mask数据
-  if (props.mask) {
-    if (props.mask instanceof ImageData) {
-      // 如果是ImageData类型，直接使用putImageData
-      ctx.value.putImageData(props.mask, 0, 0);
-      saveInitialState();
-    } else if (props.mask.data && typeof props.mask.data === "string") {
-      // 如果是包含data字符串的对象(可能是base64图像)
-      const img = new Image();
-      img.onload = () => {
-        ctx.value.drawImage(img, 0, 0, canvas.width, canvas.height);
-        // 保存初始状态
-        saveInitialState();
-      };
-      img.onerror = () => {
-        console.error("加载蒙版图像失败");
-        ctx.value.clearRect(0, 0, canvas.width, canvas.height);
-        saveInitialState();
-      };
-      // 根据mask类型设置图片源
-      if (props.mask.type === 'path' && props.mask.displayUrl) {
-        // 文件路径模式，使用displayUrl
-        img.src = props.mask.displayUrl;
-      } else if (props.mask.type === 'base64') {
-        // base64模式
-        const base64Data = props.mask.data.startsWith('data:')
-          ? props.mask.data
-          : `data:image/png;base64,${props.mask.data}`;
-        img.src = base64Data;
-      } else {
-        // 兼容旧格式
-        img.src = props.mask.data;
-      }
-      return; // 异步加载，提前返回
-    } else {
-      // 如果没有有效的蒙版数据，创建空白蒙版
-      ctx.value.clearRect(0, 0, canvas.width, canvas.height);
-      saveInitialState();
-    }
-  } else {
-    // 没有蒙版，创建空白蒙版
-    ctx.value.clearRect(0, 0, canvas.width, canvas.height);
-    saveInitialState();
-  }
+const toRgba = (hex, alpha = 1) => {
+  const value = String(hex || "").replace("#", "").trim();
+  const normalized =
+    value.length === 3
+      ? value
+          .split("")
+          .map((item) => item + item)
+          .join("")
+      : value.padEnd(6, "0").slice(0, 6);
+  const red = Number.parseInt(normalized.slice(0, 2), 16);
+  const green = Number.parseInt(normalized.slice(2, 4), 16);
+  const blue = Number.parseInt(normalized.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${Math.max(0, Math.min(1, alpha))})`;
 };
 
-// 切换蒙版可见性
-const toggleMaskVisibility = (visible) => {
-  maskVisible.value = visible;
-};
-// 保存初始状态
 const saveInitialState = () => {
   const canvas = maskCanvas.value;
   if (!canvas || !ctx.value || canvas.width <= 0 || canvas.height <= 0) return;
 
-  // 重置历史记录
   history.value = [];
   historyIndex.value = -1;
-  operationStartIndices.value = [];
+  operationStartIndices.value = [0];
 
-  const initialState = ctx.value.getImageData(
-    0,
-    0,
-    canvas.width,
-    canvas.height
-  );
+  const initialState = ctx.value.getImageData(0, 0, canvas.width, canvas.height);
   history.value.push(initialState);
   historyIndex.value = 0;
   operationStartIndices.value = [0];
   updateCanUndoRedo();
 };
-// 比较两个 ImageData 是否相同
+
 const areImageDatasEqual = (data1, data2) => {
   if (!data1 || !data2) return false;
-  if (data1.width !== data2.width || data1.height !== data2.height)
-    return false;
+  if (data1.width !== data2.width || data1.height !== data2.height) return false;
 
-  const d1 = data1.data;
-  const d2 = data2.data;
+  const source = data1.data;
+  const target = data2.data;
+  if (source.length !== target.length) return false;
 
-  if (d1.length !== d2.length) return false;
-
-  return !Array.from({ length: d1.length / 4 }, (_, i) => i * 4).some((i) => {
-    // 只有当至少一个像素有透明度时才比较
-    return (
-      (d1[i + 3] > 0 || d2[i + 3] > 0) &&
-      (d1[i] !== d2[i] ||
-        d1[i + 1] !== d2[i + 1] ||
-        d1[i + 2] !== d2[i + 2] ||
-        d1[i + 3] !== d2[i + 3])
-    );
-  });
-};
-// 状态管理
-const saveState = () => {
-  if (
-    !ctx.value ||
-    !maskCanvas.value ||
-    !maskCanvas.value.width ||
-    !maskCanvas.value.height
-  )
-    return;
-
-  const imageData = ctx.value.getImageData(
-    0,
-    0,
-    maskCanvas.value.width,
-    maskCanvas.value.height
-  );
-  // 删除当前位置之后的所有历史记录
-  history.value.splice(historyIndex.value + 1);
-  history.value.push(imageData);
-  historyIndex.value = history.value.length - 1;
-};
-
-// 处理鼠标移动，更新光标位置
-const handlePointerMove = (e) => {
-  if (!maskCanvas.value) return;
-
-  cursorPosition.value = {
-    x: e.clientX,
-    y: e.clientY,
-  };
-
-  // 如果正在绘制，则调用绘制函数
-  if (isDrawing.value) {
-    draw(e);
-  }
-};
-// 鼠标移出画布的处理
-const handlePointerOut = (e) => {
-  // 如果是移出到工具栏，不停止绘制
-  if (e.relatedTarget && e.relatedTarget.closest(".toolbar-container")) {
-    return;
+  for (let index = 0; index < source.length; index += 4) {
+    if (
+      (source[index + 3] > 0 || target[index + 3] > 0) &&
+      (source[index] !== target[index] ||
+        source[index + 1] !== target[index + 1] ||
+        source[index + 2] !== target[index + 2] ||
+        source[index + 3] !== target[index + 3])
+    ) {
+      return false;
+    }
   }
 
-  if (isDrawing.value) {
-    stopDrawing();
-  }
-  // 移出画布时隐藏自定义光标
-  cursorPosition.value = null;
+  return true;
 };
-//绘制
-const draw = (e) => {
-  if (!isDrawing.value || !ctx.value || !lastPoint.value) return;
 
-  // 防止绘制时的事件冒泡
-  e.preventDefault();
-  e.stopPropagation();
-
-  const rect = maskCanvas.value.getBoundingClientRect();
-  const x = (e.clientX - rect.left) / props.scale;
-  const y = (e.clientY - rect.top) / props.scale;
-
-  // 检查是否在画布范围内
-  if (
-    x < 0 ||
-    x > maskCanvas.value.width ||
-    y < 0 ||
-    y > maskCanvas.value.height
-  ) {
-    return;
-  }
-
-  // 使用requestAnimationFrame优化绘制性能
-  requestAnimationFrame(() => {
-    ctx.value.beginPath();
-    ctx.value.moveTo(lastPoint.value.x, lastPoint.value.y);
-    ctx.value.lineTo(x, y);
-
-    // 设置画笔样式
-    ctx.value.strokeStyle = brushColor.value;
-    ctx.value.lineWidth = brushSize.value / props.scale;
-    ctx.value.lineCap = "round";
-    ctx.value.lineJoin = "round";
-    ctx.value.stroke();
-
-    lastPoint.value = { x, y };
-  });
-};
-// 节流函数
 const throttle = (fn, delay) => {
   let lastCall = 0;
-  return function (...args) {
-    const now = new Date().getTime();
-    if (now - lastCall < delay) {
-      return;
-    }
+  return function throttled(...args) {
+    const now = Date.now();
+    if (now - lastCall < delay) return;
     lastCall = now;
     return fn(...args);
   };
 };
-// 开始绘制时，保存当前状态到临时画布
-const startDrawing = (e) => {
-  if (e.button !== 0) return;
 
-  const rect = maskCanvas.value.getBoundingClientRect();
-  const x = (e.clientX - rect.left) / props.scale;
-  const y = (e.clientY - rect.top) / props.scale;
+const initCanvas = () => {
+  const canvas = maskCanvas.value;
+  if (!canvas || !store.imageWidth || !store.imageHeight) return;
 
-  // 创建临时画布保存当前状态
-  if (!tempCanvas.value) {
-    tempCanvas.value = document.createElement("canvas");
-    tempCanvas.value.width = maskCanvas.value.width;
-    tempCanvas.value.height = maskCanvas.value.height;
-    tempCtx.value = tempCanvas.value.getContext("2d", {
-      willReadFrequently: true,
-    });
+  canvas.width = store.imageWidth;
+  canvas.height = store.imageHeight;
+  ctx.value = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.value.globalCompositeOperation = "source-over";
+  ctx.value.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (!props.mask) {
+    saveInitialState();
+    return;
   }
 
-  // 复制当前状态到临时画布
-  tempCtx.value.clearRect(
-    0,
-    0,
-    tempCanvas.value.width,
-    tempCanvas.value.height
-  );
-  tempCtx.value.drawImage(maskCanvas.value, 0, 0);
-
-  lastPoint.value = { x, y };
-  isDrawing.value = true;
-
-  // 立即绘制一个点
-  ctx.value.beginPath();
-  ctx.value.arc(x, y, brushSize.value / (props.scale * 2), 0, Math.PI * 2);
-  ctx.value.fillStyle = brushColor.value;
-  ctx.value.fill();
-  emitMask();
-};
-const stopDrawing = () => {
-  if (isDrawing.value) {
-    isDrawing.value = false;
-
-    // 只在绘制结束时保存状态，并且只有当内容有变化时才保存
-    if (tempCanvas.value && tempCtx.value) {
-      const currentImageData = ctx.value.getImageData(
-        0,
-        0,
-        maskCanvas.value.width,
-        maskCanvas.value.height
-      );
-      const startImageData = tempCtx.value.getImageData(
-        0,
-        0,
-        tempCanvas.value.width,
-        tempCanvas.value.height
-      );
-
-      // 只有当绘制前后有变化时才保存状态
-      if (!areImageDatasEqual(currentImageData, startImageData)) {
-        // 删除当前位置之后的所有历史记录
-        if (historyIndex.value < history.value.length - 1) {
-          history.value.splice(historyIndex.value + 1);
-
-          // 重建操作起始索引数组，只保留当前有效的索引
-          operationStartIndices.value = operationStartIndices.value.filter(
-            (index) => index <= historyIndex.value
-          );
-        }
-
-        // 记录新操作的起始索引
-        const newIndex = history.value.length;
-        operationStartIndices.value.push(newIndex);
-
-        // 创建新的ImageData对象以避免引用问题
-        const newImageData = new ImageData(
-          new Uint8ClampedArray(currentImageData.data),
-          currentImageData.width,
-          currentImageData.height
-        );
-
-        history.value.push(newImageData);
-        historyIndex.value = history.value.length - 1;
-        updateCanUndoRedo();
-        emitMask();
-      }
-    }
+  if (props.mask instanceof ImageData) {
+    ctx.value.putImageData(props.mask, 0, 0);
+    saveInitialState();
+    return;
   }
-};
 
-// 工具栏功能
-const isDrawingMode = ref(false);
-
-const toggleDrawing = () => {
-  isDrawingMode.value = !isDrawingMode.value;
-  isDrawing.value = false;
-  // 通知父组件绘制模式状态变化
-  emit("update:drawing-mode", isDrawingMode.value);
-};
-
-const onPointerDown = (e) => {
-  if (e.button !== 0) return;
-
-  if (isDrawingMode.value || isCtrlPressed.value) {
-    // 绘制模式
-    startDrawing(e);
-
-    // 防止 Ctrl 键触发浏览器默认行为
-    if (isCtrlPressed.value) {
-      e.preventDefault();
-    }
-  } else {
-    // 拖拽模式
-    const startX = e.clientX - store.offsetX;
-    const startY = e.clientY - store.offsetY;
-
-    const onPointerMove = (e) => {
-      store.setOffset(e.clientX - startX, e.clientY - startY);
+  if (props.mask.data && typeof props.mask.data === "string") {
+    const img = new Image();
+    img.onload = () => {
+      ctx.value.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.value.drawImage(img, 0, 0, canvas.width, canvas.height);
+      saveInitialState();
+    };
+    img.onerror = () => {
+      console.error("加载蒙版图像失败");
+      ctx.value.clearRect(0, 0, canvas.width, canvas.height);
+      saveInitialState();
     };
 
-    const onPointerUp = () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-    };
-
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
-  }
-};
-
-const resetView = () => {
-  if (editor && editor.value) {
-    editor.value.resetView();
-  } else {
-    // 如果没有找到editor引用，使用store的重置方法
-    store.resetView();
-  }
-};
-
-const undo = () => {
-  if (historyIndex.value > 0) {
-    // 找到当前操作的起始索引
-    let currentOpIndex = 0;
-    for (let i = operationStartIndices.value.length - 1; i >= 0; i--) {
-      if (operationStartIndices.value[i] <= historyIndex.value) {
-        currentOpIndex = i;
-        break;
-      }
-    }
-
-    // 找到上一个操作的起始索引
-    const prevOpIndex = Math.max(0, currentOpIndex - 1);
-    const targetIndex = operationStartIndices.value[prevOpIndex];
-
-    // 确保目标索引有效
-    if (targetIndex >= 0 && targetIndex < history.value.length) {
-      // 从操作起始索引中移除被撤销的索引
-      operationStartIndices.value = operationStartIndices.value.filter(
-        (index) => index <= targetIndex
-      );
-
-      // 直接跳转到上一个操作的起始点
-      historyIndex.value = targetIndex;
-      ctx.value.putImageData(history.value[historyIndex.value], 0, 0);
-
-      updateCanUndoRedo();
-      emitMask();
+    if (props.mask.type === "path" && props.mask.displayUrl) {
+      img.src = props.mask.displayUrl;
+    } else if (props.mask.type === "base64") {
+      img.src = props.mask.data.startsWith("data:")
+        ? props.mask.data
+        : `data:image/png;base64,${props.mask.data}`;
     } else {
-      console.error("无效的目标索引:", targetIndex);
+      img.src = props.mask.data;
     }
+    return;
   }
+
+  saveInitialState();
 };
 
-// 清除方法
-const clearCanvas = () => {
-  if (!ctx.value || !maskCanvas.value) return;
-
-  ctx.value.clearRect(0, 0, maskCanvas.value.width, maskCanvas.value.height);
-
-  // 删除当前位置之后的所有历史记录
-  if (historyIndex.value < history.value.length - 1) {
-    history.value.splice(historyIndex.value + 1);
-    // 同时删除对应的操作起始索引
-    operationStartIndices.value = operationStartIndices.value.filter(
-      (index) => index <= historyIndex.value
-    );
-  }
-  // 记录清除操作的起始索引
-  const newIndex = history.value.length;
-  operationStartIndices.value.push(newIndex);
-
-  const imageData = ctx.value.getImageData(
-    0,
-    0,
-    maskCanvas.value.width,
-    maskCanvas.value.height
-  );
-  history.value.push(imageData);
-  historyIndex.value = history.value.length - 1;
-  updateCanUndoRedo();
-  emitMask();
+const toggleMaskVisibility = (visible) => {
+  maskVisible.value = visible;
 };
-const updateCanUndoRedo = () => {
-  // 只有当当前索引大于最早的操作起始索引时，才能撤销
-  canUndo.value = historyIndex.value > operationStartIndices.value[0];
-};
-// 向父组件发送蒙版数据
+
+const getMaskData = () => maskCanvas.value?.toDataURL("image/png") || "";
+
 const emitMask = throttle(() => {
   if (!ctx.value || !maskCanvas.value) return;
 
-  // 使用toDataURL代替getImageData，减少数据量
-  const dataUrl = maskCanvas.value.toDataURL("image/png", 0.8); // 使用压缩率0.8
-
-  // 更新fileManager store中的mask
+  const dataUrl = maskCanvas.value.toDataURL("image/png");
   if (fileManagerStore.currentFileId) {
     fileManagerStore.updateFileMask(fileManagerStore.currentFileId, dataUrl);
   }
@@ -613,57 +343,332 @@ const emitMask = throttle(() => {
   });
 }, 100);
 
-// updateMask方法，供外部调用
+const updateCanUndoRedo = () => {
+  canUndo.value = historyIndex.value > operationStartIndices.value[0];
+};
+
+const handlePointerMove = (event) => {
+  if (!maskCanvas.value) return;
+
+  cursorPosition.value = {
+    x: event.clientX,
+    y: event.clientY,
+  };
+
+  if (isDrawing.value) {
+    draw(event);
+  }
+};
+
+const handlePointerOut = (event) => {
+  if (event.relatedTarget && event.relatedTarget.closest(".toolbar-container")) {
+    return;
+  }
+
+  if (isDrawing.value) {
+    stopDrawing();
+  }
+  cursorPosition.value = null;
+};
+
+const draw = (event) => {
+  if (!isDrawing.value || !ctx.value || !lastPoint.value) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const rect = maskCanvas.value.getBoundingClientRect();
+  const x = (event.clientX - rect.left) / props.scale;
+  const y = (event.clientY - rect.top) / props.scale;
+
+  if (x < 0 || x > maskCanvas.value.width || y < 0 || y > maskCanvas.value.height) {
+    return;
+  }
+
+  requestAnimationFrame(() => {
+    ctx.value.beginPath();
+    ctx.value.moveTo(lastPoint.value.x, lastPoint.value.y);
+    ctx.value.lineTo(x, y);
+    ctx.value.strokeStyle = brushColor.value;
+    ctx.value.lineWidth = brushSize.value / props.scale;
+    ctx.value.lineCap = "round";
+    ctx.value.lineJoin = "round";
+    ctx.value.stroke();
+
+    lastPoint.value = { x, y };
+  });
+};
+
+const startDrawing = (event) => {
+  if (event.button !== 0 || !maskCanvas.value || !ctx.value) return;
+
+  const rect = maskCanvas.value.getBoundingClientRect();
+  const x = (event.clientX - rect.left) / props.scale;
+  const y = (event.clientY - rect.top) / props.scale;
+
+  if (!tempCanvas.value) {
+    tempCanvas.value = document.createElement("canvas");
+    tempCanvas.value.width = maskCanvas.value.width;
+    tempCanvas.value.height = maskCanvas.value.height;
+    tempCtx.value = tempCanvas.value.getContext("2d", {
+      willReadFrequently: true,
+    });
+  }
+
+  tempCtx.value.clearRect(0, 0, tempCanvas.value.width, tempCanvas.value.height);
+  tempCtx.value.drawImage(maskCanvas.value, 0, 0);
+
+  lastPoint.value = { x, y };
+  isDrawing.value = true;
+
+  ctx.value.beginPath();
+  ctx.value.arc(x, y, brushSize.value / (props.scale * 2), 0, Math.PI * 2);
+  ctx.value.fillStyle = brushColor.value;
+  ctx.value.fill();
+  emitMask();
+};
+
+const stopDrawing = () => {
+  if (!isDrawing.value || !ctx.value || !maskCanvas.value) return;
+
+  isDrawing.value = false;
+  if (!tempCanvas.value || !tempCtx.value) return;
+
+  const currentImageData = ctx.value.getImageData(
+    0,
+    0,
+    maskCanvas.value.width,
+    maskCanvas.value.height
+  );
+  const startImageData = tempCtx.value.getImageData(
+    0,
+    0,
+    tempCanvas.value.width,
+    tempCanvas.value.height
+  );
+
+  if (areImageDatasEqual(currentImageData, startImageData)) {
+    return;
+  }
+
+  if (historyIndex.value < history.value.length - 1) {
+    history.value.splice(historyIndex.value + 1);
+    operationStartIndices.value = operationStartIndices.value.filter(
+      (index) => index <= historyIndex.value
+    );
+  }
+
+  const newIndex = history.value.length;
+  operationStartIndices.value.push(newIndex);
+  history.value.push(
+    new ImageData(
+      new Uint8ClampedArray(currentImageData.data),
+      currentImageData.width,
+      currentImageData.height
+    )
+  );
+  historyIndex.value = history.value.length - 1;
+  updateCanUndoRedo();
+  emitMask();
+};
+
+const toggleDrawing = () => {
+  isDrawingMode.value = !isDrawingMode.value;
+  isDrawing.value = false;
+  emit("update:drawing-mode", isDrawingMode.value);
+};
+
+const onPointerDown = (event) => {
+  if (event.button !== 0) return;
+
+  if (isDrawingMode.value || isCtrlPressed.value) {
+    startDrawing(event);
+    if (isCtrlPressed.value) {
+      event.preventDefault();
+    }
+    return;
+  }
+
+  const startX = event.clientX - store.offsetX;
+  const startY = event.clientY - store.offsetY;
+
+  const onPointerMove = (moveEvent) => {
+    store.setOffset(moveEvent.clientX - startX, moveEvent.clientY - startY);
+  };
+
+  const onPointerUp = () => {
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+  };
+
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp);
+};
+
+const resetView = () => {
+  hasManualToolbarPosition.value = false;
+  if (editor?.value) {
+    editor.value.resetView();
+  } else {
+    store.resetView();
+  }
+
+  nextTick(() => {
+    syncToolbarPosition();
+  });
+};
+
+const undo = () => {
+  if (historyIndex.value <= 0 || !ctx.value) return;
+
+  let currentOpIndex = 0;
+  for (let index = operationStartIndices.value.length - 1; index >= 0; index -= 1) {
+    if (operationStartIndices.value[index] <= historyIndex.value) {
+      currentOpIndex = index;
+      break;
+    }
+  }
+
+  const previousOpIndex = Math.max(0, currentOpIndex - 1);
+  const targetIndex = operationStartIndices.value[previousOpIndex];
+  if (targetIndex < 0 || targetIndex >= history.value.length) return;
+
+  operationStartIndices.value = operationStartIndices.value.filter((index) => index <= targetIndex);
+  historyIndex.value = targetIndex;
+  ctx.value.putImageData(history.value[historyIndex.value], 0, 0);
+  updateCanUndoRedo();
+  emitMask();
+};
+
+const clearCanvas = () => {
+  if (!ctx.value || !maskCanvas.value) return;
+
+  ctx.value.clearRect(0, 0, maskCanvas.value.width, maskCanvas.value.height);
+
+  if (historyIndex.value < history.value.length - 1) {
+    history.value.splice(historyIndex.value + 1);
+    operationStartIndices.value = operationStartIndices.value.filter(
+      (index) => index <= historyIndex.value
+    );
+  }
+
+  const newIndex = history.value.length;
+  operationStartIndices.value.push(newIndex);
+  history.value.push(
+    ctx.value.getImageData(0, 0, maskCanvas.value.width, maskCanvas.value.height)
+  );
+  historyIndex.value = history.value.length - 1;
+  updateCanUndoRedo();
+  emitMask();
+};
+
 const updateMask = (newMask) => {
   if (!ctx.value || !maskCanvas.value) return;
+
+  if (!newMask) {
+    ctx.value.clearRect(0, 0, maskCanvas.value.width, maskCanvas.value.height);
+    saveInitialState();
+    return;
+  }
 
   if (newMask instanceof ImageData) {
     ctx.value.putImageData(newMask, 0, 0);
     saveInitialState();
-  } else if (newMask.data && typeof newMask.data === "string") {
+    return;
+  }
+
+  if (newMask.data && typeof newMask.data === "string") {
     const img = new Image();
     img.onload = () => {
-      ctx.value.clearRect(
-        0,
-        0,
-        maskCanvas.value.width,
-        maskCanvas.value.height
-      );
-      ctx.value.drawImage(
-        img,
-        0,
-        0,
-        maskCanvas.value.width,
-        maskCanvas.value.height
-      );
+      ctx.value.clearRect(0, 0, maskCanvas.value.width, maskCanvas.value.height);
+      ctx.value.drawImage(img, 0, 0, maskCanvas.value.width, maskCanvas.value.height);
       saveInitialState();
     };
     img.onerror = () => {
       console.error("加载蒙版图像失败");
-      ctx.value.clearRect(
-        0,
-        0,
-        maskCanvas.value.width,
-        maskCanvas.value.height
-      );
+      ctx.value.clearRect(0, 0, maskCanvas.value.width, maskCanvas.value.height);
       saveInitialState();
     };
-    img.src = newMask.data;
+    img.src = newMask.displayUrl || newMask.data;
   }
 };
-// 开始拖拽工具栏
-const startDragToolbar = (e) => {
-  // 阻止事件冒泡和默认行为
-  e.stopPropagation();
-  e.preventDefault();
 
+const getSafeToolbarViewport = () => {
+  const rootEl = rootRef.value;
+  const toolbarEl = toolbarRef.value;
+  if (!rootEl || !toolbarEl) return null;
+
+  const rootWidth = rootEl.clientWidth;
+  const rootHeight = rootEl.clientHeight;
+  const leftInset = Math.max(0, Number(props.visibleAreaInsets?.left || 0));
+  const rightInset = Math.max(0, Number(props.visibleAreaInsets?.right || 0));
+  const topInset = Math.max(0, Number(props.visibleAreaInsets?.top || 0));
+  const bottomInset = Math.max(0, Number(props.visibleAreaInsets?.bottom || 0));
+  const safeWidth = Math.max(1, rootWidth - leftInset - rightInset);
+  const safeHeight = Math.max(1, rootHeight - topInset - bottomInset);
+
+  return {
+    rootWidth,
+    rootHeight,
+    toolbarWidth: toolbarEl.offsetWidth || 0,
+    toolbarHeight: toolbarEl.offsetHeight || 0,
+    leftInset,
+    rightInset,
+    topInset,
+    bottomInset,
+    safeWidth,
+    safeHeight,
+  };
+};
+
+const clampToolbarPosition = (position) => {
+  const viewport = getSafeToolbarViewport();
+  if (!viewport) return position;
+
+  const minX = viewport.leftInset + 20;
+  const minY = viewport.topInset + 20;
+  const maxX = Math.max(minX, viewport.rootWidth - viewport.rightInset - viewport.toolbarWidth - 20);
+  const maxY = Math.max(minY, viewport.rootHeight - viewport.bottomInset - viewport.toolbarHeight - 20);
+
+  return {
+    x: Math.min(maxX, Math.max(minX, position.x)),
+    y: Math.min(maxY, Math.max(minY, position.y)),
+  };
+};
+
+const setDefaultToolbarPosition = () => {
+  const viewport = getSafeToolbarViewport();
+  if (!viewport) return;
+
+  const imageCenterX = store.offsetX + (store.imageWidth * props.scale) / 2;
+  toolbarPosition.value = clampToolbarPosition({
+    x: imageCenterX - viewport.toolbarWidth / 2,
+    y: viewport.rootHeight - viewport.bottomInset - viewport.toolbarHeight - 20,
+  });
+};
+
+const syncToolbarPosition = () => {
+  if (!toolbarRef.value || !rootRef.value) return;
+
+  if (hasManualToolbarPosition.value) {
+    toolbarPosition.value = clampToolbarPosition(toolbarPosition.value);
+    return;
+  }
+
+  setDefaultToolbarPosition();
+};
+
+const startDragToolbar = (event) => {
+  event.stopPropagation();
+  event.preventDefault();
+
+  hasManualToolbarPosition.value = true;
   isDraggingToolbar.value = true;
   dragOffset.value = {
-    x: e.clientX - toolbarPosition.value.x,
-    y: e.clientY - toolbarPosition.value.y,
+    x: event.clientX - toolbarPosition.value.x,
+    y: event.clientY - toolbarPosition.value.y,
   };
 
-  // 使用捕获阶段监听，确保我们的处理函数先执行
   document.addEventListener("mousemove", moveToolbar, {
     capture: true,
     passive: false,
@@ -671,46 +676,22 @@ const startDragToolbar = (e) => {
   document.addEventListener("mouseup", stopDragToolbar, { capture: true });
 };
 
-// 移动工具栏
-const moveToolbar = (e) => {
+const moveToolbar = (event) => {
   if (!isDraggingToolbar.value) return;
 
-  // 阻止事件冒泡和默认行为
-  e.stopPropagation();
-  e.preventDefault();
+  event.stopPropagation();
+  event.preventDefault();
 
-  // 计算新位置
-  const newX = e.clientX - dragOffset.value.x;
-  const newY = e.clientY - dragOffset.value.y;
-
-  // 获取容器边界
-  const container = document.querySelector(".absolute.inset-0");
-  if (container) {
-    const rect = container.getBoundingClientRect();
-    const toolbarEl = document.querySelector(".toolbar-container");
-    if (toolbarEl) {
-      const toolbarRect = toolbarEl.getBoundingClientRect();
-
-      // 限制工具栏在容器内
-      const maxX = rect.width - toolbarRect.width;
-      const maxY = rect.height - toolbarRect.height;
-
-      toolbarPosition.value = {
-        x: Math.max(0, Math.min(newX, maxX)),
-        y: Math.max(0, Math.min(newY, maxY)),
-      };
-    } else {
-      toolbarPosition.value = { x: newX, y: newY };
-    }
-  } else {
-    toolbarPosition.value = { x: newX, y: newY };
-  }
+  toolbarPosition.value = clampToolbarPosition({
+    x: event.clientX - dragOffset.value.x,
+    y: event.clientY - dragOffset.value.y,
+  });
 };
-// 停止拖拽工具栏
-const stopDragToolbar = (e) => {
-  if (e) {
-    e.stopPropagation();
-    e.preventDefault();
+
+const stopDragToolbar = (event) => {
+  if (event) {
+    event.stopPropagation();
+    event.preventDefault();
   }
 
   isDraggingToolbar.value = false;
@@ -718,211 +699,203 @@ const stopDragToolbar = (e) => {
   document.removeEventListener("mouseup", stopDragToolbar, { capture: true });
 };
 
-const emit = defineEmits([
-  "update:mask",
-  "update:drawing-mode",
-  "update:ctrl-pressed",
-]);
-// 生命周期
+const applyBrushDefaults = () => {
+  const defaults = normalizeBrushConfig(
+    configStore.config.advanced?.imageBrushDefault,
+    DEFAULT_IMAGE_BRUSH
+  );
+  brushSize.value = defaults.size;
+  brushColor.value = defaults.color;
+  brushAlpha.value = defaults.alpha;
+};
+
 onMounted(() => {
   if (props.show) {
     initCanvas();
   }
-  const primaryColor = getComputedStyle(document.documentElement)
-    .getPropertyValue("--q-primary")
-    .trim();
-  if (primaryColor) {
-    brushColor.value = primaryColor;
-  }
-  // 设置工具栏初始位置在可见区域底部中间
-  nextTick(() => {
-    const container = document.querySelector(".absolute.inset-0");
-    const toolbar = document.querySelector(".toolbar-container");
-    if (container && toolbar) {
-      const containerRect = container.getBoundingClientRect();
-      const toolbarRect = toolbar.getBoundingClientRect();
 
-      // 计算底部中间位置
-      toolbarPosition.value = {
-        x: (containerRect.width - toolbarRect.width) / 2,
-        y: containerRect.height - toolbarRect.height - 20, // 底部留20px边距
-      };
-    }
+  applyBrushDefaults();
+  nextTick(() => {
+    syncToolbarPosition();
   });
 });
-// 在组件卸载时清理事件监听器
+
 onUnmounted(() => {
   document.removeEventListener("mousemove", moveToolbar, { capture: true });
   document.removeEventListener("mouseup", stopDragToolbar, { capture: true });
 });
-// 快捷键
-// Ctrl键监听器
-useEventListener(window, "keydown", (e) => {
-  if (props.show) {
-    if (e.key === "z" && e.ctrlKey && !e.shiftKey) {
-      e.preventDefault();
-      undo();
-    } else if (e.key === "b") {
-      e.preventDefault();
-      toggleDrawing();
-    } else if (e.key === "Control") {
-      isCtrlPressed.value = true;
-      // 通知父组件 Ctrl 键状态变化
-      emit("update:ctrl-pressed", true);
-    }
+
+useEventListener(window, "keydown", (event) => {
+  if (!props.show) return;
+
+  if (event.key === "z" && event.ctrlKey && !event.shiftKey) {
+    event.preventDefault();
+    undo();
+  } else if (event.key === "b") {
+    event.preventDefault();
+    toggleDrawing();
+  } else if (event.key === "Control") {
+    isCtrlPressed.value = true;
+    emit("update:ctrl-pressed", true);
   }
 });
 
-// keyup监听器
-useEventListener(window, "keyup", (e) => {
-  if (e.key === "Control") {
-    isCtrlPressed.value = false;
-    // 通知父组件 Ctrl 键状态变化
-    emit("update:ctrl-pressed", false);
-    if (isDrawing.value) {
-      stopDrawing();
-    }
+useEventListener(window, "keyup", (event) => {
+  if (event.key !== "Control") return;
+
+  isCtrlPressed.value = false;
+  emit("update:ctrl-pressed", false);
+  if (isDrawing.value) {
+    stopDrawing();
   }
 });
-// 确保全局监听鼠标移动以更新光标位置
-useEventListener(window, "mousemove", (e) => {
+
+useEventListener(window, "mousemove", (event) => {
   if (isDrawingMode.value || isCtrlPressed.value) {
     cursorPosition.value = {
-      x: e.clientX,
-      y: e.clientY,
+      x: event.clientX,
+      y: event.clientY,
     };
   }
 });
 
+useEventListener(window, "resize", () => {
+  nextTick(() => {
+    syncToolbarPosition();
+  });
+});
+
 watch(
-  [
-    () => ({ x: store.offsetX, y: store.offsetY, scale: store.scale }),
-    () => ({ width: store.imageWidth, height: store.imageHeight }),
-  ],
-  ([position, size], [oldPosition, oldSize]) => {
+  () => configStore.config.advanced?.imageBrushDefault,
+  () => {
+    applyBrushDefaults();
+  },
+  {
+    deep: true,
+    immediate: true,
+  }
+);
+
+watch(
+  [() => store.offsetX, () => store.offsetY, () => store.scale, () => store.imageWidth, () => store.imageHeight],
+  async () => {
     if (!props.show || !maskCanvas.value) return;
-
     const canvas = maskCanvas.value;
+    Object.assign(canvas.style, {
+      left: `${store.offsetX}px`,
+      top: `${store.offsetY}px`,
+      transform: `scale(${store.scale})`,
+    });
 
-    const { x, y, scale } = position;
-    const { width, height } = size;
-
-    // 处理位置和缩放变化
-    if (
-      x !== oldPosition?.x ||
-      y !== oldPosition?.y ||
-      scale !== oldPosition?.scale
-    ) {
-      Object.assign(canvas.style, {
-        left: `${x}px`,
-        top: `${y}px`,
-        transform: `scale(${scale})`,
-      });
-    }
-
-    // 处理尺寸变化
-    if (width !== oldSize?.width || height !== oldSize?.height) {
+    if (canvas.width !== store.imageWidth || canvas.height !== store.imageHeight) {
       initCanvas();
     }
+
+    await nextTick();
+    syncToolbarPosition();
   },
-  { immediate: true, deep: true }
+  { immediate: true }
 );
+
 watch(
   () => props.mask,
   (newMask) => {
     if (!props.show || !ctx.value) return;
+    updateMask(newMask);
+  },
+  { deep: true }
+);
 
-    // 如果newMask为null，清空画布
-    if (!newMask) {
-      ctx.value.clearRect(0, 0, maskCanvas.value.width, maskCanvas.value.height);
-      saveState();
-      return;
-    }
+watch(
+  () => props.visibleAreaInsets,
+  async () => {
+    await nextTick();
+    syncToolbarPosition();
+  },
+  { deep: true }
+);
 
-    if (newMask instanceof ImageData) {
-      ctx.value.putImageData(newMask, 0, 0);
-      saveState();
-    } else if (newMask.data && typeof newMask.data === "string") {
-      const img = new Image();
-      img.onload = () => {
-        ctx.value.clearRect(
-          0,
-          0,
-          maskCanvas.value.width,
-          maskCanvas.value.height
-        );
-        ctx.value.drawImage(
-          img,
-          0,
-          0,
-          maskCanvas.value.width,
-          maskCanvas.value.height
-        );
-        saveState();
-      };
-      img.src = newMask.displayUrl;
+watch(
+  () => props.show,
+  (visible) => {
+    if (visible) {
+      nextTick(() => {
+        initCanvas();
+        syncToolbarPosition();
+      });
     }
   }
 );
+
 defineExpose({
   updateMask,
+  getMaskData,
 });
 </script>
+
 <style scoped>
 .cursor-none {
   cursor: none !important;
   z-index: 10;
 }
+
 .cursor-grab {
   cursor: grab !important;
   z-index: 10;
 }
-/* 自定义光标样式 */
+
 .custom-cursor {
   position: fixed !important;
   pointer-events: none !important;
   z-index: 999 !important;
 }
-/* 确保工具栏始终可点击 */
+
 .toolbar-container {
   z-index: 1001 !important;
   pointer-events: auto !important;
   position: absolute !important;
   touch-action: none;
   user-select: none;
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
-  border-radius: 50px !important; /* 胶囊形状 */
   overflow: hidden;
 }
+
 .toolbar-handle {
   cursor: move !important;
-  border-top-left-radius: 50px !important;
-  border-top-right-radius: 50px !important;
+  border-top-left-radius: 20px;
+  border-top-right-radius: 20px;
+  letter-spacing: 0.02em;
 }
-/* 胶囊形状的圆角类 */
+
+.app-floating-toolbar {
+  border-radius: 20px !important;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(14px);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+:global(body.body--dark) .app-floating-toolbar {
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.35);
+  background: rgba(24, 24, 27, 0.88);
+}
+
 .rounded-pill {
-  border-radius: 50px !important;
+  border-radius: 999px !important;
 }
-.rounded-t-pill {
-  border-top-left-radius: 50px !important;
-  border-top-right-radius: 50px !important;
-}
+
 .rounded-b-pill {
-  border-bottom-left-radius: 50px !important;
-  border-bottom-right-radius: 50px !important;
-  border: none !important;
+  border-bottom-left-radius: 20px !important;
+  border-bottom-right-radius: 20px !important;
 }
-.q-bar {
+
+.app-floating-toolbar-bar {
   border: none !important;
   background: transparent !important;
+  min-height: 54px;
 }
-/* 按钮组样式 */
-.q-btn-group.rounded-pill .q-btn:first-child {
-  border-top-left-radius: 50px !important;
-  border-bottom-left-radius: 50px !important;
-}
-.q-btn-group.rounded-pill .q-btn:last-child {
-  border-top-right-radius: 50px !important;
-  border-bottom-right-radius: 50px !important;
+
+.alpha-panel {
+  width: 240px;
 }
 </style>
