@@ -2,40 +2,13 @@
 // https://v2.quasar.dev/quasar-cli-vite/quasar-config-file
 
 import { defineConfig } from "#q-app/wrappers";
-import fs from "node:fs";
-import path from "node:path";
+import { prepareElectronResources } from "./scripts/prepare-electron-resources.mjs";
 
-function prunePackagedBackend(projectRoot) {
-  if (!fs.existsSync(projectRoot)) {
-    return;
+export default defineConfig((ctx) => {
+  if (ctx.mode.electron && ctx.prod) {
+    prepareElectronResources();
   }
 
-  const queue = [projectRoot];
-  while (queue.length > 0) {
-    const currentPath = queue.pop();
-    const entries = fs.readdirSync(currentPath, { withFileTypes: true });
-
-    for (const entry of entries) {
-      const fullPath = path.join(currentPath, entry.name);
-
-      if (entry.isDirectory()) {
-        if (entry.name === ".venv" || entry.name === "__pycache__") {
-          fs.rmSync(fullPath, { recursive: true, force: true });
-          continue;
-        }
-
-        queue.push(fullPath);
-        continue;
-      }
-
-      if (entry.name.endsWith(".pyc") || entry.name.endsWith(".pyo")) {
-        fs.rmSync(fullPath, { force: true });
-      }
-    }
-  }
-}
-
-export default defineConfig((/* ctx */) => {
   return {
     // https://v2.quasar.dev/quasar-cli-vite/prefetch-feature
     // preFetch: true,
@@ -239,12 +212,12 @@ export default defineConfig((/* ctx */) => {
         overwrite: true,
         asar: true,
 
-        // 应用信息
+        // Application metadata
         appVersion: "1.0.0",
         appCopyright: "Copyright © 2023 CuiMuxuan",
         appCategoryType: "public.app-category.utilities",
 
-        // Windows 特定配置
+        // Windows-specific metadata
         win32metadata: {
           CompanyName: "CuiMuxuan",
           FileDescription: "Moonshine 图像处理客户端",
@@ -253,14 +226,14 @@ export default defineConfig((/* ctx */) => {
           InternalName: "Moonshine-Image",
         },
 
-        // 下载配置 - 解决网络问题的关键
+        // Electron download mirror
         download: {
           mirrorOptions: {
             mirror: "https://npmmirror.com/mirrors/electron/",
           },
         },
 
-        // 忽略的文件
+        // Ignore source-only files from the packaged app root
         ignore: [
           "/\\.git($|/)",
           "/\\.quasar($|/)",
@@ -269,67 +242,50 @@ export default defineConfig((/* ctx */) => {
           "/dist/spa($|/)",
           "/iopaint-change($|/)",
         ],
-        extraResource: ["public", "IOPaint"],
-        afterCopyExtraResources: [
-          (buildPath, _electronVersion, _platform, _arch, callback) => {
-            try {
-              prunePackagedBackend(path.join(buildPath, "resources", "IOPaint"));
-              callback();
-            } catch (error) {
-              callback(error);
-            }
-          },
-        ],
+        extraResource: ["build-resources/backend", "build-resources/integrity"],
       },
 
       builder: {
         // https://www.electron.build/configuration/configuration
 
-        // 应用信息
+        // Application metadata
         appId: "com.moonshine.image",
         productName: "Moonshine-Image",
 
-        // Windows 配置
+        // Windows packaging
         win: {
           target: ["nsis"],
           icon: "src-electron/icons/icon.ico",
         },
 
-        // 安装程序配置
+        // Installer options
         nsis: {
           oneClick: false,
           allowToChangeInstallationDirectory: true,
           shortcutName: "Moonshine-Image",
         },
 
-        // 文件配置
+        // Files copied from the compiled Electron output
         files: ["dist/electron/**/*", "!node_modules/**/*"],
 
-        // 额外资源
+        // External runtime resources copied alongside app.asar
         extraResources: [
           {
-            from: "public",
-            to: "public",
+            from: "build-resources/backend",
+            to: "backend",
           },
           {
-            from: "IOPaint",
-            to: "IOPaint",
-            filter: [
-              "**/*",
-              "!.venv{,/**}",
-              "!**/__pycache__{,/**}",
-              "!**/*.pyc",
-              "!**/*.pyo",
-            ],
+            from: "build-resources/integrity",
+            to: "integrity",
           },
         ],
 
-        // 安装后运行
+        // Installer artifact naming
         artifactName: "Moonshine-Image-Setup-${version}.${ext}",
-        // 自动更新配置
+        // Auto-update configuration
         publish: [
           {
-            provider: "github", // 或其他平台
+            provider: "github",
             owner: "CuiMuxuan",
             repo: "moonshine-image",
           },

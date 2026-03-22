@@ -75,21 +75,11 @@
           <div class="row justify-around q-mb-md">
             <div class="col-xs-12 col-sm-5 text-center q-pa-sm">
               <p class="q-mb-sm">微信支付</p>
-              <q-img
-                :src="getImagePath('wxPay.png')"
-                style="width: 100%; max-width: 300px"
-                spinner-color="primary"
-                contain
-              />
+              <q-img :src="sponsorWechatImage" style="width: 100%; max-width: 300px" spinner-color="primary" contain />
             </div>
             <div class="col-xs-12 col-sm-5 text-center q-pa-sm">
               <p class="q-mb-sm">支付宝</p>
-              <q-img
-                :src="getImagePath('Alipay.jpg')"
-                style="width: 100%; max-width: 300px"
-                spinner-color="primary"
-                contain
-              />
+              <q-img :src="sponsorAlipayImage" style="width: 100%; max-width: 300px" spinner-color="primary" contain />
             </div>
           </div>
 
@@ -104,17 +94,20 @@
     </q-dialog>
 
     <q-avatar class="cursor-pointer" @click="openBilibiliLink">
-      <q-img :src="getImagePath('moonshine128x128.jpg')" :ratio="1" />
+      <q-img :src="appAvatarImage" :ratio="1" />
       <q-tooltip class="toolbar-tooltip">作者 B 站主页</q-tooltip>
     </q-avatar>
   </q-toolbar>
 </template>
 
 <script setup>
-import { onMounted, ref, watch } from "vue";
+import { ref, watch } from "vue";
 import { useRoute } from "vue-router";
 
 import MoonshineIcon from "src/components/MoonshineIcon.vue";
+import sponsorAlipayImage from "src/assets/branding/Alipay.jpg";
+import appAvatarImage from "src/assets/branding/moonshine128x128.jpg";
+import sponsorWechatImage from "src/assets/branding/wxPay.png";
 
 defineProps({
   navigationDisabled: {
@@ -131,8 +124,6 @@ const route = useRoute();
 const emit = defineEmits(["route-change", "toggle-theme"]);
 
 const showSponsorDialog = ref(false);
-const resourcesPath = ref("");
-const isElectron = ref(false);
 const currentRoute = ref("image");
 
 watch(
@@ -147,16 +138,6 @@ const handleRouteChange = (value) => {
   emit("route-change", value);
 };
 
-const getImagePath = (imageName) => {
-  if (isElectron.value && process.env.NODE_ENV === "production") {
-    if (resourcesPath.value) {
-      return `${resourcesPath.value.replace(/\\/g, "/")}/public/images/${imageName}`;
-    }
-    return "./resources/public/images/" + imageName;
-  }
-  return `/images/${imageName}`;
-};
-
 const openExternalLink = (url) => {
   if (window.electron) {
     window.electron.ipcRenderer.send("open-external-link", url);
@@ -168,19 +149,6 @@ const openExternalLink = (url) => {
 const openGithubLink = () => openExternalLink("https://github.com/CuiMuxuan/Moonshine-Image");
 const openBilibiliLink = () => openExternalLink("https://space.bilibili.com/589465087");
 const openNovelLink = () => openExternalLink("https://www.jjwxc.net/oneauthor.php?authorid=3292754");
-
-onMounted(async () => {
-  isElectron.value = !!window.electron;
-
-  if (isElectron.value && window.electron?.ipcRenderer?.invoke) {
-    try {
-      resourcesPath.value = await window.electron.ipcRenderer.invoke("get-resources-path");
-    } catch (error) {
-      console.error("获取资源路径失败:", error);
-      resourcesPath.value = "./resources";
-    }
-  }
-});
 </script>
 
 <style scoped>

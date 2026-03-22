@@ -11,10 +11,19 @@ import {
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import crypto from "node:crypto";
 import fs from "fs";
 import https from "https";
 import { spawn, exec } from "child_process";
 import { promisify } from "util";
+import {
+  INTEGRITY_MANIFEST_FILE,
+  INTEGRITY_PUBLIC_KEY_PEM,
+  INTEGRITY_RESOURCE_DIR,
+  INTEGRITY_SIGNATURE_FILE,
+  PACKAGED_BACKEND_PROJECT_DIR,
+  PACKAGED_BACKEND_RESOURCE_DIR,
+} from "./integrity/public-key.js";
 const execAsync = promisify(exec);
 // Backend service process
 let backendProcess = null;
@@ -66,6 +75,23 @@ let globalConfig = { ...DEFAULT_CONFIG };
 const TARGET_PYTHON_VERSION = "3.11.5";
 const MIN_SYSTEM_PYTHON_MINOR = 10;
 const MAX_SYSTEM_PYTHON_MINOR = 12;
+let packagedIntegrityStatus = null;
+
+function getResourcesRootPath() {
+  return process.resourcesPath || path.dirname(app.getAppPath());
+}
+
+function getLegacyPackagedBackendProjectPath() {
+  return path.join(getResourcesRootPath(), PACKAGED_BACKEND_PROJECT_DIR);
+}
+
+function getPackagedBackendProjectPath() {
+  return path.join(
+    getResourcesRootPath(),
+    PACKAGED_BACKEND_RESOURCE_DIR,
+    PACKAGED_BACKEND_PROJECT_DIR
+  );
+}
 
 function quoteArg(arg) {
   return `"${String(arg).replace(/"/g, '\\"')}"`;
@@ -102,8 +128,186 @@ function isSystemPythonVersionSupported(versionInfo) {
 }
 
 function getDefaultBackendProjectPath() {
-  const appDir = path.dirname(app.getAppPath());
-  return path.join(appDir, "IOPaint");
+  if (app.isPackaged) {
+    return getPackagedBackendProjectPath();
+  }
+
+  const workingTreeProjectPath = path.join(process.cwd(), PACKAGED_BACKEND_PROJECT_DIR);
+  if (fs.existsSync(workingTreeProjectPath)) {
+    return workingTreeProjectPath;
+  }
+
+  return path.join(path.dirname(app.getAppPath()), PACKAGED_BACKEND_PROJECT_DIR);
+}
+
+function normalizeStoredBackendProjectPath(projectPath) {
+  const normalizedInput = String(projectPath || "").trim();
+  if (!app.isPackaged) {
+    return normalizedInput || getDefaultBackendProjectPath();
+  }
+
+  const packagedPath = path.normalize(getPackagedBackendProjectPath());
+  const legacyPath = path.normalize(getLegacyPackagedBackendProjectPath());
+  if (!normalizedInput) {
+    return packagedPath;
+  }
+
+  const normalizedPath = path.normalize(normalizedInput);
+  return normalizedPath === legacyPath ? packagedPath : normalizedInput;
+}
+
+function usesPackagedBackendProject(projectPath) {
+  if (!app.isPackaged) {
+    return false;
+  }
+
+  return (
+    path.normalize(String(projectPath || "")) ===
+    path.normalize(getPackagedBackendProjectPath())
+  );
+}
+
+function getIntegrityArtifactPaths() {
+  const integrityRoot = path.join(getResourcesRootPath(), INTEGRITY_RESOURCE_DIR);
+  return {
+    integrityRoot,
+    manifestPath: path.join(integrityRoot, INTEGRITY_MANIFEST_FILE),
+    signaturePath: path.join(integrityRoot, INTEGRITY_SIGNATURE_FILE),
+  };
+}
+
+function isPathInsideDirectory(candidatePath, rootDir) {
+  const relativePath = path.relative(rootDir, candidatePath);
+  return (
+    relativePath === "" ||
+    (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))
+  );
+}
+
+function verifyPackagedManifestEntry(entry, resourcesRoot) {
+  if (!entry || typeof entry !== "object") {
+    return "Manifest entry must be an object.";
+  }
+
+  if (!entry.path || typeof entry.path !== "string") {
+    return "Manifest entry path is missing.";
+  }
+
+  if (typeof entry.size !== "number" || entry.size < 0) {
+    return `Manifest entry has an invalid size: ${entry.path}`;
+  }
+
+  if (!entry.sha256 || typeof entry.sha256 !== "string") {
+    return `Manifest entry has an invalid sha256 value: ${entry.path}`;
+  }
+
+  const absolutePath = path.resolve(resourcesRoot, entry.path);
+  if (!isPathInsideDirectory(absolutePath, resourcesRoot)) {
+    return `Manifest entry points outside the resources directory: ${entry.path}`;
+  }
+
+  if (!fs.existsSync(absolutePath)) {
+    return `Protected resource is missing: ${entry.path}`;
+  }
+
+  const stats = fs.statSync(absolutePath);
+  if (!stats.isFile()) {
+    return `Protected resource is not a file: ${entry.path}`;
+  }
+
+  if (stats.size !== entry.size) {
+    return `Protected resource size mismatch: ${entry.path}`;
+  }
+
+  const actualHash = crypto
+    .createHash("sha256")
+    .update(fs.readFileSync(absolutePath))
+    .digest("hex");
+  if (actualHash !== entry.sha256) {
+    return `Protected resource hash mismatch: ${entry.path}`;
+  }
+
+  return null;
+}
+
+async function verifyPackagedResourcesIntegrity() {
+  if (!app.isPackaged) {
+    return { success: true, skipped: true };
+  }
+
+  if (packagedIntegrityStatus) {
+    return packagedIntegrityStatus;
+  }
+
+  try {
+    const resourcesRoot = getResourcesRootPath();
+    const { manifestPath, signaturePath } = getIntegrityArtifactPaths();
+
+    if (!fs.existsSync(manifestPath)) {
+      throw new Error(`Missing integrity manifest: ${manifestPath}`);
+    }
+
+    if (!fs.existsSync(signaturePath)) {
+      throw new Error(`Missing integrity signature: ${signaturePath}`);
+    }
+
+    const manifestBuffer = fs.readFileSync(manifestPath);
+    const signature = fs.readFileSync(signaturePath, "utf8").trim();
+    if (!signature) {
+      throw new Error("Integrity signature file is empty.");
+    }
+
+    const signatureValid = crypto.verify(
+      null,
+      manifestBuffer,
+      INTEGRITY_PUBLIC_KEY_PEM,
+      Buffer.from(signature, "base64")
+    );
+    if (!signatureValid) {
+      throw new Error("Integrity manifest signature verification failed.");
+    }
+
+    const manifest = JSON.parse(manifestBuffer.toString("utf8"));
+    if (manifest.schemaVersion !== 1) {
+      throw new Error(`Unsupported integrity manifest schema: ${manifest.schemaVersion}`);
+    }
+
+    if (manifest.hashAlgorithm !== "sha256") {
+      throw new Error(`Unsupported integrity hash algorithm: ${manifest.hashAlgorithm}`);
+    }
+
+    if (!Array.isArray(manifest.entries) || manifest.entries.length === 0) {
+      throw new Error("Integrity manifest does not contain any protected entries.");
+    }
+
+    for (const entry of manifest.entries) {
+      const entryError = verifyPackagedManifestEntry(entry, resourcesRoot);
+      if (entryError) {
+        throw new Error(entryError);
+      }
+    }
+
+    packagedIntegrityStatus = {
+      success: true,
+      checkedAt: new Date().toISOString(),
+      entryCount: manifest.entries.length,
+    };
+    return packagedIntegrityStatus;
+  } catch (error) {
+    packagedIntegrityStatus = {
+      success: false,
+      error: error.message || "Integrity verification failed.",
+    };
+    return packagedIntegrityStatus;
+  }
+}
+
+async function ensurePackagedBackendIntegrity(projectPath) {
+  if (!usesPackagedBackendProject(projectPath)) {
+    return { success: true, skipped: true };
+  }
+
+  return verifyPackagedResourcesIntegrity();
 }
 
 function getVenvPythonPathByVenvPath(venvPath) {
@@ -319,7 +523,7 @@ function buildManualVenvGuide(projectPath) {
 function validateProjectPath(inputPath) {
   const defaultProjectPath = getDefaultBackendProjectPath();
   const defaultProjectParentPath = path.dirname(defaultProjectPath);
-  let checkPath = inputPath;
+  let checkPath = normalizeStoredBackendProjectPath(inputPath);
   if (!checkPath) {
     const defaultPath = defaultProjectPath;
     if (fs.existsSync(defaultPath)) {
@@ -409,6 +613,9 @@ function mergeConfigWithDefaults(config = {}) {
 
 function sanitizeAppConfig(config = {}) {
   const merged = mergeConfigWithDefaults(config);
+  merged.general.backendProjectPath = normalizeStoredBackendProjectPath(
+    merged.general.backendProjectPath
+  );
   if (merged?.video && Object.prototype.hasOwnProperty.call(merged.video, "outputPath")) {
     delete merged.video.outputPath;
   }
@@ -536,6 +743,7 @@ function loadAppConfig() {
         baseURL: `http://localhost:${globalConfig.general.backendPort}`,
       },
     };
+    global.projectPath = globalConfig.general.backendProjectPath || "";
   } catch (error) {
     console.error("Failed to load configuration:", error);
     createDefaultConfig();
@@ -562,8 +770,7 @@ function createDefaultConfig() {
       "hub",
       "checkpoints"
     );
-    const appDir = path.dirname(app.getAppPath());
-    DEFAULT_CONFIG.general.backendProjectPath = path.join(appDir, "IOPaint");
+    DEFAULT_CONFIG.general.backendProjectPath = getDefaultBackendProjectPath();
     DEFAULT_CONFIG.general.defaultModel = "lama";
     DEFAULT_CONFIG.video.tempFramesPath = path.join(
       userDataPath,
@@ -572,6 +779,7 @@ function createDefaultConfig() {
     );
     fs.writeFileSync(configPath, JSON.stringify(DEFAULT_CONFIG, null, 2));
     globalConfig = sanitizeAppConfig(DEFAULT_CONFIG);
+    global.projectPath = globalConfig.general.backendProjectPath || "";
 
     [
       DEFAULT_CONFIG.fileManagement.downloadPath,
@@ -617,6 +825,7 @@ ipcMain.handle("save-app-config", async (event, newConfig) => {
         baseURL: `http://localhost:${globalConfig.general.backendPort}`,
       },
     };
+    global.projectPath = globalConfig.general.backendProjectPath || "";
     console.log("Configuration saved successfully");
     return { success: true };
   } catch (error) {
@@ -748,7 +957,7 @@ ipcMain.on("open-external-link", (event, url) => {
 // IPC handler - get resources path
 ipcMain.handle("get-resources-path", () => {
   try {
-    return path.dirname(app.getAppPath());
+    return getResourcesRootPath();
   } catch (error) {
     console.error("Failed to get resources path:", error);
     return "./resources";
@@ -1317,8 +1526,9 @@ ipcMain.handle("prepare-project-python", async (event, selectPath) => {
 // IPC set project path
 ipcMain.handle("set-project-path", async (event, selectPath) => {
   try {
-    if (fs.existsSync(selectPath)) {
-      global.projectPath = selectPath;
+    const normalizedPath = normalizeStoredBackendProjectPath(selectPath);
+    if (fs.existsSync(normalizedPath)) {
+      global.projectPath = normalizedPath;
       return { success: true };
     }
     return {
@@ -1710,6 +1920,14 @@ ipcMain.handle("start-backend-service", async (event, config) => {
 
     if (!global.projectPath) {
       return { success: false, error: "Project path is not set." };
+    }
+
+    const integrityResult = await ensurePackagedBackendIntegrity(global.projectPath);
+    if (!integrityResult.success) {
+      return {
+        success: false,
+        error: integrityResult.error || "Packaged backend integrity verification failed.",
+      };
     }
 
     const venvInfo = getProjectVenvInfo(global.projectPath);
@@ -2132,7 +2350,17 @@ async function createWindow() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  const integrityResult = await verifyPackagedResourcesIntegrity();
+  if (!integrityResult.success) {
+    dialog.showErrorBox(
+      "应用资源完整性校验失败",
+      `${integrityResult.error}\n\n应用将退出，请重新安装或恢复受保护资源。`
+    );
+    app.exit(173);
+    return;
+  }
+
   // Register the atom protocol for local file access
   protocol.registerFileProtocol("atom", (request, callback) => {
     try {

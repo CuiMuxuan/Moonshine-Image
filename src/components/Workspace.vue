@@ -8,7 +8,7 @@
         <div class="column items-center q-mb-xl" style="position: relative; width: 150px; height: 150px;">
           <!-- Logo -->
           <q-img
-            :src="getImagePath('moonshine128x128.jpg')"
+            :src="appAvatarImage"
             style="width: 128px; height: 128px; border-radius: 50%"
             class="q-mb-sm"
           />
@@ -45,7 +45,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { computed } from 'vue'
+
+import appAvatarImage from "src/assets/branding/moonshine128x128.jpg";
 
 const props = defineProps({
   selectedFile: {
@@ -54,41 +56,8 @@ const props = defineProps({
   }
 })
 
-const isElectron = ref(false)
-const resourcesPath = ref('')
-
 const hasContent = computed(() => {
   return !!props.selectedFile
-})
-
-// 获取图片路径的函数
-const getImagePath = (imageName) => {
-  if (isElectron.value && process.env.NODE_ENV === 'production') {
-    if (resourcesPath.value) {
-      return `${resourcesPath.value.replace(/\\/g, '/')}/public/images/${imageName}`
-    } else {
-      return `./resources/public/images/${imageName}`
-    }
-  } else {
-    return `/images/${imageName}`
-  }
-}
-
-onMounted(async () => {
-  isElectron.value = !!window.electron
-
-  if (isElectron.value && window.electron) {
-    try {
-      if (window.electron.ipcRenderer && window.electron.ipcRenderer.invoke) {
-        resourcesPath.value = await window.electron.ipcRenderer.invoke('get-resources-path')
-      } else {
-        resourcesPath.value = './resources'
-      }
-    } catch (error) {
-      console.error('获取资源路径失败:', error)
-      resourcesPath.value = './resources'
-    }
-  }
 })
 </script>
 
