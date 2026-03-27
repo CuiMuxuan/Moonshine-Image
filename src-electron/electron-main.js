@@ -23,6 +23,12 @@ import {
   INTEGRITY_SIGNATURE_FILE,
   PACKAGED_BACKEND_PROJECT_DIR,
   PACKAGED_BACKEND_RESOURCE_DIR,
+  PACKAGED_DEFAULT_MODEL_FILE,
+  PACKAGED_MODELS_RESOURCE_DIR,
+  PACKAGED_RUNTIME_ENV_DIR,
+  PACKAGED_RUNTIME_METADATA_FILE,
+  PACKAGED_RUNTIME_RESOURCE_DIR,
+  PACKAGED_RUNTIME_TARGET_DIR,
 } from "./integrity/public-key.js";
 const execAsync = promisify(exec);
 // Backend service process
@@ -34,6 +40,7 @@ const DEFAULT_CONFIG = {
     backendPort: 8080,
     launchMode: "cuda", // 'cuda' | 'cpu'
     modelPath: "",
+    modelDir: "",
     backendProjectPath: "",
     defaultModel: "lama",
   },
@@ -75,6 +82,10 @@ let globalConfig = { ...DEFAULT_CONFIG };
 const TARGET_PYTHON_VERSION = "3.11.5";
 const MIN_SYSTEM_PYTHON_MINOR = 10;
 const MAX_SYSTEM_PYTHON_MINOR = 12;
+const BUNDLED_RUNTIME_STATE_FILE = "runtime-state.json";
+const BUNDLED_RUNTIME_LOCK_FILE = ".prepare.lock";
+const BUNDLED_RUNTIME_LOCK_WAIT_MS = 300000;
+const BUNDLED_RUNTIME_LOCK_STALE_MS = 120000;
 let packagedIntegrityStatus = null;
 
 function getResourcesRootPath() {
@@ -91,6 +102,56 @@ function getPackagedBackendProjectPath() {
     PACKAGED_BACKEND_RESOURCE_DIR,
     PACKAGED_BACKEND_PROJECT_DIR
   );
+}
+
+function getPackagedRuntimeResourceRootPath() {
+  return path.join(
+    getResourcesRootPath(),
+    PACKAGED_RUNTIME_RESOURCE_DIR,
+    PACKAGED_RUNTIME_TARGET_DIR
+  );
+}
+
+function getPackagedRuntimeEnvPath() {
+  return path.join(getPackagedRuntimeResourceRootPath(), PACKAGED_RUNTIME_ENV_DIR);
+}
+
+function getPackagedRuntimeMetadataPath() {
+  return path.join(getPackagedRuntimeResourceRootPath(), PACKAGED_RUNTIME_METADATA_FILE);
+}
+
+function getPackagedModelsPath() {
+  return path.join(getResourcesRootPath(), PACKAGED_MODELS_RESOURCE_DIR);
+}
+
+function getBundledDefaultModelPath() {
+  return path.join(getPackagedModelsPath(), PACKAGED_DEFAULT_MODEL_FILE);
+}
+
+function getBundledRuntimeRootPath() {
+  return path.join(app.getPath("userData"), "runtime");
+}
+
+function getBundledRuntimeEnvPath() {
+  return getPackagedRuntimeEnvPath();
+}
+
+function getBundledRuntimeStatePath() {
+  return path.join(getBundledRuntimeRootPath(), BUNDLED_RUNTIME_STATE_FILE);
+}
+
+function getBundledRuntimeLockPath() {
+  return path.join(getBundledRuntimeRootPath(), BUNDLED_RUNTIME_LOCK_FILE);
+}
+
+function getPackagedBackendRuntimeProjectPath() {
+  return path.join(getBundledRuntimeRootPath(), "backend", PACKAGED_BACKEND_PROJECT_DIR);
+}
+
+function getBundledPythonPath() {
+  return os.platform() === "win32"
+    ? path.join(getBundledRuntimeEnvPath(), "python.exe")
+    : path.join(getBundledRuntimeEnvPath(), "bin", "python");
 }
 
 function quoteArg(arg) {
@@ -129,7 +190,7 @@ function isSystemPythonVersionSupported(versionInfo) {
 
 function getDefaultBackendProjectPath() {
   if (app.isPackaged) {
-    return getPackagedBackendProjectPath();
+    return getPackagedBackendRuntimeProjectPath();
   }
 
   const workingTreeProjectPath = path.join(process.cwd(), PACKAGED_BACKEND_PROJECT_DIR);
@@ -148,12 +209,17 @@ function normalizeStoredBackendProjectPath(projectPath) {
 
   const packagedPath = path.normalize(getPackagedBackendProjectPath());
   const legacyPath = path.normalize(getLegacyPackagedBackendProjectPath());
+  const runtimePath = path.normalize(getPackagedBackendRuntimeProjectPath());
   if (!normalizedInput) {
-    return packagedPath;
+    return runtimePath;
   }
 
   const normalizedPath = path.normalize(normalizedInput);
-  return normalizedPath === legacyPath ? packagedPath : normalizedInput;
+  if (normalizedPath === legacyPath || normalizedPath === packagedPath) {
+    return runtimePath;
+  }
+
+  return normalizedInput;
 }
 
 function usesPackagedBackendProject(projectPath) {
@@ -161,10 +227,23 @@ function usesPackagedBackendProject(projectPath) {
     return false;
   }
 
+  const normalizedPath = path.normalize(String(projectPath || ""));
   return (
-    path.normalize(String(projectPath || "")) ===
-    path.normalize(getPackagedBackendProjectPath())
+    normalizedPath === path.normalize(getPackagedBackendProjectPath()) ||
+    normalizedPath === path.normalize(getLegacyPackagedBackendProjectPath()) ||
+    normalizedPath === path.normalize(getPackagedBackendRuntimeProjectPath())
   );
+}
+
+function isBundledBackendMode(projectPath) {
+  if (!app.isPackaged) {
+    return false;
+  }
+
+  const normalizedPath = path.normalize(
+    normalizeStoredBackendProjectPath(projectPath || getDefaultBackendProjectPath())
+  );
+  return normalizedPath === path.normalize(getPackagedBackendRuntimeProjectPath());
 }
 
 function getIntegrityArtifactPaths() {
@@ -182,6 +261,20 @@ function isPathInsideDirectory(candidatePath, rootDir) {
     relativePath === "" ||
     (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))
   );
+}
+
+function readJsonFile(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function writeJsonFile(filePath, data) {
+  fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function verifyPackagedManifestEntry(entry, resourcesRoot) {
@@ -307,7 +400,315 @@ async function ensurePackagedBackendIntegrity(projectPath) {
     return { success: true, skipped: true };
   }
 
-  return verifyPackagedResourcesIntegrity();
+  const integrityResult = await verifyPackagedResourcesIntegrity();
+  if (!integrityResult.success) {
+    return integrityResult;
+  }
+
+  const { manifestPath } = getIntegrityArtifactPaths();
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const runtimeProjectPath = getPackagedBackendRuntimeProjectPath();
+  const backendPrefix = `${PACKAGED_BACKEND_RESOURCE_DIR}/${PACKAGED_BACKEND_PROJECT_DIR}/`;
+
+  for (const entry of manifest.entries) {
+    if (!entry?.path?.startsWith(backendPrefix)) {
+      continue;
+    }
+
+    const relativePath = entry.path.slice(backendPrefix.length).replace(/\//g, path.sep);
+    const sourcePath = path.join(getResourcesRootPath(), entry.path);
+    const targetPath = path.join(runtimeProjectPath, relativePath);
+    const targetDir = path.dirname(targetPath);
+
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+
+    let shouldCopy = true;
+    if (fs.existsSync(targetPath)) {
+      const stats = fs.statSync(targetPath);
+      shouldCopy =
+        !stats.isFile() ||
+        stats.size !== entry.size ||
+        crypto.createHash("sha256").update(fs.readFileSync(targetPath)).digest("hex") !==
+          entry.sha256;
+    }
+
+    if (shouldCopy) {
+      fs.copyFileSync(sourcePath, targetPath);
+    }
+  }
+
+  return {
+    ...integrityResult,
+    runtimeProjectPath,
+  };
+}
+
+function getBundledRuntimeCommandEnv(overrides = {}) {
+  const modelDir = getPackagedModelsPath();
+  return {
+    ...process.env,
+    ...overrides,
+    TORCH_HOME: modelDir,
+    XDG_CACHE_HOME: modelDir,
+    U2NET_HOME: modelDir,
+    HF_HOME: path.join(modelDir, "huggingface"),
+    HF_HUB_OFFLINE: "1",
+    TRANSFORMERS_OFFLINE: "1",
+    LAMA_MODEL_URL: getBundledDefaultModelPath(),
+  };
+}
+
+function getEffectiveBundledModelDir() {
+  return getPackagedModelsPath();
+}
+
+async function runProcess(command, args = [], options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: { ...process.env, ...(options.env || {}) },
+      stdio: options.stdio || "pipe",
+      shell: options.shell || false,
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    if (child.stdout) {
+      child.stdout.on("data", (data) => {
+        const text = data.toString();
+        stdout += text;
+        options.onStdout?.(text);
+      });
+    }
+
+    if (child.stderr) {
+      child.stderr.on("data", (data) => {
+        const text = data.toString();
+        stderr += text;
+        options.onStderr?.(text);
+      });
+    }
+
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        const error = new Error(
+          options.errorMessage ||
+            `${command} ${args.join(" ")} failed with exit code ${code}`
+        );
+        error.code = code;
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+      }
+    });
+  });
+}
+
+async function runBundledCondaUnpack(sendLog) {
+  const envPath = getBundledRuntimeEnvPath();
+  const pythonPath = getBundledPythonPath();
+  const exeCandidate = path.join(envPath, "Scripts", "conda-unpack.exe");
+  const scriptCandidate = path.join(envPath, "Scripts", "conda-unpack-script.py");
+
+  sendLog?.("Relocating bundled Python runtime...", "info");
+
+  if (fs.existsSync(exeCandidate)) {
+    await runProcess(exeCandidate, [], {
+      cwd: envPath,
+      errorMessage: "Failed to relocate the bundled Python runtime.",
+    });
+    return;
+  }
+
+  if (fs.existsSync(scriptCandidate) && fs.existsSync(pythonPath)) {
+    await runProcess(
+      pythonPath,
+      [scriptCandidate],
+      {
+        cwd: envPath,
+        errorMessage: "Failed to relocate the bundled Python runtime.",
+      }
+    );
+    return;
+  }
+
+  throw new Error("Bundled runtime does not contain conda-unpack.");
+}
+
+function getBundledRuntimeState() {
+  const statePath = getBundledRuntimeStatePath();
+  if (!fs.existsSync(statePath)) {
+    return null;
+  }
+
+  try {
+    return readJsonFile(statePath);
+  } catch (error) {
+    console.warn("Failed to parse bundled runtime state:", error);
+    return null;
+  }
+}
+
+function clearBundledRuntimeState() {
+  fs.rmSync(getBundledRuntimeStatePath(), { force: true });
+}
+
+function isBundledRuntimeLockStale(lockPath) {
+  if (!fs.existsSync(lockPath)) {
+    return false;
+  }
+
+  try {
+    const stats = fs.statSync(lockPath);
+    return Date.now() - stats.mtimeMs >= BUNDLED_RUNTIME_LOCK_STALE_MS;
+  } catch (error) {
+    console.warn("Failed to inspect bundled runtime lock:", error);
+    return false;
+  }
+}
+
+async function withBundledRuntimeLock(task) {
+  const runtimeRoot = getBundledRuntimeRootPath();
+  const lockPath = getBundledRuntimeLockPath();
+  fs.mkdirSync(runtimeRoot, { recursive: true });
+  const deadline = Date.now() + BUNDLED_RUNTIME_LOCK_WAIT_MS;
+
+  while (true) {
+    try {
+      const handle = fs.openSync(lockPath, "wx");
+      try {
+        return await task();
+      } finally {
+        fs.closeSync(handle);
+        fs.rmSync(lockPath, { force: true });
+      }
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
+
+      if (isBundledRuntimeLockStale(lockPath)) {
+        fs.rmSync(lockPath, { force: true });
+        continue;
+      }
+
+      if (Date.now() >= deadline) {
+        throw new Error("Timed out while waiting for the bundled runtime lock.");
+      }
+
+      await sleep(500);
+    }
+  }
+}
+
+function hasBundledRuntimeStateChanged(runtimeMetadata) {
+  const state = getBundledRuntimeState();
+  return !(
+    state &&
+    state.schemaVersion === 2 &&
+    state.runtimeBuiltAt === runtimeMetadata.builtAt &&
+    state.runtimeEnvPath === getBundledRuntimeEnvPath() &&
+    state.resourcesRootPath === getResourcesRootPath() &&
+    fs.existsSync(getBundledPythonPath())
+  );
+}
+
+async function ensureBundledRuntimeReady(sendLog) {
+  const integrityResult = await ensurePackagedBackendIntegrity(
+    getPackagedBackendRuntimeProjectPath()
+  );
+  if (!integrityResult.success) {
+    return integrityResult;
+  }
+
+  if (!fs.existsSync(getPackagedRuntimeEnvPath())) {
+    return {
+      success: false,
+      error: `Bundled runtime directory is missing: ${getPackagedRuntimeEnvPath()}`,
+    };
+  }
+
+  if (!fs.existsSync(getPackagedRuntimeMetadataPath())) {
+    return {
+      success: false,
+      error: `Bundled runtime metadata is missing: ${getPackagedRuntimeMetadataPath()}`,
+    };
+  }
+
+  if (!fs.existsSync(getBundledDefaultModelPath())) {
+    return {
+      success: false,
+      error: `Bundled default model is missing: ${getBundledDefaultModelPath()}`,
+    };
+  }
+
+  const runtimeMetadata = readJsonFile(getPackagedRuntimeMetadataPath());
+
+  await withBundledRuntimeLock(async () => {
+    const state = getBundledRuntimeState();
+    if (!hasBundledRuntimeStateChanged(runtimeMetadata)) {
+      return;
+    }
+
+    const appMoved =
+      !!state?.runtimeEnvPath && state.runtimeEnvPath !== getBundledRuntimeEnvPath();
+    if (appMoved) {
+      sendLog?.(
+        "Detected that the packaged app path changed. Re-running bundled runtime relocation...",
+        "warning"
+      );
+    }
+
+    try {
+      await runBundledCondaUnpack(sendLog);
+    } catch (error) {
+      if (appMoved) {
+        clearBundledRuntimeState();
+        error.message = `${error.message} The app appears to have been moved after the bundled runtime was prepared. Please re-extract the packaged app to a fresh directory and try again.`;
+      }
+      throw error;
+    }
+
+    const bundledPython = getBundledPythonPath();
+    if (!fs.existsSync(bundledPython)) {
+      throw new Error(`Bundled Python executable is missing: ${bundledPython}`);
+    }
+
+    writeJsonFile(getBundledRuntimeStatePath(), {
+      schemaVersion: 2,
+      preparedAt: new Date().toISOString(),
+      runtimeBuiltAt: runtimeMetadata.builtAt,
+      resourcesRootPath: getResourcesRootPath(),
+      runtimeEnvPath: getBundledRuntimeEnvPath(),
+      backendPath: getPackagedBackendRuntimeProjectPath(),
+      pythonPath: bundledPython,
+      modelPath: getBundledDefaultModelPath(),
+    });
+  });
+
+  const bundledPython = getBundledPythonPath();
+  const versionResult = await getPythonVersionFromCommand(quoteArg(bundledPython), {
+    cwd: getPackagedBackendRuntimeProjectPath(),
+    env: getBundledRuntimeCommandEnv(),
+  });
+
+  return {
+    success: true,
+    path: getPackagedBackendRuntimeProjectPath(),
+    pythonPath: bundledPython,
+    pythonVersion: versionResult.success ? versionResult.version.text : "",
+    pythonSource: "bundled offline runtime",
+    venvName: "bundled-runtime",
+    venvPath: getBundledRuntimeEnvPath(),
+    modelDir: getPackagedModelsPath(),
+    backendMode: "bundled",
+  };
 }
 
 function getVenvPythonPathByVenvPath(venvPath) {
@@ -611,11 +1012,70 @@ function mergeConfigWithDefaults(config = {}) {
   };
 }
 
+async function getUsableProjectVenvInfo(projectPath) {
+  const venvInfo = getProjectVenvInfo(projectPath);
+  if (!venvInfo.exists || !venvInfo.valid) {
+    return venvInfo;
+  }
+
+  const versionResult = await getPythonVersionFromCommand(quoteArg(venvInfo.pythonPath), {
+    cwd: projectPath,
+  });
+  if (!versionResult.success) {
+    return {
+      ...venvInfo,
+      valid: false,
+      error: `${venvInfo.venvName} exists, but its Python executable is unusable. ${versionResult.error}`,
+    };
+  }
+
+  return {
+    ...venvInfo,
+    pythonVersion: versionResult.version.text,
+  };
+}
+
+function canAutoRepairProjectVenv(projectPath, venvInfo) {
+  return (
+    app.isPackaged &&
+    usesPackagedBackendProject(projectPath) &&
+    !!venvInfo?.venvPath &&
+    isPathInsideDirectory(venvInfo.venvPath, projectPath)
+  );
+}
+
+function removeProjectVenv(venvInfo) {
+  if (!venvInfo?.venvPath) {
+    return;
+  }
+
+  fs.rmSync(venvInfo.venvPath, { recursive: true, force: true });
+}
+
+async function resolveValidatedProjectPath(inputPath) {
+  const normalizedPath = normalizeStoredBackendProjectPath(inputPath);
+  const effectivePath = normalizedPath || getDefaultBackendProjectPath();
+  const integrityResult = await ensurePackagedBackendIntegrity(effectivePath);
+  if (!integrityResult.success) {
+    return {
+      success: false,
+      code: "PACKAGED_BACKEND_INTEGRITY_FAILED",
+      error: integrityResult.error || "Packaged backend integrity verification failed.",
+    };
+  }
+
+  return validateProjectPath(effectivePath);
+}
+
 function sanitizeAppConfig(config = {}) {
   const merged = mergeConfigWithDefaults(config);
   merged.general.backendProjectPath = normalizeStoredBackendProjectPath(
     merged.general.backendProjectPath
   );
+  if (app.isPackaged && isBundledBackendMode(merged.general.backendProjectPath)) {
+    merged.general.modelPath = getPackagedModelsPath();
+    merged.general.modelDir = "";
+  }
   if (merged?.video && Object.prototype.hasOwnProperty.call(merged.video, "outputPath")) {
     delete merged.video.outputPath;
   }
@@ -763,13 +1223,10 @@ function createDefaultConfig() {
       "downloads"
     );
     DEFAULT_CONFIG.fileManagement.tempPath = path.join(userDataPath, "temp");
-    DEFAULT_CONFIG.general.modelPath = path.join(
-      userPath,
-      ".cache",
-      "torch",
-      "hub",
-      "checkpoints"
-    );
+    DEFAULT_CONFIG.general.modelPath = app.isPackaged
+      ? getPackagedModelsPath()
+      : path.join(userPath, ".cache", "torch", "hub", "checkpoints");
+    DEFAULT_CONFIG.general.modelDir = "";
     DEFAULT_CONFIG.general.backendProjectPath = getDefaultBackendProjectPath();
     DEFAULT_CONFIG.general.defaultModel = "lama";
     DEFAULT_CONFIG.video.tempFramesPath = path.join(
@@ -1365,7 +1822,7 @@ ipcMain.handle("check-conda-dependencies", async () => {
 // IPC handler - validate project path
 ipcMain.handle("check-project", async (event, selectPath) => {
   try {
-    const result = validateProjectPath(selectPath || global.projectPath);
+    const result = await resolveValidatedProjectPath(selectPath || global.projectPath);
     if (!result.success) {
       return result;
     }
@@ -1374,6 +1831,8 @@ ipcMain.handle("check-project", async (event, selectPath) => {
     return {
       success: true,
       path: result.path,
+      backendMode: isBundledBackendMode(result.path) ? "bundled" : "external",
+      defaultProjectPath: getDefaultBackendProjectPath(),
     };
   } catch (error) {
     return {
@@ -1389,7 +1848,9 @@ ipcMain.handle("prepare-project-python", async (event, selectPath) => {
   };
 
   try {
-    const projectResult = validateProjectPath(selectPath || global.projectPath);
+    const projectResult = await resolveValidatedProjectPath(
+      selectPath || global.projectPath
+    );
     if (!projectResult.success) {
       return projectResult;
     }
@@ -1398,33 +1859,48 @@ ipcMain.handle("prepare-project-python", async (event, selectPath) => {
     const workingPath = projectResult.path;
     sendLog(`Backend project path: ${workingPath}`, "info");
 
-    const existingVenv = getProjectVenvInfo(workingPath);
+    if (isBundledBackendMode(workingPath)) {
+      sendLog("Using bundled offline backend mode.", "info");
+      return ensureBundledRuntimeReady(sendLog);
+    }
+
+    let existingVenv = await getUsableProjectVenvInfo(workingPath);
     if (existingVenv.exists) {
       if (!existingVenv.valid) {
-        const manualGuide = buildManualVenvGuide(workingPath);
-        return {
-          success: false,
-          code: "INVALID_PROJECT_VENV",
-          error:
-            "A virtual environment folder exists in the backend project, but it is invalid. Please fix it manually.",
-          manualGuide,
-          venvPath: existingVenv.venvPath,
-          venvName: existingVenv.venvName,
-        };
+        if (canAutoRepairProjectVenv(workingPath, existingVenv)) {
+          sendLog(
+            `Detected an unusable packaged virtual environment at ${existingVenv.venvPath}. Removing it before repair...`,
+            "warning"
+          );
+          removeProjectVenv(existingVenv);
+          existingVenv = await getUsableProjectVenvInfo(workingPath);
+        } else {
+          const manualGuide = buildManualVenvGuide(workingPath);
+          return {
+            success: false,
+            code: "INVALID_PROJECT_VENV",
+            error:
+              existingVenv.error ||
+              "A virtual environment folder exists in the backend project, but it is invalid. Please fix it manually.",
+            manualGuide,
+            venvPath: existingVenv.venvPath,
+            venvName: existingVenv.venvName,
+          };
+        }
       }
 
-      const versionResult = await getPythonVersionFromCommand(
-        quoteArg(existingVenv.pythonPath)
-      );
-      return {
-        success: true,
-        path: workingPath,
-        pythonVersion: versionResult.success ? versionResult.version.text : "",
-        pythonSource: "project virtual environment",
-        venvPath: existingVenv.venvPath,
-        venvName: existingVenv.venvName,
-        pythonPath: existingVenv.pythonPath,
-      };
+      if (existingVenv.exists && existingVenv.valid) {
+        return {
+          success: true,
+          backendMode: "external",
+          path: workingPath,
+          pythonVersion: existingVenv.pythonVersion || "",
+          pythonSource: "project virtual environment",
+          venvPath: existingVenv.venvPath,
+          venvName: existingVenv.venvName,
+          pythonPath: existingVenv.pythonPath,
+        };
+      }
     }
 
     const systemPython = await detectSystemPython();
@@ -1450,6 +1926,7 @@ ipcMain.handle("prepare-project-python", async (event, selectPath) => {
       );
       return {
         success: true,
+        backendMode: "external",
         path: workingPath,
         pythonVersion: versionResult.success ? versionResult.version.text : "",
         pythonSource: "virtual environment created from system Python",
@@ -1467,6 +1944,7 @@ ipcMain.handle("prepare-project-python", async (event, selectPath) => {
       );
       return {
         success: true,
+        backendMode: "external",
         path: workingPath,
         pythonVersion: versionResult.success ? versionResult.version.text : "",
         pythonSource: "virtual environment bootstrapped from conda",
@@ -1497,6 +1975,7 @@ ipcMain.handle("prepare-project-python", async (event, selectPath) => {
         );
         return {
           success: true,
+          backendMode: "external",
           path: workingPath,
           pythonVersion: versionResult.success ? versionResult.version.text : "",
           pythonSource: "virtual environment created after installing Python",
@@ -1527,9 +2006,20 @@ ipcMain.handle("prepare-project-python", async (event, selectPath) => {
 ipcMain.handle("set-project-path", async (event, selectPath) => {
   try {
     const normalizedPath = normalizeStoredBackendProjectPath(selectPath);
+    const integrityResult = await ensurePackagedBackendIntegrity(normalizedPath);
+    if (!integrityResult.success) {
+      return {
+        success: false,
+        error: integrityResult.error || "Packaged backend integrity verification failed.",
+      };
+    }
     if (fs.existsSync(normalizedPath)) {
       global.projectPath = normalizedPath;
-      return { success: true };
+      return {
+        success: true,
+        path: normalizedPath,
+        backendMode: isBundledBackendMode(normalizedPath) ? "bundled" : "external",
+      };
     }
     return {
       success: false,
@@ -1548,7 +2038,27 @@ ipcMain.handle("check-venv", async () => {
       return { success: false, error: "Backend project path is not set." };
     }
 
-    const venvInfo = getProjectVenvInfo(global.projectPath);
+    if (isBundledBackendMode(global.projectPath)) {
+      const bundledResult = await ensureBundledRuntimeReady();
+      if (!bundledResult.success) {
+        return bundledResult;
+      }
+
+      return {
+        success: true,
+        exists: true,
+        valid: true,
+        venvPath: bundledResult.venvPath,
+        venvName: bundledResult.venvName,
+      };
+    }
+
+    const integrityResult = await ensurePackagedBackendIntegrity(global.projectPath);
+    if (!integrityResult.success) {
+      return integrityResult;
+    }
+
+    const venvInfo = await getUsableProjectVenvInfo(global.projectPath);
     return {
       success: venvInfo.exists && venvInfo.valid,
       exists: venvInfo.exists,
@@ -1572,9 +2082,35 @@ ipcMain.handle("check-dependencies", async () => {
       return { success: false, error: "Backend project path is not set." };
     }
 
-    const venvInfo = getProjectVenvInfo(global.projectPath);
+    if (isBundledBackendMode(global.projectPath)) {
+      const bundledResult = await ensureBundledRuntimeReady();
+      if (!bundledResult.success) {
+        return bundledResult;
+      }
+
+      try {
+        await execCommand(
+          `${quoteArg(bundledResult.pythonPath)} -c "import fastapi,uvicorn,numpy,PIL,torch,diffusers,transformers"`,
+          {
+            cwd: bundledResult.path,
+            timeout: 30000,
+            env: getBundledRuntimeCommandEnv(),
+          }
+        );
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    }
+
+    const integrityResult = await ensurePackagedBackendIntegrity(global.projectPath);
+    if (!integrityResult.success) {
+      return integrityResult;
+    }
+
+    const venvInfo = await getUsableProjectVenvInfo(global.projectPath);
     if (!venvInfo.exists || !venvInfo.valid) {
-      return { success: false };
+      return { success: false, error: venvInfo.error };
     }
 
     try {
@@ -1683,28 +2219,54 @@ ipcMain.handle("create-venv", async (event, projectPath) => {
   };
 
   try {
-    const projectResult = validateProjectPath(projectPath || global.projectPath);
+    const projectResult = await resolveValidatedProjectPath(
+      projectPath || global.projectPath
+    );
     if (!projectResult.success) {
       return projectResult;
     }
 
     global.projectPath = projectResult.path;
     const workingPath = projectResult.path;
-    const venvInfo = getProjectVenvInfo(workingPath);
-    if (venvInfo.exists) {
-      if (!venvInfo.valid) {
-        return {
-          success: false,
-          code: "INVALID_PROJECT_VENV",
-          error:
-            "A virtual environment folder exists in the backend project, but it is invalid. Please fix it manually.",
-          manualGuide: buildManualVenvGuide(workingPath),
-        };
+    if (isBundledBackendMode(workingPath)) {
+      const bundledResult = await ensureBundledRuntimeReady(sendLog);
+      if (!bundledResult.success) {
+        return bundledResult;
       }
+
       return {
         success: true,
-        message: "Project virtual environment already exists.",
+        message: "Bundled offline runtime is already prepared.",
       };
+    }
+
+    let venvInfo = await getUsableProjectVenvInfo(workingPath);
+    if (venvInfo.exists) {
+      if (!venvInfo.valid) {
+        if (canAutoRepairProjectVenv(workingPath, venvInfo)) {
+          sendLog(
+            `Detected an unusable packaged virtual environment at ${venvInfo.venvPath}. Removing it before recreation...`,
+            "warning"
+          );
+          removeProjectVenv(venvInfo);
+          venvInfo = await getUsableProjectVenvInfo(workingPath);
+        } else {
+          return {
+            success: false,
+            code: "INVALID_PROJECT_VENV",
+            error:
+              venvInfo.error ||
+              "A virtual environment folder exists in the backend project, but it is invalid. Please fix it manually.",
+            manualGuide: buildManualVenvGuide(workingPath),
+          };
+        }
+      }
+      if (venvInfo.exists && venvInfo.valid) {
+        return {
+          success: true,
+          message: "Project virtual environment already exists.",
+        };
+      }
     }
 
     const systemPython = await detectSystemPython();
@@ -1772,18 +2334,37 @@ ipcMain.handle("create-conda-venv", async (event) => {
 // IPC handler - install dependencies
 ipcMain.handle("install-dependencies", async (event, projectPath) => {
   try {
-    // Fall back to the globally stored project path when no argument is passed
-    const workingPath = projectPath || global.projectPath;
-
-    if (!workingPath) {
-      return { success: false, error: "Project path is not set." };
+    const projectResult = await resolveValidatedProjectPath(projectPath || global.projectPath);
+    if (!projectResult.success) {
+      return projectResult;
     }
 
-    const venvInfo = getProjectVenvInfo(workingPath);
+    const workingPath = projectResult.path;
+    if (isBundledBackendMode(workingPath)) {
+      const bundledResult = await ensureBundledRuntimeReady((message, type = "info") => {
+        mainWindow.webContents.send("backend-output", { type, message });
+      });
+      if (!bundledResult.success) {
+        return bundledResult;
+      }
+
+      mainWindow.webContents.send("backend-output", {
+        type: "success",
+        message: "Bundled offline runtime already includes backend dependencies.",
+      });
+      return {
+        success: true,
+        message: "Bundled offline runtime already includes backend dependencies.",
+      };
+    }
+
+    const venvInfo = await getUsableProjectVenvInfo(workingPath);
     if (!venvInfo.exists || !venvInfo.valid) {
       return {
         success: false,
-        error: "Project virtual environment is missing or invalid. Create or repair .venv first.",
+        error:
+          venvInfo.error ||
+          "Project virtual environment is missing or invalid. Create or repair .venv first.",
       };
     }
 
@@ -1930,15 +2511,14 @@ ipcMain.handle("start-backend-service", async (event, config) => {
       };
     }
 
-    const venvInfo = getProjectVenvInfo(global.projectPath);
-    if (!venvInfo.exists || !venvInfo.valid) {
-      return {
-        success: false,
-        error: "Project virtual environment is missing or invalid. Create or repair .venv first.",
-      };
+    const projectResult = await resolveValidatedProjectPath(global.projectPath);
+    if (!projectResult.success) {
+      return projectResult;
     }
 
-    const venvPython = venvInfo.pythonPath;
+    global.projectPath = projectResult.path;
+    let backendPython = "";
+    let backendEnv = { ...process.env };
     const args = [
       "main.py",
       "start",
@@ -1947,12 +2527,38 @@ ipcMain.handle("start-backend-service", async (event, config) => {
       `--port=${config.port}`,
     ];
 
-    if (config.modelDir) {
-      args.push(`--model-dir=${config.modelDir}`);
+    if (isBundledBackendMode(global.projectPath)) {
+      const bundledResult = await ensureBundledRuntimeReady((message, type = "info") => {
+        event.sender.send("backend-output", { message, type });
+      });
+      if (!bundledResult.success) {
+        return bundledResult;
+      }
+
+      backendPython = bundledResult.pythonPath;
+      backendEnv = getBundledRuntimeCommandEnv();
+      args.push(`--model-dir=${getEffectiveBundledModelDir()}`);
+    } else {
+      const venvInfo = await getUsableProjectVenvInfo(global.projectPath);
+      if (!venvInfo.exists || !venvInfo.valid) {
+        return {
+          success: false,
+          error:
+            venvInfo.error ||
+            "Project virtual environment is missing or invalid. Create or repair .venv first.",
+        };
+      }
+
+      backendPython = venvInfo.pythonPath;
+      if (config.modelDir) {
+        args.push(`--model-dir=${config.modelDir}`);
+      }
     }
-    backendProcess = spawn(venvPython, args, {
+
+    backendProcess = spawn(backendPython, args, {
       cwd: global.projectPath,
       stdio: "pipe",
+      env: backendEnv,
     });
 
     backendProcess.stdout.on("data", (data) => {

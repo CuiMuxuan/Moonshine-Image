@@ -3,6 +3,7 @@
 node_modules
 
 /IOPaint
+/models
 # Quasar core related directories
 .quasar
 /dist

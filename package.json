@@ -13,6 +13,8 @@
     "test": "echo \"No test specified\" && exit 0",
     "dev": "quasar dev",
     "build": "quasar build",
+    "build:runtime:win": "node scripts/build-runtime-win.mjs",
+    "prepare:backend": "node scripts/materialize-iopaint-backend.mjs",
     "prepare:electron-resources": "node scripts/prepare-electron-resources.mjs",
     "generate:integrity-keypair": "node scripts/generate-integrity-keypair.mjs",
     "postinstall": "quasar prepare"

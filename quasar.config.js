@@ -240,9 +240,18 @@ export default defineConfig((ctx) => {
           "/node_modules($|/)",
           "/src($|/)",
           "/dist/spa($|/)",
+          "/build-resources($|/)",
+          "/IOPaint($|/)",
           "/iopaint-change($|/)",
+          "/models($|/)",
+          "/scripts($|/)",
         ],
-        extraResource: ["build-resources/backend", "build-resources/integrity"],
+        extraResource: [
+          "build-resources/backend",
+          "build-resources/runtime",
+          "build-resources/models",
+          "build-resources/integrity",
+        ],
       },
 
       builder: {
@@ -273,6 +282,14 @@ export default defineConfig((ctx) => {
           {
             from: "build-resources/backend",
             to: "backend",
+          },
+          {
+            from: "build-resources/runtime",
+            to: "runtime",
+          },
+          {
+            from: "build-resources/models",
+            to: "models",
           },
           {
             from: "build-resources/integrity",

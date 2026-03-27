@@ -3,7 +3,7 @@
     <q-card class="backend-manager-card">
       <q-card-section class="row items-center q-pb-none bg-primary text-white">
         <q-icon name="settings" size="md" class="q-mr-sm" />
-        <div class="text-h6">Python 后端管理</div>
+        <div class="text-h6">{{ backendManagerTitle }}</div>
         <q-space />
         <q-btn icon="close" flat round dense v-close-popup color="white" />
       </q-card-section>
@@ -50,7 +50,7 @@
                       </q-item-section>
                       <q-item-section>
                         <q-item-label class="text-weight-medium"
-                          >Python 环境</q-item-label
+                          >{{ pythonSectionLabel }}</q-item-label
                         >
                         <q-item-label caption class="text-grey-6">{{
                           pythonVersion || "未检测到"
@@ -94,7 +94,7 @@
                       </q-item-section>
                       <q-item-section>
                         <q-item-label class="text-weight-medium"
-                          >虚拟环境</q-item-label
+                          >{{ venvSectionLabel }}</q-item-label
                         >
                         <q-item-label caption class="text-grey-6">{{
                           environmentStatus.venv ? "已创建" : "未创建"
@@ -115,7 +115,7 @@
                   />
                   <div class="q-gutter-sm">
                     <q-btn
-                      v-if="!environmentStatus.python"
+                      v-if="!isBundledBackendMode && !environmentStatus.python"
                       @click="installPython"
                       color="secondary"
                       label="安装 Python"
@@ -163,7 +163,7 @@
                       </q-item-section>
                       <q-item-section>
                         <q-item-label class="text-weight-medium"
-                          >虚拟环境创建</q-item-label
+                          >{{ venvSetupLabel }}</q-item-label
                         >
                         <q-item-label caption class="text-grey-6">{{
                           venvStatus
@@ -189,7 +189,7 @@
                       </q-item-section>
                       <q-item-section>
                         <q-item-label class="text-weight-medium"
-                          >依赖安装</q-item-label
+                          >{{ dependenciesLabel }}</q-item-label
                         >
                         <q-item-label caption class="text-grey-6">{{
                           dependenciesStatus
@@ -212,7 +212,7 @@
                   <q-btn
                     @click="setupEnvironment"
                     color="primary"
-                    label="配置环境"
+                    :label="setupEnvironmentLabel"
                     :loading="installing.dependencies"
                     :disable="
                       !environmentStatus.python || !environmentStatus.project
@@ -276,10 +276,10 @@
                             backendConfig.model
                           }}</span>
                         </div>
-                        <div v-if="backendConfig.modelDir" class="text-grey-7">
+                        <div v-if="backendModelLocation" class="text-grey-7">
                           模型目录:
                           <span class="text-primary text-weight-medium">{{
-                            backendConfig.modelDir
+                            backendModelLocation
                           }}</span>
                         </div>
                       </div>
@@ -320,7 +320,16 @@
                           outlined
                           color="primary"
                         />
+                        <q-banner
+                          v-if="isBundledBackendMode"
+                          dense
+                          rounded
+                          class="bg-blue-1 text-primary"
+                        >
+                          当前使用内置离线后端，模型将直接从安装包内的内置模型目录读取。
+                        </q-banner>
                         <q-input
+                          v-else
                           v-model="backendConfig.modelDir"
                           label="模型目录"
                           dense
@@ -452,7 +461,7 @@
   </q-dialog>
 </template>
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, nextTick, watch } from "vue";
+import { computed, ref, reactive, onMounted, onUnmounted, nextTick, watch } from "vue";
 import { useConfigStore } from "src/stores/config";
 import { api } from "src/boot/axios";
 
@@ -469,7 +478,33 @@ const configStore = useConfigStore();
 // Emits
 const emit = defineEmits(["update:modelValue"]);
 
+const backendMode = ref("external");
+const isBundledBackendMode = computed(() => backendMode.value === "bundled");
+const backendManagerTitle = computed(() =>
+  isBundledBackendMode.value ? "离线后端管理" : "Python 后端管理"
+);
+const pythonSectionLabel = computed(() =>
+  isBundledBackendMode.value ? "离线运行时" : "Python 环境"
+);
+const venvSectionLabel = computed(() =>
+  isBundledBackendMode.value ? "离线运行时" : "虚拟环境"
+);
+const venvSetupLabel = computed(() =>
+  isBundledBackendMode.value ? "离线运行时准备" : "虚拟环境创建"
+);
+const dependenciesLabel = computed(() =>
+  isBundledBackendMode.value ? "内置依赖" : "依赖安装"
+);
+const setupEnvironmentLabel = computed(() =>
+  isBundledBackendMode.value ? "准备离线运行时" : "配置环境"
+);
+
 // 响应式数据
+const backendModelLocation = computed(() =>
+  isBundledBackendMode.value
+    ? backendConfig.modelPath || "resources/models"
+    : backendConfig.modelDir || ""
+);
 const showDialog = ref(false);
 const currentStep = ref(1);
 const checking = ref(false);
@@ -543,6 +578,15 @@ const checkServiceStatus = async () => {
       environmentStatus.venv = true;
       environmentStatus.dependencies = true;
       environmentStatus.configured = true;
+      pythonVersion.value =
+        pythonVersion.value ||
+        (isBundledBackendMode.value ? "Bundled offline runtime ready" : "Python detected");
+      venvStatus.value = isBundledBackendMode.value
+        ? "Ready (bundled-runtime)"
+        : "Ready";
+      dependenciesStatus.value = isBundledBackendMode.value
+        ? "Bundled dependencies ready"
+        : "Installed";
     } else {
       serviceStatus.value = "stopped";
       serviceStatusText.value = "已停止";
@@ -560,14 +604,16 @@ watch(
     showDialog.value = newVal;
     if (newVal) {
       // 检查服务状态，如果服务正在运行则跳过环境检测
-      checkServiceStatus().then(() => {
-        if (serviceStatus.value !== 'running') {
-          checkEnvironment();
-        } else {
-          // 服务正在运行，直接跳转到服务管理步骤
-          currentStep.value = 3;
-          addTerminalLog("检测到后端服务正在运行，跳过环境检测", "info");
-        }
+      syncCurrentBackendMode().finally(() => {
+        checkServiceStatus().then(() => {
+          if (serviceStatus.value !== "running") {
+            checkEnvironment();
+          } else {
+            // 服务正在运行，直接跳转到服务管理步骤
+            currentStep.value = 3;
+            addTerminalLog("检测到后端服务正在运行，跳过环境检测", "info");
+          }
+        });
       });
     }
   }
@@ -580,6 +626,7 @@ watch(
     backendConfig.port = newConfig.general.backendPort || 8080;
     backendConfig.device = newConfig.general.launchMode || "cuda";
     backendConfig.model = newConfig.general.defaultModel || "lama";
+    backendConfig.modelPath = newConfig.general.modelPath || "";
     backendConfig.projectPath = newConfig.general.backendProjectPath || "";
     backendConfig.modelDir = newConfig.general.modelDir || "";
   },
@@ -623,6 +670,70 @@ const persistConfig = async (nextConfig) => {
     }
     throw new Error(storeResult?.error || "配置更新失败");
   }
+};
+
+const syncBackendMode = (mode = "external") => {
+  backendMode.value = mode === "bundled" ? "bundled" : "external";
+};
+
+const syncCurrentBackendMode = async () => {
+  try {
+    const result = await window.electron.ipcRenderer.invoke(
+      "check-project",
+      backendConfig.projectPath
+    );
+    if (!result?.success) {
+      return;
+    }
+
+    syncBackendMode(result.backendMode);
+    if (result.path) {
+      projectPath.value = result.path;
+      backendConfig.projectPath = result.path;
+    }
+  } catch (error) {
+    console.warn("Failed to sync backend mode:", error);
+  }
+};
+
+const applyPreparedEnvironment = (prepareResult = {}) => {
+  syncBackendMode(prepareResult.backendMode || backendMode.value);
+  environmentStatus.project = true;
+  environmentStatus.python = true;
+  environmentStatus.venv = true;
+
+  if (prepareResult.path) {
+    projectPath.value = prepareResult.path;
+    backendConfig.projectPath = prepareResult.path;
+  }
+
+  if (prepareResult.modelDir !== undefined) {
+    backendConfig.modelPath = prepareResult.modelDir || backendConfig.modelPath;
+  }
+
+  pythonVersion.value = prepareResult.pythonVersion
+    ? `Python ${prepareResult.pythonVersion}`
+    : isBundledBackendMode.value
+      ? "Bundled offline runtime ready"
+      : "Python detected";
+
+  const runtimeName =
+    prepareResult.venvName || (isBundledBackendMode.value ? "bundled-runtime" : ".venv");
+  venvStatus.value = isBundledBackendMode.value
+    ? `Ready (${runtimeName})`
+    : `Created (${runtimeName})`;
+};
+
+const applyDependenciesStatus = (ready) => {
+  environmentStatus.dependencies = !!ready;
+  environmentStatus.configured = !!ready;
+  dependenciesStatus.value = ready
+    ? isBundledBackendMode.value
+      ? "Bundled dependencies ready"
+      : "Installed"
+    : isBundledBackendMode.value
+      ? "Bundled dependencies not ready"
+      : "Not installed";
 };
 
 const appendProjectPathGuidance = (result) => {
@@ -672,15 +783,23 @@ const checkEnvironment = async () => {
       return;
     }
 
+    syncBackendMode(projectResult.backendMode);
     environmentStatus.project = true;
     projectPath.value = projectResult.path;
-    if (backendConfig.projectPath !== projectResult.path) {
-      backendConfig.projectPath = projectResult.path;
+    backendConfig.projectPath = projectResult.path;
+    if (configStore.config.general.backendProjectPath !== projectResult.path) {
       const newConfig = { ...configStore.config };
       newConfig.general.backendProjectPath = projectResult.path;
       await persistConfig(newConfig);
     }
     addTerminalLog(`后端项目检测成功：${projectResult.path}`, "success");
+
+    addTerminalLog(
+      projectResult.backendMode === "bundled"
+        ? "Detected bundled offline backend mode."
+        : "Detected external backend mode.",
+      "info"
+    );
 
     const prepareResult = await window.electron.ipcRenderer.invoke(
       "prepare-project-python",
@@ -728,17 +847,34 @@ const checkEnvironment = async () => {
       "success"
     );
 
+    applyPreparedEnvironment(prepareResult);
+    addTerminalLog(
+      isBundledBackendMode.value
+        ? "Bundled offline runtime is ready."
+        : `Python environment is ready (${prepareResult.pythonSource || "project virtual environment"}).`,
+      "success"
+    );
+
     const depsResult = await window.electron.ipcRenderer.invoke("check-dependencies");
     if (depsResult.success) {
-      environmentStatus.dependencies = true;
-      environmentStatus.configured = true;
-      dependenciesStatus.value = "已安装";
-      addTerminalLog("依赖已安装。", "success");
+      applyDependenciesStatus(true);
+      addTerminalLog(
+        isBundledBackendMode.value
+          ? "Bundled backend dependencies are ready."
+          : "依赖已安装。",
+        "success"
+      );
       currentStep.value = 3;
     } else {
-      environmentStatus.dependencies = false;
-      environmentStatus.configured = false;
-      dependenciesStatus.value = "未安装";
+      applyDependenciesStatus(false);
+      if (depsResult.error) {
+        addTerminalLog(
+          isBundledBackendMode.value
+            ? `Bundled dependency check failed: ${depsResult.error}`
+            : `依赖检测失败：${depsResult.error}`,
+          "warning"
+        );
+      }
       currentStep.value = 2;
     }
   } catch (error) {
@@ -792,16 +928,18 @@ const selectProjectPath = async () => {
         );
 
         if (setResult.success) {
-          projectPath.value = selectedPath;
-          backendConfig.projectPath = selectedPath;
+          const effectiveProjectPath = setResult.path || checkResult.path || selectedPath;
+          projectPath.value = effectiveProjectPath;
+          backendConfig.projectPath = effectiveProjectPath;
+          syncBackendMode(setResult.backendMode || checkResult.backendMode);
           environmentStatus.project = true;
 
           // 保存到配置文件
           const newConfig = { ...configStore.config };
-          newConfig.general.backendProjectPath = selectedPath;
+          newConfig.general.backendProjectPath = effectiveProjectPath;
           await persistConfig(newConfig);
 
-          addTerminalLog(`项目路径设置成功: ${selectedPath}`, "success");
+          addTerminalLog(`项目路径设置成功: ${effectiveProjectPath}`, "success");
           await checkEnvironment();
         } else {
           addTerminalLog(`项目路径设置失败: ${setResult.error}`, "error");
@@ -840,6 +978,12 @@ const selectModelDir = async () => {
 const setupEnvironment = async () => {
   installing.dependencies = true;
   installProgress.value = 0;
+  addTerminalLog(
+    isBundledBackendMode.value
+      ? "Preparing bundled offline backend..."
+      : "Preparing backend environment...",
+    "info"
+  );
   addTerminalLog("开始配置后端环境...", "info");
 
   try {
@@ -879,16 +1023,33 @@ const setupEnvironment = async () => {
     installProgress.value = 50;
 
     addTerminalLog("开始安装依赖...", "info");
+    applyPreparedEnvironment(prepareResult);
+    addTerminalLog(
+      isBundledBackendMode.value
+        ? "Bundled offline runtime is ready."
+        : "Virtual environment is ready.",
+      "success"
+    );
+    addTerminalLog(
+      isBundledBackendMode.value
+        ? "Verifying bundled backend dependencies..."
+        : "Installing dependencies...",
+      "info"
+    );
+
     const depsResult = await window.electron.ipcRenderer.invoke(
       "install-dependencies",
       projectPath.value || backendConfig.projectPath
     );
 
     if (depsResult.success) {
-      environmentStatus.dependencies = true;
-      environmentStatus.configured = true;
-      dependenciesStatus.value = "已安装";
-      addTerminalLog("依赖安装成功。", "success");
+      applyDependenciesStatus(true);
+      addTerminalLog(
+        isBundledBackendMode.value
+          ? "Bundled backend dependencies are ready."
+          : "依赖安装成功。",
+        "success"
+      );
       installProgress.value = 100;
       currentStep.value = 3;
     } else {

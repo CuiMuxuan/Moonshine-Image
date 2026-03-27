@@ -59,6 +59,7 @@ export class ConfigManager {
       backendPort: 8080,
       launchMode: "cuda",
       modelPath: "",
+      modelDir: "",
       backendProjectPath: "",
       defaultModel: "lama",
       autoStart: true,

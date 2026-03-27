@@ -7,30 +7,53 @@ import {
   INTEGRITY_MANIFEST_FILE,
   INTEGRITY_RESOURCE_DIR,
   INTEGRITY_SIGNATURE_FILE,
-  PACKAGED_BACKEND_PROJECT_DIR,
-  PACKAGED_BACKEND_RESOURCE_DIR,
+  PACKAGED_MODELS_RESOURCE_DIR,
+  PACKAGED_RUNTIME_METADATA_FILE,
+  PACKAGED_RUNTIME_RESOURCE_DIR,
+  PACKAGED_RUNTIME_TARGET_DIR,
 } from "../src-electron/integrity/public-key.js";
+import { buildPackagedWindowsRuntime } from "./build-runtime-win.mjs";
+import { materializePackagedBackend } from "./materialize-iopaint-backend.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..");
-const sourceBackendRoot = path.join(repoRoot, "IOPaint");
+const sourceModelsRoot = path.join(repoRoot, "models");
 const buildResourcesRoot = path.join(repoRoot, "build-resources");
-const packagedBackendRoot = path.join(
-  buildResourcesRoot,
-  PACKAGED_BACKEND_RESOURCE_DIR,
-  PACKAGED_BACKEND_PROJECT_DIR
-);
+const packagedModelsRoot = path.join(buildResourcesRoot, PACKAGED_MODELS_RESOURCE_DIR);
 const integrityRoot = path.join(buildResourcesRoot, INTEGRITY_RESOURCE_DIR);
 const defaultPrivateKeyPath = path.join(
   repoRoot,
   "build-keys",
   "integrity-private.pem"
 );
-const excludedDirNames = new Set([".venv", "__pycache__", "tests"]);
-const excludedFileNames = new Set(["requirements-dev.txt", "setup.py", ".gitignore"]);
-const allowedRootFiles = new Set(["main.py", "requirements.txt"]);
-const allowedRuntimeExtensions = new Set([".py", ".txt", ".yaml"]);
+
+const excludedDirNames = new Set(["__pycache__"]);
+const protectedResourceDirs = [
+  {
+    rootDir: path.join(buildResourcesRoot, "backend"),
+    resourcePrefix: "backend",
+  },
+  {
+    rootDir: packagedModelsRoot,
+    resourcePrefix: PACKAGED_MODELS_RESOURCE_DIR,
+  },
+];
+const protectedResourceFiles = [
+  {
+    absolutePath: path.join(
+      buildResourcesRoot,
+      PACKAGED_RUNTIME_RESOURCE_DIR,
+      PACKAGED_RUNTIME_TARGET_DIR,
+      PACKAGED_RUNTIME_METADATA_FILE
+    ),
+    manifestPath: [
+      PACKAGED_RUNTIME_RESOURCE_DIR,
+      PACKAGED_RUNTIME_TARGET_DIR,
+      PACKAGED_RUNTIME_METADATA_FILE,
+    ].join("/"),
+  },
+];
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -46,6 +69,10 @@ function toPosixPath(filePath) {
 }
 
 function listFiles(rootDir) {
+  if (!fs.existsSync(rootDir)) {
+    return [];
+  }
+
   const files = [];
   const queue = [rootDir];
 
@@ -56,6 +83,9 @@ function listFiles(rootDir) {
     for (const entry of entries) {
       const fullPath = path.join(currentPath, entry.name);
       if (entry.isDirectory()) {
+        if (excludedDirNames.has(entry.name)) {
+          continue;
+        }
         queue.push(fullPath);
         continue;
       }
@@ -66,71 +96,55 @@ function listFiles(rootDir) {
   return files.sort();
 }
 
-function shouldCopyBackendFile(relativePath) {
-  const normalizedPath = toPosixPath(relativePath);
-  const segments = normalizedPath.split("/");
-  const fileName = segments.at(-1);
-
-  if (segments.some((segment) => excludedDirNames.has(segment))) {
-    return false;
-  }
-
-  if (excludedFileNames.has(fileName)) {
-    return false;
-  }
-
-  if (segments.length === 1) {
-    return allowedRootFiles.has(fileName);
-  }
-
-  if (segments[0] !== "iopaint") {
-    return false;
-  }
-
-  return allowedRuntimeExtensions.has(path.extname(fileName).toLowerCase());
+function sha256File(filePath) {
+  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
 }
 
-function copyPackagedBackend() {
-  if (!fs.existsSync(sourceBackendRoot)) {
-    throw new Error(`Backend source directory does not exist: ${sourceBackendRoot}`);
+function copyPackagedModels() {
+  resetDir(packagedModelsRoot);
+  if (!fs.existsSync(sourceModelsRoot)) {
+    throw new Error(`Models source directory does not exist: ${sourceModelsRoot}`);
   }
 
-  resetDir(packagedBackendRoot);
-
-  for (const absolutePath of listFiles(sourceBackendRoot)) {
-    const relativePath = path.relative(sourceBackendRoot, absolutePath);
-    if (!shouldCopyBackendFile(relativePath)) {
-      continue;
-    }
-
-    const destinationPath = path.join(packagedBackendRoot, relativePath);
+  for (const absolutePath of listFiles(sourceModelsRoot)) {
+    const relativePath = path.relative(sourceModelsRoot, absolutePath);
+    const destinationPath = path.join(packagedModelsRoot, relativePath);
     ensureDir(path.dirname(destinationPath));
     fs.copyFileSync(absolutePath, destinationPath);
   }
 }
 
-function sha256File(filePath) {
-  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
-}
-
 function createManifestEntries() {
-  return listFiles(packagedBackendRoot).map((absolutePath) => {
-    const relativePath = path.relative(packagedBackendRoot, absolutePath);
-    const manifestPath = toPosixPath(
-      path.join(
-        PACKAGED_BACKEND_RESOURCE_DIR,
-        PACKAGED_BACKEND_PROJECT_DIR,
-        relativePath
-      )
-    );
-    const stats = fs.statSync(absolutePath);
+  const entries = [];
 
-    return {
-      path: manifestPath,
+  for (const resourceDir of protectedResourceDirs) {
+    for (const absolutePath of listFiles(resourceDir.rootDir)) {
+      const relativePath = path.relative(resourceDir.rootDir, absolutePath);
+      const manifestPath = toPosixPath(path.join(resourceDir.resourcePrefix, relativePath));
+      const stats = fs.statSync(absolutePath);
+
+      entries.push({
+        path: manifestPath,
+        size: stats.size,
+        sha256: sha256File(absolutePath),
+      });
+    }
+  }
+
+  for (const protectedFile of protectedResourceFiles) {
+    if (!fs.existsSync(protectedFile.absolutePath)) {
+      throw new Error(`Protected resource file does not exist: ${protectedFile.absolutePath}`);
+    }
+
+    const stats = fs.statSync(protectedFile.absolutePath);
+    entries.push({
+      path: protectedFile.manifestPath,
       size: stats.size,
-      sha256: sha256File(absolutePath),
-    };
-  });
+      sha256: sha256File(protectedFile.absolutePath),
+    });
+  }
+
+  return entries.sort((a, b) => a.path.localeCompare(b.path));
 }
 
 function readPrivateKey() {
@@ -147,7 +161,9 @@ function readPrivateKey() {
 }
 
 export function prepareElectronResources() {
-  copyPackagedBackend();
+  materializePackagedBackend();
+  buildPackagedWindowsRuntime({ allowFallback: true });
+  copyPackagedModels();
   resetDir(integrityRoot);
 
   const manifest = {
