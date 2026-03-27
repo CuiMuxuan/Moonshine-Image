@@ -4,8 +4,8 @@
       ref="maskCanvas"
       class="absolute"
       :class="{
-        'cursor-none': (isDrawingMode || isCtrlPressed) && cursorPosition,
-        'cursor-grab': !isDrawingMode && !isCtrlPressed,
+          'cursor-none': (drawingModeActive || isCtrlPressed) && cursorPosition && !isToolbarInteracting,
+          'cursor-grab': !drawingModeActive && !isCtrlPressed && !isToolbarInteracting,
       }"
       :style="{
         width: `${store.imageWidth}px`,
@@ -14,7 +14,7 @@
         transformOrigin: '0 0',
         left: `${store.offsetX}px`,
         top: `${store.offsetY}px`,
-        pointerEvents: isDrawingMode || isCtrlPressed ? 'auto' : 'none',
+        pointerEvents: drawingModeActive || isCtrlPressed ? 'auto' : 'none',
         opacity: maskVisible ? brushAlpha : 0,
         transition: 'opacity 0.15s ease',
       }"
@@ -25,7 +25,7 @@
     ></canvas>
 
     <div
-      v-if="(isDrawingMode || isCtrlPressed) && cursorPosition"
+      v-if="(drawingModeActive || isCtrlPressed) && cursorPosition && !isToolbarInteracting"
       class="absolute rounded-full pointer-events-none custom-cursor"
       :style="{
         width: `${brushSize}px`,
@@ -43,7 +43,7 @@
     <div
       v-show="showToolbar"
       ref="toolbarRef"
-      class="absolute toolbar-container app-floating-toolbar"
+      class="absolute toolbar-container mask-toolbar-region app-floating-toolbar"
       :style="{
         left: `${toolbarPosition.x}px`,
         top: `${toolbarPosition.y}px`,
@@ -51,6 +51,7 @@
       }"
       @mousedown.stop
       @pointerdown.stop
+      @pointerenter="setToolbarPointerRegionState(true)"
     >
       <div
         class="toolbar-handle bg-primary text-white text-center text-xs py-1 cursor-move"
@@ -62,48 +63,42 @@
 
       <q-bar class="q-px-md rounded-b-pill app-floating-toolbar-bar">
         <q-btn-group flat class="rounded-pill overflow-hidden">
-          <q-btn :color="isDrawingMode ? 'primary' : 'grey'" icon="brush" @click="toggleDrawing">
+          <q-btn :color="drawingModeActive ? 'primary' : 'grey'" icon="brush" @click="toggleDrawing">
             <q-tooltip>绘制 (Ctrl/B)</q-tooltip>
           </q-btn>
 
-          <q-btn-dropdown color="primary" icon="format_size">
-            <q-list>
-              <q-item>
-                <q-item-section>
-                  <div class="flex items-center">
-                    <div
-                      class="mr-2 rounded-full"
-                      :style="{
-                        width: `${Math.max(10, brushSize)}px`,
-                        height: `${Math.max(10, brushSize)}px`,
-                        backgroundColor: toRgba(brushColor, brushAlpha),
-                        minWidth: '10px',
-                        minHeight: '10px',
-                      }"
-                    ></div>
-                    <q-slider
-                      v-model="brushSize"
-                      :min="1"
-                      :max="120"
-                      label
-                      label-always
-                      class="flex-1"
-                    />
-                  </div>
-                </q-item-section>
-              </q-item>
-            </q-list>
+          <q-btn-dropdown
+            color="primary"
+            icon="format_size"
+            :content-class="toolbarPopupClass"
+          >
+            <div class="brush-size-panel q-pa-md">
+              <q-slider
+                v-model="brushSize"
+                :min="1"
+                :max="120"
+                label
+                label-always
+              />
+            </div>
           </q-btn-dropdown>
 
-          <q-btn-dropdown color="primary" icon="palette">
+          <q-btn-dropdown
+            color="primary"
+            icon="palette"
+            :content-class="toolbarPopupClass"
+          >
             <div class="q-pa-sm">
               <q-color v-model="brushColor" />
             </div>
           </q-btn-dropdown>
 
-          <q-btn-dropdown color="primary" icon="opacity">
+          <q-btn-dropdown
+            color="primary"
+            icon="opacity"
+            :content-class="toolbarPopupClass"
+          >
             <div class="alpha-panel q-pa-md">
-              <div class="text-caption q-mb-sm">透明度</div>
               <q-slider
                 v-model="brushAlpha"
                 :min="0.05"
@@ -143,17 +138,15 @@
 </template>
 
 <script setup>
-import { inject, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 
 import { DEFAULT_IMAGE_BRUSH, normalizeBrushConfig } from "src/config/ConfigManager";
 import { useConfigStore } from "src/stores/config";
 import { useEditorStore } from "../stores/editor";
-import { useFileManagerStore } from "../stores/fileManager";
 
 const editor = inject("image-editor", { value: null });
 const configStore = useConfigStore();
-const fileManagerStore = useFileManagerStore();
 
 const props = defineProps({
   scale: {
@@ -172,6 +165,10 @@ const props = defineProps({
     type: Object,
     default: null,
   },
+  drawingMode: {
+    type: Boolean,
+    default: false,
+  },
   visibleAreaInsets: {
     type: Object,
     default: () => ({
@@ -183,7 +180,12 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["update:mask", "update:drawing-mode", "update:ctrl-pressed"]);
+const emit = defineEmits([
+  "update:mask",
+  "update:drawing-mode",
+  "update:ctrl-pressed",
+  "update:toolbar-interacting",
+]);
 
 const store = useEditorStore();
 const rootRef = ref(null);
@@ -208,7 +210,34 @@ const isDraggingToolbar = ref(false);
 const dragOffset = ref({ x: 0, y: 0 });
 const hasManualToolbarPosition = ref(false);
 const maskVisible = ref(true);
-const isDrawingMode = ref(false);
+const pendingMaskSyncDataUrl = ref("");
+const drawingModeActive = computed(() => Boolean(props.drawingMode));
+const toolbarPopupClass = "mask-toolbar-popup";
+const isToolbarPointerRegionActive = ref(false);
+const isToolbarInteracting = computed(
+  () => Boolean(props.showToolbar) && (isDraggingToolbar.value || isToolbarPointerRegionActive.value)
+);
+
+const isElementWithinToolbarRegion = (target) =>
+  target instanceof HTMLElement &&
+  Boolean(target.closest(".mask-toolbar-region") || target.closest(`.${toolbarPopupClass}`));
+
+const isEventWithinToolbarRegion = (event) => {
+  if (isElementWithinToolbarRegion(event?.target)) {
+    return true;
+  }
+
+  const path = typeof event?.composedPath === "function" ? event.composedPath() : [];
+  return path.some((target) => isElementWithinToolbarRegion(target));
+};
+
+const setToolbarPointerRegionState = (value) => {
+  isToolbarPointerRegionActive.value = Boolean(value);
+};
+
+const syncToolbarPointerRegionState = (event) => {
+  setToolbarPointerRegionState(isEventWithinToolbarRegion(event));
+};
 
 const toRgba = (hex, alpha = 1) => {
   const value = String(hex || "").replace("#", "").trim();
@@ -237,7 +266,23 @@ const saveInitialState = () => {
   history.value.push(initialState);
   historyIndex.value = 0;
   operationStartIndices.value = [0];
+  pendingMaskSyncDataUrl.value = "";
   updateCanUndoRedo();
+};
+
+const normalizeMaskDataUrl = (mask) => {
+  if (!mask) return "";
+  if (typeof mask === "string") return mask;
+  if (mask instanceof ImageData) return null;
+  if (typeof mask.displayUrl === "string" && mask.displayUrl) {
+    return mask.displayUrl;
+  }
+  if (typeof mask.data === "string" && mask.data) {
+    return mask.data.startsWith("data:")
+      ? mask.data
+      : `data:image/png;base64,${mask.data}`;
+  }
+  return "";
 };
 
 const areImageDatasEqual = (data1, data2) => {
@@ -261,16 +306,6 @@ const areImageDatasEqual = (data1, data2) => {
   }
 
   return true;
-};
-
-const throttle = (fn, delay) => {
-  let lastCall = 0;
-  return function throttled(...args) {
-    const now = Date.now();
-    if (now - lastCall < delay) return;
-    lastCall = now;
-    return fn(...args);
-  };
 };
 
 const initCanvas = () => {
@@ -328,20 +363,17 @@ const toggleMaskVisibility = (visible) => {
 
 const getMaskData = () => maskCanvas.value?.toDataURL("image/png") || "";
 
-const emitMask = throttle(() => {
+const emitMask = () => {
   if (!ctx.value || !maskCanvas.value) return;
 
   const dataUrl = maskCanvas.value.toDataURL("image/png");
-  if (fileManagerStore.currentFileId) {
-    fileManagerStore.updateFileMask(fileManagerStore.currentFileId, dataUrl);
-  }
-
+  pendingMaskSyncDataUrl.value = dataUrl;
   emit("update:mask", {
     data: dataUrl,
     width: maskCanvas.value.width,
     height: maskCanvas.value.height,
   });
-}, 100);
+};
 
 const updateCanUndoRedo = () => {
   canUndo.value = historyIndex.value > operationStartIndices.value[0];
@@ -425,7 +457,6 @@ const startDrawing = (event) => {
   ctx.value.arc(x, y, brushSize.value / (props.scale * 2), 0, Math.PI * 2);
   ctx.value.fillStyle = brushColor.value;
   ctx.value.fill();
-  emitMask();
 };
 
 const stopDrawing = () => {
@@ -473,15 +504,17 @@ const stopDrawing = () => {
 };
 
 const toggleDrawing = () => {
-  isDrawingMode.value = !isDrawingMode.value;
-  isDrawing.value = false;
-  emit("update:drawing-mode", isDrawingMode.value);
+  const nextValue = !drawingModeActive.value;
+  if (!nextValue && isDrawing.value) {
+    stopDrawing();
+  }
+  emit("update:drawing-mode", nextValue);
 };
 
 const onPointerDown = (event) => {
   if (event.button !== 0) return;
 
-  if (isDrawingMode.value || isCtrlPressed.value) {
+  if (drawingModeActive.value || isCtrlPressed.value) {
     startDrawing(event);
     if (isCtrlPressed.value) {
       event.preventDefault();
@@ -751,12 +784,19 @@ useEventListener(window, "keyup", (event) => {
 });
 
 useEventListener(window, "mousemove", (event) => {
-  if (isDrawingMode.value || isCtrlPressed.value) {
+  if (drawingModeActive.value || isCtrlPressed.value) {
     cursorPosition.value = {
       x: event.clientX,
       y: event.clientY,
     };
   }
+});
+
+useEventListener(window, "pointermove", syncToolbarPointerRegionState, { passive: true, capture: true });
+useEventListener(window, "pointerdown", syncToolbarPointerRegionState, { passive: true, capture: true });
+useEventListener(window, "pointerup", syncToolbarPointerRegionState, { passive: true, capture: true });
+useEventListener(window, "blur", () => {
+  setToolbarPointerRegionState(false);
 });
 
 useEventListener(window, "resize", () => {
@@ -801,9 +841,46 @@ watch(
   () => props.mask,
   (newMask) => {
     if (!props.show || !ctx.value) return;
+    const nextMaskDataUrl = normalizeMaskDataUrl(newMask);
+    const currentMaskDataUrl = getMaskData();
+    if (nextMaskDataUrl && nextMaskDataUrl === pendingMaskSyncDataUrl.value) {
+      pendingMaskSyncDataUrl.value = "";
+      return;
+    }
+    if (nextMaskDataUrl && nextMaskDataUrl === currentMaskDataUrl) {
+      pendingMaskSyncDataUrl.value = "";
+      return;
+    }
+    pendingMaskSyncDataUrl.value = "";
     updateMask(newMask);
   },
   { deep: true }
+);
+
+watch(
+  () => props.drawingMode,
+  (enabled) => {
+    if (!enabled && isDrawing.value) {
+      stopDrawing();
+    }
+  }
+);
+
+watch(
+  isToolbarInteracting,
+  (value) => {
+    emit("update:toolbar-interacting", value);
+  },
+  { immediate: true }
+);
+
+watch(
+  () => props.showToolbar,
+  (visible) => {
+    if (!visible) {
+      setToolbarPointerRegionState(false);
+    }
+  }
 );
 
 watch(
@@ -896,6 +973,10 @@ defineExpose({
 }
 
 .alpha-panel {
+  width: 240px;
+}
+
+.brush-size-panel {
   width: 240px;
 }
 </style>

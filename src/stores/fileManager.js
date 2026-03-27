@@ -145,6 +145,10 @@ export const useFileManagerStore = defineStore("fileManager", {
     updateFileMask(fileId, maskData) {
       const file = this.files.find((f) => f.id === fileId);
       if (file) {
+        if (maskData == null) {
+          file.mask = null;
+          return;
+        }
         // 处理不同类型的maskData
         let dataUrl;
         if (typeof maskData === "string") {

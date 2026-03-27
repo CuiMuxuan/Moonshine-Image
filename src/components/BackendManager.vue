@@ -1100,6 +1100,10 @@ const startService = async () => {
         `已更新前端 API 端口配置为: ${backendConfig.port}`,
         "success"
       );
+      addTerminalLog(
+        `请耐心等待直到本页面出现以下内容：INFO: Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)`,
+        "success"
+      );
     } else {
       serviceStatus.value = "stopped";
       serviceStatusText.value = "已停止";

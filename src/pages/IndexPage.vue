@@ -162,11 +162,13 @@
             ref="editorRef"
             :selected-file="currentFile.originalFile"
             :show-masker="showMaskTools"
+            :drawing-mode="isMaskDrawingMode"
             :mask="currentFile.mask"
             :image-url="currentDisplayUrl"
             :visible-area-insets="visibleAreaInsets"
             @loaded="handleImageLoaded"
             @update:mask="handleMaskUpdate"
+            @update:drawing-mode="isMaskDrawingMode = $event"
           />
         </workspace>
       </div>
@@ -254,6 +256,7 @@ const leftDrawerOpen = ref(defaultDrawerState.left);
 const rightDrawerOpen = ref(defaultDrawerState.right);
 const currentModel = ref("lama");
 const showMaskTools = ref(true);
+const isMaskDrawingMode = ref(false);
 const actionScope = ref({ label: "仅当前文件", value: "current" });
 const selectAll = ref(false);
 const exportPath = ref("");
@@ -376,6 +379,32 @@ const handleMaskUpdate = (maskData) => {
   if (fileManagerStore.currentFile) {
     fileManagerStore.updateFileMask(fileManagerStore.currentFile.id, maskData);
   }
+};
+
+const captureMaskUiState = () => ({
+  showMaskTools: showMaskTools.value,
+  drawingMode: isMaskDrawingMode.value,
+});
+
+const restoreMaskUiState = (maskUiState = {}) => {
+  showMaskTools.value = maskUiState.showMaskTools ?? showMaskTools.value;
+  isMaskDrawingMode.value = maskUiState.drawingMode ?? isMaskDrawingMode.value;
+};
+
+const finalizeSuccessfulMaskRun = async (
+  maskUiState,
+  { processedFileIds = [], forceClearCurrentMask = false } = {}
+) => {
+  const currentId = fileManagerStore.currentFile?.id;
+  const shouldClearCurrentMask =
+    Boolean(currentId) && (forceClearCurrentMask || processedFileIds.includes(currentId));
+
+  if (shouldClearCurrentMask) {
+    fileManagerStore.updateFileMask(currentId, null);
+  }
+
+  await nextTick();
+  restoreMaskUiState(maskUiState);
 };
 
 // 确认删除选中文件时同时删除对应的蒙版
@@ -602,6 +631,7 @@ const startRepair = () => {
 };
 // 运行去除模型
 const runRemoveModel = async () => {
+  const maskUiState = captureMaskUiState();
   // 确定要处理的文件列表
   let filesToProcess = [];
 
@@ -709,17 +739,23 @@ const runRemoveModel = async () => {
     // 调用API
     const response = await InpaintService.performBatchInpainting(requestData);
     // 处理返回的结果
-    if (response.results && response.results.length > 0) {
+    const successfulResults = (response.results || []).filter((result) => result?.success);
+    if (successfulResults.length > 0) {
+      await finalizeSuccessfulMaskRun(maskUiState, {
+        processedFileIds: successfulResults
+          .map((result) => result.id)
+          .filter((id) => typeof id === "string" && id.length > 0),
+      });
       // 显示成功通知
       $q.notify({
         type: "positive",
         message: `成功处理了 ${
-          response.results.filter((r) => r.success).length
+          successfulResults.length
         } 张图像，总共 ${response.processed_count} 张`,
         position: "top",
       });
     } else {
-      throw new Error("处理结果为空");
+      throw new Error(response.results?.[0]?.error || "处理结果为空");
     }
   } catch (error) {
     // 显示错误通知
@@ -730,12 +766,14 @@ const runRemoveModel = async () => {
     });
     console.error("图像处理失败:", error);
   } finally {
+    restoreMaskUiState(maskUiState);
     loadingControl.hide();
     isPageDisabled.value = false;
   }
 };
 
 const processFolderImages = async () => {
+  const maskUiState = captureMaskUiState();
   try {
     // 显示加载状态
     if (backendRunning.value) {
@@ -758,6 +796,7 @@ const processFolderImages = async () => {
     const response = await InpaintService.performFolderInpainting(folderData);
     // 处理返回结果
     if (response.success) {
+      await finalizeSuccessfulMaskRun(maskUiState, { forceClearCurrentMask: true });
       const result = response;
       $q.notify({
         type: "positive",
@@ -778,6 +817,7 @@ const processFolderImages = async () => {
     });
     console.error("处理文件夹失败:", error);
   } finally {
+    restoreMaskUiState(maskUiState);
     loadingControl.hide();
     isPageDisabled.value = false;
   }
@@ -1159,6 +1199,7 @@ const savePageState = async () => {
       rightDrawerOpen: rightDrawerOpen.value,
       currentModel: currentModel.value,
       showMaskTools: showMaskTools.value,
+      maskDrawingMode: isMaskDrawingMode.value,
       actionScope: actionScope.value,
       selectAll: selectAll.value,
       savePath: savePath.value,
@@ -1211,6 +1252,7 @@ const restorePageState = async () => {
         rightDrawerOpen.value = savedUIState.rightDrawerOpen ?? defaultDrawerState.right;
         currentModel.value = savedUIState.currentModel || "lama";
         showMaskTools.value = savedUIState.showMaskTools ?? true;
+        isMaskDrawingMode.value = savedUIState.maskDrawingMode ?? false;
         actionScope.value = savedUIState.actionScope || {
           label: "仅当前文件",
           value: "current",

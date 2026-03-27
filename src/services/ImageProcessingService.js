@@ -155,11 +155,7 @@ const processBatchResults = async (response, requestData = {}) => {
         try {
           if (resultId) {
             await fileManagerStore.addProcessingResult(resultId, resultPayload);
-
-            const targetFile = fileManagerStore.files.find(f => f.id === resultId);
-            if (targetFile) {
-              targetFile.mask = null;
-            }
+            fileManagerStore.updateFileMask(resultId, null);
           }
 
           processedResults.push({

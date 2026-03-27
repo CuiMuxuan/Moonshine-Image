@@ -517,7 +517,7 @@ async function runBundledCondaUnpack(sendLog) {
   const scriptCandidate = path.join(envPath, "Scripts", "conda-unpack-script.py");
 
   sendLog?.("Relocating bundled Python runtime...", "info");
-
+  sendLog?.("请耐心等待直到本页面出现以下内容：Bundled backend dependencies are ready.", "info");
   if (fs.existsSync(exeCandidate)) {
     await runProcess(exeCandidate, [], {
       cwd: envPath,

@@ -5,9 +5,9 @@
       class="absolute inset-0 editor-grid-bg overflow-hidden"
       :style="containerStyle"
       :class="{
-        'cursor-grab': !isDrawingMode && !isDragging && !isCtrlPressed,
-        'cursor-grabbing': !isDrawingMode && !isCtrlPressed && isDragging,
-        'cursor-none': isDrawingMode || isCtrlPressed,
+        'cursor-grab': !isDrawingMode && !isDragging && !isCtrlPressed && !isToolbarInteracting,
+        'cursor-grabbing': !isDrawingMode && !isCtrlPressed && isDragging && !isToolbarInteracting,
+        'cursor-none': (isDrawingMode || isCtrlPressed) && !isToolbarInteracting,
       }"
       @wheel="onWheel"
       @pointerdown="onPointerDown"
@@ -26,12 +26,14 @@
         ref="maskerRef"
         :show="true"
         :show-toolbar="showMasker"
+        :drawing-mode="drawingMode"
         :scale="scale"
         :mask="mask"
         :visible-area-insets="visibleAreaInsets"
         @update:mask="$emit('update:mask', $event)"
         @update:drawing-mode="updateDrawingMode"
         @update:ctrl-pressed="updateCtrlPressed"
+        @update:toolbar-interacting="updateToolbarInteracting"
       />
     </div>
   </div>
@@ -59,10 +61,10 @@ const imageContainer = ref(null);
 const imageRef = ref(null);
 const maskerRef = ref(null);
 const isImageLoaded = ref(false);
-const isDrawingMode = ref(false);
 const isDragging = ref(false);
 const hasManualViewportChange = ref(false);
 const isCtrlPressed = ref(false);
+const isToolbarInteracting = ref(false);
 
 const props = defineProps({
   selectedFile: {
@@ -70,6 +72,10 @@ const props = defineProps({
     default: null,
   },
   showMasker: {
+    type: Boolean,
+    default: false,
+  },
+  drawingMode: {
     type: Boolean,
     default: false,
   },
@@ -92,7 +98,7 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["loaded", "update:mask"]);
+const emit = defineEmits(["loaded", "update:mask", "update:drawing-mode"]);
 const imageUrl = computed(() => {
   if (props.imageUrl) {
     return props.imageUrl;
@@ -124,6 +130,8 @@ const imageUrl = computed(() => {
 
 const mode = computed(() => store.mode);
 const scale = computed(() => store.scale);
+const drawingMode = computed(() => Boolean(props.drawingMode));
+const isDrawingMode = computed(() => Boolean(props.showMasker && drawingMode.value));
 
 const imageStyle = computed(() => ({
   transform: `scale(${scale.value})`,
@@ -287,6 +295,16 @@ watch(
   () => {
     isImageLoaded.value = false;
     hasManualViewportChange.value = false;
+    isToolbarInteracting.value = false;
+  }
+);
+
+watch(
+  () => props.showMasker,
+  (visible) => {
+    if (!visible) {
+      isToolbarInteracting.value = false;
+    }
   }
 );
 
@@ -314,7 +332,11 @@ const updateCtrlPressed = (pressed) => {
 };
 
 const updateDrawingMode = (modeValue) => {
-  isDrawingMode.value = modeValue;
+  emit("update:drawing-mode", Boolean(modeValue));
+};
+
+const updateToolbarInteracting = (value) => {
+  isToolbarInteracting.value = Boolean(value);
 };
 
 const onPointerDown = (event) => {
