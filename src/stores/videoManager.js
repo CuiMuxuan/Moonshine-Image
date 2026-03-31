@@ -6,6 +6,8 @@ import {
   DEFAULT_VIDEO_BRUSH,
   normalizeBrushConfig,
 } from "src/config/ConfigManager";
+import { useRuntimeUiStore } from "src/stores/runtimeUi";
+import { MASK_TOOL_MODES, normalizeMaskToolMode } from "src/utils/maskTool";
 import {
   getInterpolatedMaskTransform,
   getMaskKeyframeTransform,
@@ -21,8 +23,8 @@ const DEFAULT_TRANSFORM = Object.freeze({
 });
 
 const DEFAULT_MASK_TOOL = Object.freeze({
-  drawingEnabled: false,
-  mode: "draw",
+  drawingEnabled: true,
+  mode: MASK_TOOL_MODES.DRAW,
   brushSize: DEFAULT_VIDEO_BRUSH.size,
   brushAlpha: DEFAULT_VIDEO_BRUSH.alpha,
   brushColor: DEFAULT_VIDEO_BRUSH.color,
@@ -42,7 +44,7 @@ const cloneMask = (mask) => ({
 
 const cloneMaskTool = (tool = {}) => ({
   drawingEnabled: Boolean(tool.drawingEnabled),
-  mode: tool.mode === "erase" ? "erase" : "draw",
+  mode: normalizeMaskToolMode(tool.mode),
   brushSize: Math.max(2, Number(tool.brushSize ?? DEFAULT_MASK_TOOL.brushSize)),
   brushAlpha: clamp(Number(tool.brushAlpha ?? DEFAULT_MASK_TOOL.brushAlpha), 0.05, 1),
   brushColor: tool.brushColor ?? DEFAULT_MASK_TOOL.brushColor,
@@ -215,6 +217,7 @@ const createResult = (ok, payload = {}) => ({
 });
 
 export const useVideoManagerStore = defineStore("videoManager", () => {
+  const runtimeUiStore = useRuntimeUiStore();
   const videoFile = ref(null);
   const hasVideoFile = ref(false);
   const playerWidth = ref(0);
@@ -232,7 +235,12 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
   const masks = ref([]);
   const selectedMaskId = ref(null);
   const selectedKeyframeId = ref(null);
-  const maskTool = ref(cloneMaskTool(DEFAULT_MASK_TOOL));
+  const maskTool = ref(
+    cloneMaskTool({
+      ...DEFAULT_MASK_TOOL,
+      drawingEnabled: runtimeUiStore.videoMaskDrawingEnabled,
+    })
+  );
   const maskToolDefaults = ref({ ...DEFAULT_VIDEO_BRUSH });
   const currentSourcePath = ref("");
   const currentSourceName = ref("");
@@ -362,6 +370,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     isMuted.value = false;
     maskTool.value = cloneMaskTool({
       ...DEFAULT_MASK_TOOL,
+      drawingEnabled: runtimeUiStore.videoMaskDrawingEnabled,
       brushSize: maskToolDefaults.value.size,
       brushAlpha: maskToolDefaults.value.alpha,
       brushColor: maskToolDefaults.value.color,
@@ -474,7 +483,10 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     playbackRate.value = Math.max(0.1, Number(snapshot.playbackRate || 1));
     isMuted.value = Boolean(snapshot.isMuted);
     isPlaying.value = false;
-    maskTool.value = cloneMaskTool(snapshot.maskTool || DEFAULT_MASK_TOOL);
+    maskTool.value = cloneMaskTool({
+      ...(snapshot.maskTool || DEFAULT_MASK_TOOL),
+      drawingEnabled: runtimeUiStore.videoMaskDrawingEnabled,
+    });
 
     return {
       uiState: JSON.parse(JSON.stringify(snapshot.uiState || {})),
@@ -705,7 +717,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     selectMask(mask.id, null);
     updateMaskTool({
       drawingEnabled: true,
-      mode: "draw",
+      mode: MASK_TOOL_MODES.DRAW,
     });
     return mask;
   };
@@ -1181,6 +1193,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
       ...maskTool.value,
       ...patch,
     });
+    runtimeUiStore.setVideoMaskDrawingEnabled(maskTool.value.drawingEnabled);
   };
 
   const setMaskToolDefaults = (brushDefaults = {}, options = {}) => {
@@ -1200,7 +1213,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
         ? {}
         : {
             drawingEnabled: false,
-            mode: "draw",
+            mode: MASK_TOOL_MODES.DRAW,
           }),
     });
 

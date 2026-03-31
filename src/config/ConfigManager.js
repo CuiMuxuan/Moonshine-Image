@@ -1,4 +1,6 @@
 const DEFAULT_THEME_MODE = "light";
+const DEFAULT_UI_BUTTON_SIZE = "sm";
+const UI_BUTTON_SIZE_OPTIONS = Object.freeze(["xs", "sm", "md"]);
 
 const DEFAULT_BRAND_COLORS = Object.freeze({
   primary: "#7758c4",
@@ -40,6 +42,8 @@ const normalizeBrandColors = (colors = {}) => ({
 
 const normalizeThemeMode = (theme) =>
   ["light", "dark"].includes(theme) ? theme : DEFAULT_THEME_MODE;
+const normalizeButtonSize = (value) =>
+  UI_BUTTON_SIZE_OPTIONS.includes(value) ? value : DEFAULT_UI_BUTTON_SIZE;
 
 const cloneConfig = (value) => JSON.parse(JSON.stringify(value));
 
@@ -47,10 +51,13 @@ export {
   DEFAULT_BRAND_COLORS,
   DEFAULT_IMAGE_BRUSH,
   DEFAULT_THEME_MODE,
+  DEFAULT_UI_BUTTON_SIZE,
   DEFAULT_VIDEO_BRUSH,
   normalizeBrandColors,
+  normalizeButtonSize,
   normalizeBrushConfig,
   normalizeThemeMode,
+  UI_BUTTON_SIZE_OPTIONS,
 };
 
 export class ConfigManager {
@@ -85,6 +92,7 @@ export class ConfigManager {
     },
     ui: {
       theme: DEFAULT_THEME_MODE,
+      buttonSize: DEFAULT_UI_BUTTON_SIZE,
       brandColors: { ...DEFAULT_BRAND_COLORS },
       showWelcomeDialog: true,
       confirmBeforeExit: true,
@@ -171,6 +179,10 @@ export class ConfigManager {
       errors.push("主题模式必须是 light 或 dark");
     }
 
+    if (!UI_BUTTON_SIZE_OPTIONS.includes(config.ui?.buttonSize)) {
+      errors.push("按钮大小必须是 md、sm 或 xs");
+    }
+
     ["primary", "secondary", "accent"].forEach((key) => {
       if (!isValidHexColor(config.ui?.brandColors?.[key])) {
         errors.push(`主题颜色 ${key} 必须是有效的 Hex 颜色`);
@@ -248,6 +260,7 @@ export class ConfigManager {
     merged.ui = {
       ...merged.ui,
       theme: normalizeThemeMode(merged.ui?.theme),
+      buttonSize: normalizeButtonSize(merged.ui?.buttonSize),
       brandColors: normalizeBrandColors(merged.ui?.brandColors),
     };
 

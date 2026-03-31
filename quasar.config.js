@@ -4,6 +4,15 @@
 import { defineConfig } from "#q-app/wrappers";
 import { prepareElectronResources } from "./scripts/prepare-electron-resources.mjs";
 
+const DEV_WATCH_IGNORED = [
+  "**/IOPaint",
+  "**/IOPaint/**",
+  "**/models",
+  "**/models/**",
+  "**/iopaint-change",
+  "**/iopaint-change/**",
+];
+
 export default defineConfig((ctx) => {
   if (ctx.mode.electron && ctx.prod) {
     prepareElectronResources();
@@ -58,7 +67,26 @@ export default defineConfig((ctx) => {
       // polyfillModulePreload: true,
       // distDir
       // viteVuePluginOptions: {},
-      // extendViteConf (viteConf) {},
+      extendViteConf(viteConf) {
+        if (!ctx.dev) {
+          return;
+        }
+
+        const currentIgnored = viteConf.server?.watch?.ignored;
+        const ignored = Array.isArray(currentIgnored)
+          ? [...currentIgnored, ...DEV_WATCH_IGNORED]
+          : currentIgnored
+            ? [currentIgnored, ...DEV_WATCH_IGNORED]
+            : [...DEV_WATCH_IGNORED];
+
+        viteConf.server = {
+          ...(viteConf.server || {}),
+          watch: {
+            ...(viteConf.server?.watch || {}),
+            ignored,
+          },
+        };
+      },
       vitePlugins: [
         [
           "vite-plugin-checker",

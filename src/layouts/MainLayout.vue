@@ -35,6 +35,22 @@
       </main-toolbar>
     </q-header>
 
+    <component
+      :is="pageLeftDrawerComponent"
+      v-if="pageLeftDrawerComponent"
+      v-bind="pageLeftDrawerProps"
+      v-on="pageLeftDrawerListeners"
+      :class="pageLeftDrawerClass"
+    />
+
+    <component
+      :is="pageRightDrawerComponent"
+      v-if="pageRightDrawerComponent"
+      v-bind="pageRightDrawerProps"
+      v-on="pageRightDrawerListeners"
+      :class="pageRightDrawerClass"
+    />
+
     <q-page-container class="main-page-container">
       <div class="page-content-shell">
         <router-view :backend-running="backendRunning" @update:loading="handleLoadingUpdate" />
@@ -54,6 +70,15 @@
         </q-inner-loading>
       </div>
     </q-page-container>
+
+    <q-footer v-if="pageFooterComponent" class="layout-page-footer" :height-hint="60">
+      <component
+        :is="pageFooterComponent"
+        v-bind="pageFooterProps"
+        v-on="pageFooterListeners"
+        :class="pageFooterClass"
+      />
+    </q-footer>
   </q-layout>
 
   <backend-manager v-model="showBackendManager" />
@@ -62,13 +87,13 @@
 
 <script setup>
 import { setCssVar, useQuasar } from "quasar";
-import { onMounted, provide, ref, watch } from "vue";
+import { markRaw, onMounted, provide, ref, shallowRef, watch } from "vue";
 import { useRouter } from "vue-router";
 
 import { api } from "src/boot/axios";
-import BackendManager from "src/components/BackendManager.vue";
-import GlobalSettings from "src/components/GlobalSettings.vue";
-import MainToolbar from "src/components/MainToolbar.vue";
+import BackendManager from "src/components/global/BackendManager.vue";
+import GlobalSettings from "src/components/global/GlobalSettings.vue";
+import MainToolbar from "src/components/global/MainToolbar.vue";
 import { DEFAULT_BRAND_COLORS, normalizeThemeMode } from "src/config/ConfigManager";
 import { useAppStateStore } from "src/stores/appState";
 import { useConfigStore } from "src/stores/config";
@@ -87,6 +112,130 @@ const loadingState = ref({
   message: "",
   progress: null,
 });
+const pageFooterOwner = ref(null);
+const pageFooterProps = ref({});
+const pageFooterListeners = ref({});
+const pageFooterClass = ref("");
+const pageFooterComponent = shallowRef(null);
+const pageLeftDrawerOwner = ref(null);
+const pageLeftDrawerProps = ref({});
+const pageLeftDrawerListeners = ref({});
+const pageLeftDrawerClass = ref("");
+const pageLeftDrawerComponent = shallowRef(null);
+const pageRightDrawerOwner = ref(null);
+const pageRightDrawerProps = ref({});
+const pageRightDrawerListeners = ref({});
+const pageRightDrawerClass = ref("");
+const pageRightDrawerComponent = shallowRef(null);
+
+const resetPageFooter = () => {
+  pageFooterOwner.value = null;
+  pageFooterProps.value = {};
+  pageFooterListeners.value = {};
+  pageFooterClass.value = "";
+  pageFooterComponent.value = null;
+};
+
+const resetPageDrawer = (side) => {
+  if (side === "left") {
+    pageLeftDrawerOwner.value = null;
+    pageLeftDrawerProps.value = {};
+    pageLeftDrawerListeners.value = {};
+    pageLeftDrawerClass.value = "";
+    pageLeftDrawerComponent.value = null;
+    return;
+  }
+
+  if (side === "right") {
+    pageRightDrawerOwner.value = null;
+    pageRightDrawerProps.value = {};
+    pageRightDrawerListeners.value = {};
+    pageRightDrawerClass.value = "";
+    pageRightDrawerComponent.value = null;
+  }
+};
+
+const setPageFooter = ({
+  owner = Symbol("page-footer"),
+  component = null,
+  props = {},
+  listeners = {},
+  className = "",
+} = {}) => {
+  if (!component) {
+    resetPageFooter();
+    return owner;
+  }
+
+  pageFooterOwner.value = owner;
+  pageFooterProps.value = props;
+  pageFooterListeners.value = listeners;
+  pageFooterClass.value = className;
+  pageFooterComponent.value = markRaw(component);
+  return owner;
+};
+
+const clearPageFooter = (owner = null) => {
+  if (owner !== null && pageFooterOwner.value !== owner) {
+    return;
+  }
+
+  resetPageFooter();
+};
+
+const setPageDrawer = ({
+  side,
+  owner = Symbol("page-drawer"),
+  component = null,
+  props = {},
+  listeners = {},
+  className = "",
+} = {}) => {
+  if (!side) {
+    return owner;
+  }
+
+  if (!component) {
+    resetPageDrawer(side);
+    return owner;
+  }
+
+  if (side === "left") {
+    pageLeftDrawerOwner.value = owner;
+    pageLeftDrawerProps.value = props;
+    pageLeftDrawerListeners.value = listeners;
+    pageLeftDrawerClass.value = className;
+    pageLeftDrawerComponent.value = markRaw(component);
+    return owner;
+  }
+
+  if (side === "right") {
+    pageRightDrawerOwner.value = owner;
+    pageRightDrawerProps.value = props;
+    pageRightDrawerListeners.value = listeners;
+    pageRightDrawerClass.value = className;
+    pageRightDrawerComponent.value = markRaw(component);
+  }
+
+  return owner;
+};
+
+const clearPageDrawer = (side, owner = null) => {
+  if (side === "left") {
+    if (owner !== null && pageLeftDrawerOwner.value !== owner) {
+      return;
+    }
+    resetPageDrawer("left");
+    return;
+  }
+
+  if (side === "right") {
+    if (owner !== null && pageRightDrawerOwner.value !== owner) {
+      return;
+    }
+    resetPageDrawer("right");
+  }
+};
 
 const normalizeLoadingPayload = (messageOrOptions, progressArg = null) => {
   if (typeof messageOrOptions === "object" && messageOrOptions !== null) {
@@ -104,6 +253,14 @@ const normalizeLoadingPayload = (messageOrOptions, progressArg = null) => {
 };
 
 provide("backendRunning", backendRunning);
+provide("layoutFooter", {
+  setPageFooter,
+  clearPageFooter,
+});
+provide("layoutDrawers", {
+  setPageDrawer,
+  clearPageDrawer,
+});
 provide("loadingControl", {
   show: (messageOrOptions, progress) => {
     const payload = normalizeLoadingPayload(messageOrOptions, progress);
@@ -280,12 +437,28 @@ router.beforeEach(async (to, from) => {
 }
 
 .main-page-container {
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
+  min-height: 0;
 }
 
 .page-content-shell {
   position: relative;
-  min-height: calc(100vh - 50px);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.layout-page-footer {
+  background: transparent !important;
+  color: inherit !important;
+  box-shadow: none !important;
+}
+
+.main-header,
+.layout-page-footer {
+  z-index: 2100 !important;
 }
 
 .global-loading {

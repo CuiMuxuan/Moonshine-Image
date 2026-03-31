@@ -104,7 +104,7 @@
 import { ref, watch } from "vue";
 import { useRoute } from "vue-router";
 
-import MoonshineIcon from "src/components/MoonshineIcon.vue";
+import MoonshineIcon from "src/components/common/MoonshineIcon.vue";
 import sponsorAlipayImage from "src/assets/branding/Alipay.jpg";
 import appAvatarImage from "src/assets/branding/moonshine128x128.jpg";
 import sponsorWechatImage from "src/assets/branding/wxPay.png";

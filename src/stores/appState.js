@@ -27,7 +27,6 @@ export const useAppStateStore = defineStore("appState", () => {
         rightDrawerOpen: false,
         currentModel: "lama",
         showMaskTools: true,
-        maskDrawingMode: false,
         actionScope: { label: "仅当前文件", value: "current" },
         selectAll: false,
         savePath: "",
@@ -51,6 +50,12 @@ export const useAppStateStore = defineStore("appState", () => {
   });
 
   // 序列化fileManager状态 - 处理不可序列化的对象
+  const stripRuntimeOnlyImageUiState = (uiState = {}) => {
+    const safeUiState = { ...(uiState || {}) };
+    delete safeUiState.maskDrawingMode;
+    return safeUiState;
+  };
+
   const serializeFileManagerState = (fileManagerState) => {
     const serialized = {
       files: [],
@@ -160,7 +165,10 @@ export const useAppStateStore = defineStore("appState", () => {
   // 保存UI状态
   const saveUIState = (page, uiState) => {
     if (page === "image") {
-      appState.value.imageState.ui = { ...appState.value.imageState.ui, ...uiState };
+      appState.value.imageState.ui = {
+        ...stripRuntimeOnlyImageUiState(appState.value.imageState.ui),
+        ...stripRuntimeOnlyImageUiState(uiState),
+      };
     } else if (page === "video") {
       appState.value.videoState.ui = { ...appState.value.videoState.ui, ...uiState };
     }
@@ -213,6 +221,9 @@ export const useAppStateStore = defineStore("appState", () => {
 
         if (result.success && result.data) {
           appState.value = { ...appState.value, ...result.data };
+          appState.value.imageState.ui = stripRuntimeOnlyImageUiState(
+            appState.value.imageState?.ui
+          );
           return { success: true };
         }
 
@@ -298,7 +309,6 @@ export const useAppStateStore = defineStore("appState", () => {
           rightDrawerOpen: false,
           currentModel: "lama",
           showMaskTools: true,
-          maskDrawingMode: false,
           actionScope: { label: "仅当前文件", value: "current" },
           selectAll: false,
           savePath: "",

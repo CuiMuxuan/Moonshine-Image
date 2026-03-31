@@ -27,11 +27,13 @@
         :show="true"
         :show-toolbar="showMasker"
         :drawing-mode="drawingMode"
+        :tool-state="resolvedToolState"
         :scale="scale"
         :mask="mask"
         :visible-area-insets="visibleAreaInsets"
         @update:mask="$emit('update:mask', $event)"
         @update:drawing-mode="updateDrawingMode"
+        @update:tool-state="updateMaskToolState"
         @update:ctrl-pressed="updateCtrlPressed"
         @update:toolbar-interacting="updateToolbarInteracting"
       />
@@ -51,8 +53,13 @@ import {
 } from "vue";
 import { useEventListener } from "@vueuse/core";
 
-import { useEditorStore } from "../stores/editor";
-import { useFileManagerStore } from "../stores/fileManager";
+import { useEditorStore } from "src/stores/editor";
+import { useFileManagerStore } from "src/stores/fileManager";
+import { normalizeMaskToolUiState } from "src/utils/maskTool";
+import {
+  computeContainPlacement,
+  resolveViewportRect,
+} from "src/utils/viewportPlacement";
 import ImageMasker from "./ImageMasker.vue";
 
 const store = useEditorStore();
@@ -79,6 +86,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  toolState: {
+    type: Object,
+    default: null,
+  },
   mask: {
     type: Object,
     default: null,
@@ -98,7 +109,12 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["loaded", "update:mask", "update:drawing-mode"]);
+const emit = defineEmits([
+  "loaded",
+  "update:mask",
+  "update:drawing-mode",
+  "update:tool-state",
+]);
 const imageUrl = computed(() => {
   if (props.imageUrl) {
     return props.imageUrl;
@@ -132,6 +148,7 @@ const mode = computed(() => store.mode);
 const scale = computed(() => store.scale);
 const drawingMode = computed(() => Boolean(props.drawingMode));
 const isDrawingMode = computed(() => Boolean(props.showMasker && drawingMode.value));
+const resolvedToolState = computed(() => normalizeMaskToolUiState(props.toolState));
 
 const imageStyle = computed(() => ({
   transform: `scale(${scale.value})`,
@@ -146,6 +163,11 @@ const containerStyle = computed(() => ({
   width: "100%",
   height: "100%",
 }));
+
+const waitForLayoutFrame = () =>
+  new Promise((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
 
 const getCanvasData = () => {
   if (!maskerRef.value) {
@@ -169,26 +191,12 @@ const getVisibleViewport = () => {
     return null;
   }
 
-  const width = container.clientWidth;
-  const height = container.clientHeight;
-  const leftInset = Math.max(0, Number(props.visibleAreaInsets?.left || 0));
-  const rightInset = Math.max(0, Number(props.visibleAreaInsets?.right || 0));
-  const topInset = Math.max(0, Number(props.visibleAreaInsets?.top || 0));
-  const bottomInset = Math.max(0, Number(props.visibleAreaInsets?.bottom || 0));
-
-  const safeWidth = Math.max(1, width - leftInset - rightInset);
-  const safeHeight = Math.max(1, height - topInset - bottomInset);
-
-  return {
-    width,
-    height,
-    safeWidth,
-    safeHeight,
-    leftInset,
-    rightInset,
-    topInset,
-    bottomInset,
-  };
+  return resolveViewportRect({
+    containerWidth: container.clientWidth,
+    containerHeight: container.clientHeight,
+    insets: props.visibleAreaInsets,
+    respectInsets: true,
+  });
 };
 
 const computeFitViewport = () => {
@@ -198,16 +206,17 @@ const computeFitViewport = () => {
 
   const imageWidth = img.naturalWidth || store.imageWidth || 1;
   const imageHeight = img.naturalHeight || store.imageHeight || 1;
-  const scaleX = viewport.safeWidth / imageWidth;
-  const scaleY = viewport.safeHeight / imageHeight;
-  const nextScale = Math.min(scaleX, scaleY);
-  const offsetX = viewport.leftInset + (viewport.safeWidth - imageWidth * nextScale) / 2;
-  const offsetY = viewport.topInset + (viewport.safeHeight - imageHeight * nextScale) / 2;
+  const placement = computeContainPlacement({
+    contentWidth: imageWidth,
+    contentHeight: imageHeight,
+    viewport,
+  });
+  if (!placement) return null;
 
   return {
-    scale: nextScale,
-    offsetX,
-    offsetY,
+    scale: placement.scale,
+    offsetX: placement.x,
+    offsetY: placement.y,
   };
 };
 
@@ -308,6 +317,20 @@ watch(
   }
 );
 
+watch(
+  () => props.visibleAreaInsets,
+  async () => {
+    if (!isImageLoaded.value || hasManualViewportChange.value) {
+      return;
+    }
+
+    await nextTick();
+    await waitForLayoutFrame();
+    applyFitViewport();
+  },
+  { deep: true }
+);
+
 const onWheel = (event) => {
   event.preventDefault();
   hasManualViewportChange.value = true;
@@ -337,6 +360,19 @@ const updateDrawingMode = (modeValue) => {
 
 const updateToolbarInteracting = (value) => {
   isToolbarInteracting.value = Boolean(value);
+};
+
+const updateMaskToolState = (value = {}) => {
+  const mergedState = normalizeMaskToolUiState({
+    ...resolvedToolState.value,
+    ...value,
+    toolbarState:
+      value.toolbarState === undefined
+        ? resolvedToolState.value.toolbarState
+        : value.toolbarState,
+  });
+
+  emit("update:tool-state", mergedState);
 };
 
 const onPointerDown = (event) => {
@@ -373,8 +409,11 @@ onUnmounted(() => {
   }
 });
 
-const resetView = () => {
+const resetView = async () => {
   hasManualViewportChange.value = false;
+  await nextTick();
+  await waitForLayoutFrame();
+  await waitForLayoutFrame();
   applyFitViewport();
 };
 
@@ -411,22 +450,8 @@ defineExpose({
 }
 
 .editor-grid-bg {
-  background-image: linear-gradient(45deg, #f0f0f0 25%, transparent 25%),
-    linear-gradient(-45deg, #f0f0f0 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, #f0f0f0 75%),
-    linear-gradient(-45deg, transparent 75%, #f0f0f0 75%);
-  background-size: 20px 20px;
-  background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
-  background-color: #ffffff;
   position: relative;
-}
-
-:global(body.body--dark) .editor-grid-bg {
-  background-image: linear-gradient(45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
-    linear-gradient(-45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.04) 75%),
-    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.04) 75%);
-  background-color: #121212;
+  background: transparent;
 }
 
 .cursor-grab {

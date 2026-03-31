@@ -10,149 +10,12 @@
       @keydown.stop.prevent
       @keyup.stop.prevent
     ></div>
-    <!-- 左侧文件浏览器 -->
-    <file-explorer
-      ref="leftDrawerRef"
-      v-model:drawer-open="leftDrawerOpen"
-      :files="fileManagerStore.files"
-      :selected-file="currentFile"
-      :selected-files="selectedFiles"
-      :file-urls="fileUrls"
-      :class="{ 'pointer-events-none': isPageDisabled }"
-      @update:selected-file="handleFileSelection"
-      @toggle-selection="toggleFileSelection"
-      @remove-file="handleRemoveFile"
-    />
-
-    <!-- 右侧设置面板 -->
-    <q-drawer ref="rightDrawerRef" show-if-above v-model="rightDrawerOpen" side="right" bordered>
-      <div class="q-pa-md" :class="{ 'pointer-events-none': isPageDisabled }">
-        <div class="text-h6 q-mb-md flex items-center">
-          <q-icon name="settings" class="q-mr-sm" />
-          运行设置
-        </div>
-
-        <!-- 模型选择器 -->
-        <q-item>
-          <q-item-section>
-            <model-selector
-              v-model="currentModel"
-              type="image"
-              @update:model-value="handleModelChange"
-            />
-          </q-item-section>
-        </q-item>
-
-        <!-- 动态设置内容 -->
-        <div v-if="currentModel === 'lama'">
-          <!-- Lama模型设置 -->
-          <q-list>
-            <q-item>
-              <q-item-section>
-                <q-select
-                  v-model="actionScope"
-                  :options="[
-                    { label: '仅当前文件', value: 'current' },
-                    { label: '仅选中文件', value: 'selected' },
-                    { label: '选中文件夹', value: 'folder' },
-                  ]"
-                  label="作用范围"
-                  filled
-                />
-              </q-item-section>
-            </q-item>
-
-            <q-item>
-              <q-item-section>
-                <q-toggle
-                  v-model="selectAll"
-                  label="全选文件"
-                  @update:model-value="handleSelectAll"
-                />
-              </q-item-section>
-            </q-item>
-
-            <q-item>
-              <q-item-section>
-                <q-btn
-                  color="negative"
-                  icon="delete"
-                  label="删除选中文件"
-                  :disable="selectedFiles.length === 0"
-                  @click="confirmDeleteSelected"
-                />
-              </q-item-section>
-            </q-item>
-            <q-item>
-              <q-item-section>
-                <q-btn
-                  color="primary"
-                  icon="content_copy"
-                  label="当前蒙版作用于选中文件"
-                  :disable="selectedFiles.length === 0 || !currentMask?.data"
-                  @click="applyCurrentMaskToSelected"
-                />
-              </q-item-section>
-            </q-item>
-            <q-item v-if="actionScope.value === 'folder'">
-              <q-item-section>
-                <folder-selector v-model="folderPath" label="输入文件夹" />
-              </q-item-section>
-            </q-item>
-
-            <q-item v-if="actionScope.value === 'folder'">
-              <q-item-section>
-                <folder-selector v-model="maskFolderPath" label="蒙版文件夹" />
-              </q-item-section>
-            </q-item>
-
-            <q-item>
-              <q-item-section>
-                <folder-selector v-model="savePath" label="保存路径" />
-              </q-item-section>
-            </q-item>
-
-            <q-item>
-              <q-item-section>
-                <cuda-status
-                  @cuda-status-changed="handleCudaStatusChanged"
-                  :backend-running="backendRunning"
-                />
-              </q-item-section>
-            </q-item>
-          </q-list>
-        </div>
-
-        <div v-else-if="currentModel === 'ocr'">
-          <!-- OCR设置 -->
-          <q-list>
-            <q-item>
-              <q-item-section>
-                <q-select
-                  v-model="ocrLang"
-                  :options="['中文', '英文', '日文']"
-                  label="识别语言"
-                  filled
-                />
-              </q-item-section>
-            </q-item>
-            <q-item>
-              <q-item-section>
-                <q-toggle v-model="autoLayout" label="自动版面分析" />
-              </q-item-section>
-            </q-item>
-            <div class="text-h6">OCR功能将在作者B站粉丝超过2000时开发</div>
-          </q-list>
-        </div>
-        <div v-else class="text-h6">修复功能将在作者B站粉丝超过3000时开发</div>
-      </div>
-    </q-drawer>
-
     <!-- 主工作区 -->
-    <div class="col flex row">
-      <div ref="imageStageRef" class="col">
+    <div class="col image-work-area">
+      <div ref="imageStageRef" class="col image-stage-shell" :style="previewStageStyle">
         <workspace
           :selected-file="currentFile"
+          :checkerboard="true"
           :class="{ 'pointer-events-none': isPageDisabled }"
         >
           <ImageEditor
@@ -163,35 +26,19 @@
             :selected-file="currentFile.originalFile"
             :show-masker="showMaskTools"
             :drawing-mode="isMaskDrawingMode"
+            :tool-state="imageMaskToolState"
             :mask="currentFile.mask"
             :image-url="currentDisplayUrl"
             :visible-area-insets="visibleAreaInsets"
             @loaded="handleImageLoaded"
             @update:mask="handleMaskUpdate"
-            @update:drawing-mode="isMaskDrawingMode = $event"
+            @update:drawing-mode="setMaskDrawingMode"
+            @update:tool-state="updateImageMaskToolState"
           />
         </workspace>
       </div>
 
       <!-- 底部工具栏 -->
-      <processing-toolbar
-        :files="fileManagerStore.files"
-        :selected-file="currentFile?.originalFile"
-        :current-model="currentModel"
-        :show-mask-tools="showMaskTools"
-        :has-processed-images="hasProcessedImages"
-        type="image"
-        :class="{ 'pointer-events-none': isPageDisabled }"
-        @toggle-file-explorer="leftDrawerOpen = !leftDrawerOpen"
-        @rejected-files="onRejectedFiles"
-        @toggle-mask-tools="showMaskTools = !showMaskTools"
-        @show-original="showOriginalImage"
-        @show-processed="showProcessedImage"
-        @undo-processing="undoProcessing"
-        @run-model="runCurrentModel"
-        @download="downloadProcessedImages"
-        @toggle-settings="rightDrawerOpen = !rightDrawerOpen"
-      />
     </div>
   </q-page>
 </template>
@@ -212,20 +59,20 @@ import { useQuasar } from "quasar";
 import { useConfigStore } from "src/stores/config";
 import { useAppStateStore } from "src/stores/appState";
 import { useFileManagerStore } from "src/stores/fileManager";
+import { useRuntimeUiStore } from "src/stores/runtimeUi";
 import InpaintService from "src/services/ImageProcessingService";
-import ImageEditor from "../components/ImageEditor.vue";
-import FileExplorer from "../components/FileExplorer.vue";
-import Workspace from "../components/Workspace.vue";
-import ModelSelector from "../components/ModelSelector.vue";
-import ProcessingToolbar from "../components/ImageProcessingToolbar.vue";
-import FolderSelector from "../components/FolderSelector.vue";
-import CudaStatus from "../components/CudaStatus.vue";
+import ImageEditor from "../components/image/ImageEditor.vue";
+import FileExplorer from "../components/common/FileExplorer.vue";
+import Workspace from "../components/common/Workspace.vue";
+import ProcessingToolbar from "../components/image/ImageProcessingToolbar.vue";
+import ImageSettingsDrawer from "../components/image/ImageSettingsDrawer.vue";
 import { onBeforeRouteLeave } from "vue-router";
 
 const $q = useQuasar();
 const configStore = useConfigStore();
 const appStateStore = useAppStateStore();
 const fileManagerStore = useFileManagerStore();
+const runtimeUiStore = useRuntimeUiStore();
 
 const getDefaultDrawerState = () => {
   const viewportWidth =
@@ -256,7 +103,8 @@ const leftDrawerOpen = ref(defaultDrawerState.left);
 const rightDrawerOpen = ref(defaultDrawerState.right);
 const currentModel = ref("lama");
 const showMaskTools = ref(true);
-const isMaskDrawingMode = ref(false);
+const isMaskDrawingMode = ref(runtimeUiStore.imageMaskDrawingEnabled);
+const imageMaskToolState = computed(() => runtimeUiStore.imageMaskToolState);
 const actionScope = ref({ label: "仅当前文件", value: "current" });
 const selectAll = ref(false);
 const exportPath = ref("");
@@ -275,8 +123,6 @@ const dontShowMaxHistoryWarning = ref(false);
 const dontShowBackendWarning = ref(false);
 const isElectron = ref(false);
 const resourcesPath = ref("");
-const leftDrawerRef = ref(null);
-const rightDrawerRef = ref(null);
 const imageStageRef = ref(null);
 const visibleAreaInsets = ref({
   left: 0,
@@ -284,6 +130,11 @@ const visibleAreaInsets = ref({
   top: 0,
   bottom: 0,
 });
+let visibleAreaUpdateFrame = 0;
+let visibleAreaTransitionFrame = 0;
+let visibleAreaResizeObserver = null;
+const LEFT_IMAGE_DRAWER_SELECTOR = ".image-page-left-layout-drawer";
+const RIGHT_IMAGE_DRAWER_SELECTOR = ".image-page-right-layout-drawer";
 
 const joinRendererPath = (...parts) => {
   const normalizedParts = parts.filter((part) => typeof part === "string" && part.length > 0);
@@ -314,7 +165,12 @@ const props = defineProps({
 });
 const backendRunning = computed(() => props.backendRunning);
 const loadingControl = inject("loadingControl");
+const layoutFooter = inject("layoutFooter", null);
+const layoutDrawers = inject("layoutDrawers", null);
 const isPageDisabled = ref(false);
+const imagePageFooterOwner = Symbol("image-page-footer");
+const imagePageLeftDrawerOwner = Symbol("image-page-left-drawer");
+const imagePageRightDrawerOwner = Symbol("image-page-right-drawer");
 const currentFile = computed(() => fileManagerStore.currentFile);
 const selectedFiles = computed(() => fileManagerStore.selectedFiles);
 const currentDisplayUrl = computed(() => {
@@ -336,6 +192,10 @@ const currentMask = computed(() => {
 const hasProcessedImages = computed(() => {
   return currentFile.value?.history?.length > 1 || false;
 });
+const previewStageStyle = computed(() => ({
+  "--preview-grid-cell-a": "#161616",
+  "--preview-grid-cell-b": "#202020",
+}));
 
 // 提供编辑器引用
 provide("editor-ref", editorRef);
@@ -381,6 +241,19 @@ const handleMaskUpdate = (maskData) => {
   }
 };
 
+const setMaskDrawingMode = (value) => {
+  const nextValue = Boolean(value);
+  isMaskDrawingMode.value = nextValue;
+  runtimeUiStore.setImageMaskDrawingEnabled(nextValue);
+};
+
+const updateImageMaskToolState = (value = {}) => {
+  runtimeUiStore.setImageMaskToolState(
+    value,
+    configStore.config.advanced?.imageBrushDefault
+  );
+};
+
 const captureMaskUiState = () => ({
   showMaskTools: showMaskTools.value,
   drawingMode: isMaskDrawingMode.value,
@@ -388,7 +261,7 @@ const captureMaskUiState = () => ({
 
 const restoreMaskUiState = (maskUiState = {}) => {
   showMaskTools.value = maskUiState.showMaskTools ?? showMaskTools.value;
-  isMaskDrawingMode.value = maskUiState.drawingMode ?? isMaskDrawingMode.value;
+  setMaskDrawingMode(maskUiState.drawingMode ?? isMaskDrawingMode.value);
 };
 
 const finalizeSuccessfulMaskRun = async (
@@ -1118,7 +991,143 @@ const handleRemoveFile = (fileId) => {
   }
 };
 
+const syncLayoutFooter = () => {
+  if (!layoutFooter) return;
+
+  layoutFooter.setPageFooter({
+    owner: imagePageFooterOwner,
+    component: ProcessingToolbar,
+    className: {
+      "pointer-events-none": isPageDisabled.value,
+    },
+    props: {
+      files: fileManagerStore.files,
+      selectedFile: currentFile.value?.originalFile || null,
+      currentModel: currentModel.value,
+      showMaskTools: showMaskTools.value,
+      hasProcessedImages: hasProcessedImages.value,
+      type: "image",
+    },
+    listeners: {
+      "toggle-file-explorer": () => {
+        leftDrawerOpen.value = !leftDrawerOpen.value;
+      },
+      "rejected-files": onRejectedFiles,
+      "toggle-mask-tools": () => {
+        showMaskTools.value = !showMaskTools.value;
+      },
+      "show-original": showOriginalImage,
+      "show-processed": showProcessedImage,
+      "undo-processing": undoProcessing,
+      "run-model": runCurrentModel,
+      download: downloadProcessedImages,
+      "toggle-settings": () => {
+        rightDrawerOpen.value = !rightDrawerOpen.value;
+      },
+    },
+  });
+};
+
+const handleDrawerModelChange = (model) => {
+  handleModelChange(model);
+};
+
+const handleDrawerSelectAllChange = (value) => {
+  selectAll.value = value;
+  handleSelectAll(value);
+};
+
+const syncLayoutDrawers = () => {
+  if (!layoutDrawers) return;
+
+  layoutDrawers.setPageDrawer({
+    side: "left",
+    owner: imagePageLeftDrawerOwner,
+    component: FileExplorer,
+    className: [
+      LEFT_IMAGE_DRAWER_SELECTOR.slice(1),
+      { "pointer-events-none": isPageDisabled.value },
+    ],
+    props: {
+      drawerOpen: leftDrawerOpen.value,
+      files: fileManagerStore.files,
+      selectedFile: currentFile.value,
+      selectedFiles: selectedFiles.value,
+      fileUrls: fileUrls.value,
+    },
+    listeners: {
+      "update:drawer-open": (value) => {
+        leftDrawerOpen.value = value;
+      },
+      "update:selected-file": handleFileSelection,
+      "toggle-selection": toggleFileSelection,
+      "remove-file": handleRemoveFile,
+    },
+  });
+
+  layoutDrawers.setPageDrawer({
+    side: "right",
+    owner: imagePageRightDrawerOwner,
+    component: ImageSettingsDrawer,
+    className: [
+      RIGHT_IMAGE_DRAWER_SELECTOR.slice(1),
+      { "pointer-events-none": isPageDisabled.value },
+    ],
+    props: {
+      drawerOpen: rightDrawerOpen.value,
+      currentModel: currentModel.value,
+      actionScope: actionScope.value,
+      selectAll: selectAll.value,
+      selectedFiles: selectedFiles.value,
+      currentMask: currentMask.value,
+      folderPath: folderPath.value,
+      maskFolderPath: maskFolderPath.value,
+      savePath: savePath.value,
+      ocrLang: ocrLang.value,
+      autoLayout: autoLayout.value,
+      backendRunning: backendRunning.value,
+    },
+    listeners: {
+      "update:drawer-open": (value) => {
+        rightDrawerOpen.value = value;
+      },
+      "update:current-model": handleDrawerModelChange,
+      "update:action-scope": (value) => {
+        actionScope.value = value;
+      },
+      "update:select-all": handleDrawerSelectAllChange,
+      "update:folder-path": (value) => {
+        folderPath.value = value;
+      },
+      "update:mask-folder-path": (value) => {
+        maskFolderPath.value = value;
+      },
+      "update:save-path": (value) => {
+        savePath.value = value;
+      },
+      "update:ocr-lang": (value) => {
+        ocrLang.value = value;
+      },
+      "update:auto-layout": (value) => {
+        autoLayout.value = value;
+      },
+      "confirm-delete-selected": confirmDeleteSelected,
+      "apply-current-mask-to-selected": applyCurrentMaskToSelected,
+      "cuda-status-changed": handleCudaStatusChanged,
+    },
+  });
+};
+
+watchEffect(() => {
+  syncLayoutFooter();
+  syncLayoutDrawers();
+});
+
 const unwrapElement = (target) => {
+  if (typeof target === "string") {
+    return document.querySelector(target);
+  }
+
   if (target?.$el instanceof HTMLElement) {
     return target.$el;
   }
@@ -1172,19 +1181,90 @@ const updateVisibleAreaInsets = () => {
   visibleAreaInsets.value = {
     left: getDrawerOverlapInset(
       containerRect,
-      resolveDrawerElement(leftDrawerRef.value),
+      resolveDrawerElement(LEFT_IMAGE_DRAWER_SELECTOR),
       "left",
       leftDrawerOpen.value
     ),
     right: getDrawerOverlapInset(
       containerRect,
-      resolveDrawerElement(rightDrawerRef.value),
+      resolveDrawerElement(RIGHT_IMAGE_DRAWER_SELECTOR),
       "right",
       rightDrawerOpen.value
     ),
     top: 0,
     bottom: 0,
   };
+};
+
+const cancelVisibleAreaUpdateFrame = () => {
+  if (!visibleAreaUpdateFrame) return;
+  cancelAnimationFrame(visibleAreaUpdateFrame);
+  visibleAreaUpdateFrame = 0;
+};
+
+const cancelVisibleAreaTransitionSync = () => {
+  if (!visibleAreaTransitionFrame) return;
+  cancelAnimationFrame(visibleAreaTransitionFrame);
+  visibleAreaTransitionFrame = 0;
+};
+
+const scheduleVisibleAreaInsetsUpdate = () => {
+  cancelVisibleAreaUpdateFrame();
+  visibleAreaUpdateFrame = requestAnimationFrame(() => {
+    visibleAreaUpdateFrame = 0;
+    updateVisibleAreaInsets();
+  });
+};
+
+const startVisibleAreaTransitionSync = (duration = 420) => {
+  cancelVisibleAreaTransitionSync();
+
+  const endTime = performance.now() + duration;
+  const tick = () => {
+    updateVisibleAreaInsets();
+    if (performance.now() < endTime) {
+      visibleAreaTransitionFrame = requestAnimationFrame(tick);
+      return;
+    }
+
+    visibleAreaTransitionFrame = 0;
+  };
+
+  visibleAreaTransitionFrame = requestAnimationFrame(tick);
+};
+
+const disconnectVisibleAreaResizeObserver = () => {
+  if (!visibleAreaResizeObserver) return;
+  visibleAreaResizeObserver.disconnect();
+  visibleAreaResizeObserver = null;
+};
+
+const syncVisibleAreaObservers = async () => {
+  disconnectVisibleAreaResizeObserver();
+
+  if (typeof ResizeObserver === "undefined") {
+    return;
+  }
+
+  await nextTick();
+
+  const observedElements = [
+    unwrapElement(imageStageRef.value),
+    resolveDrawerElement(LEFT_IMAGE_DRAWER_SELECTOR),
+    resolveDrawerElement(RIGHT_IMAGE_DRAWER_SELECTOR),
+  ].filter(Boolean);
+
+  if (!observedElements.length) {
+    return;
+  }
+
+  visibleAreaResizeObserver = new ResizeObserver(() => {
+    scheduleVisibleAreaInsetsUpdate();
+  });
+
+  observedElements.forEach((element) => {
+    visibleAreaResizeObserver.observe(element);
+  });
 };
 
 // 页面离开时的状态保存
@@ -1199,7 +1279,6 @@ const savePageState = async () => {
       rightDrawerOpen: rightDrawerOpen.value,
       currentModel: currentModel.value,
       showMaskTools: showMaskTools.value,
-      maskDrawingMode: isMaskDrawingMode.value,
       actionScope: actionScope.value,
       selectAll: selectAll.value,
       savePath: savePath.value,
@@ -1252,7 +1331,7 @@ const restorePageState = async () => {
         rightDrawerOpen.value = savedUIState.rightDrawerOpen ?? defaultDrawerState.right;
         currentModel.value = savedUIState.currentModel || "lama";
         showMaskTools.value = savedUIState.showMaskTools ?? true;
-        isMaskDrawingMode.value = savedUIState.maskDrawingMode ?? false;
+        setMaskDrawingMode(runtimeUiStore.imageMaskDrawingEnabled);
         actionScope.value = savedUIState.actionScope || {
           label: "仅当前文件",
           value: "current",
@@ -1282,6 +1361,7 @@ const restorePageState = async () => {
 onMounted(async () => {
   // 1. 首先加载配置
   await configStore.loadConfig();
+  runtimeUiStore.ensureImageMaskToolState(configStore.config.advanced?.imageBrushDefault);
 
   // 2. 然后初始化fileManager配置（使用正确的配置）
   fileManagerStore.initProcessingConfig();
@@ -1324,18 +1404,28 @@ onMounted(async () => {
     updateVisibleAreaInsets();
   });
 
-  window.addEventListener("resize", updateVisibleAreaInsets);
+  await syncVisibleAreaObservers();
+  window.addEventListener("resize", scheduleVisibleAreaInsetsUpdate);
 });
 
 // 在路由离开前保存当前页面状态
 onBeforeRouteLeave(async (to, from, next) => {
+  layoutFooter?.clearPageFooter?.(imagePageFooterOwner);
+  layoutDrawers?.clearPageDrawer?.("left", imagePageLeftDrawerOwner);
+  layoutDrawers?.clearPageDrawer?.("right", imagePageRightDrawerOwner);
   // 保存当前页面状态
   await savePageState();
   next();
 });
 // 在组件卸载时清理资源
 onUnmounted(async () => {
-  window.removeEventListener("resize", updateVisibleAreaInsets);
+  layoutFooter?.clearPageFooter?.(imagePageFooterOwner);
+  layoutDrawers?.clearPageDrawer?.("left", imagePageLeftDrawerOwner);
+  layoutDrawers?.clearPageDrawer?.("right", imagePageRightDrawerOwner);
+  window.removeEventListener("resize", scheduleVisibleAreaInsetsUpdate);
+  cancelVisibleAreaUpdateFrame();
+  cancelVisibleAreaTransitionSync();
+  disconnectVisibleAreaResizeObserver();
   // 保存状态
   await savePageState();
 
@@ -1359,7 +1449,18 @@ watch(
   [leftDrawerOpen, rightDrawerOpen, currentFile, showMaskTools],
   async () => {
     await nextTick();
-    updateVisibleAreaInsets();
+    scheduleVisibleAreaInsetsUpdate();
+  },
+  {
+    flush: "post",
+  }
+);
+
+watch(
+  [leftDrawerOpen, rightDrawerOpen],
+  async () => {
+    await syncVisibleAreaObservers();
+    startVisibleAreaTransitionSync();
   },
   {
     flush: "post",
@@ -1388,5 +1489,30 @@ watch(
 
 .image-page {
   position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.image-work-area {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.image-stage-shell {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  --preview-grid-cell-a: #161616;
+  --preview-grid-cell-b: #202020;
 }
 </style>

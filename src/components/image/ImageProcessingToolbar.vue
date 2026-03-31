@@ -1,5 +1,5 @@
 <template>
-  <q-footer bordered class="bg-grey-8 text-white">
+  <div class="image-processing-toolbar bg-grey-8 text-white">
     <div class="row no-wrap shadow-1">
       <q-toolbar class="col-4 bg-deep-purple-2">
         <q-btn
@@ -195,13 +195,13 @@
         </div>
       </q-toolbar>
     </div>
-  </q-footer>
+  </div>
 </template>
 
 <script setup>
 import { computed, ref, watch } from "vue";
 import { useQuasar } from "quasar";
-import MoonshineFile from "./MoonshineFile.vue";
+import MoonshineFile from "../common/MoonshineFile.vue";
 
 const $q = useQuasar();
 
@@ -301,3 +301,27 @@ const handleFilesUpdate = (newFiles) => {
 //   }[type] || 'insert_drive_file'
 // }
 </script>
+
+<style scoped>
+.image-processing-toolbar {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  border-top: 1px solid rgba(17, 24, 39, 0.08);
+}
+
+.image-processing-toolbar > .row {
+  width: 100%;
+  min-height: var(--image-toolbar-height, 60px);
+  align-items: stretch;
+}
+
+.image-processing-toolbar :deep(.q-toolbar) {
+  min-height: var(--image-toolbar-height, 60px);
+}
+
+:global(body.body--dark) .image-processing-toolbar {
+  border-top-color: rgba(255, 255, 255, 0.08);
+}
+</style>

@@ -1,6 +1,6 @@
 <template>
   <q-dialog v-model="showDialog" persistent class="backend-dialog">
-    <q-card class="backend-manager-card">
+    <q-card :class="['backend-manager-card', backendManagerCardClass]">
       <q-card-section class="row items-center q-pb-none bg-primary text-white">
         <q-icon name="settings" size="md" class="q-mr-sm" />
         <div class="text-h6">{{ backendManagerTitle }}</div>
@@ -16,7 +16,7 @@
         >
           <!-- 左侧控制面板 -->
           <template v-slot:before>
-            <div class="bg-grey-1 q-pa-md control-panel full-height">
+            <div :class="['q-pa-md', 'control-panel', 'full-height', controlPanelClass]">
               <q-stepper
                 v-model="currentStep"
                 vertical
@@ -462,6 +462,7 @@
 </template>
 <script setup>
 import { computed, ref, reactive, onMounted, onUnmounted, nextTick, watch } from "vue";
+import { useQuasar } from "quasar";
 import { useConfigStore } from "src/stores/config";
 import { api } from "src/boot/axios";
 
@@ -475,6 +476,7 @@ const props = defineProps({
 const splitterModel = ref(35);
 
 const configStore = useConfigStore();
+const $q = useQuasar();
 // Emits
 const emit = defineEmits(["update:modelValue"]);
 
@@ -500,6 +502,12 @@ const setupEnvironmentLabel = computed(() =>
 );
 
 // 响应式数据
+const backendManagerCardClass = computed(() =>
+  $q.dark.isActive ? "backend-manager-card--dark" : "backend-manager-card--light"
+);
+const controlPanelClass = computed(() =>
+  $q.dark.isActive ? "control-panel--dark" : "control-panel--light"
+);
 const backendModelLocation = computed(() =>
   isBundledBackendMode.value
     ? backendConfig.modelPath || "resources/models"
@@ -1228,6 +1236,17 @@ onUnmounted(() => {
   border-radius: 12px;
   overflow: hidden;
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.15);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.backend-manager-card--light {
+  background: #ffffff;
+  color: rgba(17, 24, 39, 0.94);
+}
+
+.backend-manager-card--dark {
+  background: #121212;
+  color: rgba(244, 244, 245, 0.94);
 }
 
 .backend-content {
@@ -1240,25 +1259,37 @@ onUnmounted(() => {
 }
 
 .control-panel {
-  border-right: 1px solid #e0e0e0;
   overflow-y: auto;
   min-width: 300px;
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.control-panel--light {
+  background: #f5f5f5;
+  border-right: 1px solid #e0e0e0;
+  color: rgba(17, 24, 39, 0.94);
+}
+
+.control-panel--dark {
+  background: #1d1d1d;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(244, 244, 245, 0.94);
 }
 
 .control-panel::-webkit-scrollbar {
   width: 6px;
 }
 
-.control-panel::-webkit-scrollbar-track {
+.control-panel--light::-webkit-scrollbar-track {
   background: #f5f5f5;
 }
 
-.control-panel::-webkit-scrollbar-thumb {
+.control-panel--light::-webkit-scrollbar-thumb {
   background: #c0c0c0;
   border-radius: 3px;
 }
 
-.control-panel::-webkit-scrollbar-thumb:hover {
+.control-panel--light::-webkit-scrollbar-thumb:hover {
   background: #a0a0a0;
 }
 
@@ -1323,6 +1354,58 @@ onUnmounted(() => {
   background: rgba(255, 255, 255, 0.05);
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   flex-shrink: 0;
+}
+
+.control-panel--dark::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.control-panel--dark::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.control-panel--dark::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.control-panel--dark :deep(.q-stepper),
+.control-panel--dark :deep(.q-stepper__step-inner),
+.control-panel--dark :deep(.q-stepper__nav),
+.control-panel--dark :deep(.q-card) {
+  background: #1d1d1d;
+  color: rgba(244, 244, 245, 0.94);
+}
+
+.control-panel--dark :deep(.q-card) {
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.control-panel--dark :deep(.q-banner) {
+  background: rgba(59, 130, 246, 0.16) !important;
+  color: rgba(191, 219, 254, 0.98) !important;
+}
+
+.control-panel--dark :deep(.q-item__label),
+.control-panel--dark :deep(.text-grey-8),
+.control-panel--dark :deep(.text-grey-7),
+.control-panel--dark :deep(.text-grey-6) {
+  color: rgba(228, 228, 231, 0.9) !important;
+}
+
+.control-panel--dark :deep(.q-field__control),
+.control-panel--dark :deep(.q-field__native),
+.control-panel--dark :deep(.q-field__input) {
+  color: rgba(244, 244, 245, 0.94);
+}
+
+.control-panel--dark :deep(.q-field--outlined .q-field__control) {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.control-panel--dark :deep(.q-field__marginal),
+.control-panel--dark :deep(.q-stepper__title),
+.control-panel--dark :deep(.q-stepper__caption) {
+  color: rgba(228, 228, 231, 0.88);
 }
 
 /* 响应式设计 */

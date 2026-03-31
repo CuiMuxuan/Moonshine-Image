@@ -5,100 +5,32 @@
       dense
       dense-toggle
       expand-separator
-      label="画笔与插值"
+      label="画笔与蒙版"
       icon="brush"
       class="editor-section"
     >
       <div class="section-body tool-section">
-        <q-btn
-          :color="videoStore.maskTool.drawingEnabled ? 'primary' : 'grey-7'"
-          :icon="videoStore.maskTool.drawingEnabled ? 'brush' : 'pan_tool_alt'"
-          :label="videoStore.maskTool.drawingEnabled ? '开启绘制' : '关闭绘制'"
-          class="full-width"
-          unelevated
-          :disable="disabled"
-          @click="
+        <MaskBrushControls
+          :drawing-enabled="videoStore.maskTool.drawingEnabled"
+          :mode="videoStore.maskTool.mode"
+          :brush-size="videoStore.maskTool.brushSize"
+          :brush-color="videoStore.maskTool.brushColor"
+          :brush-alpha="videoStore.maskTool.brushAlpha"
+          :can-undo="videoStore.canUndoSelectedMaskDraw"
+          :button-size="controlButtonSize"
+          :disabled="disabled"
+          @toggle-drawing="
             videoStore.updateMaskTool({
               drawingEnabled: !videoStore.maskTool.drawingEnabled,
             })
           "
+          @update:mode="videoStore.updateMaskTool({ mode: $event })"
+          @update:brush-size="videoStore.updateMaskTool({ brushSize: $event })"
+          @update:brush-color="videoStore.updateMaskTool({ brushColor: $event })"
+          @update:brush-alpha="videoStore.updateMaskTool({ brushAlpha: $event })"
+          @undo="undoDraw"
+          @clear="clearMask"
         />
-
-        <q-btn-toggle
-          :model-value="videoStore.maskTool.mode"
-          dense
-          spread
-          :disable="disabled"
-          :options="[
-            { label: '画笔', value: 'draw' },
-            { label: '擦除', value: 'erase' },
-          ]"
-          @update:model-value="videoStore.updateMaskTool({ mode: $event })"
-        />
-
-        <div ref="maskActionButtonsRef" class="brush-history-row">
-          <q-btn
-            outline
-            color="primary"
-            icon="undo"
-            :label="maskActionButtonMode === 'icon' ? undefined : '撤回'"
-            :disable="disabled || !videoStore.canUndoSelectedMaskDraw"
-            class="brush-history-button"
-            @click="undoDraw"
-          >
-            <q-tooltip>撤回</q-tooltip>
-          </q-btn>
-
-          <q-btn
-            outline
-            color="negative"
-            icon="delete_sweep"
-            :label="clearMaskButtonLabel"
-            :disable="disabled"
-            class="brush-history-button"
-            @click="clearMask"
-          >
-            <q-tooltip>清空蒙版</q-tooltip>
-          </q-btn>
-        </div>
-
-        <div class="brush-color-row">
-          <span class="brush-color-label">画笔颜色</span>
-          <label class="brush-color-control">
-            <input
-              type="color"
-              :value="videoStore.maskTool.brushColor"
-              :disabled="disabled"
-              @input="videoStore.updateMaskTool({ brushColor: $event.target.value })"
-            />
-          </label>
-        </div>
-
-        <q-slider
-          :model-value="videoStore.maskTool.brushSize"
-          label
-          label-always
-          :min="2"
-          :max="120"
-          :step="1"
-          :disable="disabled"
-          @update:model-value="videoStore.updateMaskTool({ brushSize: $event })"
-        >
-          <template #prepend>画笔大小</template>
-        </q-slider>
-
-        <q-slider
-          :model-value="videoStore.maskTool.brushAlpha"
-          label
-          label-always
-          :min="0.05"
-          :max="1"
-          :step="0.05"
-          :disable="disabled"
-          @update:model-value="videoStore.updateMaskTool({ brushAlpha: $event })"
-        >
-          <template #prepend>透明度</template>
-        </q-slider>
 
         <q-select
           :model-value="videoStore.selectedMask.interpolation"
@@ -281,7 +213,7 @@
                 rounded
                 class="bg-grey-2 text-grey-8 q-mt-sm"
               >
-                结束关键帧的时间会始终跟随蒙版结束时间。手动修改任一字段后，会切换为独立状态。
+                结束关键帧的时间始终跟随蒙版结束时间。手动修改任一字段后，会切换为独立状态。
               </q-banner>
 
               <q-btn
@@ -308,9 +240,13 @@
 
 <script setup>
 import { useQuasar } from "quasar";
-import { computed, nextTick, onUnmounted, reactive, ref, watch } from "vue";
+import { computed, reactive } from "vue";
 
+import MaskBrushControls from "src/components/common/MaskBrushControls.vue";
+import { normalizeButtonSize } from "src/config/ConfigManager";
+import { useConfigStore } from "src/stores/config";
 import { useVideoManagerStore } from "src/stores/videoManager";
+import { createTransparentMaskDataUrl } from "src/utils/maskTool";
 import { formatSeconds, MASK_KEYFRAME_TYPES, parseNumeric } from "src/utils/videoMaskUtils";
 
 defineProps({
@@ -321,13 +257,11 @@ defineProps({
 });
 
 const $q = useQuasar();
+const configStore = useConfigStore();
 const videoStore = useVideoManagerStore();
-const maskActionButtonsRef = ref(null);
-const maskActionButtonMode = ref("full");
-let maskActionButtonsObserver = null;
-
-const FULL_CLEAR_BUTTON_WIDTH = 224;
-const SHORT_CLEAR_BUTTON_WIDTH = 160;
+const controlButtonSize = computed(() =>
+  normalizeButtonSize(configStore.config.ui?.buttonSize)
+);
 
 const sections = reactive({
   brush: true,
@@ -336,38 +270,6 @@ const sections = reactive({
 });
 
 const orderedKeyframes = computed(() => videoStore.selectedMaskOrderedKeyframes);
-const clearMaskButtonLabel = computed(() => {
-  if (maskActionButtonMode.value === "icon") return undefined;
-  return maskActionButtonMode.value === "full" ? "清空蒙版" : "清空";
-});
-
-const disconnectMaskActionButtonsObserver = () => {
-  if (!maskActionButtonsObserver) return;
-  maskActionButtonsObserver.disconnect();
-  maskActionButtonsObserver = null;
-};
-
-const updateMaskActionButtonMode = () => {
-  const width = maskActionButtonsRef.value?.clientWidth || 0;
-  if (width >= FULL_CLEAR_BUTTON_WIDTH) {
-    maskActionButtonMode.value = "full";
-    return;
-  }
-  if (width >= SHORT_CLEAR_BUTTON_WIDTH) {
-    maskActionButtonMode.value = "short";
-    return;
-  }
-  maskActionButtonMode.value = "icon";
-};
-
-const createTransparentMaskDataUrl = () => {
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.floor(videoStore.videoWidth || 1));
-  canvas.height = Math.max(1, Math.floor(videoStore.videoHeight || 1));
-  const ctx = canvas.getContext("2d");
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL("image/png");
-};
 
 const getKeyframeTitle = (keyframe) => {
   if (keyframe.type === MASK_KEYFRAME_TYPES.START) return "起始关键帧";
@@ -403,7 +305,9 @@ const showWarning = (message) => {
 
 const clearMask = () => {
   if (!videoStore.selectedMaskId) return;
-  videoStore.commitSelectedMaskBaseMask(createTransparentMaskDataUrl());
+  videoStore.commitSelectedMaskBaseMask(
+    createTransparentMaskDataUrl(videoStore.videoWidth, videoStore.videoHeight)
+  );
 };
 
 const undoDraw = () => {
@@ -564,37 +468,6 @@ const setEndFromCurrentTime = async () => {
     endTime: videoStore.currentTime,
   });
 };
-
-watch(
-  maskActionButtonsRef,
-  async (element) => {
-    disconnectMaskActionButtonsObserver();
-    await nextTick();
-    updateMaskActionButtonMode();
-
-    if (!element || typeof ResizeObserver === "undefined") return;
-
-    maskActionButtonsObserver = new ResizeObserver(() => {
-      updateMaskActionButtonMode();
-    });
-    maskActionButtonsObserver.observe(element);
-  },
-  {
-    flush: "post",
-  }
-);
-
-watch(
-  () => videoStore.selectedMaskId,
-  async () => {
-    await nextTick();
-    updateMaskActionButtonMode();
-  }
-);
-
-onUnmounted(() => {
-  disconnectMaskActionButtonsObserver();
-});
 </script>
 
 <style scoped>
@@ -620,16 +493,6 @@ onUnmounted(() => {
   gap: 12px;
 }
 
-.brush-history-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 8px;
-}
-
-.brush-history-button {
-  min-width: 0;
-}
-
 .keyframe-toolbar {
   display: flex;
   justify-content: flex-start;
@@ -644,39 +507,6 @@ onUnmounted(() => {
   border-top: 1px solid rgba(17, 24, 39, 0.06);
 }
 
-.brush-color-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.brush-color-label {
-  color: #374151;
-  font-size: 13px;
-  white-space: nowrap;
-}
-
-.brush-color-control {
-  width: 48px;
-  height: 32px;
-  padding: 0;
-  border: 1px solid rgba(17, 24, 39, 0.15);
-  border-radius: 8px;
-  overflow: hidden;
-  background: #fff;
-  cursor: pointer;
-}
-
-.brush-color-control input {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  padding: 0;
-  background: transparent;
-  cursor: pointer;
-}
-
 .empty-state {
   min-height: 220px;
   display: flex;
@@ -686,5 +516,4 @@ onUnmounted(() => {
   text-align: center;
   padding: 20px;
 }
-
 </style>

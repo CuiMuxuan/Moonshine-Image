@@ -162,6 +162,35 @@
                 </div>
               </div>
 
+              <div>
+                <div class="row items-center q-mb-sm">
+                  <div class="text-subtitle2">按钮大小</div>
+                  <q-space />
+                  <q-btn
+                    outline
+                    color="primary"
+                    icon="restart_alt"
+                    label="恢复默认按钮大小"
+                    @click="resetButtonSize"
+                  />
+                </div>
+
+                <q-select
+                  v-model="localConfig.ui.buttonSize"
+                  outlined
+                  emit-value
+                  map-options
+                  :options="buttonSizeOptions"
+                  label="绘制控制区按钮大小"
+                >
+                  <template #hint>
+                    <div class="text-caption">
+                      默认使用 MD，可选 SM 或 XS，用于绘制控制区的 QBtn 尺寸。
+                    </div>
+                  </template>
+                </q-select>
+              </div>
+
               <q-separator />
 
               <div>
@@ -408,7 +437,9 @@ import {
   ConfigManager,
   DEFAULT_BRAND_COLORS,
   DEFAULT_IMAGE_BRUSH,
+  DEFAULT_UI_BUTTON_SIZE,
   DEFAULT_VIDEO_BRUSH,
+  UI_BUTTON_SIZE_OPTIONS,
 } from "src/config/ConfigManager";
 import { useAppStateStore } from "src/stores/appState";
 import { useConfigStore } from "src/stores/config";
@@ -442,6 +473,14 @@ const brushConfigFields = [
   { key: "imageBrushDefault", label: "图片默认笔刷" },
   { key: "videoBrushDefault", label: "视频默认笔刷" },
 ];
+
+const buttonSizeOptions = UI_BUTTON_SIZE_OPTIONS
+  .slice()
+  .reverse()
+  .map((value) => ({
+    label: value.toUpperCase(),
+    value,
+  }));
 
 const props = defineProps({
   modelValue: {
@@ -525,6 +564,10 @@ const disableReason = computed(() => {
 
 const resetThemeColors = () => {
   localConfig.value.ui.brandColors = { ...DEFAULT_BRAND_COLORS };
+};
+
+const resetButtonSize = () => {
+  localConfig.value.ui.buttonSize = DEFAULT_UI_BUTTON_SIZE;
 };
 
 const resetBrushDefaults = () => {

@@ -8,16 +8,30 @@
       :style="overlayCanvasStyle"
       @pointerenter="handlePointerEnter"
       @pointerdown="startPreviewDraw"
-      @pointermove="handlePreviewDrawMove"
-      @pointerup="finishPreviewDraw"
+      @pointermove="handlePreviewPointerMove"
       @pointerleave="handlePointerLeave"
     />
 
     <div
-      v-if="cursorVisible"
+      v-if="cursorVisible && videoStore.maskTool.mode !== MASK_TOOL_MODES.RECT"
       class="brush-cursor"
-      :class="{ 'is-erase': videoStore.maskTool.mode === 'erase' }"
+      :class="{ 'is-erase': videoStore.maskTool.mode === MASK_TOOL_MODES.ERASE }"
       :style="brushCursorStyle"
+    ></div>
+
+    <div
+      v-if="cursorVisible && videoStore.maskTool.mode === MASK_TOOL_MODES.RECT"
+      class="rect-cursor"
+      :style="rectCursorStyle"
+    >
+      <span class="rect-cursor-line is-horizontal"></span>
+      <span class="rect-cursor-line is-vertical"></span>
+    </div>
+
+    <div
+      v-if="rectPreviewDisplayBox"
+      class="rect-preview-box"
+      :style="rectPreviewDisplayStyle"
     ></div>
 
     <div
@@ -41,7 +55,9 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 
+import { useRasterMaskEditor } from "src/composables/useRasterMaskEditor";
 import { useVideoManagerStore } from "src/stores/videoManager";
+import { MASK_TOOL_MODES, hexToRgba } from "src/utils/maskTool";
 import {
   getMaskBoundsFromDataUrl,
   getTransformedBoundsRect,
@@ -81,11 +97,11 @@ const editableCtxRef = ref(null);
 const editableMaskId = ref(null);
 const activeDrawingMaskId = ref(null);
 const selectedState = ref(null);
-const isPreviewDrawing = ref(false);
-const previewLastPoint = ref(null);
 const interactionState = ref(null);
 const cursorPosition = ref({ x: 0, y: 0 });
 const cursorInside = ref(false);
+const rectPreview = ref(null);
+const drawingWindowBound = ref(false);
 
 const handles = ["nw", "ne", "se", "sw"];
 
@@ -138,6 +154,42 @@ const selectedDisplayBox = computed(() => {
   };
 });
 
+const rectPreviewDisplayBox = computed(() => {
+  if (!rectPreview.value || !selectedState.value) return null;
+
+  const scale = Number(selectedState.value.scale || 1);
+  const translatedLeft =
+    videoAnchor.value.x +
+    Number(selectedState.value.x || 0) +
+    scale * (rectPreview.value.x - videoAnchor.value.x);
+  const translatedTop =
+    videoAnchor.value.y +
+    Number(selectedState.value.y || 0) +
+    scale * (rectPreview.value.y - videoAnchor.value.y);
+
+  return {
+    left: translatedLeft * scaleX.value,
+    top: translatedTop * scaleY.value,
+    width: rectPreview.value.width * scale * scaleX.value,
+    height: rectPreview.value.height * scale * scaleY.value,
+  };
+});
+
+const rectPreviewDisplayStyle = computed(() => {
+  if (!rectPreviewDisplayBox.value) return {};
+  return {
+    left: `${rectPreviewDisplayBox.value.left}px`,
+    top: `${rectPreviewDisplayBox.value.top}px`,
+    width: `${rectPreviewDisplayBox.value.width}px`,
+    height: `${rectPreviewDisplayBox.value.height}px`,
+    borderColor: hexToRgba(
+      videoStore.maskTool.brushColor,
+      Math.max(0.3, videoStore.maskTool.brushAlpha)
+    ),
+    background: hexToRgba(videoStore.maskTool.brushColor, videoStore.maskTool.brushAlpha),
+  };
+});
+
 const overlayRootStyle = computed(() => ({
   width: `${safeDisplayWidth.value}px`,
   height: `${safeDisplayHeight.value}px`,
@@ -156,25 +208,9 @@ const overlayCanvasStyle = computed(() => ({
 
 const cursorVisible = computed(() => drawingEnabled.value && cursorInside.value);
 
-const hexToRgba = (hex, alpha) => {
-  const normalized = String(hex || "#ffffff").replace("#", "");
-  const safeHex =
-    normalized.length === 3
-      ? normalized
-          .split("")
-          .map((char) => `${char}${char}`)
-          .join("")
-      : normalized.padEnd(6, "f").slice(0, 6);
-
-  const r = Number.parseInt(safeHex.slice(0, 2), 16);
-  const g = Number.parseInt(safeHex.slice(2, 4), 16);
-  const b = Number.parseInt(safeHex.slice(4, 6), 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-};
-
 const brushCursorStyle = computed(() => {
   const size = Math.max(4, videoStore.maskTool.brushSize * displayScale.value);
-  const isErase = videoStore.maskTool.mode === "erase";
+  const isErase = videoStore.maskTool.mode === MASK_TOOL_MODES.ERASE;
 
   return {
     left: `${cursorPosition.value.x}px`,
@@ -187,6 +223,11 @@ const brushCursorStyle = computed(() => {
     borderColor: isErase ? "rgba(17, 24, 39, 0.65)" : "rgba(255, 255, 255, 0.92)",
   };
 });
+
+const rectCursorStyle = computed(() => ({
+  left: `${cursorPosition.value.x}px`,
+  top: `${cursorPosition.value.y}px`,
+}));
 
 const selectionBoxStyle = computed(() => {
   if (!selectedDisplayBox.value) return {};
@@ -250,8 +291,28 @@ const refreshAssets = async () => {
   assets.value = nextAssets;
 };
 
+const getOverlayRect = () => overlayCanvasRef.value?.getBoundingClientRect() || null;
+
+const isPointerInOverlay = (event) => {
+  const rect = getOverlayRect();
+  if (!rect) return false;
+  return (
+    event.clientX >= rect.left &&
+    event.clientX <= rect.right &&
+    event.clientY >= rect.top &&
+    event.clientY <= rect.bottom
+  );
+};
+
 const getSourcePointFromEvent = (event) => {
-  const rect = overlayCanvasRef.value.getBoundingClientRect();
+  const rect = getOverlayRect();
+  if (!rect) {
+    return {
+      x: 0,
+      y: 0,
+    };
+  }
+
   return {
     x: ((event.clientX - rect.left) / rect.width) * safeSourceWidth.value,
     y: ((event.clientY - rect.top) / rect.height) * safeSourceHeight.value,
@@ -259,7 +320,9 @@ const getSourcePointFromEvent = (event) => {
 };
 
 const updateCursorPosition = (event) => {
-  const rect = overlayCanvasRef.value.getBoundingClientRect();
+  const rect = getOverlayRect();
+  if (!rect) return;
+
   cursorPosition.value = {
     x: event.clientX - rect.left,
     y: event.clientY - rect.top,
@@ -271,26 +334,9 @@ const getInverseTransformedPoint = (sourcePoint) => {
   return inverseTransformPointAroundAnchor(sourcePoint, selectedState.value, videoAnchor.value);
 };
 
-const drawBaseMaskLine = (from, to) => {
-  const ctx = editableCtxRef.value;
-  if (!ctx) return;
-
-  ctx.save();
-  if (videoStore.maskTool.mode === "erase") {
-    ctx.globalCompositeOperation = "destination-out";
-    ctx.strokeStyle = "rgba(0, 0, 0, 1)";
-  } else {
-    ctx.globalCompositeOperation = "source-over";
-    ctx.strokeStyle = hexToRgba(videoStore.maskTool.brushColor, videoStore.maskTool.brushAlpha);
-  }
-  ctx.lineWidth = videoStore.maskTool.brushSize;
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  ctx.beginPath();
-  ctx.moveTo(from.x, from.y);
-  ctx.lineTo(to.x, to.y);
-  ctx.stroke();
-  ctx.restore();
+const getBasePointFromEvent = (event) => {
+  const sourcePoint = getSourcePointFromEvent(event);
+  return getInverseTransformedPoint(sourcePoint);
 };
 
 const renderOverlay = () => {
@@ -320,13 +366,66 @@ const renderOverlay = () => {
   });
 };
 
+let rasterMaskEditor;
+const syncRectPreview = () => {
+  rectPreview.value = rasterMaskEditor.rectPreview.value;
+  renderOverlay();
+};
+
+rasterMaskEditor = useRasterMaskEditor({
+  canvasRef: editableCanvasRef,
+  ctxRef: editableCtxRef,
+  getTool: () => ({
+    mode: videoStore.maskTool.mode,
+    brushColor: videoStore.maskTool.brushColor,
+    brushAlpha: videoStore.maskTool.brushAlpha,
+    brushSize: videoStore.maskTool.brushSize,
+  }),
+  onPreviewChange: syncRectPreview,
+});
+
+const detachDrawingWindowListeners = () => {
+  if (!drawingWindowBound.value) return;
+  window.removeEventListener("pointermove", handleWindowPointerMove, true);
+  window.removeEventListener("pointerup", handleWindowPointerUp, true);
+  drawingWindowBound.value = false;
+};
+
+const commitEditedMask = () => {
+  if (!editableCanvasRef.value) return;
+  if (activeDrawingMaskId.value === videoStore.selectedMaskId) {
+    videoStore.commitSelectedMaskBaseMask(editableCanvasRef.value.toDataURL("image/png"));
+  } else if (activeDrawingMaskId.value) {
+    videoStore.commitMaskBaseMask(activeDrawingMaskId.value, editableCanvasRef.value.toDataURL("image/png"));
+  }
+};
+
+const cancelPreviewDraw = () => {
+  rasterMaskEditor.cancelOperation();
+  rectPreview.value = null;
+  activeDrawingMaskId.value = null;
+  detachDrawingWindowListeners();
+  renderOverlay();
+};
+
+const finishPreviewDraw = (event = null) => {
+  const result = rasterMaskEditor.finishOperation(event ? getBasePointFromEvent(event) : null);
+  rectPreview.value = null;
+  detachDrawingWindowListeners();
+  if (result.changed) {
+    commitEditedMask();
+  }
+  activeDrawingMaskId.value = null;
+  renderOverlay();
+};
+
 const handlePointerEnter = (event) => {
   cursorInside.value = true;
   updateCursorPosition(event);
 };
 
 const startPreviewDraw = async (event) => {
-  if (!drawingEnabled.value || !videoStore.selectedMask) {
+  if (!drawingEnabled.value || !videoStore.selectedMask || event.button !== 0) {
     return;
   }
 
@@ -337,47 +436,47 @@ const startPreviewDraw = async (event) => {
     await ensureEditableCanvas();
   }
 
-  const sourcePoint = getSourcePointFromEvent(event);
-  const basePoint = getInverseTransformedPoint(sourcePoint);
   activeDrawingMaskId.value = videoStore.selectedMask.id;
-  previewLastPoint.value = basePoint;
-  drawBaseMaskLine(basePoint, basePoint);
-  isPreviewDrawing.value = true;
-  renderOverlay();
+  const result = rasterMaskEditor.beginOperation(getBasePointFromEvent(event));
+  rectPreview.value = rasterMaskEditor.rectPreview.value;
+  if (!result.started) return;
+
+  detachDrawingWindowListeners();
+  window.addEventListener("pointermove", handleWindowPointerMove, true);
+  window.addEventListener("pointerup", handleWindowPointerUp, true);
+  drawingWindowBound.value = true;
   event.preventDefault();
 };
 
-const handlePreviewDrawMove = (event) => {
-  updateCursorPosition(event);
+const handlePreviewPointerMove = (event) => {
   cursorInside.value = true;
-
-  if (!isPreviewDrawing.value || props.disabled) return;
-
-  const sourcePoint = getSourcePointFromEvent(event);
-  const basePoint = getInverseTransformedPoint(sourcePoint);
-  drawBaseMaskLine(previewLastPoint.value, basePoint);
-  previewLastPoint.value = basePoint;
-  renderOverlay();
+  updateCursorPosition(event);
 };
 
-const finishPreviewDraw = () => {
-  if (!isPreviewDrawing.value || !editableCanvasRef.value) return;
-  isPreviewDrawing.value = false;
-  previewLastPoint.value = null;
-  if (activeDrawingMaskId.value === videoStore.selectedMaskId) {
-    videoStore.commitSelectedMaskBaseMask(editableCanvasRef.value.toDataURL("image/png"));
-  } else if (activeDrawingMaskId.value) {
-    videoStore.commitMaskBaseMask(
-      activeDrawingMaskId.value,
-      editableCanvasRef.value.toDataURL("image/png")
-    );
+const handleWindowPointerMove = (event) => {
+  if (!rasterMaskEditor.isOperating.value) return;
+  updateCursorPosition(event);
+  cursorInside.value = isPointerInOverlay(event);
+  rasterMaskEditor.updateOperation(getBasePointFromEvent(event));
+  event.preventDefault();
+};
+
+const handleWindowPointerUp = (event) => {
+  if (!rasterMaskEditor.isOperating.value) {
+    detachDrawingWindowListeners();
+    return;
   }
-  activeDrawingMaskId.value = null;
+
+  updateCursorPosition(event);
+  cursorInside.value = isPointerInOverlay(event);
+  finishPreviewDraw(event);
+  event.preventDefault();
 };
 
 const handlePointerLeave = () => {
-  cursorInside.value = false;
-  finishPreviewDraw();
+  if (!rasterMaskEditor.isOperating.value) {
+    cursorInside.value = false;
+  }
 };
 
 const startMove = (event) => {
@@ -497,6 +596,9 @@ watch(
 watch(
   () => [videoStore.currentTime, videoStore.selectedMaskId, videoStore.selectedKeyframeId],
   () => {
+    if (rasterMaskEditor.isOperating.value) {
+      cancelPreviewDraw();
+    }
     refreshSelectedState();
     renderOverlay();
   },
@@ -537,10 +639,24 @@ watch(
 );
 
 watch(
-  () => [videoStore.maskTool.brushColor, videoStore.maskTool.brushAlpha, videoStore.maskTool.brushSize],
+  () => [
+    videoStore.maskTool.mode,
+    videoStore.maskTool.brushColor,
+    videoStore.maskTool.brushAlpha,
+    videoStore.maskTool.brushSize,
+  ],
   () => {
     if (!cursorInside.value) return;
     renderOverlay();
+  }
+);
+
+watch(
+  () => props.disabled,
+  (disabled) => {
+    if (disabled && rasterMaskEditor.isOperating.value) {
+      cancelPreviewDraw();
+    }
   }
 );
 
@@ -550,6 +666,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  cancelPreviewDraw();
   finishInteraction();
 });
 </script>
@@ -577,6 +694,47 @@ onUnmounted(() => {
 
 .brush-cursor.is-erase {
   box-shadow: 0 0 0 1px rgba(17, 24, 39, 0.45);
+}
+
+.rect-cursor {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 4;
+  mix-blend-mode: difference;
+}
+
+.rect-cursor-line {
+  position: absolute;
+  background: #ffffff;
+  border-radius: 999px;
+}
+
+.rect-cursor-line.is-horizontal {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+}
+
+.rect-cursor-line.is-vertical {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+}
+
+.rect-preview-box {
+  position: absolute;
+  border: 1px dashed rgba(59, 130, 246, 0.95);
+  background: rgba(59, 130, 246, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+  pointer-events: none;
+  z-index: 3;
 }
 
 .selection-box {

@@ -86,6 +86,7 @@
         </q-btn>
 
         <!-- 悬浮文件列表 -->
+        <teleport to="body">
         <q-card
           v-show="showFileList && canShowFloatingList"
           class="file-list-popup bg-deep-purple-2"
@@ -162,6 +163,7 @@
             </q-scroll-area>
           </q-card-section>
         </q-card>
+        </teleport>
       </div>
     </div>
 
@@ -726,7 +728,7 @@ defineExpose({
 
 .file-list-popup {
   position: fixed;
-  z-index: 1000;
+  z-index: 3200;
   box-shadow: 0 8px 24px rgba(156, 39, 176, 0.3);
   border-radius: 12px;
   border: 2px solid rgba(156, 39, 176, 0.2);

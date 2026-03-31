@@ -1,5 +1,13 @@
 <template>
-  <q-drawer show-if-above overlay bordered v-model="drawerModel" side="left" elevated>
+  <q-drawer
+    show-if-above
+    overlay
+    bordered
+    v-model="drawerModel"
+    side="left"
+    elevated
+    :class="drawerClass"
+  >
     <file-list
       :files="files"
       :selected-file="selectedFile"
@@ -14,7 +22,10 @@
 
 <script setup>
 import { computed } from 'vue'
+import { useQuasar } from "quasar";
 import FileList from './FileList.vue'
+
+const $q = useQuasar();
 
 const props = defineProps({
   drawerOpen: {
@@ -55,4 +66,25 @@ const drawerModel = computed({
     emit('update:drawer-open', value)
   }
 })
+
+const drawerClass = computed(() =>
+  $q.dark.isActive
+    ? "file-explorer-drawer file-explorer-drawer--dark"
+    : "file-explorer-drawer file-explorer-drawer--light"
+)
 </script>
+
+<style scoped>
+.file-explorer-drawer {
+  color: inherit;
+}
+
+.file-explorer-drawer--light {
+  background: #ffffff;
+}
+
+.file-explorer-drawer--dark {
+  background: #1d1d1d;
+  color: rgba(244, 244, 245, 0.94);
+}
+</style>
