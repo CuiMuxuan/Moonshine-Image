@@ -5,9 +5,9 @@
       class="absolute inset-0 editor-grid-bg overflow-hidden"
       :style="containerStyle"
       :class="{
-        'cursor-grab': !isDrawingMode && !isDragging && !isCtrlPressed && !isToolbarInteracting,
-        'cursor-grabbing': !isDrawingMode && !isCtrlPressed && isDragging && !isToolbarInteracting,
-        'cursor-none': (isDrawingMode || isCtrlPressed) && !isToolbarInteracting,
+        'cursor-grab': !isDrawingMode && !isDragging && !isToolbarInteracting,
+        'cursor-grabbing': !isDrawingMode && isDragging && !isToolbarInteracting,
+        'cursor-none': isDrawingMode && !isToolbarInteracting,
       }"
       @wheel="onWheel"
       @pointerdown="onPointerDown"
@@ -18,6 +18,7 @@
         :style="imageStyle"
         class="absolute select-none"
         @load="onImageLoad"
+        @error="onImageError"
         draggable="false"
       />
 
@@ -34,7 +35,6 @@
         @update:mask="$emit('update:mask', $event)"
         @update:drawing-mode="updateDrawingMode"
         @update:tool-state="updateMaskToolState"
-        @update:ctrl-pressed="updateCtrlPressed"
         @update:toolbar-interacting="updateToolbarInteracting"
       />
     </div>
@@ -51,7 +51,7 @@ import {
   ref,
   watch,
 } from "vue";
-import { useEventListener } from "@vueuse/core";
+import { useQuasar } from "quasar";
 
 import { useEditorStore } from "src/stores/editor";
 import { useFileManagerStore } from "src/stores/fileManager";
@@ -64,14 +64,15 @@ import ImageMasker from "./ImageMasker.vue";
 
 const store = useEditorStore();
 const fileManagerStore = useFileManagerStore();
+const $q = useQuasar();
 const imageContainer = ref(null);
 const imageRef = ref(null);
 const maskerRef = ref(null);
 const isImageLoaded = ref(false);
 const isDragging = ref(false);
 const hasManualViewportChange = ref(false);
-const isCtrlPressed = ref(false);
 const isToolbarInteracting = ref(false);
+const lastMissingImagePath = ref("");
 
 const props = defineProps({
   selectedFile: {
@@ -258,22 +259,36 @@ const onImageLoad = () => {
     applyFitViewport();
     initializeEmptyMaskIfNeeded();
 
+    lastMissingImagePath.value = "";
     isImageLoaded.value = true;
     emit("loaded");
   });
 };
 
-useEventListener(window, "keydown", (event) => {
-  if (event.key === "Control") {
-    isCtrlPressed.value = true;
-  }
-});
+const onImageError = async () => {
+  isImageLoaded.value = false;
 
-useEventListener(window, "keyup", (event) => {
-  if (event.key === "Control") {
-    isCtrlPressed.value = false;
+  const currentDisplayImage = fileManagerStore.getCurrentDisplayImage;
+  if (currentDisplayImage?.type !== "path" || !currentDisplayImage.data) {
+    return;
   }
-});
+
+  const missingPath = currentDisplayImage.data;
+  if (await fileManagerStore.fileExists(missingPath)) {
+    return;
+  }
+
+  if (lastMissingImagePath.value === missingPath) {
+    return;
+  }
+
+  lastMissingImagePath.value = missingPath;
+  $q.notify({
+    type: "warning",
+    message: `${props.selectedFile?.name || "当前图片"} 对应的本地文件已被删除或移动，请重新导入后再试`,
+    position: "top",
+  });
+};
 
 watch([() => store.scale, () => store.offsetX, () => store.offsetY], () => {
   if (mode.value === "mask" && maskerRef.value) {
@@ -350,10 +365,6 @@ const onWheel = (event) => {
   }
 };
 
-const updateCtrlPressed = (pressed) => {
-  isCtrlPressed.value = pressed;
-};
-
 const updateDrawingMode = (modeValue) => {
   emit("update:drawing-mode", Boolean(modeValue));
 };
@@ -376,7 +387,7 @@ const updateMaskToolState = (value = {}) => {
 };
 
 const onPointerDown = (event) => {
-  if (isDrawingMode.value || isCtrlPressed.value) return;
+  if (isDrawingMode.value) return;
 
   hasManualViewportChange.value = true;
   isDragging.value = true;
@@ -423,6 +434,9 @@ provide(
     resetView,
     getCanvasData,
     getSelection,
+    undoMask: () => maskerRef.value?.undo?.(),
+    canUndoMask: () => Boolean(maskerRef.value?.canUndo?.()),
+    isMaskerReady: () => Boolean(maskerRef.value?.isReady?.()),
   })
 );
 
@@ -430,6 +444,9 @@ defineExpose({
   resetView,
   getCanvasData,
   getSelection,
+  undoMask: () => maskerRef.value?.undo?.(),
+  canUndoMask: () => Boolean(maskerRef.value?.canUndo?.()),
+  isMaskerReady: () => Boolean(maskerRef.value?.isReady?.()),
 });
 </script>
 

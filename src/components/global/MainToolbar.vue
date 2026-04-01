@@ -1,8 +1,8 @@
 <template>
   <q-toolbar>
     <q-toolbar-title class="toolbar-title">
-      <q-avatar>
-        <moonshine-icon color="white" :size="24" />
+      <q-avatar size="34px">
+        <q-img :src="navBrandImage" :ratio="1" />
       </q-avatar>
       <span class="app-name">Moonshine-Image</span>
     </q-toolbar-title>
@@ -40,7 +40,7 @@
     <q-btn flat round dense class="q-mr-sm" @click="emit('toggle-theme')">
       <q-icon :name="themeMode === 'dark' ? 'light_mode' : 'dark_mode'" />
       <q-tooltip class="toolbar-tooltip">
-        {{ themeMode === "dark" ? "切换到明亮模式" : "切换到黑暗模式" }}
+        {{ themeMode === "dark" ? "切换到明亮模式" : "切换到暗黑模式" }}
       </q-tooltip>
     </q-btn>
 
@@ -86,15 +86,15 @@
           <q-separator class="q-my-md" />
 
           <div class="text-center">
-            <p>也可以看看作者写的免费小说</p>
+            <p>也可以看看作者写的免费小说。</p>
             <q-btn color="primary" icon="menu_book" label="阅读小说" @click="openNovelLink" />
           </div>
         </q-card-section>
       </q-card>
     </q-dialog>
 
-    <q-avatar class="cursor-pointer" @click="openBilibiliLink">
-      <q-img :src="appAvatarImage" :ratio="1" />
+    <q-avatar class="cursor-pointer" size="38px" @click="openBilibiliLink">
+      <q-img :src="authorAvatarImage" :ratio="1" />
       <q-tooltip class="toolbar-tooltip">作者 B 站主页</q-tooltip>
     </q-avatar>
   </q-toolbar>
@@ -104,10 +104,9 @@
 import { ref, watch } from "vue";
 import { useRoute } from "vue-router";
 
-import MoonshineIcon from "src/components/common/MoonshineIcon.vue";
 import sponsorAlipayImage from "src/assets/branding/Alipay.jpg";
-import appAvatarImage from "src/assets/branding/moonshine128x128.jpg";
 import sponsorWechatImage from "src/assets/branding/wxPay.png";
+import { resolvePublicAssetPath } from "src/utils/publicAsset";
 
 defineProps({
   navigationDisabled: {
@@ -123,6 +122,8 @@ defineProps({
 const route = useRoute();
 const emit = defineEmits(["route-change", "toggle-theme"]);
 
+const navBrandImage = resolvePublicAssetPath("icons/cmx-logo128.png");
+const authorAvatarImage = resolvePublicAssetPath("images/moonshine128x128.jpg");
 const showSponsorDialog = ref(false);
 const currentRoute = ref("image");
 
@@ -159,10 +160,6 @@ const openNovelLink = () => openExternalLink("https://www.jjwxc.net/oneauthor.ph
   gap: 8px;
 }
 
-.app-name {
-  transition: opacity 0.3s ease;
-}
-
 .navigation-buttons {
   display: flex;
   align-items: center;
@@ -182,7 +179,6 @@ const openNovelLink = () => openExternalLink("https://www.jjwxc.net/oneauthor.ph
 
 .nav-text {
   font-weight: 500;
-  transition: opacity 0.3s ease;
 }
 
 @media (max-width: 768px) {
@@ -210,15 +206,8 @@ const openNovelLink = () => openExternalLink("https://www.jjwxc.net/oneauthor.ph
   }
 }
 
-:deep(.sponsor-dialog .q-dialog) {
-  z-index: 3000 !important;
-}
-
+:deep(.sponsor-dialog .q-dialog),
 :deep(.sponsor-dialog .q-dialog__backdrop) {
   z-index: 3000 !important;
-}
-
-:deep(.toolbar-tooltip) {
-  z-index: 2100 !important;
 }
 </style>

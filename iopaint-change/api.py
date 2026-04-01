@@ -816,8 +816,16 @@ class Api:
         start_time = time.time()
         results = []
         failed_items = []
+        total_frames = len(req.frames)
+        batch_id = getattr(req.options, "batch_id", "") or f"video_batch_{int(start_time)}"
+        gc_interval = 8
 
-        for item in req.frames:
+        logger.info(
+            f"[{batch_id}] start video batch: {total_frames} frame(s), "
+            f"stop_on_error={req.options.stop_on_error}"
+        )
+
+        for index, item in enumerate(req.frames, start=1):
             try:
                 image, alpha_channel = self._load_image_from_path(item.image_path)
                 mask = self._load_mask_from_path(
@@ -839,7 +847,6 @@ class Api:
                 self._save_processed_frame(
                     item.output_path, processed_bgr.astype(np.uint8), alpha_channel
                 )
-                torch_gc()
 
                 results.append(
                     {
@@ -848,6 +855,14 @@ class Api:
                         "success": True,
                     }
                 )
+
+                if index % gc_interval == 0:
+                    torch_gc()
+
+                if index == total_frames or index % 5 == 0:
+                    logger.info(
+                        f"[{batch_id}] processed {index}/{total_frames} frame(s)"
+                    )
             except Exception as error:
                 failed = {
                     "frame_index": item.frame_index,
@@ -861,10 +876,12 @@ class Api:
                 results.append(failed)
 
                 logger.error(
-                    f"Video batch frame {item.frame_index} failed: {str(error)}"
+                    f"[{batch_id}] frame {item.frame_index} failed: {str(error)}"
                 )
                 if req.options.stop_on_error:
                     break
+
+        torch_gc()
 
         failure_snapshot_dir = None
         if len(failed_items) > 0:
@@ -875,6 +892,11 @@ class Api:
             )
 
         batch_time = time.time() - start_time
+        logger.info(
+            f"[{batch_id}] finished video batch: success="
+            f"{sum(1 for it in results if it.get('success', False))}/{total_frames}, "
+            f"failed={len(failed_items)}, elapsed={batch_time:.2f}s"
+        )
         return JSONResponse(
             content=jsonable_encoder(
                 {

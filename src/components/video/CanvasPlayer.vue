@@ -10,10 +10,15 @@
         <slot name="overlay"></slot>
       </div>
     </div>
-    <div v-else class="empty-state fit column flex-center" :style="playerSize">
+    <div
+      v-else
+      class="empty-state fit column flex-center"
+      :class="emptyStateClass"
+      :style="playerSize"
+    >
       <div class="empty-content text-center">
-        <q-icon name="videocam_off" size="64px" color="grey-5" />
-        <p class="text-grey-5 q-mt-md">
+        <img class="empty-state-logo" :src="emptyStateLogoImage" alt="Moonshine Logo" />
+        <p class="q-mt-md" :class="emptyStateTextClass">
           Upload a video from the left panel to start editing.
         </p>
       </div>
@@ -23,12 +28,15 @@
 
 <script setup>
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
+import { useQuasar } from "quasar";
 import { AVCanvas } from "@webav/av-canvas";
 import { MP4Clip, VisibleSprite } from "@webav/av-cliper";
 
 import { useVideoManagerStore } from "../../stores/videoManager";
+import { resolvePublicAssetPath } from "src/utils/publicAsset";
 
 const videoStore = useVideoManagerStore();
+const $q = useQuasar();
 
 const canvasWrapper = ref(null);
 let avCvs = null;
@@ -80,6 +88,14 @@ const playerSize = computed(() => {
     height: "100%",
   };
 });
+
+const emptyStateClass = computed(() =>
+  $q.dark.isActive ? "empty-state--dark" : "empty-state--light"
+);
+const emptyStateTextClass = computed(() =>
+  $q.dark.isActive ? "text-grey-4" : "text-grey-7"
+);
+const emptyStateLogoImage = resolvePublicAssetPath("icons/cmx-logo256.png");
 
 const destroyVideoClip = () => {
   if (videoSprite) {
@@ -405,7 +421,11 @@ watch(
   async (newFile) => {
     const version = ++loadVersion;
     if (newFile) {
-      await loadVideoIntoPlayer(newFile, version, 0);
+      const restoreTime = Math.max(
+        0,
+        Math.min(Number(videoStore.currentTime || 0), Number(videoStore.videoDuration || 0))
+      );
+      await loadVideoIntoPlayer(newFile, version, restoreTime);
     } else {
       startReadyCycle(version);
       destroyCanvas();
@@ -502,8 +522,25 @@ onUnmounted(() => {
 }
 
 .empty-state {
-  background-color: #f5f5f5;
   border-radius: 4px;
-  border: 2px dashed #ddd;
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.empty-state-logo {
+  width: clamp(76px, 14vw, 132px);
+  height: clamp(76px, 14vw, 132px);
+  object-fit: contain;
+  display: block;
+  margin: 0 auto;
+}
+
+.empty-state--light {
+  background-color: #f5f5f5;
+  border: 2px dashed #d4d4d8;
+}
+
+.empty-state--dark {
+  background-color: #171717;
+  border: 2px dashed rgba(255, 255, 255, 0.16);
 }
 </style>

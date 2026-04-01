@@ -18,6 +18,7 @@
           :brush-alpha="videoStore.maskTool.brushAlpha"
           :can-undo="videoStore.canUndoSelectedMaskDraw"
           :button-size="controlButtonSize"
+          layout="video-sidebar"
           :disabled="disabled"
           @toggle-drawing="
             videoStore.updateMaskTool({

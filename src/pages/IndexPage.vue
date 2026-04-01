@@ -60,7 +60,10 @@ import { useConfigStore } from "src/stores/config";
 import { useAppStateStore } from "src/stores/appState";
 import { useFileManagerStore } from "src/stores/fileManager";
 import { useRuntimeUiStore } from "src/stores/runtimeUi";
+import { useConfiguredShortcuts } from "src/composables/useConfiguredShortcuts";
 import InpaintService from "src/services/ImageProcessingService";
+import { buildImageOutputBaseName, splitFileName } from "src/utils/fileNaming";
+import { MASK_TOOL_MODES } from "src/utils/maskTool";
 import ImageEditor from "../components/image/ImageEditor.vue";
 import FileExplorer from "../components/common/FileExplorer.vue";
 import Workspace from "../components/common/Workspace.vue";
@@ -110,6 +113,7 @@ const selectAll = ref(false);
 const exportPath = ref("");
 const imageFolderName = ref("");
 const savePath = ref("");
+const savePathSourceMode = ref("managed");
 const folderPath = ref("");
 const maskFolderPath = ref("");
 const ocrLang = ref("中文");
@@ -150,12 +154,75 @@ const getManagedImageOutputPath = (downloadPath, folderName) => {
   return joinRendererPath(downloadPath, folderName || "images");
 };
 
+const normalizeComparablePath = (value = "") =>
+  String(value || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+
+const resolveManagedSavePathMode = ({
+  candidatePath = "",
+  downloadPath = "",
+  folderName = "images",
+} = {}) => {
+  const normalizedCandidate = normalizeComparablePath(candidatePath);
+  const normalizedDownloadPath = normalizeComparablePath(downloadPath);
+  const normalizedManagedPath = normalizeComparablePath(
+    getManagedImageOutputPath(downloadPath, folderName)
+  );
+
+  if (!normalizedCandidate) {
+    return "managed";
+  }
+
+  if (
+    normalizedCandidate === normalizedDownloadPath ||
+    normalizedCandidate === normalizedManagedPath
+  ) {
+    return "managed";
+  }
+
+  return "custom";
+};
+
+const resolveEffectiveImageSavePath = ({
+  candidatePath = "",
+  downloadPath = "",
+  folderName = "images",
+  sourceMode = "managed",
+} = {}) => {
+  const managedPath = getManagedImageOutputPath(downloadPath, folderName);
+  if (sourceMode === "managed") {
+    return managedPath;
+  }
+
+  return candidatePath || managedPath;
+};
+
 const syncManagedImageOutputPath = (fileManagement = {}) => {
   const nextImageFolderName = fileManagement.imageFolderName || "images";
   const nextDownloadPath = fileManagement.downloadPath || "";
+  const nextSavePathMode =
+    savePathSourceMode.value === "managed"
+      ? "managed"
+      : resolveManagedSavePathMode({
+          candidatePath: savePath.value,
+          downloadPath: nextDownloadPath,
+          folderName: nextImageFolderName,
+        });
+
+  const nextSavePath = resolveEffectiveImageSavePath({
+    candidatePath: savePath.value,
+    downloadPath: nextDownloadPath,
+    folderName: nextImageFolderName,
+    sourceMode: nextSavePathMode,
+  });
+
   imageFolderName.value = nextImageFolderName;
   exportPath.value = nextDownloadPath;
-  savePath.value = getManagedImageOutputPath(nextDownloadPath, nextImageFolderName);
+  savePathSourceMode.value = nextSavePathMode;
+  savePath.value = nextSavePath;
 };
 const props = defineProps({
   backendRunning: {
@@ -196,6 +263,46 @@ const previewStageStyle = computed(() => ({
   "--preview-grid-cell-a": "#161616",
   "--preview-grid-cell-b": "#202020",
 }));
+const isImageMaskerReady = computed(
+  () =>
+    Boolean(
+      currentFile.value &&
+        showMaskTools.value &&
+        editorRef.value?.isMaskerReady?.()
+    )
+);
+const canUndoMaskShortcut = computed(
+  () => Boolean(isImageMaskerReady.value && editorRef.value?.canUndoMask?.())
+);
+const canUseImageToolbarShortcuts = computed(
+  () => Boolean(currentFile.value && currentDisplayUrl.value && !isPageDisabled.value)
+);
+const canUndoProcessingShortcut = computed(
+  () =>
+    Boolean(
+      canUseImageToolbarShortcuts.value &&
+        currentFile.value?.history?.length > 1
+    )
+);
+const canCompareOriginalShortcut = computed(() => canUndoProcessingShortcut.value);
+const canSelectAllShortcut = computed(
+  () =>
+    Boolean(
+      canUseImageToolbarShortcuts.value &&
+        fileManagerStore.files.some((file) =>
+          file.originalFile?.type?.startsWith("image/")
+        )
+    )
+);
+const effectiveSavePath = computed(() =>
+  resolveEffectiveImageSavePath({
+    candidatePath: savePath.value,
+    downloadPath: exportPath.value,
+    folderName: imageFolderName.value,
+    sourceMode: savePathSourceMode.value,
+  })
+);
+const canOpenSavePath = computed(() => Boolean(effectiveSavePath.value && window.electron));
 
 // 提供编辑器引用
 provide("editor-ref", editorRef);
@@ -253,6 +360,165 @@ const updateImageMaskToolState = (value = {}) => {
     configStore.config.advanced?.imageBrushDefault
   );
 };
+
+const getImageBrushDefaults = () => configStore.config.advanced?.imageBrushDefault;
+
+const setImageToolMode = (mode) => {
+  if (!isImageMaskerReady.value) {
+    return false;
+  }
+
+  runtimeUiStore.patchImageMaskToolState(
+    {
+      mode,
+    },
+    getImageBrushDefaults()
+  );
+
+  return true;
+};
+
+const restoreImageShortcutSession = (session = {}) => {
+  if (!isImageMaskerReady.value) {
+    return;
+  }
+
+  setMaskDrawingMode(session.imageDrawingEnabled ?? isMaskDrawingMode.value);
+
+  if (session.imageToolMode) {
+    runtimeUiStore.patchImageMaskToolState(
+      {
+        mode: session.imageToolMode,
+      },
+      getImageBrushDefaults()
+    );
+  }
+};
+
+const handleImageShortcutPress = (actionId) => {
+  switch (actionId) {
+    case "drawingUndo":
+      if (canUndoMaskShortcut.value) {
+        editorRef.value?.undoMask?.();
+      }
+      break;
+    case "drawingResetView":
+      if (isImageMaskerReady.value) {
+        editorRef.value?.resetView?.();
+      }
+      break;
+    case "drawingToggle":
+      if (isImageMaskerReady.value) {
+        setMaskDrawingMode(!isMaskDrawingMode.value);
+      }
+      break;
+    case "drawingBrush":
+      setImageToolMode(MASK_TOOL_MODES.DRAW);
+      break;
+    case "drawingRect":
+      setImageToolMode(MASK_TOOL_MODES.RECT);
+      break;
+    case "drawingErase":
+      setImageToolMode(MASK_TOOL_MODES.ERASE);
+      break;
+    case "imageUndoProcessing":
+      if (canUndoProcessingShortcut.value) {
+        undoProcessing();
+      }
+      break;
+    case "imageSelectAll":
+      if (canSelectAllShortcut.value) {
+        selectAll.value = true;
+        handleSelectAll(true);
+      }
+      break;
+    default:
+      break;
+  }
+};
+
+const handleImageShortcutHoldStart = (actionId) => {
+  switch (actionId) {
+    case "drawingHoldBrush":
+      if (isImageMaskerReady.value) {
+        setMaskDrawingMode(true);
+        setImageToolMode(MASK_TOOL_MODES.DRAW);
+      }
+      break;
+    case "drawingHoldRect":
+      if (isImageMaskerReady.value) {
+        setMaskDrawingMode(true);
+        setImageToolMode(MASK_TOOL_MODES.RECT);
+      }
+      break;
+    case "drawingHoldErase":
+      if (isImageMaskerReady.value) {
+        setMaskDrawingMode(true);
+        setImageToolMode(MASK_TOOL_MODES.ERASE);
+      }
+      break;
+    case "imageCompareOriginal":
+      if (canCompareOriginalShortcut.value) {
+        showOriginalImage();
+      }
+      break;
+    default:
+      break;
+  }
+};
+
+const handleImageShortcutHoldEnd = (actionId, session) => {
+  switch (actionId) {
+    case "drawingHoldBrush":
+    case "drawingHoldRect":
+    case "drawingHoldErase":
+      restoreImageShortcutSession(session);
+      break;
+    case "imageCompareOriginal":
+      showProcessedImage();
+      break;
+    default:
+      break;
+  }
+};
+
+const buildProcessedImageOutputName = (file) => {
+  const { extension } = splitFileName(file?.name || "");
+  const outputExtension = extension || ".png";
+  const namingMode = configStore.config.advanced?.imageOutputNamingMode || "original";
+  const fixedPrefix = configStore.config.advanced?.imageOutputFixedPrefix || "moonshine";
+  const baseName = buildImageOutputBaseName({
+    originalName: file?.name || "",
+    namingMode,
+    fixedPrefix,
+  });
+
+  return `${baseName}${outputExtension}`;
+};
+
+const getFileNameFromPath = (filePath, fallback = "") =>
+  String(filePath || fallback)
+    .split(/[\\/]/)
+    .filter(Boolean)
+    .pop() || fallback;
+
+useConfiguredShortcuts({
+  enabled: computed(() => true),
+  shortcutConfig: computed(() => configStore.config.shortcuts),
+  createSessionContext: () => ({
+    imageToolMode: imageMaskToolState.value.mode,
+    imageDrawingEnabled: isMaskDrawingMode.value,
+  }),
+  onPress: (actionId) => {
+    handleImageShortcutPress(actionId);
+  },
+  onHoldStart: (actionId) => {
+    handleImageShortcutHoldStart(actionId);
+  },
+  onHoldEnd: (actionId, session) => {
+    handleImageShortcutHoldEnd(actionId, session);
+  },
+});
 
 const captureMaskUiState = () => ({
   showMaskTools: showMaskTools.value,
@@ -333,7 +599,7 @@ const applyCurrentMaskToSelected = async () => {
 const resizeMaskForFile = async (targetFile, sourceMaskUrl) => {
   try {
     // 获取目标图片的尺寸
-    const targetDimensions = await getImageDimensions(targetFile.originalFile);
+    const targetDimensions = await getImageDimensions(targetFile);
 
     // 获取源蒙版的尺寸
     const sourceDimensions = await new Promise((resolve, reject) => {
@@ -360,22 +626,88 @@ const resizeMaskForFile = async (targetFile, sourceMaskUrl) => {
     throw error;
   }
 };
+
+const normalizeRendererImagePath = (filePath = "") => {
+  const normalizedPath = String(filePath).replace(/\\/g, "/");
+  return window.electron ? `atom://${normalizedPath}` : `file://${normalizedPath}`;
+};
+
+const createImageLoadSource = async (fileEntry) => {
+  const latestImage =
+    Array.isArray(fileEntry?.history) && fileEntry.history.length > 0
+      ? fileEntry.history[fileEntry.history.length - 1]
+      : null;
+
+  if (latestImage?.type === "base64" && latestImage.displayUrl) {
+    return {
+      src: latestImage.displayUrl,
+      revoke: () => {},
+    };
+  }
+
+  if (latestImage?.type === "path" && latestImage.data) {
+    if (window.electron && !(await fileManagerStore.fileExists(latestImage.data))) {
+      throw new Error(`图片文件不存在: ${fileEntry?.name || latestImage.data}`);
+    }
+
+    return {
+      src: normalizeRendererImagePath(latestImage.data),
+      revoke: () => {},
+    };
+  }
+
+  if (fileEntry?.originalFile instanceof Blob) {
+    const objectUrl = URL.createObjectURL(fileEntry.originalFile);
+    return {
+      src: objectUrl,
+      revoke: () => URL.revokeObjectURL(objectUrl),
+    };
+  }
+
+  if (fileEntry instanceof Blob) {
+    const objectUrl = URL.createObjectURL(fileEntry);
+    return {
+      src: objectUrl,
+      revoke: () => URL.revokeObjectURL(objectUrl),
+    };
+  }
+
+  if (fileEntry?.originalFile?.path) {
+    if (window.electron && !(await fileManagerStore.fileExists(fileEntry.originalFile.path))) {
+      throw new Error(`图片文件不存在: ${fileEntry?.name || fileEntry.originalFile.path}`);
+    }
+
+    return {
+      src: normalizeRendererImagePath(fileEntry.originalFile.path),
+      revoke: () => {},
+    };
+  }
+
+  throw new Error(`无法加载图片: ${fileEntry?.name || "unknown"}`);
+};
+
 // 获取图片尺寸的辅助函数
-const getImageDimensions = (file) => {
+const getImageDimensions = async (fileEntry) => {
+  const { src, revoke } = await createImageLoadSource(fileEntry);
+
   return new Promise((resolve, reject) => {
     const img = new Image();
+    const cleanup = () => {
+      revoke?.();
+    };
+
     img.onload = () => {
+      cleanup();
       resolve({
         width: img.naturalWidth,
         height: img.naturalHeight,
       });
-      URL.revokeObjectURL(img.src); // 释放内存
     };
     img.onerror = () => {
+      cleanup();
       reject(new Error("无法加载图片"));
-      URL.revokeObjectURL(img.src);
     };
-    img.src = URL.createObjectURL(file);
+    img.src = src;
   });
 };
 
@@ -519,7 +851,7 @@ const runRemoveModel = async () => {
       return;
     }
 
-    if (!savePath.value) {
+    if (!effectiveSavePath.value) {
       $q.notify({
         type: "negative",
         message: "请先选择保存路径",
@@ -663,7 +995,7 @@ const processFolderImages = async () => {
       device: cudaAvailable.value ? "cuda" : "cpu",
       image_folder: folderPath.value,
       mask_folder: maskFolderPath.value,
-      output_folder: savePath.value,
+      output_folder: effectiveSavePath.value,
     };
     // 调用文件夹处理API
     const response = await InpaintService.performFolderInpainting(folderData);
@@ -724,32 +1056,100 @@ const downloadProcessedImages = async () => {
     return;
   }
 
-  // 使用 fileManagerStore.saveFile 保存文件
+  if (!window.electron) {
+    $q.notify({
+      type: "warning",
+      message: "当前环境不支持本地保存处理结果",
+      position: "top",
+    });
+    return;
+  }
+
+  if (!effectiveSavePath.value) {
+    $q.notify({
+      type: "warning",
+      message: "请先设置图片输出目录",
+      position: "top",
+    });
+    return;
+  }
+
+  const successFiles = [];
+  const failedFiles = [];
+
   for (const file of filesToDownload) {
-    const fileName = file.name;
-    const fileNameWithoutExt =
-      fileName.substring(0, fileName.lastIndexOf(".")) || fileName;
-    const fileExt = fileName.substring(fileName.lastIndexOf(".")) || ".png";
-    const newFileName = `${fileNameWithoutExt}_processed${fileExt}`;
-    const fullPath = joinRendererPath(savePath.value, newFileName);
+    const outputFileName = buildProcessedImageOutputName(file);
+    const fullPath = joinRendererPath(effectiveSavePath.value, outputFileName);
 
     try {
-      await fileManagerStore.saveFile(file.id, fullPath);
-      $q.notify({
-        type: "positive",
-        message: `已保存: ${newFileName}`,
-        position: "top",
-      });
+      const result = await fileManagerStore.saveFile(file.id, fullPath);
+      if (result?.success) {
+        successFiles.push(getFileNameFromPath(result.targetPath, outputFileName));
+      } else {
+        failedFiles.push(`${file.name}: ${result?.error || "保存失败"}`);
+      }
     } catch (error) {
-      $q.notify({
-        type: "negative",
-        message: `保存失败: ${fileName}，${error.message}`,
-        position: "top",
-      });
+      failedFiles.push(`${file.name}: ${error.message}`);
     }
   }
+
+  if (successFiles.length > 0 && failedFiles.length === 0) {
+    $q.notify({
+      type: "positive",
+      message:
+        successFiles.length === 1
+          ? `已保存 ${successFiles[0]}`
+          : `已导出 ${successFiles.length} 张图片`,
+      position: "top",
+    });
+    return;
+  }
+
+  if (successFiles.length > 0) {
+    $q.notify({
+      type: "warning",
+      message: `已导出 ${successFiles.length} 张图片，失败 ${failedFiles.length} 张`,
+      position: "top",
+      timeout: 3500,
+    });
+    return;
+  }
+
+  $q.notify({
+    type: "negative",
+    message: failedFiles[0] || "保存处理结果失败",
+    position: "top",
+  });
 };
 // 检查CUDA可用性
+const openCurrentSavePath = async () => {
+  if (!canOpenSavePath.value) return;
+
+  try {
+    const ensureResult = await window.electron.ipcRenderer.invoke(
+      "ensure-directory",
+      effectiveSavePath.value
+    );
+    if (!ensureResult?.success) {
+      throw new Error(ensureResult?.error || "创建保存目录失败");
+    }
+
+    const result = await window.electron.ipcRenderer.invoke("show-item-in-folder", {
+      filePath: effectiveSavePath.value,
+    });
+    if (!result?.success) {
+      throw new Error(result?.error || "打开保存路径失败");
+    }
+  } catch (error) {
+    $q.notify({
+      type: "negative",
+      message: `打开保存路径失败: ${error.message}`,
+      position: "top",
+      timeout: 3000,
+    });
+  }
+};
+
 const handleCudaStatusChanged = (status) => {
   cudaAvailable.value = status.available;
   cudaInfo.value = status.info;
@@ -775,11 +1175,24 @@ const undoProcessing = () => {
   }
 };
 // 显示原图
-const showOriginalImage = () => {
+const showOriginalImage = async () => {
   if (
     fileManagerStore.currentFile &&
     fileManagerStore.currentFile.history?.length > 1
   ) {
+    const originalImage = fileManagerStore.currentFile.history[0];
+    if (
+      originalImage?.type === "path" &&
+      !(await fileManagerStore.fileExists(originalImage.data))
+    ) {
+      $q.notify({
+        type: "warning",
+        message: "原图文件已被删除或移动，无法切换到原图对比",
+        position: "top",
+      });
+      return;
+    }
+
     showingOriginal.value = true;
   }
 };
@@ -924,11 +1337,11 @@ watch(
   (newValue) => {
     if (newValue === "folder") {
       // 如果没有设置必要的路径，自动打开右侧设置面板
-      if (!folderPath.value || !maskFolderPath.value || !savePath.value) {
+      if (!folderPath.value || !maskFolderPath.value || !effectiveSavePath.value) {
         rightDrawerOpen.value = true;
 
         // 显示提示信息
-        if (!folderPath.value || !maskFolderPath.value || !savePath.value) {
+        if (!folderPath.value || !maskFolderPath.value || !effectiveSavePath.value) {
           $q.notify({
             type: "info",
             message: "请在设置面板中设置所有必要的文件夹路径",
@@ -1082,7 +1495,8 @@ const syncLayoutDrawers = () => {
       currentMask: currentMask.value,
       folderPath: folderPath.value,
       maskFolderPath: maskFolderPath.value,
-      savePath: savePath.value,
+      savePath: effectiveSavePath.value,
+      canOpenSavePath: canOpenSavePath.value,
       ocrLang: ocrLang.value,
       autoLayout: autoLayout.value,
       backendRunning: backendRunning.value,
@@ -1103,7 +1517,17 @@ const syncLayoutDrawers = () => {
         maskFolderPath.value = value;
       },
       "update:save-path": (value) => {
-        savePath.value = value;
+        savePathSourceMode.value = resolveManagedSavePathMode({
+          candidatePath: value,
+          downloadPath: exportPath.value,
+          folderName: imageFolderName.value,
+        });
+        savePath.value = resolveEffectiveImageSavePath({
+          candidatePath: value,
+          downloadPath: exportPath.value,
+          folderName: imageFolderName.value,
+          sourceMode: savePathSourceMode.value,
+        });
       },
       "update:ocr-lang": (value) => {
         ocrLang.value = value;
@@ -1113,6 +1537,7 @@ const syncLayoutDrawers = () => {
       },
       "confirm-delete-selected": confirmDeleteSelected,
       "apply-current-mask-to-selected": applyCurrentMaskToSelected,
+      "open-save-path": openCurrentSavePath,
       "cuda-status-changed": handleCudaStatusChanged,
     },
   });
@@ -1281,7 +1706,8 @@ const savePageState = async () => {
       showMaskTools: showMaskTools.value,
       actionScope: actionScope.value,
       selectAll: selectAll.value,
-      savePath: savePath.value,
+      savePath: effectiveSavePath.value,
+      savePathSourceMode: savePathSourceMode.value,
       folderPath: folderPath.value,
       maskFolderPath: maskFolderPath.value,
       ocrLang: ocrLang.value,
@@ -1338,6 +1764,7 @@ const restorePageState = async () => {
         };
         selectAll.value = savedUIState.selectAll ?? false;
         savePath.value = savedUIState.savePath || "";
+        savePathSourceMode.value = savedUIState.savePathSourceMode || "managed";
         folderPath.value = savedUIState.folderPath || "";
         maskFolderPath.value = savedUIState.maskFolderPath || "";
         ocrLang.value = savedUIState.ocrLang || "中文";

@@ -34,6 +34,50 @@ const execAsync = promisify(exec);
 // Backend service process
 let backendProcess = null;
 global.projectPath = "";
+const DEFAULT_BRAND_COLORS = Object.freeze({
+  primary: "#7758c4",
+  secondary: "#2679a6",
+  accent: "#9C27B0",
+});
+const DEFAULT_IMAGE_BRUSH = Object.freeze({
+  size: 20,
+  color: "#1976D2",
+  alpha: 0.75,
+});
+const DEFAULT_VIDEO_BRUSH = Object.freeze({
+  size: 24,
+  color: DEFAULT_IMAGE_BRUSH.color,
+  alpha: 0.75,
+});
+const SHORTCUT_DEFAULTS = Object.freeze({
+  drawingUndo: ["Ctrl", "Z"],
+  drawingResetView: ["Ctrl", "X"],
+  drawingToggle: ["Ctrl", "Space"],
+  drawingBrush: ["1"],
+  drawingRect: ["2"],
+  drawingErase: ["3"],
+  drawingHoldBrush: ["1", "Q"],
+  drawingHoldRect: ["2", "Q"],
+  drawingHoldErase: ["3", "E"],
+  imageUndoProcessing: ["Ctrl", "Alt", "Z"],
+  imageCompareOriginal: ["Ctrl", "Alt", "X"],
+  imageSelectAll: ["Ctrl", "A"],
+});
+const SHORTCUT_KEY_COUNTS = Object.freeze({
+  drawingUndo: 2,
+  drawingResetView: 2,
+  drawingToggle: 2,
+  drawingBrush: 1,
+  drawingRect: 1,
+  drawingErase: 1,
+  drawingHoldBrush: 2,
+  drawingHoldRect: 2,
+  drawingHoldErase: 2,
+  imageUndoProcessing: 3,
+  imageCompareOriginal: 3,
+  imageSelectAll: 2,
+});
+const IMAGE_OUTPUT_NAMING_MODES = Object.freeze(["original", "prefixUuid"]);
 // Default configuration
 const DEFAULT_CONFIG = {
   general: {
@@ -52,10 +96,23 @@ const DEFAULT_CONFIG = {
   },
   advanced: {
     imageHistoryLimit: 10,
-    imageWarningSize: 5, // MB
+    imageWarningSize: 50, // MB
     stateSaveLimit: 100, // MB
-    imageProcessingMethod: "base64",
+    imageProcessingMethod: "path",
+    imageOutputNamingMode: "original",
+    imageOutputFixedPrefix: "moonshine",
+    imageBrushDefault: { ...DEFAULT_IMAGE_BRUSH },
+    videoBrushDefault: { ...DEFAULT_VIDEO_BRUSH },
   },
+  ui: {
+    theme: "light",
+    buttonSize: "sm",
+    brandColors: { ...DEFAULT_BRAND_COLORS },
+    showWelcomeDialog: true,
+    confirmBeforeExit: true,
+    autoSaveInterval: 30000,
+  },
+  shortcuts: JSON.parse(JSON.stringify(SHORTCUT_DEFAULTS)),
   video: {
     maxFrameCount: 10000,
     frameExtractionFormat: "jpg",
@@ -87,6 +144,65 @@ const BUNDLED_RUNTIME_LOCK_FILE = ".prepare.lock";
 const BUNDLED_RUNTIME_LOCK_WAIT_MS = 300000;
 const BUNDLED_RUNTIME_LOCK_STALE_MS = 120000;
 let packagedIntegrityStatus = null;
+
+function normalizeShortcutKeys(keys = []) {
+  const normalized = Array.from(
+    new Set(
+      (Array.isArray(keys) ? keys : [])
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+        .map((item) => {
+          if (item === " " || item === "Space") return "Space";
+          if (item === "Control") return "Ctrl";
+          return item.length === 1 ? item.toUpperCase() : item;
+        })
+    )
+  );
+
+  return normalized.sort((left, right) => {
+    const order = ["Ctrl", "Alt", "Shift", "Meta"];
+    const leftIndex = order.indexOf(left);
+    const rightIndex = order.indexOf(right);
+    if (leftIndex !== -1 || rightIndex !== -1) {
+      if (leftIndex === -1) return 1;
+      if (rightIndex === -1) return -1;
+      return leftIndex - rightIndex;
+    }
+    return left.localeCompare(right);
+  });
+}
+
+function normalizeShortcutConfig(shortcuts = {}) {
+  const nextConfig = {};
+
+  Object.entries(SHORTCUT_DEFAULTS).forEach(([actionId, defaultKeys]) => {
+    const normalizedKeys = normalizeShortcutKeys(shortcuts?.[actionId] || defaultKeys);
+    nextConfig[actionId] =
+      normalizedKeys.length === SHORTCUT_KEY_COUNTS[actionId]
+        ? normalizedKeys
+        : [...defaultKeys];
+  });
+
+  return nextConfig;
+}
+
+function validateShortcutConfig(shortcuts = {}) {
+  const normalized = normalizeShortcutConfig(shortcuts);
+  const seen = new Set();
+
+  return Object.entries(normalized).every(([actionId, keys]) => {
+    if (keys.length !== SHORTCUT_KEY_COUNTS[actionId]) {
+      return false;
+    }
+
+    const signature = keys.join("+");
+    if (seen.has(signature)) {
+      return false;
+    }
+    seen.add(signature);
+    return true;
+  });
+}
 
 function getResourcesRootPath() {
   return process.resourcesPath || path.dirname(app.getAppPath());
@@ -1005,6 +1121,18 @@ function mergeConfigWithDefaults(config = {}) {
       ...DEFAULT_CONFIG.advanced,
       ...(config.advanced || {}),
     },
+    ui: {
+      ...DEFAULT_CONFIG.ui,
+      ...(config.ui || {}),
+      brandColors: {
+        ...DEFAULT_CONFIG.ui.brandColors,
+        ...(config.ui?.brandColors || {}),
+      },
+    },
+    shortcuts: {
+      ...SHORTCUT_DEFAULTS,
+      ...(config.shortcuts || {}),
+    },
     video: {
       ...DEFAULT_CONFIG.video,
       ...(config.video || {}),
@@ -1072,6 +1200,16 @@ function sanitizeAppConfig(config = {}) {
   merged.general.backendProjectPath = normalizeStoredBackendProjectPath(
     merged.general.backendProjectPath
   );
+  merged.advanced.imageProcessingMethod =
+    merged.advanced?.imageProcessingMethod === "base64" ? "base64" : "path";
+  merged.advanced.imageOutputNamingMode = IMAGE_OUTPUT_NAMING_MODES.includes(
+    merged.advanced?.imageOutputNamingMode
+  )
+    ? merged.advanced.imageOutputNamingMode
+    : "original";
+  merged.advanced.imageOutputFixedPrefix =
+    String(merged.advanced?.imageOutputFixedPrefix || "moonshine").trim() || "moonshine";
+  merged.shortcuts = normalizeShortcutConfig(merged.shortcuts);
   if (app.isPackaged && isBundledBackendMode(merged.general.backendProjectPath)) {
     merged.general.modelPath = getPackagedModelsPath();
     merged.general.modelDir = "";
@@ -1086,7 +1224,14 @@ function sanitizeAppConfig(config = {}) {
 function validateConfig(config) {
   try {
     // Validate required sections
-    if (!config.general || !config.fileManagement || !config.advanced || !config.video) {
+    if (
+      !config.general ||
+      !config.fileManagement ||
+      !config.advanced ||
+      !config.ui ||
+      !config.shortcuts ||
+      !config.video
+    ) {
       return false;
     }
 
@@ -1116,6 +1261,17 @@ function validateConfig(config) {
       config.advanced?.imageProcessingMethod &&
       !["base64", "path"].includes(config.advanced.imageProcessingMethod)
     ) {
+      return false;
+    }
+
+    if (
+      config.advanced?.imageOutputNamingMode &&
+      !IMAGE_OUTPUT_NAMING_MODES.includes(config.advanced.imageOutputNamingMode)
+    ) {
+      return false;
+    }
+
+    if (!String(config.advanced?.imageOutputFixedPrefix || "").trim()) {
       return false;
     }
 
@@ -1163,6 +1319,10 @@ function validateConfig(config) {
         config.video.failureRetentionCount < 1 ||
         config.video.failureRetentionCount > 50)
     ) {
+      return false;
+    }
+
+    if (!validateShortcutConfig(config.shortcuts)) {
       return false;
     }
     return true;
@@ -2668,6 +2828,56 @@ ipcMain.handle("execute-command", async (event, { command, cwd }) => {
     return {
       success: true,
       output: stdout || stderr,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message,
+    };
+  }
+});
+
+ipcMain.handle("show-item-in-folder", async (event, { filePath }) => {
+  try {
+    if (!filePath || typeof filePath !== "string") {
+      return {
+        success: false,
+        error: "缺少有效的文件路径",
+      };
+    }
+
+    const normalizedPath = path.normalize(filePath);
+    const targetExists = fs.existsSync(normalizedPath);
+    const targetStats = targetExists ? fs.statSync(normalizedPath) : null;
+    const isDirectoryTarget = Boolean(targetStats?.isDirectory());
+    const targetDirectory = isDirectoryTarget ? normalizedPath : path.dirname(normalizedPath);
+
+    if (!fs.existsSync(targetDirectory)) {
+      return {
+        success: false,
+        error: `目标路径不存在: ${normalizedPath}`,
+      };
+    }
+
+    if (isDirectoryTarget) {
+      const openError = await shell.openPath(normalizedPath);
+      return {
+        success: openError === "",
+        error: openError || undefined,
+      };
+    }
+
+    if (targetExists) {
+      shell.showItemInFolder(normalizedPath);
+      return {
+        success: true,
+      };
+    }
+
+    const openError = await shell.openPath(targetDirectory);
+    return {
+      success: openError === "",
+      error: openError || undefined,
     };
   } catch (error) {
     return {

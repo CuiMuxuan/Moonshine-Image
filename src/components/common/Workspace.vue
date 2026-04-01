@@ -1,53 +1,29 @@
 <!-- eslint-disable vue/multi-word-component-names -->
 <template>
-  <div
-    class="workspace-shell relative"
-    :class="{ 'workspace-shell--checkerboard': checkerboard }"
-  >
-    <div
-      v-if="checkerboard"
-      class="workspace-grid-shadow-layer"
-      aria-hidden="true"
-    ></div>
+  <div class="workspace-shell relative" :class="{ 'workspace-shell--checkerboard': checkerboard }">
+    <div v-if="checkerboard" class="workspace-grid-shadow-layer" aria-hidden="true"></div>
     <div class="workspace-content-layer">
       <slot v-if="hasContent" />
       <div v-else class="workspace-empty-state">
-      <div class="workspace-empty-content">
-        <!-- Logo 和声明标题的容器 -->
-        <div class="workspace-logo-wrap column items-center">
-          <!-- Logo -->
-          <q-img
-            :src="appAvatarImage"
-            style="width: 128px; height: 128px; border-radius: 50%"
-            class="q-mb-sm"
-          />
-
-          <!-- 声明标题 - 定位在LOGO下方并部分遮挡 -->
-          <div
-            class="workspace-disclaimer-tag text-h5 text-negative text-weight-bold"
-            style="position: absolute; bottom: 10px; width: 100%; text-align: center; padding: 2px 15px; border-radius: 4px; z-index: 10;"
-          >
-            声明
-          </div>
-        </div>
-
-        <!-- 免责声明内容 -->
-        <q-card dark class="disclaimer-card q-pa-md">
-          <q-card-section>
-            <div class="text-warning">
-              <p>1.使用者对本项目的使用由使用者自行决定，并自行承担风险。作者对使用者使用本项目所产生的任何损失、责任、或风险概不负责。</p>
-              <p>2.本项目的作者提供的代码和功能是基于现有知识和技术开发的成果。作者尽力确保代码的正确性和安全性，但不保证代码完全没有错误或缺陷。</p>
-              <p>3.使用者在使用本项目时必须严格遵守GNU General Public License v3.0的要求，并在适当的地方注明使用了GPLv3的代码。</p>
-              <p>4.使用者在任何情况下均不得将本项目的作者、贡献者或其他相关方与使用者的使用行为联系起来，或要求其对使用者使用本项目所产生的任何损失或损害负责。</p>
-              <p>5.使用者在使用本项目的代码和功能时，必须自行研究相关法律法规，并确保其使用行为合法合规。任何因违反法律法规而导致的法律责任和风险，均由使用者自行承担。</p>
-              <p class="text-negative">6.本项目为基于GPLv3协议的开源项目，作者不会提供本项目的付费版本。</p>
-              <p>7.基于本项目进行的任何二次开发、修改或编译的程序与原创作者无关，原创作者不承担与二次开发行为或其结果相关的任何责任，使用者应自行对因二次开发可能带来的各种情况负全部责任。</p>
-              <p>在使用本项目的代码和功能之前，请您认真考虑并接受以上免责声明。</p>
-              <p>如果您对上述声明有任何疑问或不同意，请不要使用本项目的代码和功能。</p>
-              <p>如果您使用了本项目的代码和功能，则视为您已完全理解并接受上述免责声明，并自愿承担使用本项目的一切风险和后果。</p>
+        <div class="workspace-empty-content">
+          <div class="workspace-logo-wrap column items-center">
+            <q-img :src="appAvatarImage" style="width: 148px; height: 148px; border-radius: 50%" class="q-mb-sm" />
+            <div class="workspace-disclaimer-tag text-h5 text-negative text-weight-bold">
+              声明
             </div>
-          </q-card-section>
-        </q-card>
+          </div>
+
+          <q-card dark class="disclaimer-card q-pa-md">
+            <q-card-section class="text-warning">
+              <p>1. 本项目仅供学习与研究使用，使用者需自行判断用途并承担全部风险。</p>
+              <p>2. 作者会尽力保证代码的可用性与安全性，但不对任何直接或间接损失承担责任。</p>
+              <p>3. 使用、修改、分发本项目时，请遵守 GPLv3 及相关开源协议要求。</p>
+              <p>4. 使用者应自行确认当地法律法规与平台规则，确保实际使用行为合法合规。</p>
+              <p>5. 基于本项目进行的二次开发、修改或编译结果，由二次开发者自行负责。</p>
+              <p class="text-negative">6. 本项目基于 GPLv3 开源协议发布，作者不会提供本项目的付费版本。</p>
+              <p>继续使用本项目即表示你已阅读并接受以上说明。</p>
+            </q-card-section>
+          </q-card>
         </div>
       </div>
     </div>
@@ -55,24 +31,22 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
-
-import appAvatarImage from "src/assets/branding/moonshine128x128.jpg";
+import { computed } from "vue";
+import { resolvePublicAssetPath } from "src/utils/publicAsset";
 
 const props = defineProps({
   selectedFile: {
     type: Object,
-    default: null
+    default: null,
   },
   checkerboard: {
     type: Boolean,
-    default: false
-  }
-})
+    default: false,
+  },
+});
 
-const hasContent = computed(() => {
-  return !!props.selectedFile
-})
+const appAvatarImage = resolvePublicAssetPath("images/moonshine300x300.jpg");
+const hasContent = computed(() => Boolean(props.selectedFile));
 </script>
 
 <style scoped>
@@ -137,7 +111,6 @@ const hasContent = computed(() => {
   min-width: 0;
   min-height: 0;
   padding: 24px;
-  box-sizing: border-box;
   overflow: hidden;
   color: #6b7280;
 }
@@ -155,14 +128,22 @@ const hasContent = computed(() => {
 
 .workspace-logo-wrap {
   position: relative;
-  width: 150px;
-  height: 150px;
+  width: 170px;
+  height: 170px;
   flex: 0 0 auto;
   margin-bottom: 24px;
 }
 
 .workspace-disclaimer-tag {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 8px;
+  padding: 2px 15px;
+  text-align: center;
+  border-radius: 4px;
   background: rgba(255, 255, 255, 0.6);
+  z-index: 10;
 }
 
 :global(body.body--dark) .workspace-empty-state {
@@ -176,9 +157,8 @@ const hasContent = computed(() => {
 .disclaimer-card {
   width: min(100%, 800px);
   max-width: 800px;
-  max-height: min(60vh, calc(100% - 190px));
+  max-height: min(60vh, calc(100% - 210px));
   overflow-y: auto;
-  flex: 0 1 auto;
   border-radius: 8px;
   box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
 }
@@ -186,19 +166,5 @@ const hasContent = computed(() => {
 .disclaimer-card p {
   margin-bottom: 12px;
   line-height: 1.5;
-}
-
-@media (max-height: 820px) {
-  .workspace-empty-state {
-    padding: 20px;
-  }
-
-  .workspace-logo-wrap {
-    margin-bottom: 18px;
-  }
-
-  .disclaimer-card {
-    max-height: calc(100% - 170px);
-  }
 }
 </style>

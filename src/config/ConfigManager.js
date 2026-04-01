@@ -1,6 +1,13 @@
+import {
+  createDefaultShortcuts,
+  normalizeShortcutConfig,
+  validateShortcutConfig,
+} from "src/utils/shortcutConfig";
+
 const DEFAULT_THEME_MODE = "light";
 const DEFAULT_UI_BUTTON_SIZE = "sm";
 const UI_BUTTON_SIZE_OPTIONS = Object.freeze(["xs", "sm", "md"]);
+const IMAGE_OUTPUT_NAMING_MODES = Object.freeze(["original", "prefixUuid"]);
 
 const DEFAULT_BRAND_COLORS = Object.freeze({
   primary: "#7758c4",
@@ -21,7 +28,8 @@ const DEFAULT_VIDEO_BRUSH = Object.freeze({
 });
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
-const isValidHexColor = (value) => /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(value || "").trim());
+const isValidHexColor = (value) =>
+  /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(value || "").trim());
 
 const normalizeHexColor = (value, fallback) => {
   const candidate = String(value || "").trim();
@@ -42,6 +50,7 @@ const normalizeBrandColors = (colors = {}) => ({
 
 const normalizeThemeMode = (theme) =>
   ["light", "dark"].includes(theme) ? theme : DEFAULT_THEME_MODE;
+
 const normalizeButtonSize = (value) =>
   UI_BUTTON_SIZE_OPTIONS.includes(value) ? value : DEFAULT_UI_BUTTON_SIZE;
 
@@ -53,9 +62,10 @@ export {
   DEFAULT_THEME_MODE,
   DEFAULT_UI_BUTTON_SIZE,
   DEFAULT_VIDEO_BRUSH,
+  IMAGE_OUTPUT_NAMING_MODES,
   normalizeBrandColors,
-  normalizeButtonSize,
   normalizeBrushConfig,
+  normalizeButtonSize,
   normalizeThemeMode,
   UI_BUTTON_SIZE_OPTIONS,
 };
@@ -86,7 +96,9 @@ export class ConfigManager {
       maxConcurrentTasks: 3,
       enableDebugMode: false,
       logLevel: "info",
-      imageProcessingMethod: "base64",
+      imageProcessingMethod: "path",
+      imageOutputNamingMode: "original",
+      imageOutputFixedPrefix: "moonshine",
       imageBrushDefault: { ...DEFAULT_IMAGE_BRUSH },
       videoBrushDefault: { ...DEFAULT_VIDEO_BRUSH },
     },
@@ -98,6 +110,7 @@ export class ConfigManager {
       confirmBeforeExit: true,
       autoSaveInterval: 30000,
     },
+    shortcuts: createDefaultShortcuts(),
     video: {
       maxFrameCount: 10000,
       frameExtractionFormat: "jpg",
@@ -127,21 +140,21 @@ export class ConfigManager {
       config.general.backendPort < 1024 ||
       config.general.backendPort > 65535
     ) {
-      errors.push("后端端口必须在 1024-65535 范围内");
+      errors.push("后端端口必须在 1024-65535 范围内。");
     }
 
     if (!["cuda", "cpu"].includes(config.general?.launchMode)) {
-      errors.push("启动方式必须是 cuda 或 cpu");
+      errors.push("启动方式必须是 cuda 或 cpu。");
     }
 
     if (
       config.general?.backendProjectPath &&
       typeof config.general.backendProjectPath !== "string"
     ) {
-      errors.push("后端项目路径必须是字符串");
+      errors.push("后端项目路径必须是字符串。");
     }
 
-    const numFields = [
+    const numberFields = [
       {
         value: config.advanced?.imageHistoryLimit,
         name: "图片历史记录上限",
@@ -159,12 +172,12 @@ export class ConfigManager {
       },
     ];
 
-    numFields.forEach((field) => {
-      if (typeof field.value !== "number" || field.value < field.min) {
-        errors.push(`${field.name}必须大于等于 ${field.min}`);
+    numberFields.forEach((field) => {
+      if (typeof field.value !== "number" || Number.isNaN(field.value) || field.value < field.min) {
+        errors.push(`${field.name}必须大于等于 ${field.min}。`);
       }
       if (field.max && field.value > field.max) {
-        errors.push(`${field.name}不能超过 ${field.max}`);
+        errors.push(`${field.name}不能超过 ${field.max}。`);
       }
     });
 
@@ -172,44 +185,55 @@ export class ConfigManager {
       config.advanced?.imageProcessingMethod &&
       !["base64", "path"].includes(config.advanced.imageProcessingMethod)
     ) {
-      errors.push("图片处理方式必须是 base64 或 path");
+      errors.push("图片处理方式必须是 base64 或 path。");
+    }
+
+    if (
+      config.advanced?.imageOutputNamingMode &&
+      !IMAGE_OUTPUT_NAMING_MODES.includes(config.advanced.imageOutputNamingMode)
+    ) {
+      errors.push("图片输出文件命名方式无效。");
+    }
+
+    if (!String(config.advanced?.imageOutputFixedPrefix || "").trim()) {
+      errors.push("图片输出固定前缀不能为空。");
     }
 
     if (!["light", "dark"].includes(config.ui?.theme)) {
-      errors.push("主题模式必须是 light 或 dark");
+      errors.push("主题模式必须是 light 或 dark。");
     }
 
     if (!UI_BUTTON_SIZE_OPTIONS.includes(config.ui?.buttonSize)) {
-      errors.push("按钮大小必须是 md、sm 或 xs");
+      errors.push("按钮大小必须是 xs、sm 或 md。");
     }
 
     ["primary", "secondary", "accent"].forEach((key) => {
       if (!isValidHexColor(config.ui?.brandColors?.[key])) {
-        errors.push(`主题颜色 ${key} 必须是有效的 Hex 颜色`);
+        errors.push(`主题颜色 ${key} 必须是有效的 Hex 颜色。`);
       }
     });
 
     [
-      { value: config.advanced?.imageBrushDefault, name: "图片默认笔刷" },
-      { value: config.advanced?.videoBrushDefault, name: "视频默认笔刷" },
+      { value: config.advanced?.imageBrushDefault, name: "图片默认画笔" },
+      { value: config.advanced?.videoBrushDefault, name: "视频默认画笔" },
     ].forEach(({ value, name }) => {
       if (!value || typeof value !== "object") {
-        errors.push(`${name}配置缺失`);
+        errors.push(`${name}配置缺失。`);
         return;
       }
 
       if (typeof value.size !== "number" || Number.isNaN(value.size) || value.size < 1) {
-        errors.push(`${name}的大小必须大于等于 1`);
+        errors.push(`${name}的大小必须大于等于 1。`);
       }
 
       if (typeof value.alpha !== "number" || Number.isNaN(value.alpha)) {
-        errors.push(`${name}的透明度必须是数字`);
+        errors.push(`${name}的透明度必须是数字。`);
       } else if (value.alpha < 0.05 || value.alpha > 1) {
-        errors.push(`${name}的透明度必须在 0.05-1 范围内`);
+        errors.push(`${name}的透明度必须在 0.05-1 范围内。`);
       }
 
       if (!isValidHexColor(value.color)) {
-        errors.push(`${name}的颜色必须是有效的 Hex 颜色`);
+        errors.push(`${name}的颜色必须是有效的 Hex 颜色。`);
       }
     });
 
@@ -230,11 +254,11 @@ export class ConfigManager {
     videoFields.forEach((field) => {
       const value = video[field.key];
       if (typeof value !== "number" || Number.isNaN(value)) {
-        errors.push(`${field.name}必须是数字`);
+        errors.push(`${field.name}必须是数字。`);
         return;
       }
       if (value < field.min || value > field.max) {
-        errors.push(`${field.name}必须在 ${field.min}-${field.max} 范围内`);
+        errors.push(`${field.name}必须在 ${field.min}-${field.max} 范围内。`);
       }
     });
 
@@ -244,8 +268,10 @@ export class ConfigManager {
         String(video.frameExtractionFormat).toLowerCase()
       )
     ) {
-      errors.push("视频拆帧格式仅支持 jpg、jpeg、png 或 webp");
+      errors.push("视频拆帧格式仅支持 jpg、jpeg、png 或 webp。");
     }
+
+    errors.push(...validateShortcutConfig(config.shortcuts));
 
     return errors;
   }
@@ -266,6 +292,15 @@ export class ConfigManager {
 
     merged.advanced = {
       ...merged.advanced,
+      imageProcessingMethod:
+        merged.advanced?.imageProcessingMethod === "base64" ? "base64" : "path",
+      imageOutputNamingMode: IMAGE_OUTPUT_NAMING_MODES.includes(
+        merged.advanced?.imageOutputNamingMode
+      )
+        ? merged.advanced.imageOutputNamingMode
+        : "original",
+      imageOutputFixedPrefix:
+        String(merged.advanced?.imageOutputFixedPrefix || "moonshine").trim() || "moonshine",
       imageBrushDefault: normalizeBrushConfig(
         merged.advanced?.imageBrushDefault,
         DEFAULT_IMAGE_BRUSH
@@ -275,6 +310,8 @@ export class ConfigManager {
         DEFAULT_VIDEO_BRUSH
       ),
     };
+
+    merged.shortcuts = normalizeShortcutConfig(merged.shortcuts);
 
     return merged;
   }

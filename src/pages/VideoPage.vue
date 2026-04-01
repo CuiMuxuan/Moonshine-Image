@@ -12,6 +12,7 @@
               :export-size-text="exportSizeText"
               :computed-batch-size="computedBatchSize"
               :can-run="canRun"
+              :can-open-output="canOpenOutput"
               :is-processing="isProcessing"
               :processing-progress="processingProgress"
               :processing-message="processingMessage"
@@ -34,6 +35,7 @@
               <CanvasPlayer ref="canvasPlayerRef" class="player-canvas">
                 <template #overlay>
                   <VideoPreviewOverlay
+                    ref="videoOverlayRef"
                     v-if="videoStore.hasVideoFile && videoStore.displayWidth && videoStore.displayHeight"
                     :display-width="videoStore.displayWidth"
                     :display-height="videoStore.displayHeight"
@@ -216,8 +218,6 @@
              @time-update="handleTimelineTimeUpdate"
              @scroll="handleTimelineScroll"
              @click-action="handleTimelineActionClick"
-             @action-move-start="handleTimelineActionMoveStart"
-             @action-moving="handleTimelineActionMoving"
              @action-move-end="handleTimelineActionMoveEnd"
              @action-resize-end="handleTimelineActionResizeEnd"
            >
@@ -246,6 +246,7 @@
 <script setup>
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useQuasar } from "quasar";
+import { onBeforeRouteLeave } from "vue-router";
 import TimelineEditor from "vue-timeline-editor";
 import "vue-timeline-editor/dist/vue-timeline-editor.css";
 import {
@@ -257,8 +258,10 @@ import {
 } from "@webav/av-cliper";
 
 import { useConfigStore } from "src/stores/config";
+import { useConfiguredShortcuts } from "src/composables/useConfiguredShortcuts";
 import { useVideoManagerStore } from "src/stores/videoManager";
 import { submitVideoBatchInpaint } from "src/services/VideoProcessingService";
+import { MASK_TOOL_MODES } from "src/utils/maskTool";
 import {
   formatSeconds,
   getVideoCenterAnchor,
@@ -277,11 +280,13 @@ const $q = useQuasar();
 const videoStore = useVideoManagerStore();
 const configStore = useConfigStore();
 const loadingControl = inject("loadingControl", null);
+const backendRunningState = inject("backendRunning", ref(false));
 
 const playerContainer = ref(null);
 const canvasPlayerRef = ref(null);
 const timelineRef = ref(null);
 const timelineViewportRef = ref(null);
+const videoOverlayRef = ref(null);
 
 const currentProgress = ref(0);
 const isDragging = ref(false);
@@ -300,21 +305,39 @@ const timelineZoomPercent = ref(0);
 let syncingTimelineFromStore = false;
 let processingEtaTickerId = null;
 let processingBatchMessageContext = null;
-let timelineRangeMoveState = null;
-
+let preserveLastOutputPathOnNextVideoChange = false;
 const playbackRates = [0.5, 1, 1.5, 2, 3];
 const timelineScaleWidth = 160;
 const timelineStartLeft = 20;
 const timelineZoomStep = 5;
+const VIDEO_READY_TIMEOUT_MS = 30000;
 const PROCESSING_ETA_TICK_MS = 250;
 const PROCESSING_FINAL_STAGE_PLACEHOLDER_SECONDS = 5;
-const TIMELINE_BOUNDARY_TOLERANCE = 0.0005;
+const PROCESSING_ETA_MODES = {
+  DYNAMIC: "dynamic",
+  FREEZE: "freeze",
+};
+const VIDEO_MOUNT_LOADING_PROGRESS = Object.freeze({
+  PREPARE: 0.18,
+  PREVIEW: 0.62,
+  TIMELINE: 0.88,
+  FINALIZE: 0.97,
+});
 
 const processingEtaState = {
   firstResponseSeconds: null,
   estimateBaseSeconds: null,
   estimateFloorSeconds: 0,
   estimateStartedAtMs: 0,
+  frozenSeconds: null,
+  progressAwareCapSeconds: null,
+  progressAwareFloorSeconds: null,
+  progressAwareStageBaseSeconds: null,
+  sessionStartedAtMs: 0,
+};
+const videoMountLoadingState = {
+  token: 0,
+  externallyManaged: false,
 };
 
 const timelineEffects = {
@@ -337,6 +360,12 @@ const exportFps = computed(() => {
 const historyEntries = computed(() => [...videoStore.videoHistory].reverse());
 const canReplaceCurrentSource = computed(
   () => Boolean(lastOutputPath.value) && processingSucceeded.value
+);
+const canOpenOutput = computed(
+  () =>
+    Boolean(lastOutputPath.value) &&
+    (processingSucceeded.value ||
+      (Boolean(videoStore.currentSourceIsReplacement) && videoStore.videoHistory.length > 0))
 );
 
 const proxyDimensions = computed(() => {
@@ -377,6 +406,7 @@ const timelineOptions = computed(() => ({
   scaleWidth: timelineScaleWidth,
   startLeft: timelineStartLeft,
   rowHeight: 44,
+  minScaleCount: 1,
   duration: Math.max(0.1, videoStore.videoDuration || 0.1),
   gridSnap: true,
   dragLine: true,
@@ -437,6 +467,135 @@ const canRun = computed(
     videoStore.videoDuration > 0 &&
     videoStore.masks.length > 0
 );
+const isVideoDrawingShortcutReady = computed(
+  () =>
+    Boolean(
+      videoStore.hasVideoFile &&
+        videoStore.selectedMaskId &&
+        !isProcessing.value &&
+        videoOverlayRef.value?.isReady?.()
+    )
+);
+const canUndoVideoMaskShortcut = computed(
+  () => Boolean(isVideoDrawingShortcutReady.value && videoStore.canUndoSelectedMaskDraw)
+);
+
+const setVideoToolMode = (mode) => {
+  if (!isVideoDrawingShortcutReady.value) {
+    return false;
+  }
+
+  videoStore.updateMaskTool({
+    mode,
+  });
+  return true;
+};
+
+const restoreVideoShortcutSession = (session = {}) => {
+  if (!isVideoDrawingShortcutReady.value) {
+    return;
+  }
+
+  videoStore.updateMaskTool({
+    drawingEnabled:
+      session.videoDrawingEnabled ?? videoStore.maskTool.drawingEnabled,
+    mode: session.videoToolMode ?? videoStore.maskTool.mode,
+  });
+};
+
+const handleVideoShortcutPress = (actionId) => {
+  switch (actionId) {
+    case "drawingUndo":
+      if (canUndoVideoMaskShortcut.value) {
+        videoStore.undoSelectedMaskDraw();
+      }
+      break;
+    case "drawingResetView":
+      if (isVideoDrawingShortcutReady.value) {
+        videoStore.resetSelectedMaskTransformAtCurrentTime();
+      }
+      break;
+    case "drawingToggle":
+      if (isVideoDrawingShortcutReady.value) {
+        videoStore.updateMaskTool({
+          drawingEnabled: !videoStore.maskTool.drawingEnabled,
+        });
+      }
+      break;
+    case "drawingBrush":
+      setVideoToolMode(MASK_TOOL_MODES.DRAW);
+      break;
+    case "drawingRect":
+      setVideoToolMode(MASK_TOOL_MODES.RECT);
+      break;
+    case "drawingErase":
+      setVideoToolMode(MASK_TOOL_MODES.ERASE);
+      break;
+    default:
+      break;
+  }
+};
+
+const handleVideoShortcutHoldStart = (actionId) => {
+  switch (actionId) {
+    case "drawingHoldBrush":
+      if (isVideoDrawingShortcutReady.value) {
+        videoStore.updateMaskTool({
+          drawingEnabled: true,
+          mode: MASK_TOOL_MODES.DRAW,
+        });
+      }
+      break;
+    case "drawingHoldRect":
+      if (isVideoDrawingShortcutReady.value) {
+        videoStore.updateMaskTool({
+          drawingEnabled: true,
+          mode: MASK_TOOL_MODES.RECT,
+        });
+      }
+      break;
+    case "drawingHoldErase":
+      if (isVideoDrawingShortcutReady.value) {
+        videoStore.updateMaskTool({
+          drawingEnabled: true,
+          mode: MASK_TOOL_MODES.ERASE,
+        });
+      }
+      break;
+    default:
+      break;
+  }
+};
+
+const handleVideoShortcutHoldEnd = (actionId, session) => {
+  switch (actionId) {
+    case "drawingHoldBrush":
+    case "drawingHoldRect":
+    case "drawingHoldErase":
+      restoreVideoShortcutSession(session);
+      break;
+    default:
+      break;
+  }
+};
+
+useConfiguredShortcuts({
+  enabled: computed(() => true),
+  shortcutConfig: computed(() => configStore.config.shortcuts),
+  createSessionContext: () => ({
+    videoToolMode: videoStore.maskTool.mode,
+    videoDrawingEnabled: videoStore.maskTool.drawingEnabled,
+  }),
+  onPress: (actionId) => {
+    handleVideoShortcutPress(actionId);
+  },
+  onHoldStart: (actionId) => {
+    handleVideoShortcutHoldStart(actionId);
+  },
+  onHoldEnd: (actionId, session) => {
+    handleVideoShortcutHoldEnd(actionId, session);
+  },
+});
 
 const getMimeTypeForPath = (filePath) => {
   const normalized = String(filePath || "").toLowerCase();
@@ -636,7 +795,7 @@ const loadVideoFileFromPath = async (filePath) => {
   return file;
 };
 
-const waitForVideoReady = async (timeoutMs = 8000) => {
+const waitForVideoReady = async (timeoutMs = VIDEO_READY_TIMEOUT_MS) => {
   await nextTick();
   if (canvasPlayerRef.value?.waitForReady) {
     await canvasPlayerRef.value.waitForReady(timeoutMs);
@@ -672,91 +831,82 @@ const waitForVideoReady = async (timeoutMs = 8000) => {
   });
 };
 
-const resetTimelineRangeMoveState = () => {
-  timelineRangeMoveState = null;
+const beginVideoMountLoading = ({
+  message = "正在读取视频信息",
+  progress = VIDEO_MOUNT_LOADING_PROGRESS.PREPARE,
+  external = false,
+} = {}) => {
+  const token = ++videoMountLoadingState.token;
+  videoMountLoadingState.externallyManaged = external;
+  updateGlobalLoadingOverlay(message, progress);
+  return token;
 };
 
-const notifyTimelineRangeOverflow = (direction) => {
-  const message =
-    direction === "start"
-      ? "蒙版区间不能早于视频开始时间。"
-      : "蒙版区间不能超出视频结束时间。";
+const isActiveVideoMountLoading = (token) => token === videoMountLoadingState.token;
 
-  $q.notify({
-    type: "warning",
-    message,
-    timeout: 2500,
-  });
+const updateVideoMountLoading = (token, message, progress = null) => {
+  if (!isActiveVideoMountLoading(token)) {
+    return false;
+  }
+
+  updateGlobalLoadingOverlay(message, progress);
+  return true;
 };
 
-const handleTimelineActionMoveStart = (params) => {
-  const action = params?.action;
-  if (action?.data?.kind !== "mask-range") {
-    resetTimelineRangeMoveState();
+const finishVideoMountLoading = (token, { forceHide = false } = {}) => {
+  if (!isActiveVideoMountLoading(token)) {
     return;
   }
 
-  timelineRangeMoveState = {
-    maskId: action.data.maskId,
-    lastStart: Number(action.start || 0),
-    lastEnd: Number(action.end || 0),
-    boundaryDirection: "",
-  };
-};
-
-const handleTimelineActionMoving = (params) => {
-  const action = params?.action;
-  if (
-    !timelineRangeMoveState ||
-    action?.data?.kind !== "mask-range" ||
-    action.data.maskId !== timelineRangeMoveState.maskId
-  ) {
-    return;
+  const shouldHide = forceHide || !videoMountLoadingState.externallyManaged;
+  videoMountLoadingState.externallyManaged = false;
+  if (shouldHide) {
+    hideGlobalLoadingOverlay();
   }
-
-  const start = Number(action.start || 0);
-  const end = Number(action.end || 0);
-  const sameRange =
-    Math.abs(start - timelineRangeMoveState.lastStart) <= TIMELINE_BOUNDARY_TOLERANCE &&
-    Math.abs(end - timelineRangeMoveState.lastEnd) <= TIMELINE_BOUNDARY_TOLERANCE;
-  const videoEnd = Math.max(Number(videoStore.videoDuration || 0), 0);
-  const hitStartBoundary = start <= TIMELINE_BOUNDARY_TOLERANCE;
-  const hitEndBoundary = end >= videoEnd - TIMELINE_BOUNDARY_TOLERANCE;
-
-  if (sameRange && (hitStartBoundary || hitEndBoundary)) {
-    timelineRangeMoveState.boundaryDirection = hitStartBoundary ? "start" : "end";
-  } else if (!hitStartBoundary && !hitEndBoundary) {
-    timelineRangeMoveState.boundaryDirection = "";
-  }
-
-  timelineRangeMoveState.lastStart = start;
-  timelineRangeMoveState.lastEnd = end;
 };
 
 const buildTimelineRows = () => {
   const markerDuration = keyframeMarkerDuration.value;
-  return videoStore.masks.map((mask) => {
+  return videoStore.masks.flatMap((mask) => {
     const userKeyframes = sortMaskKeyframes(mask.keyframes).filter(
       (keyframe) => keyframe.type === MASK_KEYFRAME_TYPES.USER
     );
-    const actions = [
-      {
-        id: `range-${mask.id}`,
-        start: mask.startTime,
-        end: mask.endTime,
-        effectId: "effect-mask-range",
-        movable: true,
-        flexible: true,
-        minStart: 0,
-        maxEnd: Math.max(videoStore.videoDuration || 0, 0),
-        selected: mask.id === videoStore.selectedMaskId,
-        data: {
-          kind: "mask-range",
-          maskId: mask.id,
-          label: mask.name,
+
+    const rangeRow = {
+      id: `range-row-${mask.id}`,
+      rowHeight: 44,
+      classNames: ["timeline-row-range"],
+      selected: mask.id === videoStore.selectedMaskId,
+      actions: [
+        {
+          id: `range-${mask.id}`,
+          start: mask.startTime,
+          end: mask.endTime,
+          effectId: "effect-mask-range",
+          movable: true,
+          flexible: true,
+          minStart: 0,
+          maxEnd: Math.max(videoStore.videoDuration || 0, 0),
+          selected: mask.id === videoStore.selectedMaskId,
+          data: {
+            kind: "mask-range",
+            maskId: mask.id,
+            label: mask.name,
+            color: mask.displayColor,
+          },
         },
-      },
-      ...userKeyframes.map((keyframe) => ({
+      ],
+    };
+
+    if (userKeyframes.length === 0) {
+      return [rangeRow];
+    }
+
+    const keyframeRow = {
+      id: `keyframe-row-${mask.id}`,
+      rowHeight: 20,
+      classNames: ["timeline-row-keyframes"],
+      actions: userKeyframes.map((keyframe) => ({
         id: `keyframe-${mask.id}-${keyframe.id}`,
         start: keyframe.time,
         end: keyframe.time + markerDuration,
@@ -769,15 +919,15 @@ const buildTimelineRows = () => {
           maskId: mask.id,
           keyframeId: keyframe.id,
           label: formatSeconds(keyframe.time),
+          color: "transparent",
         },
       })),
-    ];
-
-    return {
-      id: mask.id,
-      rowHeight: 44,
-      actions,
     };
+
+    return [
+      rangeRow,
+      keyframeRow,
+    ];
   });
 };
 
@@ -798,8 +948,12 @@ watch(
 watch(
   () => videoStore.videoFile,
   async (file) => {
+    const shouldPreserveLastOutputPath = preserveLastOutputPathOnNextVideoChange;
+    preserveLastOutputPathOnNextVideoChange = false;
     processingSucceeded.value = false;
-    lastOutputPath.value = "";
+    if (!shouldPreserveLastOutputPath) {
+      lastOutputPath.value = "";
+    }
 
     if (!file) {
       timelineRows.value = [];
@@ -808,16 +962,63 @@ watch(
       timelineScrollLeft.value = 0;
       timelineViewportWidth.value = 0;
       videoStore.setSourceFrameRate(30);
+      if (!videoMountLoadingState.externallyManaged) {
+        hideGlobalLoadingOverlay();
+      }
       return;
     }
 
-    sourceFps.value = await estimateFpsFromVideo(file);
-    videoStore.setSourceFrameRate(sourceFps.value);
-    timelineZoomPercent.value = 0;
-    timelineScrollLeft.value = 0;
-    await nextTick();
-    updateLayoutMetrics();
-    syncTimelineViewport();
+    const mountToken = videoMountLoadingState.externallyManaged
+      ? videoMountLoadingState.token
+      : beginVideoMountLoading({
+          message: "正在读取视频信息",
+          progress: VIDEO_MOUNT_LOADING_PROGRESS.PREPARE,
+        });
+
+    try {
+      sourceFps.value = await estimateFpsFromVideo(file);
+      if (!isActiveVideoMountLoading(mountToken)) return;
+
+      videoStore.setSourceFrameRate(sourceFps.value);
+      timelineZoomPercent.value = 0;
+      timelineScrollLeft.value = 0;
+
+      updateVideoMountLoading(
+        mountToken,
+        "正在挂载视频预览",
+        VIDEO_MOUNT_LOADING_PROGRESS.PREVIEW
+      );
+      await waitForVideoReady(VIDEO_READY_TIMEOUT_MS);
+      if (!isActiveVideoMountLoading(mountToken)) return;
+
+      updateVideoMountLoading(
+        mountToken,
+        "正在初始化时间轴",
+        VIDEO_MOUNT_LOADING_PROGRESS.TIMELINE
+      );
+      await nextTick();
+      updateLayoutMetrics();
+      syncTimelineViewport({ center: videoStore.currentTime > 0.0005 });
+      updateVideoMountLoading(
+        mountToken,
+        "正在完成页面准备",
+        VIDEO_MOUNT_LOADING_PROGRESS.FINALIZE
+      );
+    } catch (error) {
+      if (isActiveVideoMountLoading(mountToken)) {
+        console.warn("Failed to prepare video page:", error);
+        $q.notify({
+          type: "warning",
+          message: `视频加载可能未完成：${error.message}`,
+          position: "top",
+          timeout: 3000,
+        });
+      }
+    } finally {
+      if (isActiveVideoMountLoading(mountToken) && !videoMountLoadingState.externallyManaged) {
+        finishVideoMountLoading(mountToken);
+      }
+    }
   }
 );
 
@@ -990,31 +1191,18 @@ const commitTimelineRangeResize = async (action) => {
 
 const handleTimelineActionMoveEnd = (params) => {
   if (isProcessing.value) {
-    resetTimelineRangeMoveState();
     syncTimelineRowsFromStore();
     return;
   }
 
   const action = params?.action;
   if (action?.data?.kind !== "mask-range") {
-    resetTimelineRangeMoveState();
     syncTimelineRowsFromStore();
     return;
   }
 
   const mask = videoStore.getMaskById(action.data.maskId);
   if (!mask) {
-    resetTimelineRangeMoveState();
-    syncTimelineRowsFromStore();
-    return;
-  }
-
-  if (
-    timelineRangeMoveState?.maskId === mask.id &&
-    timelineRangeMoveState.boundaryDirection
-  ) {
-    notifyTimelineRangeOverflow(timelineRangeMoveState.boundaryDirection);
-    resetTimelineRangeMoveState();
     syncTimelineRowsFromStore();
     return;
   }
@@ -1028,7 +1216,6 @@ const handleTimelineActionMoveEnd = (params) => {
       timeout: 2500,
     });
   }
-  resetTimelineRangeMoveState();
   syncTimelineRowsFromStore();
 };
 
@@ -1050,6 +1237,12 @@ const handleTimelineActionResizeEnd = async (params) => {
 const replaceCurrentVideoSource = async () => {
   if (!canReplaceCurrentSource.value || !videoStore.videoFile) return;
 
+  const mountToken = beginVideoMountLoading({
+    message: "正在加载导出视频文件",
+    progress: 0.2,
+    external: true,
+  });
+
   try {
     const historyLimit = getConfiguredVideoHistoryLimit();
     if (videoStore.videoHistory.length >= historyLimit) {
@@ -1062,6 +1255,9 @@ const replaceCurrentVideoSource = async () => {
       uiState: captureVideoUiState(),
     });
     videoStore.pushHistoryEntry(currentEntry, historyLimit);
+
+    preserveLastOutputPathOnNextVideoChange = true;
+    updateVideoMountLoading(mountToken, "正在切换当前视频源", 0.44);
     await videoStore.setVideoFile(nextFile, {
       resetEditor: true,
       resetHistory: false,
@@ -1074,10 +1270,10 @@ const replaceCurrentVideoSource = async () => {
     timelineZoomPercent.value = 0;
     timelineScrollLeft.value = 0;
     processingSucceeded.value = false;
-    lastOutputPath.value = "";
     processingMessage.value = "";
 
-    await waitForVideoReady();
+    await waitForVideoReady(VIDEO_READY_TIMEOUT_MS);
+    updateVideoMountLoading(mountToken, "正在恢复预览位置", VIDEO_MOUNT_LOADING_PROGRESS.FINALIZE);
     await canvasPlayerRef.value?.seekTo(0);
     syncTimelineRowsFromStore();
   } catch (error) {
@@ -1087,10 +1283,18 @@ const replaceCurrentVideoSource = async () => {
       position: "top",
       timeout: 3000,
     });
+  } finally {
+    finishVideoMountLoading(mountToken, { forceHide: true });
   }
 };
 
 const restoreVideoHistory = async (entryId) => {
+  const mountToken = beginVideoMountLoading({
+    message: "正在恢复历史视频",
+    progress: 0.18,
+    external: true,
+  });
+
   try {
     const targetEntry = videoStore.videoHistory.find((item) => item.id === entryId);
     if (!targetEntry) return;
@@ -1129,7 +1333,7 @@ const restoreVideoHistory = async (entryId) => {
       sourceName: targetEntry.fileName || nextFile.name || "",
     });
 
-    await waitForVideoReady();
+    await waitForVideoReady(VIDEO_READY_TIMEOUT_MS);
 
     const restored = videoStore.restoreEditorSnapshot(targetEntry.snapshot, {
       preserveVideoInfo: true,
@@ -1138,7 +1342,8 @@ const restoreVideoHistory = async (entryId) => {
     lastOutputPath.value = "";
     processingMessage.value = "";
 
-    await waitForVideoReady();
+    updateVideoMountLoading(mountToken, "正在恢复历史编辑状态", 0.95);
+    await waitForVideoReady(VIDEO_READY_TIMEOUT_MS);
     await restoreVideoUiState(restored.uiState);
     const seekSucceeded = await canvasPlayerRef.value?.seekTo(
       Number(targetEntry.snapshot?.currentTime || 0)
@@ -1155,6 +1360,8 @@ const restoreVideoHistory = async (entryId) => {
       position: "top",
       timeout: 3000,
     });
+  } finally {
+    finishVideoMountLoading(mountToken, { forceHide: true });
   }
 };
 
@@ -1221,21 +1428,32 @@ const buildOutputVideoPath = async (sourceFile, sourcePath) => {
   return window.electron.ipcRenderer.joinPath(outputDir, outputName);
 };
 
-const applyProcessingUi = (message, progress = processingProgress.value) => {
-  processingMessage.value = message;
-  processingProgress.value = Math.max(0, Math.min(1, Number(progress || 0)));
+const withBackendProgressHint = (message = "") =>
+  backendRunningState?.value ? `${message}\n可打开后端管理页面查看进度` : message;
 
+const updateGlobalLoadingOverlay = (message, progress = null) => {
   if (loadingControl?.update) {
     loadingControl.update({
       message,
-      progress: processingProgress.value,
+      progress: typeof progress === "number" ? progress : null,
     });
   } else if (loadingControl?.show) {
     loadingControl.show({
       message,
-      progress: processingProgress.value,
+      progress: typeof progress === "number" ? progress : null,
     });
   }
+};
+
+const hideGlobalLoadingOverlay = () => {
+  loadingControl?.hide?.();
+};
+
+const applyProcessingUi = (message, progress = processingProgress.value) => {
+  const resolvedMessage = withBackendProgressHint(message);
+  processingMessage.value = resolvedMessage;
+  processingProgress.value = Math.max(0, Math.min(1, Number(progress || 0)));
+  updateGlobalLoadingOverlay(resolvedMessage, processingProgress.value);
 };
 
 const clearProcessingEtaTicker = () => {
@@ -1244,17 +1462,26 @@ const clearProcessingEtaTicker = () => {
   processingEtaTickerId = null;
 };
 
+const clearProgressAwareEtaState = () => {
+  processingEtaState.progressAwareCapSeconds = null;
+  processingEtaState.progressAwareFloorSeconds = null;
+  processingEtaState.progressAwareStageBaseSeconds = null;
+};
+
 const clearProcessingBatchMessageContext = () => {
   processingBatchMessageContext = null;
   processingEtaState.estimateBaseSeconds = null;
   processingEtaState.estimateFloorSeconds = 0;
   processingEtaState.estimateStartedAtMs = 0;
+  processingEtaState.frozenSeconds = null;
+  clearProgressAwareEtaState();
   clearProcessingEtaTicker();
 };
 
 const resetProcessingEtaState = () => {
   clearProcessingBatchMessageContext();
   processingEtaState.firstResponseSeconds = null;
+  processingEtaState.sessionStartedAtMs = 0;
 };
 
 const formatEta = (seconds) => {
@@ -1272,11 +1499,56 @@ const formatEta = (seconds) => {
   return `${secs}s`;
 };
 
-const getAverageBatchSeconds = (batchDurations = []) => {
+const getAverageBatchSeconds = (
+  batchDurations = [],
+  fallbackSeconds = processingEtaState.firstResponseSeconds
+) => {
   if (batchDurations.length > 0) {
-    return batchDurations.reduce((sum, value) => sum + value, 0) / batchDurations.length;
+    const recentSamples = batchDurations.slice(-6);
+    const totalWeight = recentSamples.reduce((sum, _value, index) => sum + index + 1, 0);
+    const weightedSum = recentSamples.reduce(
+      (sum, value, index) => sum + Number(value || 0) * (index + 1),
+      0
+    );
+    return totalWeight > 0 ? weightedSum / totalWeight : Number(fallbackSeconds || 0);
   }
-  return processingEtaState.firstResponseSeconds;
+  return Number(fallbackSeconds || 0);
+};
+
+const getProgressBasedEtaSeconds = (progress = processingProgress.value) => {
+  if (!(processingEtaState.sessionStartedAtMs > 0)) return null;
+
+  const clampedProgress = Math.max(0, Math.min(0.97, Number(progress || 0)));
+  if (!(clampedProgress >= 0.05)) return null;
+
+  const elapsedSeconds = Math.max(
+    0,
+    (performance.now() - processingEtaState.sessionStartedAtMs) / 1000
+  );
+  if (!(elapsedSeconds > 1)) return null;
+
+  return Math.max(0, elapsedSeconds * ((1 - clampedProgress) / clampedProgress));
+};
+
+const blendProcessingEtaSeconds = ({
+  batchModelSeconds,
+  progressModelSeconds = null,
+  progress = processingProgress.value,
+  completedBatchCount = 0,
+}) => {
+  if (!(progressModelSeconds > 0)) {
+    return batchModelSeconds;
+  }
+
+  const progressWeight = Math.min(
+    0.7,
+    Math.max(0, completedBatchCount - 1) * 0.12 + Math.max(0, Number(progress || 0) - 0.12) * 0.45
+  );
+  if (!(progressWeight > 0)) {
+    return batchModelSeconds;
+  }
+
+  return batchModelSeconds * (1 - progressWeight) + progressModelSeconds * progressWeight;
 };
 
 const getRemainingBatchCount = ({
@@ -1294,17 +1566,24 @@ const getRemainingBatchCount = ({
   return Math.max(0, totalBatches - batchNumber + 1);
 };
 
-const primeProcessingEta = ({
+const resolveProcessingEtaSnapshot = ({
   batchNumber,
   totalBatches,
   batchDurations = [],
+  pipelineBatchDurations = [],
   remainingBatchCount = null,
+  progress = processingProgress.value,
 }) => {
-  const averageBatchSeconds = getAverageBatchSeconds(batchDurations);
-  if (!(averageBatchSeconds > 0) || !(processingEtaState.firstResponseSeconds > 0)) {
-    processingEtaState.estimateBaseSeconds = null;
-    processingEtaState.estimateFloorSeconds = 0;
-    processingEtaState.estimateStartedAtMs = 0;
+  const averageProcessingBatchSeconds = getAverageBatchSeconds(batchDurations);
+  const averagePipelineBatchSeconds = getAverageBatchSeconds(
+    pipelineBatchDurations,
+    averageProcessingBatchSeconds
+  );
+  if (
+    !(averageProcessingBatchSeconds > 0) ||
+    !(averagePipelineBatchSeconds > 0) ||
+    !(processingEtaState.firstResponseSeconds > 0)
+  ) {
     return null;
   }
 
@@ -1313,30 +1592,165 @@ const primeProcessingEta = ({
     totalBatches,
     remainingBatchCount,
   });
-  const baseSeconds =
-    averageBatchSeconds * nextRemainingBatchCount + PROCESSING_FINAL_STAGE_PLACEHOLDER_SECONDS;
+  const futureBatchCount = Math.max(0, nextRemainingBatchCount - 1);
+  const futureBatchSeconds =
+    averagePipelineBatchSeconds * futureBatchCount +
+    PROCESSING_FINAL_STAGE_PLACEHOLDER_SECONDS;
+  const batchModelSeconds =
+    Math.max(averageProcessingBatchSeconds, processingEtaState.firstResponseSeconds) +
+    futureBatchSeconds;
+  const progressModelSeconds = getProgressBasedEtaSeconds(progress);
+  const baseSeconds = Math.max(
+    futureBatchSeconds,
+    blendProcessingEtaSeconds({
+      batchModelSeconds,
+      progressModelSeconds,
+      progress,
+      completedBatchCount: pipelineBatchDurations.length,
+    })
+  );
   const floorSeconds =
     nextRemainingBatchCount <= 1
       ? 1
-      : Math.max(0, baseSeconds - processingEtaState.firstResponseSeconds);
+      : Math.max(futureBatchSeconds, baseSeconds - processingEtaState.firstResponseSeconds);
 
-  processingEtaState.estimateBaseSeconds = baseSeconds;
-  processingEtaState.estimateFloorSeconds = floorSeconds;
+  return {
+    averageProcessingBatchSeconds,
+    averagePipelineBatchSeconds,
+    nextRemainingBatchCount,
+    futureBatchCount,
+    futureBatchSeconds,
+    baseSeconds,
+    floorSeconds,
+  };
+};
+
+const primeProcessingEta = ({
+  batchNumber,
+  totalBatches,
+  batchDurations = [],
+  pipelineBatchDurations = [],
+  remainingBatchCount = null,
+  progress = processingProgress.value,
+}) => {
+  const snapshot = resolveProcessingEtaSnapshot({
+    batchNumber,
+    totalBatches,
+    batchDurations,
+    pipelineBatchDurations,
+    remainingBatchCount,
+    progress,
+  });
+  if (!snapshot) {
+    processingEtaState.estimateBaseSeconds = null;
+    processingEtaState.estimateFloorSeconds = 0;
+    processingEtaState.estimateStartedAtMs = 0;
+    clearProgressAwareEtaState();
+    return null;
+  }
+
+  processingEtaState.estimateBaseSeconds = snapshot.baseSeconds;
+  processingEtaState.estimateFloorSeconds = snapshot.floorSeconds;
   processingEtaState.estimateStartedAtMs = performance.now();
-  return baseSeconds;
+  clearProgressAwareEtaState();
+  return snapshot.baseSeconds;
+};
+
+const freezeProcessingEtaAtCurrentValue = () => {
+  const etaSeconds = getCurrentProcessingEtaSeconds();
+  processingEtaState.frozenSeconds =
+    etaSeconds === null ? null : Math.max(0, Number(etaSeconds || 0));
+  clearProcessingEtaTicker();
+  return processingEtaState.frozenSeconds;
+};
+
+const primeProgressAwareEta = ({
+  batchNumber,
+  totalBatches,
+  batchDurations = [],
+  pipelineBatchDurations = [],
+  remainingBatchCount = null,
+  overallProgress = processingProgress.value,
+  stageProgress = 0,
+  initialEtaSeconds = null,
+  resetStageBase = false,
+}) => {
+  const snapshot = resolveProcessingEtaSnapshot({
+    batchNumber,
+    totalBatches,
+    batchDurations,
+    pipelineBatchDurations,
+    remainingBatchCount,
+    progress: overallProgress,
+  });
+  if (!snapshot) {
+    processingEtaState.estimateBaseSeconds = null;
+    processingEtaState.estimateFloorSeconds = 0;
+    processingEtaState.estimateStartedAtMs = 0;
+    clearProgressAwareEtaState();
+    return null;
+  }
+
+  const shouldResetStageBase =
+    resetStageBase || !(processingEtaState.progressAwareStageBaseSeconds > 0);
+  const fallbackBaseSeconds =
+    initialEtaSeconds ?? processingEtaState.estimateBaseSeconds ?? snapshot.baseSeconds;
+  const nextStageBaseSeconds = shouldResetStageBase
+    ? Math.max(snapshot.futureBatchSeconds, fallbackBaseSeconds)
+    : Math.max(processingEtaState.progressAwareStageBaseSeconds, snapshot.futureBatchSeconds);
+  const clampedProgress = Math.max(0, Math.min(1, Number(stageProgress || 0)));
+
+  if (shouldResetStageBase) {
+    processingEtaState.progressAwareStageBaseSeconds = nextStageBaseSeconds;
+    processingEtaState.estimateBaseSeconds = nextStageBaseSeconds;
+    processingEtaState.estimateFloorSeconds = snapshot.futureBatchSeconds;
+    processingEtaState.estimateStartedAtMs = performance.now();
+  }
+
+  const stageBaseSeconds = Math.max(
+    processingEtaState.progressAwareStageBaseSeconds,
+    snapshot.futureBatchSeconds
+  );
+  const stageBudgetSeconds = Math.max(0.25, stageBaseSeconds - snapshot.futureBatchSeconds);
+  processingEtaState.progressAwareFloorSeconds = snapshot.futureBatchSeconds;
+  processingEtaState.progressAwareCapSeconds = Math.max(
+    snapshot.futureBatchSeconds,
+    snapshot.futureBatchSeconds + stageBudgetSeconds * (1 - clampedProgress)
+  );
+  return processingEtaState.progressAwareCapSeconds;
 };
 
 const getCurrentProcessingEtaSeconds = () => {
-  if (!(processingEtaState.estimateBaseSeconds > 0)) return null;
+  if (
+    typeof processingEtaState.frozenSeconds === "number" &&
+    Number.isFinite(processingEtaState.frozenSeconds)
+  ) {
+    return Math.max(0, processingEtaState.frozenSeconds);
+  }
+  const hasEstimateBase = processingEtaState.estimateBaseSeconds > 0;
+  const elapsedBasedEtaSeconds = hasEstimateBase
+    ? Math.max(
+        processingEtaState.estimateFloorSeconds,
+        processingEtaState.estimateBaseSeconds -
+          Math.max(0, (performance.now() - processingEtaState.estimateStartedAtMs) / 1000)
+      )
+    : null;
 
-  const elapsedSeconds = Math.max(
-    0,
-    (performance.now() - processingEtaState.estimateStartedAtMs) / 1000
-  );
-  return Math.max(
-    processingEtaState.estimateFloorSeconds,
-    processingEtaState.estimateBaseSeconds - elapsedSeconds
-  );
+  if (
+    typeof processingEtaState.progressAwareCapSeconds === "number" &&
+    Number.isFinite(processingEtaState.progressAwareCapSeconds)
+  ) {
+    if (elapsedBasedEtaSeconds === null) {
+      return Math.max(0, processingEtaState.progressAwareCapSeconds);
+    }
+
+    return Math.max(
+      processingEtaState.progressAwareFloorSeconds ?? processingEtaState.estimateFloorSeconds,
+      Math.min(elapsedBasedEtaSeconds, processingEtaState.progressAwareCapSeconds)
+    );
+  }
+
+  return elapsedBasedEtaSeconds;
 };
 
 const buildBatchMessage = ({
@@ -1370,28 +1784,89 @@ const updateBatchProcessingUi = ({
   totalBatches,
   stageLabel,
   batchDurations = [],
+  pipelineBatchDurations = [],
   progress = processingProgress.value,
   remainingBatchCount = null,
+  etaMode = PROCESSING_ETA_MODES.DYNAMIC,
+  etaProgress = null,
 }) => {
+  const previousBatchMessageContext = processingBatchMessageContext;
+  const previousEtaSeconds = getCurrentProcessingEtaSeconds();
+  const shouldFreezeEta = etaMode === PROCESSING_ETA_MODES.FREEZE;
+  const normalizedEtaProgress = Number.isFinite(Number(etaProgress))
+    ? Math.max(0, Math.min(1, Number(etaProgress)))
+    : null;
+  const shouldUseProgressAwareEta =
+    !shouldFreezeEta && normalizedEtaProgress !== null;
+  const isSameFrozenStage =
+    shouldFreezeEta &&
+    previousBatchMessageContext?.etaMode === PROCESSING_ETA_MODES.FREEZE &&
+    previousBatchMessageContext?.batchNumber === batchNumber &&
+    previousBatchMessageContext?.stageLabel === stageLabel;
+  const shouldPrimeDynamicEta =
+    !shouldFreezeEta &&
+    (
+      previousBatchMessageContext?.etaMode !== PROCESSING_ETA_MODES.DYNAMIC ||
+      previousBatchMessageContext?.batchNumber !== batchNumber ||
+      previousBatchMessageContext?.totalBatches !== totalBatches ||
+      previousBatchMessageContext?.stageLabel !== stageLabel ||
+      previousBatchMessageContext?.remainingBatchCount !== remainingBatchCount ||
+      processingEtaState.estimateBaseSeconds === null
+    );
+
   processingBatchMessageContext = {
     batchNumber,
     totalBatches,
     stageLabel,
     batchDurations,
+    pipelineBatchDurations,
     remainingBatchCount,
+    etaMode,
+    progress,
+    etaProgress: normalizedEtaProgress,
   };
 
-  primeProcessingEta({
-    batchNumber,
-    totalBatches,
-    batchDurations,
-    remainingBatchCount,
-  });
-
-  if (processingEtaState.estimateBaseSeconds !== null) {
-    ensureProcessingEtaTicker();
+  if (shouldFreezeEta) {
+    if (!isSameFrozenStage) {
+      freezeProcessingEtaAtCurrentValue();
+    } else {
+      clearProcessingEtaTicker();
+    }
+    clearProgressAwareEtaState();
   } else {
-    clearProcessingEtaTicker();
+    processingEtaState.frozenSeconds = null;
+    if (shouldUseProgressAwareEta) {
+      primeProgressAwareEta({
+        batchNumber,
+        totalBatches,
+        batchDurations,
+        pipelineBatchDurations,
+        remainingBatchCount,
+        overallProgress: progress,
+        stageProgress: normalizedEtaProgress,
+        initialEtaSeconds: previousEtaSeconds,
+        resetStageBase: shouldPrimeDynamicEta,
+      });
+    } else {
+      clearProgressAwareEtaState();
+    }
+
+    if (shouldPrimeDynamicEta && !shouldUseProgressAwareEta) {
+      primeProcessingEta({
+        batchNumber,
+        totalBatches,
+        batchDurations,
+        pipelineBatchDurations,
+        remainingBatchCount,
+        progress,
+      });
+    }
+
+    if (processingEtaState.estimateBaseSeconds !== null) {
+      ensureProcessingEtaTicker();
+    } else {
+      clearProcessingEtaTicker();
+    }
   }
 
   applyProcessingUi(buildBatchMessage(processingBatchMessageContext), progress);
@@ -1399,6 +1874,10 @@ const updateBatchProcessingUi = ({
 
 const refreshProcessingEtaEstimate = () => {
   if (!processingBatchMessageContext) return;
+  if (processingBatchMessageContext.etaMode === PROCESSING_ETA_MODES.FREEZE) {
+    refreshProcessingBatchMessage();
+    return;
+  }
 
   primeProcessingEta(processingBatchMessageContext);
   if (processingEtaState.estimateBaseSeconds !== null) {
@@ -1461,6 +1940,7 @@ const exportProcessedBatchSegment = async ({
   batchNumber,
   totalBatches,
   batchDurations,
+  pipelineBatchDurations,
 }) => {
   await ensureMp4ExportSupported(width, height);
 
@@ -1478,6 +1958,15 @@ const exportProcessedBatchSegment = async ({
   let unbindProgress = null;
   try {
     await combinator.addSprite(mainSprite, { main: true });
+    updateBatchProcessingUi({
+      batchNumber,
+      totalBatches,
+      stageLabel: "正在编码临时视频分段",
+      batchDurations,
+      pipelineBatchDurations,
+      progress: progressBase,
+      etaProgress: 0,
+    });
     unbindProgress = combinator.on("OutputProgress", (progress) => {
       const normalized = Math.max(0, Math.min(1, progress));
       updateBatchProcessingUi({
@@ -1485,7 +1974,9 @@ const exportProcessedBatchSegment = async ({
         totalBatches,
         stageLabel: "正在编码临时视频分段",
         batchDurations,
+        pipelineBatchDurations,
         progress: progressBase + progressWeight * normalized,
+        etaProgress: normalized,
       });
     });
 
@@ -1581,6 +2072,7 @@ const prepareBatchArtifacts = async ({
   batchDurations,
   reportProgress = true,
 }) => {
+  const preparationStartedAt = performance.now();
   const {
     start,
     end,
@@ -1616,10 +2108,15 @@ const prepareBatchArtifacts = async ({
     const maskPath = window.electron.ipcRenderer.joinPath(paths.masksDir, maskName);
     const outputPath = window.electron.ipcRenderer.joinPath(paths.resultsDir, resultName);
 
-    const frameBlob = await extractor.capture(ts);
-    const maskBlob = await maskRenderer.render(ts);
-    await saveBlobToPath(frameBlob, framePath);
-    await saveBlobToPath(maskBlob, maskPath);
+    const [frameBlob, maskBlob] = await Promise.all([
+      extractor.capture(ts),
+      maskRenderer.render(ts),
+    ]);
+
+    await Promise.all([
+      saveBlobToPath(frameBlob, framePath),
+      saveBlobToPath(maskBlob, maskPath),
+    ]);
 
     batchItems.push({
       frame_index: frameIndex,
@@ -1633,6 +2130,7 @@ const prepareBatchArtifacts = async ({
 
   return {
     ...descriptor,
+    preparationSeconds: (performance.now() - preparationStartedAt) / 1000,
     batchItems,
     batchArtifactPaths,
     batchResultPaths,
@@ -1689,16 +2187,10 @@ const runVideoProcessing = async () => {
   isProcessing.value = true;
   processingSucceeded.value = false;
   processingProgress.value = 0;
-  processingMessage.value = "准备处理任务...";
   lastOutputPath.value = "";
   resetProcessingEtaState();
-
-  if (loadingControl?.show) {
-    loadingControl.show({
-      message: "准备处理任务...",
-      progress: 0,
-    });
-  }
+  processingEtaState.sessionStartedAtMs = performance.now();
+  applyProcessingUi("准备处理任务", 0);
 
   const fps = exportFps.value;
   const totalFrames = Math.max(1, Math.ceil(videoStore.videoDuration * fps));
@@ -1736,6 +2228,7 @@ const runVideoProcessing = async () => {
 
       const segmentPaths = [];
       const batchDurations = [];
+      const pipelineBatchDurations = [];
       let processedFrames = 0;
       preparedBatchTask = createPreparedBatchTask({
         start: 0,
@@ -1760,6 +2253,7 @@ const runVideoProcessing = async () => {
             totalBatches,
             stageLabel: "正在生成帧与蒙版",
             batchDurations,
+            pipelineBatchDurations,
             progress: currentTask.descriptor.batchProgressBase,
           });
         }
@@ -1799,6 +2293,7 @@ const runVideoProcessing = async () => {
               totalBatches,
               stageLabel: "正在提交后端批次",
               batchDurations,
+              pipelineBatchDurations,
               progress: currentBatch.batchProgressBase + currentBatch.batchProgressSpan * 0.45,
             });
 
@@ -1862,11 +2357,18 @@ const runVideoProcessing = async () => {
           batchNumber: currentBatch.batchNumber,
           totalBatches,
           batchDurations,
+          pipelineBatchDurations,
         });
 
         segmentPaths.push(savedSegmentPath || segmentPath);
         processedFrames += currentBatch.batchFrameCount;
-        batchDurations.push((performance.now() - batchStartedAt) / 1000);
+        const currentBatchProcessingSeconds = (performance.now() - batchStartedAt) / 1000;
+        batchDurations.push(currentBatchProcessingSeconds);
+        pipelineBatchDurations.push(
+          currentBatch.batchNumber === 1
+            ? Number(currentBatch.preparationSeconds || 0) + currentBatchProcessingSeconds
+            : Math.max(Number(currentBatch.preparationSeconds || 0), currentBatchProcessingSeconds)
+        );
 
         await removeTemporaryFiles(currentBatch.batchArtifactPaths);
         updateBatchProcessingUi({
@@ -1874,6 +2376,7 @@ const runVideoProcessing = async () => {
           totalBatches,
           stageLabel: "当前批次已完成",
           batchDurations,
+          pipelineBatchDurations,
           progress: (processedFrames / totalFrames) * 0.85,
           remainingBatchCount: Math.max(0, totalBatches - currentBatch.batchNumber),
         });
@@ -2173,9 +2676,22 @@ const createCombinedMaskRenderer = async ({ masks, width, height }) => {
 };
 
 const openOutputDir = async () => {
-  if (!lastOutputPath.value || !window.electron) return;
-  const command = `explorer /select,"${lastOutputPath.value}"`;
-  await window.electron.ipcRenderer.invoke("execute-command", { command });
+  if (!canOpenOutput.value || !lastOutputPath.value || !window.electron) return;
+  try {
+    const result = await window.electron.ipcRenderer.invoke("show-item-in-folder", {
+      filePath: lastOutputPath.value,
+    });
+    if (!result?.success) {
+      throw new Error(result?.error || "打开目录失败");
+    }
+  } catch (error) {
+    $q.notify({
+      type: "negative",
+      message: `打开目录失败: ${error.message}`,
+      position: "top",
+      timeout: 3000,
+    });
+  }
 };
 
 const estimateFpsFromVideo = async (file) => {
@@ -2410,9 +2926,20 @@ const handleResize = async () => {
 
 const applyVideoBrushDefaults = () => {
   videoStore.setMaskToolDefaults(configStore.config.advanced?.videoBrushDefault, {
-    syncActive: true,
+    syncActive: !videoStore.hasVideoFile,
     preserveInteraction: true,
   });
+};
+
+const preserveVideoPagePlaybackState = () => {
+  if (!videoStore.hasVideoFile) {
+    return;
+  }
+
+  if (videoStore.isPlaying) {
+    canvasPlayerRef.value?.pause?.();
+    videoStore.setIsPlaying(false);
+  }
 };
 
 onMounted(async () => {
@@ -2433,7 +2960,12 @@ watch(
   }
 );
 
+onBeforeRouteLeave(() => {
+  preserveVideoPagePlaybackState();
+});
+
 onUnmounted(() => {
+  preserveVideoPagePlaybackState();
   window.removeEventListener("resize", handleResize);
 });
 </script>
@@ -2458,6 +2990,8 @@ onUnmounted(() => {
   gap: 10px;
   height: 100%;
   padding: 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .top-row {
@@ -2466,6 +3000,7 @@ onUnmounted(() => {
   gap: 10px;
   min-height: 0;
   height: 100%;
+  min-width: 980px;
 }
 
 .top-row.has-timeline {
@@ -2511,6 +3046,7 @@ onUnmounted(() => {
 
 .timeline-panel {
   height: 250px;
+  min-width: 980px;
 }
 
 .timeline-controls {
@@ -2598,18 +3134,67 @@ onUnmounted(() => {
 .timeline-action-range {
   width: 100%;
   font-size: 12px;
+  text-shadow: 0 1px 2px rgba(15, 23, 42, 0.45);
 }
 
 .timeline-action-keyframe {
   width: 100%;
+  min-width: 14px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  position: relative;
+}
+
+.timeline-action-keyframe::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  background: #b4d0f9;
+  border-radius: 1px;
+  box-shadow: 0 0 0 1px rgba(104, 142, 196, 0.45);
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.timeline-editor-host :deep(.timeline-action.effect-effect-mask-keyframe) {
+  top: 0;
+  height: 100%;
+  min-width: 14px;
+  border: 0 !important;
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible;
+}
+
+.timeline-editor-host :deep(.timeline-action.effect-effect-mask-keyframe.selected) {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.timeline-editor-host :deep(.timeline-action.effect-effect-mask-keyframe .timeline-action-content) {
+  padding: 0;
+  overflow: visible;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .keyframe-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  background: #facc15;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.3);
+  display: none;
+}
+
+.timeline-editor-host :deep(.timeline-action.effect-effect-mask-keyframe.selected)
+  .timeline-action-keyframe::before {
+  box-shadow:
+    0 0 0 1px rgba(104, 142, 196, 0.6),
+    0 0 0 3px rgba(180, 208, 249, 0.28);
 }
 
 @media (max-width: 1280px) {
@@ -2628,16 +3213,6 @@ onUnmounted(() => {
 }
 
 @media (max-width: 980px) {
-  .top-row {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto auto auto;
-    height: auto;
-  }
-
-  .timeline-panel {
-    height: 280px;
-  }
-
   .timeline-progress-control {
     min-width: 260px;
   }

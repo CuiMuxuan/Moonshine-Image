@@ -50,6 +50,9 @@ const cloneMaskTool = (tool = {}) => ({
   brushColor: tool.brushColor ?? DEFAULT_MASK_TOOL.brushColor,
 });
 
+const normalizeMaskDisplayColor = (color) =>
+  typeof color === "string" && color.trim() ? color.trim() : DEFAULT_MASK_TOOL.brushColor;
+
 const createTransparentMaskDataUrl = (width, height) => {
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.floor(width || 1));
@@ -200,6 +203,7 @@ const reconcileMask = (mask = {}, duration = 0) => {
     id: mask.id || uuidv4(),
     name: mask.name || "蒙版",
     enabled: mask.enabled !== false,
+    displayColor: normalizeMaskDisplayColor(mask.displayColor || mask.color),
     baseMaskDataUrl: mask.baseMaskDataUrl || "",
     interpolation: mask.interpolation || "linear",
     startTime,
@@ -689,6 +693,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
         id: uuidv4(),
         name: name || `蒙版 ${order}`,
         enabled: true,
+        displayColor: normalizeMaskDisplayColor(maskTool.value.brushColor),
         baseMaskDataUrl,
         interpolation: "linear",
         startTime: clampedStart,
@@ -802,6 +807,49 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
   const undoSelectedMaskDraw = () => {
     if (!selectedMaskId.value) return null;
     return undoMaskDraw(selectedMaskId.value);
+  };
+
+  const resetMaskTransformAtTime = (maskId, time = currentTime.value) => {
+    const mask = getMaskById(maskId);
+    if (!mask) return null;
+
+    const targetTime = Number(time ?? currentTime.value ?? 0);
+    const exactKeyframe =
+      sortMaskKeyframes(mask.keyframes).find((item) => isSameTime(item.time, targetTime)) || null;
+
+    if (exactKeyframe) {
+      return upsertKeyframe(
+        maskId,
+        {
+          id: exactKeyframe.id,
+          x: 0,
+          y: 0,
+          scale: 1,
+        },
+        {
+          select: true,
+          allowStartEdit: exactKeyframe.type === MASK_KEYFRAME_TYPES.START,
+        }
+      );
+    }
+
+    return createUserKeyframe(
+      maskId,
+      {
+        time: targetTime,
+        x: 0,
+        y: 0,
+        scale: 1,
+      },
+      {
+        select: true,
+      }
+    );
+  };
+
+  const resetSelectedMaskTransformAtCurrentTime = () => {
+    if (!selectedMaskId.value) return null;
+    return resetMaskTransformAtTime(selectedMaskId.value, currentTime.value);
   };
 
   const getMaskStateAtTime = (maskId, time) => {
@@ -1287,6 +1335,8 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     commitSelectedMaskBaseMask,
     undoMaskDraw,
     undoSelectedMaskDraw,
+    resetMaskTransformAtTime,
+    resetSelectedMaskTransformAtCurrentTime,
     createUserKeyframe,
     upsertKeyframe,
     removeKeyframe,

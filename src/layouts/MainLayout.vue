@@ -57,8 +57,12 @@
 
         <q-inner-loading :showing="loadingState.showing" class="global-loading">
           <div class="global-loading-content">
-            <q-spinner-gears size="50px" color="primary" />
-            <span class="text-h6 text-primary text-center">{{ loadingState.message }}</span>
+            <div class="global-loading-logo-shell" aria-hidden="true">
+              <img class="global-loading-logo" :src="globalLoadingLogo" alt="" />
+            </div>
+            <span class="global-loading-message text-h6 text-primary text-center">
+              {{ loadingState.message }}
+            </span>
             <q-linear-progress
               v-if="typeof loadingState.progress === 'number'"
               :value="loadingState.progress"
@@ -97,11 +101,13 @@ import MainToolbar from "src/components/global/MainToolbar.vue";
 import { DEFAULT_BRAND_COLORS, normalizeThemeMode } from "src/config/ConfigManager";
 import { useAppStateStore } from "src/stores/appState";
 import { useConfigStore } from "src/stores/config";
+import { resolvePublicAssetPath } from "src/utils/publicAsset";
 
 const $q = useQuasar();
 const router = useRouter();
 const configStore = useConfigStore();
 const appStateStore = useAppStateStore();
+const globalLoadingLogo = resolvePublicAssetPath("icons/cmx-logo256.png");
 
 const showBackendManager = ref(false);
 const showSettings = ref(false);
@@ -237,6 +243,12 @@ const clearPageDrawer = (side, owner = null) => {
   }
 };
 
+const normalizeLoadingMessage = (message = "") =>
+  String(message || "").replace(
+    /\s*，?\s*可打开后端管理页面查看进度/g,
+    "\n可打开后端管理页面查看进度"
+  );
+
 const normalizeLoadingPayload = (messageOrOptions, progressArg = null) => {
   if (typeof messageOrOptions === "object" && messageOrOptions !== null) {
     return {
@@ -252,6 +264,12 @@ const normalizeLoadingPayload = (messageOrOptions, progressArg = null) => {
   };
 };
 
+const normalizeBackendHintBreak = (message = "") =>
+  normalizeLoadingMessage(message).replace(
+    /\s*[\uFF0C,]?\s*\u53ef\u6253\u5f00\u540e\u7aef\u7ba1\u7406\u9875\u9762\u67e5\u770b\u8fdb\u5ea6/g,
+    "\n\u53ef\u6253\u5f00\u540e\u7aef\u7ba1\u7406\u9875\u9762\u67e5\u770b\u8fdb\u5ea6"
+  );
+
 provide("backendRunning", backendRunning);
 provide("layoutFooter", {
   setPageFooter,
@@ -266,7 +284,7 @@ provide("loadingControl", {
     const payload = normalizeLoadingPayload(messageOrOptions, progress);
     loadingState.value = {
       showing: true,
-      message: payload.message,
+      message: normalizeBackendHintBreak(payload.message),
       progress: payload.progress,
     };
   },
@@ -274,7 +292,7 @@ provide("loadingControl", {
     const payload = normalizeLoadingPayload(messageOrOptions, progress);
     loadingState.value = {
       showing: true,
-      message: payload.message,
+      message: normalizeBackendHintBreak(payload.message),
       progress: payload.progress,
     };
   },
@@ -292,7 +310,7 @@ const handleLoadingUpdate = (state) => {
     const payload = normalizeLoadingPayload(state.message || state, state.progress);
     loadingState.value = {
       showing: true,
-      message: payload.message,
+      message: normalizeBackendHintBreak(payload.message),
       progress: payload.progress,
     };
     return;
@@ -474,7 +492,55 @@ router.beforeEach(async (to, from) => {
   gap: 14px;
 }
 
+.global-loading-logo-shell {
+  width: clamp(84px, 11vw, 132px);
+  height: clamp(84px, 11vw, 132px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.global-loading-logo {
+  width: 72%;
+  height: 72%;
+  object-fit: contain;
+  display: block;
+  transform-origin: center;
+  animation: global-loading-breathe 2.2s ease-in-out infinite;
+  will-change: transform, opacity, filter;
+}
+
 .global-loading-progress {
   width: 100%;
+}
+
+.global-loading-message {
+  white-space: pre-line;
+  line-height: 1.45;
+}
+
+@keyframes global-loading-breathe {
+  0%,
+  100% {
+    transform: scale(0.9);
+    opacity: 0.9;
+    filter: drop-shadow(0 6px 14px rgba(17, 24, 39, 0.14));
+  }
+
+  50% {
+    transform: scale(1.08);
+    opacity: 1;
+    filter: drop-shadow(0 10px 22px rgba(17, 24, 39, 0.22));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .global-loading-logo {
+    animation: none;
+    transform: none;
+    opacity: 1;
+    filter: none;
+  }
 }
 </style>

@@ -1,7 +1,11 @@
 <template>
   <div
     class="mask-brush-controls"
-    :class="{ 'is-disabled': disabled, 'is-dark': $q.dark.isActive }"
+    :class="{
+      'is-disabled': disabled,
+      'is-dark': $q.dark.isActive,
+      'layout-video-sidebar': layout === 'video-sidebar',
+    }"
     :style="controlsStyle"
   >
     <div class="slot-before">
@@ -214,6 +218,10 @@ const props = defineProps({
     type: String,
     default: "jump-up",
   },
+  layout: {
+    type: String,
+    default: "default",
+  },
 });
 
 defineEmits([
@@ -245,6 +253,12 @@ const controlsStyle = computed(() => {
     sm: 520,
     xs: 476,
   };
+
+  if (props.layout === "video-sidebar") {
+    return {
+      "--mask-controls-min-width": "0px",
+    };
+  }
 
   return {
     "--mask-controls-min-width": `${minWidthMap[resolvedButtonSize.value] || minWidthMap.md}px`,
@@ -284,6 +298,13 @@ const brushPreviewStyle = computed(() => {
   width: max-content;
   min-width: var(--mask-controls-min-width, 560px);
   max-width: none;
+}
+
+.mask-brush-controls.layout-video-sidebar {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  container-type: inline-size;
 }
 
 .slot-before,
@@ -356,6 +377,65 @@ const brushPreviewStyle = computed(() => {
 .mode-button :deep(.q-icon img) {
   width: 20px;
   height: 20px;
+}
+
+@container (max-width: 560px) {
+  .mask-brush-controls.layout-video-sidebar {
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .mask-brush-controls.layout-video-sidebar .tool-main-group {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+
+  .mask-brush-controls.layout-video-sidebar .control-group,
+  .mask-brush-controls.layout-video-sidebar .slot-after,
+  .mask-brush-controls.layout-video-sidebar .slot-before {
+    margin-left: auto;
+  }
+
+  .mask-brush-controls.layout-video-sidebar .mode-toggle {
+    min-width: 0;
+  }
+
+  .mask-brush-controls.layout-video-sidebar .control-group,
+  .mask-brush-controls.layout-video-sidebar .control-button,
+  .mask-brush-controls.layout-video-sidebar .mode-button {
+    min-height: 38px;
+  }
+
+  .mask-brush-controls.layout-video-sidebar .mode-button {
+    min-width: 46px;
+  }
+
+  .mask-brush-controls.layout-video-sidebar .mode-button :deep(.q-icon img) {
+    width: 18px;
+    height: 18px;
+  }
+
+  .mask-brush-controls.layout-video-sidebar :deep(.q-btn) {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+}
+
+@container (max-width: 420px) {
+  .mask-brush-controls.layout-video-sidebar .control-group,
+  .mask-brush-controls.layout-video-sidebar .control-button,
+  .mask-brush-controls.layout-video-sidebar .mode-button {
+    min-height: 36px;
+  }
+
+  .mask-brush-controls.layout-video-sidebar .mode-button {
+    min-width: 42px;
+  }
+
+  .mask-brush-controls.layout-video-sidebar :deep(.q-btn) {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
 }
 
 :global(.mask-brush-settings-popup) {

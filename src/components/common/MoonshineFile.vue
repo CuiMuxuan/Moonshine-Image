@@ -1,44 +1,25 @@
 <template>
   <div class="moonshine-file-wrapper">
-    <!-- 上传进度对话框 -->
     <q-dialog v-model="showUploadProgress" persistent>
       <q-card style="min-width: 400px">
         <q-card-section>
-          <div class="text-h6">文件上传进度</div>
+          <div class="text-h6">文件加载进度</div>
         </q-card-section>
 
         <q-card-section>
           <div class="q-mb-md">
             <div class="text-subtitle2">{{ uploadStatus.currentFile }}</div>
-            <q-linear-progress
-              :value="uploadStatus.progress"
-              color="primary"
-              size="20px"
-              class="q-mt-sm"
-            >
+            <q-linear-progress :value="uploadStatus.progress" color="primary" size="20px" class="q-mt-sm">
               <div class="absolute-full flex flex-center">
-                <q-badge
-                  color="white"
-                  text-color="primary"
-                  :label="`${Math.round((uploadStatus.progress || 0) * 100)}%`"
-                />
+                <q-badge color="white" text-color="primary" :label="`${Math.round((uploadStatus.progress || 0) * 100)}%`" />
               </div>
             </q-linear-progress>
           </div>
-
-          <div class="text-caption text-grey-7">
-            {{ uploadStatus.details }}
-          </div>
+          <div class="text-caption text-grey-7">{{ uploadStatus.details }}</div>
         </q-card-section>
 
         <q-card-actions align="right">
-          <q-btn
-            flat
-            color="negative"
-            label="取消"
-            @click="cancelUpload"
-            :disable="!canCancelUpload"
-          />
+          <q-btn flat color="negative" label="取消" :disable="!canCancelUpload" @click="cancelUpload" />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -55,12 +36,9 @@
         unelevated
         no-caps
       >
-        <q-tooltip v-if="tooltip" class="bg-deep-purple text-white">{{
-          tooltip
-        }}</q-tooltip>
+        <q-tooltip v-if="tooltip" class="bg-primary text-white">{{ tooltip }}</q-tooltip>
       </q-btn>
 
-      <!-- 文件数量指示器 -->
       <div
         v-if="fileManagerStore.files.length > 0"
         ref="fileIndicatorRef"
@@ -68,113 +46,63 @@
         @mouseenter="handleMouseEnter"
         @mouseleave="handleMouseLeave"
       >
-        <q-btn
-          flat
-          round
-          dense
-          icon="expand_less"
-          color="deep-purple"
-          class="file-count-btn"
-          unelevated
-        >
-          <q-badge
-            color="negative"
-            floating
-            :label="fileManagerStore.files.length"
-            rounded
-          />
+        <q-btn flat round dense icon="expand_less" color="primary" class="file-count-btn">
+          <q-badge color="negative" floating :label="fileManagerStore.files.length" rounded />
         </q-btn>
 
-        <!-- 悬浮文件列表 -->
         <teleport to="body">
-        <q-card
-          v-show="showFileList && canShowFloatingList"
-          class="file-list-popup bg-deep-purple-2"
-          :style="popupStyle"
-          @mouseenter="handleMouseEnter"
-          @mouseleave="handleMouseLeave"
-          bordered
-          flat
-        >
-          <q-card-section class="q-pa-xs">
-            <div class="text-subtitle2 text-deep-purple-10 q-mb-xs q-px-sm">
-              已选择文件 ({{ fileManagerStore.files.length }})
-            </div>
-            <q-separator class="q-mb-xs" />
-            <q-scroll-area
-              :style="scrollAreaStyle"
-              class="file-list-container"
-              :thumb-style="thumbStyle"
-              :bar-style="barStyle"
-            >
-              <q-list dense class="q-pa-none">
-                <q-item
-                  v-for="file in fileManagerStore.files"
-                  :key="file.id"
-                  class="file-item q-pa-xs"
-                  clickable
-                  v-ripple
-                  :class="{
-                    'bg-deep-purple-1':
-                      file.id === fileManagerStore.currentFileId,
-                  }"
-                  @click="fileManagerStore.setCurrentFile(file.id)"
-                >
-                  <q-item-section avatar>
-                    <q-avatar
-                      size="28px"
-                      color="deep-purple-1"
-                      text-color="deep-purple-10"
-                    >
-                      <q-icon :name="getFileIcon(file)" />
-                    </q-avatar>
-                  </q-item-section>
+          <q-card
+            v-show="showFileList && canShowFloatingList"
+            class="file-list-popup"
+            :style="popupStyle"
+            @mouseenter="handleMouseEnter"
+            @mouseleave="handleMouseLeave"
+            bordered
+            flat
+          >
+            <q-card-section class="q-pa-xs">
+              <div class="text-subtitle2 text-primary q-mb-xs q-px-sm">
+                已加载文件（{{ fileManagerStore.files.length }}）
+              </div>
+              <q-separator class="q-mb-xs" />
+              <q-scroll-area :style="scrollAreaStyle" class="file-list-container">
+                <q-list dense class="q-pa-none">
+                  <q-item
+                    v-for="file in fileManagerStore.files"
+                    :key="file.id"
+                    class="file-item q-pa-xs"
+                    clickable
+                    v-ripple
+                    :class="{ 'file-item-active': file.id === fileManagerStore.currentFileId }"
+                    @click="fileManagerStore.setCurrentFile(file.id)"
+                  >
+                    <q-item-section avatar>
+                      <q-avatar size="28px" color="primary" text-color="white">
+                        <q-icon :name="getFileIcon(file)" />
+                      </q-avatar>
+                    </q-item-section>
 
-                  <q-item-section>
-                    <q-item-label
-                      class="text-caption ellipsis text-deep-purple-10"
-                    >
-                      {{ file.name }}
-                    </q-item-label>
-                    <q-item-label caption class="text-deep-purple-8">
-                      历史记录: {{ file.history.length }}
-                      <span v-if="file.mask" class="q-ml-xs">• 已设置蒙版</span>
-                    </q-item-label>
-                  </q-item-section>
+                    <q-item-section>
+                      <q-item-label class="text-caption ellipsis">{{ file.name }}</q-item-label>
+                      <q-item-label caption>
+                        历史记录：{{ file.history.length }}
+                        <span v-if="file.mask" class="q-ml-xs">已设置蒙版</span>
+                      </q-item-label>
+                    </q-item-section>
 
-                  <q-item-section side>
-                    <q-btn
-                      flat
-                      round
-                      dense
-                      size="sm"
-                      icon="close"
-                      color="negative"
-                      @click.stop="removeFile(file.id)"
-                      class="hover-scale"
-                    >
-                      <q-tooltip class="bg-negative text-white"
-                        >移除文件</q-tooltip
-                      >
-                    </q-btn>
-                  </q-item-section>
-                </q-item>
-              </q-list>
-            </q-scroll-area>
-          </q-card-section>
-        </q-card>
+                    <q-item-section side>
+                      <q-btn flat round dense size="sm" icon="close" color="negative" @click.stop="removeFile(file.id)" />
+                    </q-item-section>
+                  </q-item>
+                </q-list>
+              </q-scroll-area>
+            </q-card-section>
+          </q-card>
         </teleport>
       </div>
     </div>
 
-    <input
-      ref="fileInput"
-      type="file"
-      :accept="accept"
-      :multiple="multiple"
-      style="display: none"
-      @change="handleFileChange"
-    />
+    <input ref="fileInput" type="file" :accept="accept" :multiple="multiple" style="display: none" @change="handleFileChange" />
   </div>
 </template>
 
@@ -187,6 +115,10 @@ const $q = useQuasar();
 const fileManagerStore = useFileManagerStore();
 
 const props = defineProps({
+  modelValue: {
+    type: Array,
+    default: () => [],
+  },
   accept: {
     type: String,
     default: "image/*",
@@ -217,19 +149,13 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["file-added", "file-removed"]);
+const emit = defineEmits(["update:modelValue", "file-added", "file-removed"]);
 
 const fileInput = ref(null);
 const showFileList = ref(false);
 const fileIndicatorRef = ref(null);
 const viewportWidth = ref(window.innerWidth);
 const viewportHeight = ref(window.innerHeight);
-const POPUP_MARGIN = 12;
-const POPUP_MAX_WIDTH = 560;
-const POPUP_MIN_WIDTH = 300;
-const POPUP_MIN_SCREEN_WIDTH = 560;
-const POPUP_MIN_SCREEN_HEIGHT = 420;
-// 上传进度相关状态
 const showUploadProgress = ref(false);
 const canCancelUpload = ref(true);
 const uploadStatus = ref({
@@ -237,14 +163,20 @@ const uploadStatus = ref({
   progress: 0,
   details: "",
 });
+
+const POPUP_MARGIN = 12;
+const POPUP_MAX_WIDTH = 560;
+const POPUP_MIN_WIDTH = 300;
+const POPUP_MIN_SCREEN_WIDTH = 560;
+const POPUP_MIN_SCREEN_HEIGHT = 420;
+
 let hideTimeout = null;
 
-const canShowFloatingList = computed(() => {
-  return (
+const canShowFloatingList = computed(
+  () =>
     viewportWidth.value >= POPUP_MIN_SCREEN_WIDTH &&
     viewportHeight.value >= POPUP_MIN_SCREEN_HEIGHT
-  );
-});
+);
 
 const popupWidth = computed(() => {
   const available = Math.max(0, viewportWidth.value - POPUP_MARGIN * 2);
@@ -252,62 +184,49 @@ const popupWidth = computed(() => {
   return Math.max(minWidth, Math.min(POPUP_MAX_WIDTH, available));
 });
 
-const popupMaxHeight = computed(() => {
-  return Math.max(160, Math.min(360, Math.floor(viewportHeight.value * 0.55)));
-});
+const popupMaxHeight = computed(() =>
+  Math.max(160, Math.min(360, Math.floor(viewportHeight.value * 0.55)))
+);
 
 const popupEstimatedHeight = computed(() => {
-  const listHeight = Math.min(
-    fileManagerStore.files.length * 60,
-    popupMaxHeight.value
-  );
-  const estimated = listHeight + 64;
-  return Math.min(estimated, viewportHeight.value - POPUP_MARGIN * 2);
+  const listHeight = Math.min(fileManagerStore.files.length * 60, popupMaxHeight.value);
+  return Math.min(listHeight + 64, viewportHeight.value - POPUP_MARGIN * 2);
 });
 
 const popupStyle = computed(() => {
   const width = popupWidth.value;
   const height = popupEstimatedHeight.value;
-  const minWidth = Math.min(POPUP_MIN_WIDTH, width);
-
-  const baseStyle = {
-    width: `${width}px`,
-    minWidth: `${minWidth}px`,
-    maxWidth: `${width}px`,
-    left: `${POPUP_MARGIN}px`,
-    top: `${POPUP_MARGIN}px`,
-  };
-
   const rect = fileIndicatorRef.value?.getBoundingClientRect();
+
   if (!rect) {
-    return baseStyle;
+    return {
+      width: `${width}px`,
+      minWidth: `${Math.min(POPUP_MIN_WIDTH, width)}px`,
+      left: `${POPUP_MARGIN}px`,
+      top: `${POPUP_MARGIN}px`,
+    };
   }
 
-  let left = rect.right - width;
-  left = Math.max(
+  const left = Math.max(
     POPUP_MARGIN,
-    Math.min(left, viewportWidth.value - width - POPUP_MARGIN)
+    Math.min(rect.right - width, viewportWidth.value - width - POPUP_MARGIN)
   );
-
-  const canOpenUp = rect.top >= height + POPUP_MARGIN;
-  let top = canOpenUp ? rect.top - height - 8 : rect.bottom + 8;
-  top = Math.max(
+  const rawTop = rect.top >= height + POPUP_MARGIN ? rect.top - height - 8 : rect.bottom + 8;
+  const top = Math.max(
     POPUP_MARGIN,
-    Math.min(top, viewportHeight.value - height - POPUP_MARGIN)
+    Math.min(rawTop, viewportHeight.value - height - POPUP_MARGIN)
   );
 
   return {
-    ...baseStyle,
+    width: `${width}px`,
+    minWidth: `${Math.min(POPUP_MIN_WIDTH, width)}px`,
     left: `${Math.round(left)}px`,
     top: `${Math.round(top)}px`,
   };
 });
 
 const scrollAreaStyle = computed(() => {
-  const height = Math.min(
-    fileManagerStore.files.length * 60,
-    popupMaxHeight.value
-  );
+  const height = Math.min(fileManagerStore.files.length * 60, popupMaxHeight.value);
   return `height: ${height}px; max-height: ${popupMaxHeight.value}px;`;
 });
 
@@ -316,7 +235,271 @@ const updateViewport = () => {
   viewportHeight.value = window.innerHeight;
 };
 
-// 初始化处理配置
+const syncModelValue = () => {
+  emit(
+    "update:modelValue",
+    fileManagerStore.files.map((file) => file.originalFile).filter(Boolean)
+  );
+};
+
+const getFileFilters = () => {
+  if (props.accept === "*" || !props.accept) {
+    return [];
+  }
+
+  const extensions = props.accept
+    .split(",")
+    .map((item) => item.trim().replace(".", ""))
+    .filter(Boolean);
+
+  return extensions.length > 0 ? [{ name: "支持的文件", extensions }] : [];
+};
+
+const getFileIcon = (file) => {
+  const type = file.type?.split("/")[0] || "";
+  return {
+    image: "photo",
+    video: "movie",
+    audio: "music_note",
+    text: "description",
+    application: "insert_drive_file",
+  }[type] || "insert_drive_file";
+};
+
+const buildPathDescriptor = async (filePath) => {
+  const result = await window.electron.ipcRenderer.invoke("get-file-stats", filePath);
+  if (!result?.success) {
+    throw new Error(result?.error || `无法读取文件信息：${filePath}`);
+  }
+
+  const stats = result.data || {};
+  return {
+    name: stats.name || filePath.split(/[\\/]/).pop() || "unknown",
+    size: Number(stats.size || 0),
+    type: stats.type || "",
+    lastModified: Number(stats.lastModified || Date.now()),
+    path: filePath,
+  };
+};
+
+const startProgress = () => {
+  showUploadProgress.value = true;
+  canCancelUpload.value = true;
+};
+
+const finishProgress = () => {
+  window.setTimeout(() => {
+    showUploadProgress.value = false;
+  }, 600);
+};
+
+const selectFiles = async () => {
+  if (window.electron?.ipcRenderer?.invoke) {
+    try {
+      const result = await window.electron.ipcRenderer.invoke("select-file", {
+        title: "选择文件",
+        filters: getFileFilters(),
+        properties: props.multiple ? ["openFile", "multiSelections"] : ["openFile"],
+      });
+
+      if (!result.canceled && result.filePaths.length > 0) {
+        await loadFilesFromPaths(result.filePaths);
+      }
+    } catch (error) {
+      $q.notify({
+        type: "negative",
+        message: `文件选择失败：${error.message}`,
+        position: "top",
+      });
+    }
+    return;
+  }
+
+  fileInput.value?.click();
+};
+
+const handleFileChange = async (event) => {
+  const files = Array.from(event.target.files || []);
+  if (files.length > 0) {
+    await processBrowserFiles(files);
+  }
+  event.target.value = "";
+};
+
+const processBrowserFiles = async (files) => {
+  startProgress();
+  let processedCount = 0;
+
+  try {
+    for (let index = 0; index < files.length; index += 1) {
+      if (!canCancelUpload.value) break;
+
+      const file = files[index];
+      uploadStatus.value = {
+        currentFile: file.name || `文件 ${index + 1}`,
+        progress: processedCount / files.length,
+        details: `正在处理文件 ${index + 1} / ${files.length}`,
+      };
+
+      const fileData = await fileManagerStore.addFile(file, (progress) => {
+        if (!canCancelUpload.value) return;
+        uploadStatus.value = {
+          currentFile: file.name || `文件 ${index + 1}`,
+          progress: (processedCount + (progress || 0)) / files.length,
+          details: `正在读取 ${file.name}（${Math.round((progress || 0) * 100)}%）`,
+        };
+      });
+
+      processedCount += 1;
+      emit("file-added", fileData);
+    }
+
+    syncModelValue();
+
+    if (processedCount > 0) {
+      uploadStatus.value = {
+        currentFile: "处理完成",
+        progress: 1,
+        details: `成功加载 ${processedCount} 个文件`,
+      };
+      $q.notify({
+        type: "positive",
+        message: `成功添加 ${processedCount} 个文件`,
+        position: "top",
+      });
+    }
+  } catch (error) {
+    $q.notify({
+      type: "negative",
+      message: `文件处理失败：${error.message}`,
+      position: "top",
+    });
+  } finally {
+    finishProgress();
+  }
+};
+
+const loadFilesFromPaths = async (filePaths) => {
+  startProgress();
+  let processedCount = 0;
+
+  try {
+    for (let index = 0; index < filePaths.length; index += 1) {
+      if (!canCancelUpload.value) break;
+
+      const filePath = filePaths[index];
+      uploadStatus.value = {
+        currentFile: filePath.split(/[\\/]/).pop() || `文件 ${index + 1}`,
+        progress: processedCount / filePaths.length,
+        details: `正在载入文件 ${index + 1} / ${filePaths.length}`,
+      };
+
+      const alreadyLoaded = fileManagerStore.files.some(
+        (file) => file.originalFile?.path === filePath
+      );
+      if (alreadyLoaded) {
+        continue;
+      }
+
+      const descriptor = await buildPathDescriptor(filePath);
+      const fileData = await fileManagerStore.addFile(descriptor, (progress) => {
+        uploadStatus.value = {
+          currentFile: descriptor.name,
+          progress: (processedCount + (progress || 0)) / filePaths.length,
+          details: `正在建立文件索引 ${index + 1} / ${filePaths.length}`,
+        };
+      });
+
+      processedCount += 1;
+      emit("file-added", fileData);
+    }
+
+    syncModelValue();
+
+    if (processedCount > 0) {
+      uploadStatus.value = {
+        currentFile: "加载完成",
+        progress: 1,
+        details: `成功加载 ${processedCount} 个文件`,
+      };
+      $q.notify({
+        type: "positive",
+        message: `成功加载 ${processedCount} 个文件`,
+        position: "top",
+      });
+    }
+  } catch (error) {
+    $q.notify({
+      type: "negative",
+      message: `文件加载失败：${error.message}`,
+      position: "top",
+    });
+  } finally {
+    finishProgress();
+  }
+};
+
+const removeFile = (fileId) => {
+  const file = fileManagerStore.files.find((item) => item.id === fileId);
+  if (!file) return;
+
+  fileManagerStore.removeFile(fileId);
+  emit("file-removed", file);
+  syncModelValue();
+
+  $q.notify({
+    type: "info",
+    message: `已移除文件 ${file.name}`,
+    position: "top",
+  });
+};
+
+const cancelUpload = () => {
+  canCancelUpload.value = false;
+  showUploadProgress.value = false;
+  $q.notify({
+    type: "info",
+    message: "已取消文件加载",
+    position: "top",
+  });
+};
+
+const handleMouseLeave = () => {
+  hideTimeout = window.setTimeout(() => {
+    showFileList.value = false;
+  }, 250);
+};
+
+const handleMouseEnter = () => {
+  if (hideTimeout) {
+    window.clearTimeout(hideTimeout);
+    hideTimeout = null;
+  }
+
+  if (!canShowFloatingList.value) {
+    showFileList.value = false;
+    return;
+  }
+
+  showFileList.value = true;
+  nextTick(() => {
+    updateViewport();
+  });
+};
+
+watch(canShowFloatingList, (canShow) => {
+  if (!canShow) {
+    showFileList.value = false;
+  }
+});
+
+watch(
+  () => props.modelValue,
+  () => {
+    fileManagerStore.initProcessingConfig();
+  }
+);
+
 onMounted(() => {
   fileManagerStore.initProcessingConfig();
   updateViewport();
@@ -326,366 +509,10 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener("resize", updateViewport);
   if (hideTimeout) {
-    clearTimeout(hideTimeout);
-    hideTimeout = null;
+    window.clearTimeout(hideTimeout);
   }
 });
 
-watch(canShowFloatingList, (canShow) => {
-  if (!canShow) {
-    showFileList.value = false;
-  }
-});
-// Quasar滚动条样式
-const thumbStyle = {
-  right: "4px",
-  borderRadius: "5px",
-  backgroundColor: "#9c27b0",
-  width: "6px",
-  opacity: 0.75,
-};
-
-const barStyle = {
-  right: "2px",
-  borderRadius: "9px",
-  backgroundColor: "#e1bee7",
-  width: "10px",
-  opacity: 0.2,
-};
-
-// 处理鼠标离开事件，延迟隐藏列表
-const handleMouseLeave = () => {
-  hideTimeout = setTimeout(() => {
-    showFileList.value = false;
-  }, 300); // 增加延迟时间
-};
-
-// 当鼠标重新进入时取消隐藏
-const handleMouseEnter = () => {
-  if (hideTimeout) {
-    clearTimeout(hideTimeout);
-    hideTimeout = null;
-  }
-  if (!canShowFloatingList.value) {
-    showFileList.value = false;
-    return;
-  }
-  showFileList.value = true;
-  nextTick(() => {
-    updateViewport();
-  });
-};
-
-// 选择文件
-const selectFiles = async () => {
-  if (window.electron) {
-    // Electron环境：使用原生文件选择对话框
-    try {
-      const result = await window.electron.ipcRenderer.invoke("select-file", {
-        title: "选择文件",
-        filters: getFileFilters(),
-        properties: props.multiple
-          ? ["openFile", "multiSelections"]
-          : ["openFile"],
-      });
-
-      if (!result.canceled && result.filePaths.length > 0) {
-        await loadFilesFromPaths(result.filePaths);
-      }
-    } catch (error) {
-      console.error("文件选择失败:", error);
-      $q.notify({
-        type: "negative",
-        message: "文件选择失败: " + error.message,
-        position: "top",
-      });
-    }
-  } else {
-    // 浏览器环境：使用传统文件输入
-    fileInput.value?.click();
-  }
-};
-
-// 处理浏览器文件选择
-const handleFileChange = async (event) => {
-  const files = Array.from(event.target.files || []);
-  if (files.length > 0) {
-    await processFiles(files);
-  }
-  event.target.value = "";
-};
-
-// 处理文件
-const processFiles = async (files) => {
-  showUploadProgress.value = true;
-  canCancelUpload.value = true;
-
-  const totalFiles = files.length;
-  let processedFiles = 0;
-
-  try {
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-
-      const fileName = file.name || `文件${i + 1}`;
-      uploadStatus.value = {
-        currentFile: fileName,
-        progress: processedFiles / totalFiles,
-        details: `正在处理文件 ${i + 1} / ${totalFiles}`,
-      };
-
-      if (!canCancelUpload.value) {
-        uploadStatus.value = {
-          currentFile: "已取消",
-          progress: processedFiles / totalFiles,
-          details: "文件上传已取消",
-        };
-        break;
-      }
-
-      // 使用真实的文件读取进度
-      const fileData = await fileManagerStore.addFile(file, (progress) => {
-        // 检查是否已取消
-        if (!canCancelUpload.value) return;
-
-        const safeProgress = progress || 0;
-        const currentProgress = (processedFiles + safeProgress) / totalFiles;
-        uploadStatus.value = {
-          currentFile: fileName,
-          progress: currentProgress,
-          details: `正在读取 ${fileName} (${Math.round(safeProgress * 100)}%)`,
-        };
-      });
-
-      // 如果在处理过程中被取消，跳出循环
-      if (!canCancelUpload.value) break;
-
-      processedFiles++;
-      emit("file-added", fileData);
-    }
-
-    uploadStatus.value = {
-      currentFile: "处理完成",
-      progress: 1,
-      details: `成功处理 ${files.length} 个文件`,
-    };
-
-    $q.notify({
-      type: "positive",
-      message: `成功添加 ${files.length} 个文件`,
-      position: "top",
-      timeout: 2000,
-    });
-  } catch (error) {
-    console.error("文件处理失败:", error);
-    $q.notify({
-      type: "negative",
-      message: "文件处理失败: " + error.message,
-      position: "top",
-    });
-  } finally {
-    setTimeout(() => {
-      showUploadProgress.value = false;
-    }, 1000);
-  }
-};
-
-// 移除文件
-const removeFile = (fileId) => {
-  const file = fileManagerStore.files.find((f) => f.id === fileId);
-  if (file) {
-    fileManagerStore.removeFile(fileId);
-    emit("file-removed", file);
-
-    $q.notify({
-      type: "info",
-      message: `已移除文件: ${file.name}`,
-      position: "top",
-      timeout: 2000,
-    });
-  }
-};
-
-// 从文件路径加载文件（Electron环境）
-const loadFilesFromPaths = async (filePaths) => {
-  showUploadProgress.value = true;
-  canCancelUpload.value = true;
-  let processedCount = 0;
-
-  try {
-    // 首先获取所有文件的大小信息
-    const fileInfos = [];
-    for (const filePath of filePaths) {
-      try {
-        const stats = await window.electron.ipcRenderer.invoke(
-          "get-file-stats",
-          filePath
-        );
-        if (stats.success) {
-          const fileName =
-            stats.name || filePath.split(/[\\/]/).pop() || "unknown";
-          fileInfos.push({ path: filePath, size: stats.size, name: fileName });
-        }
-      } catch (error) {
-        console.error(`获取文件信息失败 ${filePath}:`, error);
-      }
-    }
-
-    for (let i = 0; i < fileInfos.length; i++) {
-      const fileInfo = fileInfos[i];
-
-      uploadStatus.value = {
-        currentFile: fileInfo.name,
-        progress: processedCount / fileInfos.length,
-        details: `正在加载文件 ${i + 1} / ${fileInfos.length}`,
-      };
-
-      if (!canCancelUpload.value) break;
-
-      try {
-        // 检查文件是否已存在
-        const isExisting = fileManagerStore.files.some(
-          (file) => file.originalFile?.path === fileInfo.path
-        );
-        if (isExisting) {
-          processedCount++;
-          continue;
-        }
-
-        // 使用支持进度的文件读取方法
-        // 设置进度监听器
-        const progressHandler = (event, progressData) => {
-          if (progressData && progressData.filePath === fileInfo.path) {
-            const progressPercent = progressData.progress || 0;
-            const currentProgress = (processedCount + progressPercent / 100) / fileInfos.length;
-            uploadStatus.value = {
-              currentFile: fileInfo.name,
-              progress: currentProgress,
-              details: `正在读取 ${fileInfo.name} (${Math.round(
-                progressPercent
-              )}%)`,
-            };
-          }
-        };
-
-        // 添加进度监听器
-        window.electron.ipcRenderer.on("file-read-progress", progressHandler);
-
-        try {
-          // 调用文件读取，不传递回调函数
-          const result = await window.electron.ipcRenderer.invoke(
-            "read-file-with-progress",
-            fileInfo.path
-          );
-
-          if (result.success) {
-            // 创建File对象
-            const uint8Array = new Uint8Array(result.data.buffer);
-            const blob = new Blob([uint8Array], { type: result.data.type });
-            const file = new File([blob], result.data.name, {
-              type: result.data.type,
-              lastModified: result.data.lastModified,
-            });
-
-            // 添加路径信息
-            Object.defineProperty(file, "path", {
-              value: fileInfo.path,
-              writable: false,
-            });
-
-            // 添加到fileManager store
-            const fileData = await fileManagerStore.addFile(file);
-            emit("file-added", fileData);
-            processedCount++;
-          }
-
-        } catch (error) {
-          console.error(`加载文件失败 ${fileInfo.path}:`, error);
-        } finally {
-          // 清理进度监听器
-          window.electron.ipcRenderer.removeListener(
-            "file-read-progress",
-            progressHandler
-          );
-        }
-      } catch (error) {
-        console.error(`处理文件失败 ${fileInfo.path}:`, error);
-      }
-    }
-
-    uploadStatus.value = {
-      currentFile: "加载完成",
-      progress: 1,
-      details: `成功加载 ${processedCount} 个文件`,
-    };
-
-    if (processedCount > 0) {
-      $q.notify({
-        type: "positive",
-        message: `成功添加 ${processedCount} 个文件`,
-        position: "top",
-        timeout: 2000,
-      });
-    }
-  } catch (error) {
-    console.error("文件加载失败:", error);
-    $q.notify({
-      type: "negative",
-      message: "文件加载失败: " + error.message,
-      position: "top",
-    });
-  } finally {
-    // 延迟关闭进度对话框
-    setTimeout(() => {
-      showUploadProgress.value = false;
-    }, 1000);
-  }
-};
-
-
-// 取消上传
-const cancelUpload = () => {
-  canCancelUpload.value = false;
-  showUploadProgress.value = false;
-  $q.notify({
-    type: "info",
-    message: "已取消文件上传",
-    position: "top",
-  });
-};
-
-// 获取文件过滤器（Electron用）
-const getFileFilters = () => {
-  if (props.accept === "*") {
-    return [];
-  }
-
-  const extensions = props.accept
-    .split(",")
-    .map((ext) => ext.trim().replace(".", ""));
-  return [
-    {
-      name: "支持的文件",
-      extensions: extensions,
-    },
-  ];
-};
-
-// 获取文件图标
-const getFileIcon = (file) => {
-  const type = file.type?.split("/")[0] || "";
-  return (
-    {
-      image: "photo",
-      video: "movie",
-      audio: "music_note",
-      text: "description",
-      application: "insert_drive_file",
-    }[type] || "insert_drive_file"
-  );
-};
-
-// 暴露方法供外部调用
 defineExpose({
   selectFiles,
   removeFile,
@@ -705,6 +532,7 @@ defineExpose({
 
 .file-select-btn {
   flex: 1;
+  min-width: 44px;
   transition: all 0.3s ease;
 }
 
@@ -713,56 +541,42 @@ defineExpose({
   box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
 }
 
+.icon-only {
+  min-width: 44px;
+  max-width: 44px;
+  padding: 8px;
+}
+
 .file-indicator {
   position: relative;
 }
 
 .file-count-btn {
   min-width: 40px;
-  transition: all 0.3s ease;
-}
-
-.file-count-btn:hover {
-  transform: scale(1.1);
 }
 
 .file-list-popup {
   position: fixed;
   z-index: 3200;
-  box-shadow: 0 8px 24px rgba(156, 39, 176, 0.3);
   border-radius: 12px;
-  border: 2px solid rgba(156, 39, 176, 0.2);
+  border: 1px solid rgba(59, 130, 246, 0.16);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
   backdrop-filter: blur(10px);
-  animation: slideUp 0.3s ease-out;
-  overflow: hidden;
-}
-
-@keyframes slideUp {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .file-list-container {
   min-height: 10vh;
   max-height: 50vh;
-  overflow-y: auto;
 }
 
 .file-item {
   border-radius: 8px;
   margin: 2px 4px;
-  transition: all 0.2s ease;
 }
 
-.file-item:hover {
-  background-color: rgba(156, 39, 176, 0.1);
-  transform: translateX(4px);
+.file-item-active {
+  background: rgba(59, 130, 246, 0.1);
 }
 
 .ellipsis {
@@ -772,67 +586,11 @@ defineExpose({
   max-width: 220px;
 }
 
-.hover-scale {
-  transition: transform 0.2s ease;
-}
-
-.hover-scale:hover {
-  transform: scale(1.2);
-}
-
-/* 深紫色主题样式 */
-.bg-deep-purple-2 {
-  background-color: #d1c4e9 !important;
-}
-
-.text-deep-purple-10 {
-  color: #4a148c !important;
-}
-
-.text-deep-purple-8 {
-  color: #6a1b9a !important;
-}
-.file-select-btn {
-  flex: 1;
-  transition: all 0.3s ease;
-  min-width: 44px; /* 确保按钮有最小宽度以容纳图标 */
-}
-
-.file-select-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-}
-
-/* 小屏幕下的图标模式样式 */
-.icon-only {
-  min-width: 44px;
-  max-width: 44px;
-  padding: 8px;
-}
-
-/* 使用Quasar CSS类的替代方案 */
 @media (max-width: 599px) {
   .file-select-btn {
     min-width: 44px;
     max-width: 44px;
     padding: 8px;
-  }
-
-  .file-select-btn .q-btn__content {
-    min-width: auto;
-  }
-}
-
-/* 超小屏幕优化 */
-@media (max-width: 320px) {
-  .file-selector-container {
-    gap: 4px;
-  }
-
-  .file-select-btn {
-    min-width: 40px;
-    max-width: 40px;
-    padding: 6px;
   }
 }
 </style>

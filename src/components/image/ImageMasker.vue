@@ -198,7 +198,6 @@ const props = defineProps({
 const emit = defineEmits([
   "update:mask",
   "update:drawing-mode",
-  "update:ctrl-pressed",
   "update:tool-state",
   "update:toolbar-interacting",
 ]);
@@ -212,7 +211,6 @@ const brushSize = ref(DEFAULT_IMAGE_BRUSH.size);
 const brushColor = ref(DEFAULT_IMAGE_BRUSH.color);
 const brushAlpha = ref(DEFAULT_IMAGE_BRUSH.alpha);
 const toolMode = ref(MASK_TOOL_MODES.DRAW);
-const isCtrlPressed = ref(false);
 const cursorPosition = ref(null);
 const history = ref([]);
 const historyIndex = ref(-1);
@@ -230,9 +228,7 @@ const toolbarPopupClass = "mask-toolbar-popup";
 const isToolbarPointerRegionActive = ref(false);
 
 const drawingModeActive = computed(() => Boolean(props.drawingMode));
-const effectiveDrawingEnabled = computed(
-  () => Boolean(props.show) && (drawingModeActive.value || isCtrlPressed.value)
-);
+const effectiveDrawingEnabled = computed(() => Boolean(props.show) && drawingModeActive.value);
 const currentToolMode = computed(() => normalizeMaskToolMode(toolMode.value));
 const isToolbarInteracting = computed(
   () => Boolean(props.showToolbar) && (isDraggingToolbar.value || isToolbarPointerRegionActive.value)
@@ -618,7 +614,7 @@ const updateBrushAlpha = (value) => {
 
 const toggleDrawing = () => {
   const nextValue = !drawingModeActive.value;
-  if (!nextValue && !isCtrlPressed.value && rasterMaskEditor.isOperating.value) {
+  if (!nextValue && rasterMaskEditor.isOperating.value) {
     finishCurrentOperation();
   }
   emit("update:drawing-mode", nextValue);
@@ -888,31 +884,6 @@ onUnmounted(() => {
   detachDrawingWindowListeners();
 });
 
-useEventListener(window, "keydown", (event) => {
-  if (!props.show) return;
-
-  if (event.key === "z" && event.ctrlKey && !event.shiftKey) {
-    event.preventDefault();
-    undo();
-  } else if (event.key === "b") {
-    event.preventDefault();
-    toggleDrawing();
-  } else if (event.key === "Control") {
-    isCtrlPressed.value = true;
-    emit("update:ctrl-pressed", true);
-  }
-});
-
-useEventListener(window, "keyup", (event) => {
-  if (event.key !== "Control") return;
-
-  isCtrlPressed.value = false;
-  emit("update:ctrl-pressed", false);
-  if (!drawingModeActive.value && rasterMaskEditor.isOperating.value) {
-    finishCurrentOperation();
-  }
-});
-
 useEventListener(window, "mousemove", (event) => {
   if (effectiveDrawingEnabled.value && !isToolbarInteracting.value) {
     cursorPosition.value = {
@@ -993,7 +964,7 @@ watch(
 watch(
   () => props.drawingMode,
   (enabled) => {
-    if (!enabled && !isCtrlPressed.value && rasterMaskEditor.isOperating.value) {
+    if (!enabled && rasterMaskEditor.isOperating.value) {
       finishCurrentOperation();
     }
   }
@@ -1055,6 +1026,10 @@ watch(
 defineExpose({
   updateMask,
   getMaskData,
+  undo,
+  resetView,
+  isReady: () => Boolean(maskCanvas.value && ctx.value),
+  canUndo: () => canUndo.value,
 });
 </script>
 

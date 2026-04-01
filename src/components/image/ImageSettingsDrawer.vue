@@ -1,11 +1,5 @@
 <template>
-  <q-drawer
-    v-model="drawerModel"
-    show-if-above
-    overlay
-    side="right"
-    bordered
-  >
+  <q-drawer v-model="drawerModel" show-if-above overlay side="right" bordered>
     <div class="q-pa-md">
       <div class="text-h6 q-mb-md flex items-center">
         <q-icon name="settings" class="q-mr-sm" />
@@ -27,12 +21,8 @@
           <q-item>
             <q-item-section>
               <q-select
-                :model-value="actionScope"
-                :options="[
-                  { label: '仅当前文件', value: 'current' },
-                  { label: '仅选中文件', value: 'selected' },
-                  { label: '选中文件夹', value: 'folder' },
-                ]"
+                :model-value="normalizedActionScope"
+                :options="actionScopeOptions"
                 label="作用范围"
                 filled
                 @update:model-value="$emit('update:action-scope', $event)"
@@ -67,14 +57,14 @@
               <q-btn
                 color="primary"
                 icon="content_copy"
-                label="当前蒙版作用于选中文件"
+                label="将当前蒙版作用于选中文件"
                 :disable="selectedFiles.length === 0 || !currentMask?.data"
                 @click="$emit('apply-current-mask-to-selected')"
               />
             </q-item-section>
           </q-item>
 
-          <q-item v-if="actionScope?.value === 'folder'">
+          <q-item v-if="normalizedActionScope?.value === 'folder'">
             <q-item-section>
               <folder-selector
                 :model-value="folderPath"
@@ -84,7 +74,7 @@
             </q-item-section>
           </q-item>
 
-          <q-item v-if="actionScope?.value === 'folder'">
+          <q-item v-if="normalizedActionScope?.value === 'folder'">
             <q-item-section>
               <folder-selector
                 :model-value="maskFolderPath"
@@ -106,6 +96,19 @@
 
           <q-item>
             <q-item-section>
+              <q-btn
+                outline
+                color="primary"
+                icon="folder_open"
+                label="打开保存路径"
+                :disable="!canOpenSavePath"
+                @click="$emit('open-save-path')"
+              />
+            </q-item-section>
+          </q-item>
+
+          <q-item>
+            <q-item-section>
               <cuda-status
                 :backend-running="backendRunning"
                 @cuda-status-changed="$emit('cuda-status-changed', $event)"
@@ -120,8 +123,8 @@
           <q-item>
             <q-item-section>
               <q-select
-                :model-value="ocrLang"
-                :options="['中文', '英文', '日文']"
+                :model-value="normalizedOcrLang"
+                :options="ocrLangOptions"
                 label="识别语言"
                 filled
                 @update:model-value="$emit('update:ocr-lang', $event)"
@@ -137,11 +140,11 @@
               />
             </q-item-section>
           </q-item>
-          <div class="text-h6">OCR功能将在作者B站粉丝超过2000时开发</div>
+          <div class="text-h6">OCR 功能将在作者 B 站粉丝超过 1000 时开放</div>
         </q-list>
       </div>
 
-      <div v-else class="text-h6">修复功能将在作者B站粉丝超过3000时开发</div>
+      <div v-else class="text-h6">修复功能将在作者 B 站粉丝超过 1000 时开放</div>
     </div>
   </q-drawer>
 </template>
@@ -152,6 +155,14 @@ import { computed } from "vue";
 import CudaStatus from "src/components/common/CudaStatus.vue";
 import FolderSelector from "src/components/common/FolderSelector.vue";
 import ModelSelector from "src/components/common/ModelSelector.vue";
+
+const actionScopeOptions = [
+  { label: "仅当前文件", value: "current" },
+  { label: "仅选中文件", value: "selected" },
+  { label: "整个文件夹", value: "folder" },
+];
+
+const ocrLangOptions = ["中文", "英文", "日文"];
 
 const props = defineProps({
   drawerOpen: {
@@ -190,6 +201,10 @@ const props = defineProps({
     type: String,
     default: "",
   },
+  canOpenSavePath: {
+    type: Boolean,
+    default: false,
+  },
   ocrLang: {
     type: String,
     default: "中文",
@@ -216,8 +231,18 @@ const emit = defineEmits([
   "update:auto-layout",
   "confirm-delete-selected",
   "apply-current-mask-to-selected",
+  "open-save-path",
   "cuda-status-changed",
 ]);
+
+const normalizedActionScope = computed(() => {
+  const matched = actionScopeOptions.find((option) => option.value === props.actionScope?.value);
+  return matched || actionScopeOptions[0];
+});
+
+const normalizedOcrLang = computed(() =>
+  ocrLangOptions.includes(props.ocrLang) ? props.ocrLang : "中文"
+);
 
 const drawerModel = computed({
   get: () => props.drawerOpen,

@@ -1,5 +1,5 @@
 <template>
-  <div class="resource-manage">
+  <div class="resource-manage" :class="{ 'resource-manage--dark': $q.dark.isActive }">
     <VideoUploaderButton />
 
     <div v-if="videoStore.hasVideoFile" class="q-mt-md">
@@ -147,7 +147,7 @@
               color="primary"
               icon="folder_open"
               :label="actionButtonMode === 'icon' ? undefined : openButtonLabel"
-              :disable="!lastOutputPath"
+              :disable="!canOpenOutput"
               :class="['action-button', { 'action-button-icon-only': actionButtonMode === 'icon' }]"
               @click="emit('open-output')"
             >
@@ -242,6 +242,7 @@
 
 <script setup>
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
+import { useQuasar } from "quasar";
 
 import { useVideoManagerStore } from "src/stores/videoManager";
 import { formatSeconds } from "src/utils/videoMaskUtils";
@@ -270,6 +271,10 @@ defineProps({
     default: 0,
   },
   canRun: {
+    type: Boolean,
+    default: false,
+  },
+  canOpenOutput: {
     type: Boolean,
     default: false,
   },
@@ -315,6 +320,7 @@ const emit = defineEmits([
   "restore-history",
 ]);
 
+const $q = useQuasar();
 const videoStore = useVideoManagerStore();
 const tab = ref("info");
 const showHistoryDialog = ref(false);
@@ -363,6 +369,7 @@ const updateActionButtonMode = () => {
 
 const createMask = () => {
   videoStore.createMask({
+    name: `蒙版 ${videoStore.masks.length + 1}`,
     startTime: 0,
     endTime: videoStore.videoDuration,
   });
@@ -436,6 +443,11 @@ onUnmounted(() => {
 .value {
   color: #111827;
   text-align: right;
+}
+
+.resource-manage--dark .info-item .label,
+.resource-manage--dark .info-item .value {
+  color: #fff;
 }
 
 .mask-list {

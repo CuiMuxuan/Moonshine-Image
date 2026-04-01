@@ -339,6 +339,9 @@ const getBasePointFromEvent = (event) => {
   return getInverseTransformedPoint(sourcePoint);
 };
 
+const getMaskPreviewOpacity = (maskId) =>
+  maskId === videoStore.selectedMaskId ? 1 : 0.28;
+
 const renderOverlay = () => {
   const canvas = overlayCanvasRef.value;
   if (!canvas) return;
@@ -357,7 +360,7 @@ const renderOverlay = () => {
       mask.id === editableMaskId.value && editableCanvasRef.value ? editableCanvasRef.value : asset.image;
 
     ctx.save();
-    ctx.globalAlpha = mask.id === videoStore.selectedMaskId ? 0.4 : 0.2;
+    ctx.globalAlpha = getMaskPreviewOpacity(mask.id);
     ctx.translate(videoAnchor.value.x + state.x, videoAnchor.value.y + state.y);
     ctx.scale(state.scale, state.scale);
     ctx.translate(-videoAnchor.value.x, -videoAnchor.value.y);
@@ -668,6 +671,11 @@ onMounted(() => {
 onUnmounted(() => {
   cancelPreviewDraw();
   finishInteraction();
+});
+
+defineExpose({
+  isReady: () => Boolean(overlayCanvasRef.value && videoStore.selectedMask),
+  cancelPreviewDraw,
 });
 </script>
 

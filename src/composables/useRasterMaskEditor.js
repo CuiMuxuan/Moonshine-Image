@@ -33,27 +33,44 @@ const normalizeRect = (startPoint, endPoint, canvas) => {
   };
 };
 
-const getCanvasImageData = (canvas, ctx) => {
-  if (!canvas || !ctx) return null;
-  return ctx.getImageData(0, 0, canvas.width, canvas.height);
+const createDirtyRect = (x, y, width, height) => {
+  const left = Math.floor(x);
+  const top = Math.floor(y);
+  const right = Math.ceil(x + width);
+  const bottom = Math.ceil(y + height);
+
+  return {
+    x: left,
+    y: top,
+    width: Math.max(1, right - left),
+    height: Math.max(1, bottom - top),
+  };
 };
 
-const areImageDatasEqual = (data1, data2) => {
-  if (!data1 || !data2) return false;
-  if (data1.width !== data2.width || data1.height !== data2.height) return false;
+const expandDirtyRect = (currentRect, nextRect) => {
+  if (!nextRect) return currentRect;
+  if (!currentRect) return nextRect;
 
-  const source = data1.data;
-  const target = data2.data;
-  if (source.length !== target.length) return false;
+  const left = Math.min(currentRect.x, nextRect.x);
+  const top = Math.min(currentRect.y, nextRect.y);
+  const right = Math.max(currentRect.x + currentRect.width, nextRect.x + nextRect.width);
+  const bottom = Math.max(currentRect.y + currentRect.height, nextRect.y + nextRect.height);
 
-  for (let index = 0; index < source.length; index += 4) {
-    if (
-      (source[index + 3] > 0 || target[index + 3] > 0) &&
-      (source[index] !== target[index] ||
-        source[index + 1] !== target[index + 1] ||
-        source[index + 2] !== target[index + 2] ||
-        source[index + 3] !== target[index + 3])
-    ) {
+  return {
+    x: left,
+    y: top,
+    width: Math.max(1, right - left),
+    height: Math.max(1, bottom - top),
+  };
+};
+
+const areImageDataBuffersEqual = (left, right) => {
+  if (!left || !right) return false;
+  if (left.width !== right.width || left.height !== right.height) return false;
+  if (left.data.length !== right.data.length) return false;
+
+  for (let index = 0; index < left.data.length; index += 1) {
+    if (left.data[index] !== right.data[index]) {
       return false;
     }
   }
@@ -69,6 +86,7 @@ export const useRasterMaskEditor = ({
 } = {}) => {
   const isOperating = ref(false);
   const operationMode = ref(MASK_TOOL_MODES.DRAW);
+  const operationTool = ref(null);
   const startPoint = ref(null);
   const lastPoint = ref(null);
   const rectPreview = ref(null);
@@ -76,6 +94,7 @@ export const useRasterMaskEditor = ({
   const snapshotCtx = ref(null);
   const operationCanvas = ref(null);
   const operationCtx = ref(null);
+  const dirtyRect = ref(null);
 
   const getCanvas = () => canvasRef?.value || null;
   const getCtx = () => ctxRef?.value || null;
@@ -146,56 +165,99 @@ export const useRasterMaskEditor = ({
   const clearOperationCanvas = () => {
     const operation = ensureOperationCanvas();
     if (!operation || !operationCtx.value) return;
-
     operationCtx.value.clearRect(0, 0, operation.width, operation.height);
   };
 
-  const restoreSnapshot = () => {
-    const canvas = getCanvas();
-    const ctx = getCtx();
-    if (!canvas || !ctx || !snapshotCanvas.value) return;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(snapshotCanvas.value, 0, 0);
+  const clearDirtyRect = () => {
+    dirtyRect.value = null;
   };
 
-  const renderOperationPreview = () => {
+  const markDirtyRect = (nextDirtyRect) => {
+    dirtyRect.value = expandDirtyRect(dirtyRect.value, nextDirtyRect);
+    return dirtyRect.value;
+  };
+
+  const restoreSnapshotRegion = (region) => {
+    const ctx = getCtx();
+    if (!ctx || !snapshotCanvas.value || !region) return;
+
+    ctx.clearRect(region.x, region.y, region.width, region.height);
+    ctx.drawImage(
+      snapshotCanvas.value,
+      region.x,
+      region.y,
+      region.width,
+      region.height,
+      region.x,
+      region.y,
+      region.width,
+      region.height
+    );
+  };
+
+  const renderOperationRegion = (region) => {
     const ctx = getCtx();
     const operation = ensureOperationCanvas();
-    if (!ctx || !operation) return;
+    const activeTool = operationTool.value;
+    if (!ctx || !operation || !region || !activeTool) return;
 
-    const tool = getNormalizedTool();
-    restoreSnapshot();
+    restoreSnapshotRegion(region);
 
     ctx.save();
-    if (tool.mode === MASK_TOOL_MODES.ERASE) {
+    if (activeTool.mode === MASK_TOOL_MODES.ERASE) {
       ctx.globalCompositeOperation = "destination-out";
-      ctx.drawImage(operation, 0, 0);
+      ctx.drawImage(
+        operation,
+        region.x,
+        region.y,
+        region.width,
+        region.height,
+        region.x,
+        region.y,
+        region.width,
+        region.height
+      );
     } else {
       ctx.globalCompositeOperation = "source-over";
-      ctx.globalAlpha = tool.brushAlpha;
-      ctx.drawImage(operation, 0, 0);
+      ctx.globalAlpha = activeTool.brushAlpha;
+      ctx.drawImage(
+        operation,
+        region.x,
+        region.y,
+        region.width,
+        region.height,
+        region.x,
+        region.y,
+        region.width,
+        region.height
+      );
     }
     ctx.restore();
   };
 
+  const getStrokeDirtyRect = (fromPoint, toPoint, brushSize) => {
+    if (!fromPoint || !toPoint) return null;
+
+    const padding = Math.ceil(brushSize / 2) + 2;
+    const left = Math.min(fromPoint.x, toPoint.x) - padding;
+    const top = Math.min(fromPoint.y, toPoint.y) - padding;
+    const right = Math.max(fromPoint.x, toPoint.x) + padding;
+    const bottom = Math.max(fromPoint.y, toPoint.y) + padding;
+    return createDirtyRect(left, top, right - left, bottom - top);
+  };
+
   const drawStrokeSegment = (fromPoint, toPoint) => {
     const operation = ensureOperationCanvas();
-    if (!operationCtx.value || !operation || !fromPoint || !toPoint) return;
-
-    const tool = getNormalizedTool();
-    operationCtx.value.save();
-    if (tool.mode === MASK_TOOL_MODES.ERASE) {
-      operationCtx.value.globalCompositeOperation = "source-over";
-      operationCtx.value.strokeStyle = "rgba(0, 0, 0, 1)";
-      operationCtx.value.fillStyle = "rgba(0, 0, 0, 1)";
-    } else {
-      operationCtx.value.globalCompositeOperation = "source-over";
-      operationCtx.value.strokeStyle = hexToRgba(tool.brushColor, 1);
-      operationCtx.value.fillStyle = hexToRgba(tool.brushColor, 1);
+    const activeTool = operationTool.value;
+    if (!operation || !operationCtx.value || !fromPoint || !toPoint || !activeTool) {
+      return;
     }
 
-    operationCtx.value.lineWidth = tool.brushSize;
+    operationCtx.value.save();
+    operationCtx.value.globalCompositeOperation = "source-over";
+    operationCtx.value.strokeStyle = hexToRgba(activeTool.brushColor, 1);
+    operationCtx.value.fillStyle = hexToRgba(activeTool.brushColor, 1);
+    operationCtx.value.lineWidth = activeTool.brushSize;
     operationCtx.value.lineCap = "round";
     operationCtx.value.lineJoin = "round";
     operationCtx.value.beginPath();
@@ -204,70 +266,84 @@ export const useRasterMaskEditor = ({
     operationCtx.value.stroke();
 
     operationCtx.value.beginPath();
-    operationCtx.value.arc(toPoint.x, toPoint.y, tool.brushSize / 2, 0, Math.PI * 2);
+    operationCtx.value.arc(toPoint.x, toPoint.y, activeTool.brushSize / 2, 0, Math.PI * 2);
     operationCtx.value.fill();
     operationCtx.value.restore();
-    renderOperationPreview();
+
+    const region = getStrokeDirtyRect(fromPoint, toPoint, activeTool.brushSize);
+    markDirtyRect(region);
+    renderOperationRegion(region);
     onPreviewChange?.();
   };
 
-  const drawRect = (nextPoint) => {
+  const drawRectPreview = (nextPoint) => {
     const canvas = getCanvas();
-    const operation = ensureOperationCanvas();
-    if (!canvas || !operation || !operationCtx.value || !startPoint.value) return;
+    if (!canvas || !startPoint.value) return;
 
-    const rect = normalizeRect(startPoint.value, nextPoint, canvas);
-    rectPreview.value = rect;
-    clearOperationCanvas();
-
-    if (!rect) {
-      renderOperationPreview();
-      onPreviewChange?.();
-      return;
-    }
-
-    const tool = getNormalizedTool();
-    operationCtx.value.save();
-    if (tool.mode === MASK_TOOL_MODES.ERASE) {
-      operationCtx.value.globalCompositeOperation = "source-over";
-      operationCtx.value.fillStyle = "rgba(0, 0, 0, 1)";
-    } else {
-      operationCtx.value.globalCompositeOperation = "source-over";
-      operationCtx.value.fillStyle = hexToRgba(tool.brushColor, 1);
-    }
-    operationCtx.value.fillRect(rect.x, rect.y, rect.width, rect.height);
-    operationCtx.value.restore();
-    renderOperationPreview();
+    rectPreview.value = normalizeRect(startPoint.value, nextPoint, canvas);
     onPreviewChange?.();
+  };
+
+  const applyRectToCanvas = (rect) => {
+    const ctx = getCtx();
+    const activeTool = operationTool.value;
+    if (!ctx || !rect || !activeTool) return;
+
+    const region = createDirtyRect(rect.x, rect.y, rect.width, rect.height);
+    markDirtyRect(region);
+    restoreSnapshotRegion(region);
+
+    ctx.save();
+    if (activeTool.mode === MASK_TOOL_MODES.ERASE) {
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.fillStyle = "rgba(0, 0, 0, 1)";
+    } else {
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = hexToRgba(activeTool.brushColor, activeTool.brushAlpha);
+    }
+    ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+    ctx.restore();
+  };
+
+  const hasDirtyChanges = () => {
+    const canvas = getCanvas();
+    const ctx = getCtx();
+    if (!canvas || !ctx || !dirtyRect.value || !snapshotCtx.value) {
+      return false;
+    }
+
+    const { x, y, width, height } = dirtyRect.value;
+    const currentImageData = ctx.getImageData(x, y, width, height);
+    const originalImageData = snapshotCtx.value.getImageData(x, y, width, height);
+    return !areImageDataBuffersEqual(currentImageData, originalImageData);
   };
 
   const beginOperation = (point) => {
     const canvas = getCanvas();
     const ctx = getCtx();
     if (!canvas || !ctx) {
-      return {
-        started: false,
-      };
+      return { started: false };
     }
 
     const clampedPoint = clampPointToCanvas(point, canvas);
     if (!clampedPoint) {
-      return {
-        started: false,
-      };
+      return { started: false };
     }
 
     snapshotBaseCanvas();
     clearOperationCanvas();
+    clearDirtyRect();
+
     const tool = getNormalizedTool();
     operationMode.value = tool.mode;
+    operationTool.value = tool;
     startPoint.value = clampedPoint;
     lastPoint.value = clampedPoint;
     rectPreview.value = null;
     isOperating.value = true;
 
     if (tool.mode === MASK_TOOL_MODES.RECT) {
-      drawRect(clampedPoint);
+      drawRectPreview(clampedPoint);
     } else {
       drawStrokeSegment(clampedPoint, clampedPoint);
     }
@@ -281,21 +357,17 @@ export const useRasterMaskEditor = ({
 
   const updateOperation = (point) => {
     if (!isOperating.value) {
-      return {
-        updated: false,
-      };
+      return { updated: false };
     }
 
     const canvas = getCanvas();
     const clampedPoint = clampPointToCanvas(point, canvas);
     if (!canvas || !clampedPoint) {
-      return {
-        updated: false,
-      };
+      return { updated: false };
     }
 
     if (operationMode.value === MASK_TOOL_MODES.RECT) {
-      drawRect(clampedPoint);
+      drawRectPreview(clampedPoint);
       lastPoint.value = clampedPoint;
       return {
         updated: true,
@@ -325,18 +397,27 @@ export const useRasterMaskEditor = ({
       updateOperation(point);
     }
 
+    const finalRect = rectPreview.value;
+    if (operationMode.value === MASK_TOOL_MODES.RECT && finalRect) {
+      applyRectToCanvas(finalRect);
+    }
+
+    const changed = hasDirtyChanges();
     const canvas = getCanvas();
     const ctx = getCtx();
-    const currentImageData = getCanvasImageData(canvas, ctx);
-    const startImageData = getCanvasImageData(snapshotCanvas.value, snapshotCtx.value);
-    const changed = !areImageDatasEqual(currentImageData, startImageData);
+    const currentImageData =
+      changed && canvas && ctx ? ctx.getImageData(0, 0, canvas.width, canvas.height) : null;
 
     isOperating.value = false;
     startPoint.value = null;
     lastPoint.value = null;
-    const finalRect = rectPreview.value;
     rectPreview.value = null;
+    operationMode.value = MASK_TOOL_MODES.DRAW;
+    operationTool.value = null;
     clearOperationCanvas();
+    clearDirtyRect();
+
+    onPreviewChange?.();
 
     return {
       changed,
@@ -348,17 +429,19 @@ export const useRasterMaskEditor = ({
   const cancelOperation = ({ restore = true } = {}) => {
     if (!isOperating.value) return;
 
-    if (restore) {
-      restoreSnapshot();
-      onPreviewChange?.();
+    if (restore && dirtyRect.value) {
+      restoreSnapshotRegion(dirtyRect.value);
     }
 
     clearOperationCanvas();
-
+    clearDirtyRect();
     isOperating.value = false;
     startPoint.value = null;
     lastPoint.value = null;
     rectPreview.value = null;
+    operationMode.value = MASK_TOOL_MODES.DRAW;
+    operationTool.value = null;
+    onPreviewChange?.();
   };
 
   return {
@@ -368,6 +451,5 @@ export const useRasterMaskEditor = ({
     updateOperation,
     finishOperation,
     cancelOperation,
-    restoreSnapshot,
   };
 };

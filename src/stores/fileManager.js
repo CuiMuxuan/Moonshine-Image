@@ -1,62 +1,138 @@
 import { defineStore } from "pinia";
-import { useConfigStore } from "./config";
 import { v4 as uuidv4 } from "uuid";
+
+import { useConfigStore } from "./config";
+
+const DEFAULT_PROCESSING_CONFIG = Object.freeze({
+  imageType: "path",
+  maskType: "base64",
+  responseType: "path",
+  tempPath: "",
+});
+
+const getRendererDisplayUrl = (filePath) => {
+  if (!filePath) return "";
+
+  const normalizedPath = String(filePath).replace(/\\/g, "/");
+  if (window.electron) {
+    return `atom://${normalizedPath}`;
+  }
+  return `file://${normalizedPath}`;
+};
+
+const resolveMimeTypeFromName = (fileName = "") => {
+  const normalized = String(fileName || "").toLowerCase();
+  if (normalized.endsWith(".png")) return "image/png";
+  if (normalized.endsWith(".webp")) return "image/webp";
+  if (normalized.endsWith(".gif")) return "image/gif";
+  if (normalized.endsWith(".bmp")) return "image/bmp";
+  return "image/jpeg";
+};
+
+const definePathProperty = (file, filePath) => {
+  if (!(file instanceof Blob) || !filePath) {
+    return file;
+  }
+
+  try {
+    Object.defineProperty(file, "path", {
+      configurable: true,
+      enumerable: true,
+      writable: false,
+      value: filePath,
+    });
+  } catch {
+    // Ignore failures on platforms where File.path is read-only.
+  }
+
+  return file;
+};
+
+const createRendererFile = (data = {}, fallback = {}) => {
+  const bytes = new Uint8Array(Array.isArray(data.buffer) ? data.buffer : []);
+  const fileName = data.name || fallback.name || "image";
+  const fileType = data.type || fallback.type || resolveMimeTypeFromName(fileName);
+  const lastModified = Number(data.lastModified || fallback.lastModified || Date.now());
+  const filePath = data.path || fallback.path || "";
+  const file = new File([bytes], fileName, {
+    type: fileType,
+    lastModified,
+  });
+
+  return definePathProperty(file, filePath);
+};
+
+const buildMissingFileMessage = (fileName = "当前文件") =>
+  `${fileName} 对应的本地文件已被删除、移动或不可访问，请重新导入后再试`;
+
+const resolveOriginalFilePath = (file) => {
+  const latestPath = file?.history?.[file.history.length - 1]?.type === "path"
+    ? file.history[file.history.length - 1].data
+    : "";
+
+  return (
+    file?.originalFile?.path ||
+    file?.image?.path ||
+    file?.image?.data ||
+    latestPath ||
+    ""
+  );
+};
+
+const convertBase64ToArrayBuffer = (base64Data) => {
+  const binaryString = atob(base64Data);
+  const arrayBuffer = new ArrayBuffer(binaryString.length);
+  const uint8Array = new Uint8Array(arrayBuffer);
+
+  for (let index = 0; index < binaryString.length; index += 1) {
+    uint8Array[index] = binaryString.charCodeAt(index);
+  }
+
+  return arrayBuffer;
+};
 
 export const useFileManagerStore = defineStore("fileManager", {
   state: () => ({
-    // 文件列表，每个文件包含ID、image、mask和历史记录
     files: [],
-    // 当前选中的文件ID
     currentFileId: null,
     selectedFileIds: [],
-    // 全局处理配置
     processingConfig: {
-      imageType: "base64", // 'base64' | 'path'
-      maskType: "base64", // 'base64' | 'path'
-      responseType: "base64", // 'base64' | 'path'
-      tempPath: "",
+      ...DEFAULT_PROCESSING_CONFIG,
     },
   }),
 
   getters: {
-    currentFile: (state) => {
-      return state.files.find((file) => file.id === state.currentFileId);
-    },
+    currentFile: (state) => state.files.find((file) => file.id === state.currentFileId) || null,
 
     getCurrentDisplayImage: (state) => {
-      const file = state.files.find((file) => file.id === state.currentFileId);
+      const file = state.files.find((item) => item.id === state.currentFileId);
       if (!file || !file.history.length) return null;
+      return file.history[file.history.length - 1];
+    },
 
-      // 返回历史记录最上层的图片
-      const latestHistory = file.history[file.history.length - 1];
-      return latestHistory;
-    },
-    selectedFiles: (state) => {
-      return state.files.filter((file) =>
-        state.selectedFileIds.includes(file.id)
-      );
-    },
+    selectedFiles: (state) =>
+      state.files.filter((file) => state.selectedFileIds.includes(file.id)),
 
     hasProcessedImages: (state) => {
-      const file = state.files.find((file) => file.id === state.currentFileId);
+      const file = state.files.find((item) => item.id === state.currentFileId);
       return file?.history?.length > 1 || false;
     },
   },
 
   actions: {
-    // 初始化处理配置
     initProcessingConfig() {
       const configStore = useConfigStore();
       const method =
-        configStore.config.advanced?.imageProcessingMethod || "base64";
+        configStore.config.advanced?.imageProcessingMethod === "base64" ? "base64" : "path";
+
       this.processingConfig = {
+        ...DEFAULT_PROCESSING_CONFIG,
         imageType: method,
-        maskType: "base64", // mask始终使用base64
         responseType: method,
+        tempPath: configStore.config.fileManagement?.tempPath || "",
       };
     },
 
-    // 从状态恢复fileManager
     restoreFromState(savedState) {
       if (!savedState) return;
 
@@ -64,12 +140,11 @@ export const useFileManagerStore = defineStore("fileManager", {
       this.currentFileId = savedState.currentFileId || null;
       this.selectedFileIds = savedState.selectedFileIds || [];
       this.processingConfig = {
-        ...this.processingConfig,
+        ...DEFAULT_PROCESSING_CONFIG,
         ...savedState.processingConfig,
       };
     },
 
-    // 获取当前状态的快照
     getStateSnapshot() {
       return {
         files: [...this.files],
@@ -79,56 +154,48 @@ export const useFileManagerStore = defineStore("fileManager", {
       };
     },
 
-    // 添加文件并初始化
     async addFile(file, progressCallback = null) {
       const fileId = uuidv4();
       const configStore = useConfigStore();
+      const preferredMethod =
+        configStore.config.advanced?.imageProcessingMethod === "base64" ? "base64" : "path";
 
       let imageData;
-
-      // 根据处理方式初始化图片数据
-      if (
-        configStore.config.advanced?.imageProcessingMethod === "path" &&
-        window.electron &&
-        file.path
-      ) {
-        // 路径模式：使用文件路径
+      if (preferredMethod === "path" && window.electron && file?.path) {
         imageData = {
           type: "path",
           data: file.path,
-          displayUrl: window.electron
-            ? `atom://${file.path.replace(/\\/g, "/")}`
-            : `file://${file.path}`,
+          displayUrl: getRendererDisplayUrl(file.path),
         };
-        // 路径模式下模拟进度完成
-        if (progressCallback) {
-          progressCallback(1.0);
-        }
+        progressCallback?.(1);
       } else {
-        // base64模式：转换为base64，传递进度回调
         const base64 = await this.fileToBase64(file, progressCallback);
         imageData = {
           type: "base64",
-          data: base64.split(",")[1], // 去掉data:image前缀
-          displayUrl: base64, // 用于显示
+          data: base64.split(",")[1],
+          displayUrl: base64,
         };
       }
 
+      const normalizedFile = {
+        ...file,
+        type: file?.type || resolveMimeTypeFromName(file?.name),
+        size: Number(file?.size || 0),
+      };
+
       const fileData = {
         id: fileId,
-        name: file.name,
-        type: file.type || "image/jpeg", // 添加 type 属性，确保有默认值
-        size: file.size || 0, // 添加 size 属性，确保有默认值
-        originalFile: file,
+        name: normalizedFile.name,
+        type: normalizedFile.type,
+        size: normalizedFile.size,
+        originalFile: normalizedFile,
         image: imageData,
-        mask: null, // 初始化时没有mask
-        history: [imageData], // 历史记录，初始包含原图
+        mask: null,
+        history: [imageData],
         createdAt: new Date().toISOString(),
       };
 
       this.files.push(fileData);
-
-      // 如果是第一个文件，设为当前文件
       if (this.files.length === 1) {
         this.currentFileId = fileId;
       }
@@ -136,84 +203,68 @@ export const useFileManagerStore = defineStore("fileManager", {
       return fileData;
     },
 
-    // 设置当前文件
     setCurrentFile(fileId) {
       this.currentFileId = fileId;
     },
 
-    // 更新文件的mask
     updateFileMask(fileId, maskData) {
-      const file = this.files.find((f) => f.id === fileId);
-      if (file) {
-        if (maskData == null) {
-          file.mask = null;
-          return;
-        }
-        // 处理不同类型的maskData
-        let dataUrl;
-        if (typeof maskData === "string") {
-          dataUrl = maskData;
-        } else if (maskData && typeof maskData === "object" && maskData.data) {
-          dataUrl = maskData.data;
-        } else {
-          console.error("Invalid mask data format:", maskData);
-          return;
-        }
+      const file = this.files.find((item) => item.id === fileId);
+      if (!file) return;
 
-        // 确保dataUrl是有效的base64字符串
-        if (!dataUrl || typeof dataUrl !== "string") {
-          console.error("Invalid data URL:", dataUrl);
-          return;
-        }
-
-        // mask始终使用base64格式
-        file.mask = {
-          type: "base64",
-          data: dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl, // 安全地处理split
-          displayUrl: dataUrl,
-        };
+      if (maskData == null) {
+        file.mask = null;
+        return;
       }
+
+      let dataUrl = "";
+      if (typeof maskData === "string") {
+        dataUrl = maskData;
+      } else if (maskData && typeof maskData === "object" && maskData.data) {
+        dataUrl = maskData.data;
+      }
+
+      if (!dataUrl || typeof dataUrl !== "string") {
+        console.error("Invalid mask data:", maskData);
+        return;
+      }
+
+      file.mask = {
+        type: "base64",
+        data: dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl,
+        displayUrl: dataUrl,
+      };
     },
 
-    // 添加处理结果到历史记录
     async addProcessingResult(fileId, resultData) {
-      const file = this.files.find((f) => f.id === fileId);
+      const file = this.files.find((item) => item.id === fileId);
       if (!file) return;
-      let historyItem;
 
+      let historyItem;
       if (
         this.processingConfig.responseType === "path" &&
         typeof resultData === "string" &&
         !resultData.startsWith("data:")
       ) {
-        // 路径模式的结果
-        const normalizedPath = resultData.replace(/\\/g, "/");
         historyItem = {
           type: "path",
           data: resultData,
-          displayUrl: window.electron
-            ? `atom://${normalizedPath}`
-            : `file://${resultData}`,
+          displayUrl: getRendererDisplayUrl(resultData),
           timestamp: new Date().toISOString(),
         };
       } else {
-        // base64模式的结果
-        const base64Data = resultData.startsWith("data:")
+        const dataUrl = resultData.startsWith("data:")
           ? resultData
           : `data:image/png;base64,${resultData}`;
         historyItem = {
           type: "base64",
-          data: resultData.startsWith("data:")
-            ? resultData.split(",")[1]
-            : resultData,
-          displayUrl: base64Data,
+          data: dataUrl.split(",")[1],
+          displayUrl: dataUrl,
           timestamp: new Date().toISOString(),
         };
       }
 
       file.history.push(historyItem);
 
-      // 限制历史记录数量
       const configStore = useConfigStore();
       const limit = configStore.config.advanced?.imageHistoryLimit || 10;
       if (file.history.length > limit) {
@@ -221,119 +272,227 @@ export const useFileManagerStore = defineStore("fileManager", {
       }
     },
 
-    // 移除文件
     removeFile(fileId) {
-      const index = this.files.findIndex((f) => f.id === fileId);
-      if (index !== -1) {
-        this.files.splice(index, 1);
+      const fileIndex = this.files.findIndex((file) => file.id === fileId);
+      if (fileIndex === -1) return;
 
-        // 如果移除的是当前文件，切换到其他文件
-        if (this.currentFileId === fileId) {
-          this.currentFileId = this.files.length > 0 ? this.files[0].id : null;
-        }
+      this.files.splice(fileIndex, 1);
 
-        // 从选中列表中移除
-        const selectedIndex = this.selectedFileIds.indexOf(fileId);
-        if (selectedIndex !== -1) {
-          this.selectedFileIds.splice(selectedIndex, 1);
-        }
+      if (this.currentFileId === fileId) {
+        this.currentFileId = this.files.length > 0 ? this.files[0].id : null;
       }
+
+      this.selectedFileIds = this.selectedFileIds.filter((id) => id !== fileId);
     },
 
-    // 保存文件
     async saveFile(fileId, targetPath) {
-      const file = this.files.find((f) => f.id === fileId);
-      if (!file) return false;
+      const file = this.files.find((item) => item.id === fileId);
+      if (!file || !file.history?.length) {
+        return {
+          success: false,
+          error: "未找到要保存的文件",
+        };
+      }
 
-      const latestImage =
-        file.history && file.history.length > 0
-          ? file.history[file.history.length - 1]
-          : null;
-      if (!latestImage) return false;
+      const latestImage = file.history[file.history.length - 1];
 
-      if (
-        this.processingConfig.responseType === "path" &&
-        latestImage.type === "path"
-      ) {
-        // 路径模式：复制文件到下载目录
-        if (window.electron) {
-          try {
-            await window.electron.ipcRenderer.invoke("copy-file", {
-              source: latestImage.data,
-              target: targetPath,
-            });
-            return true;
-          } catch (error) {
-            console.error("文件复制失败:", error);
-            return false;
-          }
+      if (latestImage.type === "path" && latestImage.data && window.electron) {
+        if (!(await this.fileExists(latestImage.data))) {
+          return {
+            success: false,
+            error: buildMissingFileMessage(file.name),
+          };
         }
-      } else {
-        // base64模式：保存base64数据
-        if (window.electron) {
-          try {
-            const base64Data = latestImage.data;
-            const binaryString = atob(base64Data);
-            const arrayBuffer = new ArrayBuffer(binaryString.length);
-            const uint8Array = new Uint8Array(arrayBuffer);
 
-            for (let i = 0; i < binaryString.length; i++) {
-              uint8Array[i] = binaryString.charCodeAt(i);
-            }
-
-            await window.electron.ipcRenderer.invoke("save-file", {
-              filePath: targetPath,
-              blob: arrayBuffer,
-            });
-            return true;
-          } catch (error) {
-            console.error("文件保存失败:", error);
-            return false;
-          }
+        try {
+          const result = await window.electron.ipcRenderer.invoke("copy-file", {
+            source: latestImage.data,
+            target: targetPath,
+          });
+          return {
+            success: Boolean(result?.success),
+            targetPath: result?.targetPath || targetPath,
+            error: result?.error || "",
+          };
+        } catch (error) {
+          console.error("Failed to copy processed image:", error);
+          return {
+            success: false,
+            error: error.message || "复制文件失败",
+          };
         }
       }
 
-      return false;
+      if (latestImage.type === "base64" && window.electron) {
+        try {
+          const savedPath = await window.electron.ipcRenderer.invoke("save-file", {
+            filePath: targetPath,
+            blob: convertBase64ToArrayBuffer(latestImage.data),
+          });
+          return {
+            success: true,
+            targetPath: typeof savedPath === "string" ? savedPath : targetPath,
+            error: "",
+          };
+        } catch (error) {
+          console.error("Failed to save processed image:", error);
+          return {
+            success: false,
+            error: error.message || "保存文件失败",
+          };
+        }
+      }
+
+      return {
+        success: false,
+        error: "当前环境不支持此保存方式",
+      };
     },
 
-    // 工具方法：文件转base64
-    fileToBase64(file, progressCallback = null) {
+    legacyBlobToBase64(file, progressCallback = null) {
       return new Promise((resolve, reject) => {
-        const reader = new FileReader();
+        if (!(file instanceof Blob)) {
+          reject(new Error("当前文件不支持转换为 base64"));
+          return;
+        }
 
-        // 如果提供了进度回调，监听progress事件
-        if (progressCallback && typeof progressCallback === "function") {
+        const reader = new FileReader();
+        if (typeof progressCallback === "function") {
           reader.onprogress = (event) => {
             if (event.lengthComputable) {
-              const progress = event.loaded / event.total;
-              progressCallback(progress);
+              progressCallback(event.loaded / event.total);
             }
           };
-
-          // 开始时调用一次进度回调
           progressCallback(0);
         }
 
-        reader.readAsDataURL(file);
         reader.onload = () => {
-          // 完成时确保进度为100%
-          if (progressCallback) {
-            progressCallback(1.0);
-          }
+          progressCallback?.(1);
           resolve(reader.result);
         };
         reader.onerror = (error) => reject(error);
+        reader.readAsDataURL(file);
       });
     },
 
-    // 清空所有文件
+    async fileExists(filePath) {
+      if (!filePath) {
+        return false;
+      }
+
+      if (!window.electron?.ipcRenderer?.invoke) {
+        return true;
+      }
+
+      try {
+        const result = await window.electron.ipcRenderer.invoke("get-file-stats", filePath);
+        return Boolean(result?.success);
+      } catch (error) {
+        console.error("Failed to check file stats:", error);
+        return false;
+      }
+    },
+
+    async loadElectronFile(file, progressCallback = null) {
+      const filePath = typeof file === "string" ? file : file?.path;
+      if (!filePath) {
+        throw new Error("缺少本地文件路径");
+      }
+
+      if (!window.electron?.ipcRenderer?.invoke) {
+        throw new Error("当前环境不支持读取本地路径文件");
+      }
+
+      const ipcRenderer = window.electron.ipcRenderer;
+      let disposeProgressListener = null;
+
+      if (typeof progressCallback === "function" && typeof ipcRenderer.on === "function") {
+        progressCallback(0);
+        disposeProgressListener = ipcRenderer.on("file-read-progress", (event, payload) => {
+          if (payload?.filePath !== filePath) {
+            return;
+          }
+
+          const progress = Math.max(0, Math.min(1, Number(payload.progress || 0) / 100));
+          progressCallback(progress);
+        });
+      }
+
+      try {
+        let result = await ipcRenderer.invoke("read-file-with-progress", filePath);
+        if (!result?.success || !result.data?.buffer) {
+          result = await ipcRenderer.invoke("read-file", filePath);
+        }
+
+        if (!result?.success || !result.data?.buffer) {
+          throw new Error(result?.error || buildMissingFileMessage(file?.name));
+        }
+
+        progressCallback?.(1);
+        return createRendererFile(result.data, file);
+      } catch (error) {
+        throw new Error(error?.message || buildMissingFileMessage(file?.name));
+      } finally {
+        disposeProgressListener?.();
+      }
+    },
+
+    blobToBase64(file, progressCallback = null) {
+      return new Promise((resolve, reject) => {
+        if (!(file instanceof Blob)) {
+          reject(new Error("当前文件不支持转换为 base64"));
+          return;
+        }
+
+        const reader = new FileReader();
+        if (typeof progressCallback === "function") {
+          reader.onprogress = (event) => {
+            if (event.lengthComputable) {
+              progressCallback(event.loaded / event.total);
+            }
+          };
+          progressCallback(0);
+        }
+
+        reader.onload = () => {
+          progressCallback?.(1);
+          resolve(reader.result);
+        };
+        reader.onerror = (error) => reject(error);
+        reader.readAsDataURL(file);
+      });
+    },
+
+    async fileToBase64(file, progressCallback = null) {
+      if (file instanceof Blob) {
+        return this.blobToBase64(file, progressCallback);
+      }
+
+      if (window.electron && file?.path) {
+        const rendererFile = await this.loadElectronFile(
+          file,
+          typeof progressCallback === "function"
+            ? (progress) => progressCallback(progress * 0.85)
+            : null
+        );
+
+        return this.blobToBase64(
+          rendererFile,
+          typeof progressCallback === "function"
+            ? (progress) => progressCallback(0.85 + progress * 0.15)
+            : null
+        );
+      }
+
+      throw new Error("当前文件不支持转换为 base64");
+    },
+
     clearFiles() {
       this.files = [];
       this.currentFileId = null;
       this.selectedFileIds = [];
     },
 
-    // 切换文件选择状态
     toggleFileSelection(fileId) {
       const index = this.selectedFileIds.indexOf(fileId);
       if (index === -1) {
@@ -343,35 +502,33 @@ export const useFileManagerStore = defineStore("fileManager", {
       }
     },
 
-    // 全选/取消全选
     selectAllFiles(select = true) {
-      if (select) {
-        this.selectedFileIds = this.files
-          .filter((f) => f.originalFile?.type.startsWith("image/"))
-          .map((f) => f.id);
-      } else {
+      if (!select) {
         this.selectedFileIds = [];
+        return;
       }
+
+      this.selectedFileIds = this.files
+        .filter((file) => file.originalFile?.type?.startsWith("image/"))
+        .map((file) => file.id);
     },
 
-    // 清空选择
     clearSelection() {
       this.selectedFileIds = [];
     },
 
-    // 撤销处理
     undoProcessing(fileId) {
-      const file = this.files.find((f) => f.id === fileId);
-      if (file && file.history.length > 1) {
-        file.history.pop();
-        return true;
+      const file = this.files.find((item) => item.id === fileId);
+      if (!file || file.history.length <= 1) {
+        return false;
       }
-      return false;
+
+      file.history.pop();
+      return true;
     },
 
-    // 批量应用蒙版
     async applyMaskToFiles(sourceFileId, targetFileIds) {
-      const sourceFile = this.files.find((f) => f.id === sourceFileId);
+      const sourceFile = this.files.find((file) => file.id === sourceFileId);
       if (!sourceFile?.mask) return false;
 
       for (const targetId of targetFileIds) {
@@ -379,87 +536,79 @@ export const useFileManagerStore = defineStore("fileManager", {
           this.updateFileMask(targetId, sourceFile.mask.displayUrl);
         }
       }
+
       return true;
     },
-    // 准备批量处理数据
+
     async prepareBatchInpaintData(filesToProcess) {
       const configStore = useConfigStore();
-      const batchItems = [];
-      const tempPath = configStore.config.fileManagement?.tempPath || "";
-      const imageFolderName =
-        configStore.config.fileManagement?.imageFolderName || "images";
-      let fullTempPath = "";
-      if (tempPath) {
-        // 统一使用正斜杠格式进行路径拼接
-        if (window.electron) {
-          // 在 Electron 环境中，先使用 path.join 然后标准化为正斜杠
-          const joinedPath =
-            window.electron.path?.join(tempPath, imageFolderName) ||
-            `${tempPath}${window.electron.path?.sep || "/"}${imageFolderName}`;
-          // 将所有反斜杠替换为正斜杠，确保路径格式统一
-          fullTempPath = joinedPath.replace(/\\/g, "/");
-        } else {
-          // 在浏览器环境中直接使用正斜杠拼接
-          const normalizedTempPath = tempPath.replace(/\\/g, "/");
-          fullTempPath = `${normalizedTempPath}/${imageFolderName}`;
-        }
-      }
-      for (let i = 0; i < filesToProcess.length; i++) {
-        const file = filesToProcess[i];
+      const imageType = this.processingConfig.imageType === "base64" ? "base64" : "path";
+      const responseType = this.processingConfig.responseType === "base64" ? "base64" : "path";
+      const tempRoot = configStore.config.fileManagement?.tempPath || "";
+      const imageFolderName = configStore.config.fileManagement?.imageFolderName || "images";
+      const tempPath =
+        tempRoot && window.electron?.ipcRenderer?.joinPath
+          ? window.electron.ipcRenderer.joinPath(tempRoot, imageFolderName).replace(/\\/g, "/")
+          : "";
 
-        // 获取图像数据
-        let imageData;
+      const batchItems = [];
+      for (const file of filesToProcess) {
         const latestImage = file.history[file.history.length - 1];
 
-        if (this.processingConfig.imageType === "base64") {
-          if (latestImage.type === "base64") {
+        let imageData = "";
+        if (imageType === "path") {
+          if (latestImage.type === "path") {
             imageData = latestImage.data;
+          } else if (file.history.length <= 1) {
+            imageData = resolveOriginalFilePath(file);
           } else {
-            // 转换为base64
-            const imageBase64 = await this.fileToBase64(file.originalFile);
-            imageData = imageBase64.split(",")[1]; // 提取纯base64
+            throw new Error(
+              `当前图像仅保存在内存中，无法按路径模式继续处理，请切换为 base64 模式或重新导入：${file.name}`
+            );
           }
+          if (!imageData) {
+            throw new Error(`无法读取图片路径: ${file.name}`);
+          }
+          if (!(await this.fileExists(imageData))) {
+            throw new Error(buildMissingFileMessage(file.name));
+          }
+        } else if (latestImage.type === "base64") {
+          imageData = latestImage.data;
         } else {
-          // 使用路径模式
-          imageData = file.originalFile.path || file.originalFile.name;
+          const fileBase64 = await this.fileToBase64({
+            name: file.name,
+            type: file.type,
+            path: latestImage.data || resolveOriginalFilePath(file),
+          });
+          imageData = fileBase64.split(",")[1];
         }
 
-        // 获取蒙版数据
-        let maskData;
-        if (this.processingConfig.maskType === "base64") {
-          maskData = file.mask.data;
-        } else {
-          // 使用路径模式
-          maskData = file.mask.path || `mask_${file.id}.png`;
+        if (!file.mask?.data) {
+          throw new Error(`缺少蒙版数据: ${file.name}`);
         }
 
         batchItems.push({
           id: file.id,
           image: imageData,
-          mask: maskData,
+          mask: file.mask.data,
         });
       }
+
       return {
         data: batchItems,
-        image_type: this.processingConfig.imageType,
-        mask_type: this.processingConfig.maskType,
-        response_type: this.processingConfig.responseType,
-        temp_path: fullTempPath,
+        image_type: imageType,
+        mask_type: "base64",
+        response_type: responseType,
+        temp_path: responseType === "path" ? tempPath : "",
       };
     },
-  },
 
-  // 获取选中的文件用于处理（简化的处理逻辑）
-  getSelectedFilesForProcessing() {
-    return this.selectedFiles.filter(
-      (file) => file.mask && file.mask.data // 只返回有蒙版的文件
-    );
-  },
+    getSelectedFilesForProcessing() {
+      return this.selectedFiles.filter((file) => file.mask?.data);
+    },
 
-  // 获取所有可处理的文件
-  getAllProcessableFiles() {
-    return this.files.filter(
-      (file) => file.mask && file.mask.data // 只返回有蒙版的文件
-    );
+    getAllProcessableFiles() {
+      return this.files.filter((file) => file.mask?.data);
+    },
   },
 });
