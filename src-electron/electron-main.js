@@ -7,14 +7,15 @@ import {
   Menu,
   shell,
   protocol,
+  net,
 } from "electron";
 import path from "node:path";
 import os from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import crypto from "node:crypto";
 import fs from "fs";
 import https from "https";
-import { spawn, exec } from "child_process";
+import { spawn, spawnSync, exec } from "child_process";
 import { promisify } from "util";
 import {
   INTEGRITY_MANIFEST_FILE,
@@ -34,6 +35,19 @@ const execAsync = promisify(exec);
 // Backend service process
 let backendProcess = null;
 global.projectPath = "";
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "atom",
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
+  },
+]);
 const DEFAULT_BRAND_COLORS = Object.freeze({
   primary: "#7758c4",
   secondary: "#2679a6",
@@ -114,7 +128,6 @@ const DEFAULT_CONFIG = {
   },
   shortcuts: JSON.parse(JSON.stringify(SHORTCUT_DEFAULTS)),
   video: {
-    maxFrameCount: 10000,
     frameExtractionFormat: "jpg",
     batchFrameCount: 120,
     historyLimit: 5,
@@ -1217,6 +1230,9 @@ function sanitizeAppConfig(config = {}) {
   if (merged?.video && Object.prototype.hasOwnProperty.call(merged.video, "outputPath")) {
     delete merged.video.outputPath;
   }
+  if (merged?.video && Object.prototype.hasOwnProperty.call(merged.video, "maxFrameCount")) {
+    delete merged.video.maxFrameCount;
+  }
   return merged;
 }
 
@@ -1287,8 +1303,7 @@ function validateConfig(config) {
     if (
       typeof config.video.batchFrameCount !== "number" ||
       Number.isNaN(config.video.batchFrameCount) ||
-      config.video.batchFrameCount < 120 ||
-      config.video.batchFrameCount > 5000
+      config.video.batchFrameCount < 1
     ) {
       return false;
     }
@@ -1519,22 +1534,102 @@ ipcMain.handle("check-app-state-exists", async () => {
 });
 
 // IPC handler - save file
+const activeFileWriteStreams = new Map();
+let nextFileWriteStreamId = 1;
+
+const resolveWritableFilePath = (filePath) => {
+  const directory = path.dirname(filePath);
+  if (!fs.existsSync(directory)) {
+    fs.mkdirSync(directory, { recursive: true });
+  }
+
+  if (!fs.existsSync(filePath)) {
+    return filePath;
+  }
+
+  const fileExt = path.extname(filePath);
+  const baseName = path.basename(filePath, fileExt);
+  const dirName = path.dirname(filePath);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return path.join(dirName, `${baseName}_${timestamp}${fileExt}`);
+};
+
+const waitForWriteStreamOpen = (stream) =>
+  new Promise((resolve, reject) => {
+    const cleanup = () => {
+      stream.removeListener("open", onOpen);
+      stream.removeListener("error", onError);
+    };
+    const onOpen = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+
+    stream.once("open", onOpen);
+    stream.once("error", onError);
+  });
+
+const writeChunkToStream = (stream, chunk) =>
+  new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      stream.removeListener("error", onError);
+      stream.removeListener("drain", onDrain);
+    };
+    const finalize = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback(value);
+    };
+    const onError = (error) => finalize(reject, error);
+    const onDrain = () => finalize(resolve);
+
+    stream.once("error", onError);
+    let canContinue = false;
+    canContinue = stream.write(Buffer.from(chunk), (error) => {
+      if (error) {
+        finalize(reject, error);
+        return;
+      }
+
+      if (canContinue) {
+        finalize(resolve);
+      }
+    });
+
+    if (!canContinue) {
+      stream.once("drain", onDrain);
+    }
+  });
+
+const finishWriteStream = (stream) =>
+  new Promise((resolve, reject) => {
+    const cleanup = () => {
+      stream.removeListener("finish", onFinish);
+      stream.removeListener("error", onError);
+    };
+    const onFinish = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+
+    stream.once("finish", onFinish);
+    stream.once("error", onError);
+    stream.end();
+  });
+
 const saveFileHandler = async (event, { filePath, blob }) => {
   try {
-    // Ensure the target directory exists
-    const directory = path.dirname(filePath);
-    if (!fs.existsSync(directory)) {
-      fs.mkdirSync(directory, { recursive: true });
-    }
-
-    // Avoid overwriting existing files by appending a timestamp.
-    if (fs.existsSync(filePath)) {
-      const fileExt = path.extname(filePath);
-      const baseName = path.basename(filePath, fileExt);
-      const dirName = path.dirname(filePath);
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      filePath = path.join(dirName, `${baseName}_${timestamp}${fileExt}`);
-    }
+    filePath = resolveWritableFilePath(filePath);
 
     fs.writeFileSync(filePath, Buffer.from(blob));
 
@@ -1546,6 +1641,80 @@ const saveFileHandler = async (event, { filePath, blob }) => {
 };
 ipcMain.handle("save-file", saveFileHandler);
 ipcMain.handle("saveFile", saveFileHandler);
+ipcMain.handle("open-file-write-stream", async (event, filePath) => {
+  try {
+    const resolvedFilePath = resolveWritableFilePath(filePath);
+    const stream = fs.createWriteStream(resolvedFilePath);
+    await waitForWriteStreamOpen(stream);
+
+    const streamId = `file_stream_${Date.now()}_${nextFileWriteStreamId++}`;
+    activeFileWriteStreams.set(streamId, {
+      stream,
+      filePath: resolvedFilePath,
+    });
+
+    return {
+      success: true,
+      streamId,
+      filePath: resolvedFilePath,
+    };
+  } catch (error) {
+    console.error("Failed to open file write stream:", error);
+    return { success: false, error: error.message };
+  }
+});
+ipcMain.handle("write-file-stream-chunk", async (event, { streamId, chunk }) => {
+  const session = activeFileWriteStreams.get(streamId);
+  if (!session) {
+    return { success: false, error: "File write stream is not open." };
+  }
+
+  try {
+    if (chunk) {
+      await writeChunkToStream(session.stream, chunk);
+    }
+    return { success: true };
+  } catch (error) {
+    console.error("Failed to write file stream chunk:", error);
+    return { success: false, error: error.message };
+  }
+});
+ipcMain.handle("close-file-write-stream", async (event, streamId) => {
+  const session = activeFileWriteStreams.get(streamId);
+  if (!session) {
+    return { success: false, error: "File write stream is not open." };
+  }
+
+  activeFileWriteStreams.delete(streamId);
+  try {
+    await finishWriteStream(session.stream);
+    return {
+      success: true,
+      filePath: session.filePath,
+    };
+  } catch (error) {
+    console.error("Failed to close file write stream:", error);
+    return { success: false, error: error.message };
+  }
+});
+ipcMain.handle("abort-file-write-stream", async (event, streamId) => {
+  const session = activeFileWriteStreams.get(streamId);
+  if (!session) {
+    return { success: true };
+  }
+
+  activeFileWriteStreams.delete(streamId);
+  try {
+    session.stream.destroy();
+    if (fs.existsSync(session.filePath)) {
+      fs.rmSync(session.filePath, { force: true });
+    }
+    return { success: true };
+  } catch (error) {
+    console.error("Failed to abort file write stream:", error);
+    return { success: false, error: error.message };
+  }
+});
 // IPC handler - select directory
 ipcMain.handle("select-directory", async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
@@ -2650,6 +2819,105 @@ ipcMain.handle("install-conda-dependencies", async (event) => {
   }
 });
 // IPC handler - start backend service
+function probePythonCudaCompatibility(pythonPath, runtimeEnv = process.env) {
+  const probeScript = `
+import json
+
+result = {
+    "success": True,
+    "cuda_available": False,
+    "cuda_device_count": 0,
+    "cuda_compatible": None,
+    "torch_version": None,
+    "cuda_version": None,
+    "device_name": None,
+    "device_capability": None,
+    "supported_arches": [],
+    "message": None,
+}
+
+try:
+    import torch
+    result["torch_version"] = getattr(torch, "__version__", None)
+    result["cuda_version"] = getattr(torch.version, "cuda", None)
+    result["cuda_available"] = bool(torch.cuda.is_available())
+    result["cuda_device_count"] = int(torch.cuda.device_count())
+
+    supported_arches = []
+    if hasattr(torch.cuda, "get_arch_list"):
+        try:
+            supported_arches = list(torch.cuda.get_arch_list() or [])
+        except Exception:
+            supported_arches = []
+    result["supported_arches"] = supported_arches
+
+    if result["cuda_available"] and result["cuda_device_count"] > 0:
+        current_device = torch.cuda.current_device()
+        capability = tuple(int(v) for v in torch.cuda.get_device_capability(current_device))
+        result["device_name"] = torch.cuda.get_device_name(current_device)
+        result["device_capability"] = list(capability)
+
+        supported_arch_values = []
+        for arch in supported_arches:
+            if isinstance(arch, str) and arch.startswith("sm_"):
+                suffix = arch[3:]
+                if suffix.isdigit():
+                    supported_arch_values.append(int(suffix))
+
+        if supported_arch_values:
+            device_arch = capability[0] * 10 + capability[1]
+            max_supported_arch = max(supported_arch_values)
+            result["cuda_compatible"] = device_arch <= max_supported_arch
+            if not result["cuda_compatible"]:
+                result["message"] = (
+                    f"Detected GPU architecture sm_{device_arch}, but the current PyTorch build "
+                    f"only supports up to sm_{max_supported_arch}. "
+                    "Please use a runtime that supports CUDA 12.8/13.0 or switch to CPU mode."
+                )
+        else:
+            result["cuda_compatible"] = True
+    else:
+        result["cuda_compatible"] = False
+        result["message"] = "No CUDA device is available in the current runtime."
+except Exception as error:
+    result["success"] = False
+    result["cuda_compatible"] = False
+    result["message"] = str(error)
+
+print(json.dumps(result))
+`;
+
+  try {
+    const probeResult = spawnSync(pythonPath, ["-c", probeScript], {
+      env: runtimeEnv,
+      encoding: "utf8",
+      windowsHide: true,
+    });
+
+    if (probeResult.error) {
+      return {
+        success: false,
+        message: probeResult.error.message,
+      };
+    }
+
+    const stdout = String(probeResult.stdout || "").trim();
+    if (!stdout) {
+      return {
+        success: false,
+        message: String(probeResult.stderr || "CUDA probe returned no output").trim(),
+      };
+    }
+
+    return JSON.parse(stdout);
+  } catch (error) {
+    return {
+      success: false,
+      message: error.message,
+    };
+  }
+}
+
 ipcMain.handle("start-backend-service", async (event, config) => {
   try {
     if (backendProcess) {
@@ -2712,6 +2980,34 @@ ipcMain.handle("start-backend-service", async (event, config) => {
       backendPython = venvInfo.pythonPath;
       if (config.modelDir) {
         args.push(`--model-dir=${config.modelDir}`);
+      }
+    }
+
+    if (config.device === "cuda") {
+      const cudaProbe = probePythonCudaCompatibility(backendPython, backendEnv);
+      if (!cudaProbe.success) {
+        event.sender.send("backend-output", {
+          type: "warning",
+          message: `CUDA 预检失败，将继续尝试启动后端: ${cudaProbe.message || "未知错误"}`,
+        });
+      } else if (!cudaProbe.cuda_available) {
+        return {
+          success: false,
+          error: "当前运行时未检测到可用 CUDA 设备，请切换为 CPU 模式后再启动后端。",
+          cudaProbe,
+        };
+      } else if (cudaProbe.cuda_compatible === false) {
+        const capability = Array.isArray(cudaProbe.device_capability)
+          ? `sm_${cudaProbe.device_capability.join("")}`
+          : "unknown";
+        return {
+          success: false,
+          error:
+            `当前运行时的 PyTorch (${cudaProbe.torch_version || "unknown"}, CUDA ${cudaProbe.cuda_version || "unknown"}) ` +
+            `不支持显卡 ${cudaProbe.device_name || ""} (${capability})。` +
+            "请将启动方式切换为 CPU，或升级运行时到支持 CUDA 12.8/13.0 的 PyTorch。",
+          cudaProbe,
+        };
       }
     }
 
@@ -3168,6 +3464,45 @@ async function createWindow() {
   });
 }
 
+const resolveAtomRequestPath = (requestUrl = "") => {
+  let rawPath = String(requestUrl || "").replace(/^atom:\/\//i, "");
+  rawPath = decodeURIComponent(rawPath);
+
+  if (
+    process.platform === "win32" &&
+    /^[A-Za-z]\//.test(rawPath) &&
+    !rawPath.includes(":")
+  ) {
+    rawPath = rawPath.charAt(0) + ":" + rawPath.slice(1);
+  }
+
+  return path.normalize(rawPath);
+};
+
+const registerAtomProtocol = () => {
+  protocol.handle("atom", async (request) => {
+    try {
+      const filePath = resolveAtomRequestPath(request.url);
+      if (!filePath || !fs.existsSync(filePath)) {
+        console.error("File does not exist:", filePath);
+        return new Response("File not found", { status: 404 });
+      }
+
+      const stats = fs.statSync(filePath);
+      if (!stats.isFile()) {
+        return new Response("Unsupported atom resource", { status: 400 });
+      }
+
+      return net.fetch(pathToFileURL(filePath).toString());
+    } catch (error) {
+      console.error("Protocol handler error:", error);
+      return new Response(String(error?.message || error || "Protocol error"), {
+        status: 500,
+      });
+    }
+  });
+};
+
 app.whenReady().then(async () => {
   const integrityResult = await verifyPackagedResourcesIntegrity();
   if (!integrityResult.success) {
@@ -3179,38 +3514,7 @@ app.whenReady().then(async () => {
     return;
   }
 
-  // Register the atom protocol for local file access
-  protocol.registerFileProtocol("atom", (request, callback) => {
-    try {
-      let url = request.url.substr(7); // Strip the "atom://" prefix
-
-      // Decode URL-encoded non-ASCII characters
-      url = decodeURIComponent(url);
-
-      if (
-        process.platform === "win32" &&
-        url.match(/^[A-Za-z]\//) &&
-        !url.includes(":")
-      ) {
-        url = url.charAt(0) + ":" + url.slice(1);
-      }
-
-      const filePath = path.normalize(url);
-
-      console.log("Trying to access file:", filePath);
-
-      // Security check: ensure the file exists before serving it
-      if (fs.existsSync(filePath)) {
-        callback({ path: filePath });
-      } else {
-        console.error("File does not exist:", filePath);
-        callback({ error: -6 }); // FILE_NOT_FOUND
-      }
-    } catch (error) {
-      console.error("Protocol handler error:", error);
-      callback({ error: -2 }); // GENERIC_FAILURE
-    }
-  });
+  registerAtomProtocol();
   loadAppConfig();
   createWindow();
 });

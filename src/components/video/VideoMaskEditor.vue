@@ -32,19 +32,9 @@
           @undo="undoDraw"
           @clear="clearMask"
         />
-
-        <q-select
-          :model-value="videoStore.selectedMask.interpolation"
-          :disable="disabled"
-          label="关键帧插值"
-          emit-value
-          map-options
-          :options="[
-            { label: '线性', value: 'linear' },
-            { label: '缓入缓出', value: 'ease-in-out' },
-          ]"
-          @update:model-value="videoStore.updateSelectedMask({ interpolation: $event })"
-        />
+        <q-banner dense rounded class="bg-grey-2 text-grey-8">
+          视频蒙版关键帧插值已固定为线性。
+        </q-banner>
       </div>
     </q-expansion-item>
 
@@ -164,7 +154,7 @@
               </div>
 
               <div class="row q-col-gutter-sm">
-                <div class="col-12">
+                <div class="col-6">
                   <q-input
                     :model-value="keyframe.time"
                     type="number"
@@ -173,6 +163,29 @@
                     :step="0.01"
                     @update:model-value="updateKeyframeField(keyframe, 'time', $event)"
                   />
+                </div>
+                <div class="col-6">
+                  <q-input
+                    v-if="!showRestoreOriginalAction(keyframe)"
+                    :model-value="getKeyframeScaleValue(keyframe)"
+                    type="number"
+                    label="缩放"
+                    :disable="disabled || !canEditTransform(keyframe)"
+                    :step="0.01"
+                    @update:model-value="updateKeyframeUniformScale(keyframe, $event)"
+                  />
+
+                  <div v-else class="keyframe-inline-action">
+                    <q-btn
+                      color="primary"
+                      icon="undo"
+                      label="复原"
+                      outline
+                      :disable="disabled || !canEditTransform(keyframe)"
+                      class="full-width"
+                      @click="restoreKeyframeOriginalShape(keyframe)"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -199,15 +212,16 @@
                 </div>
               </div>
 
-              <q-input
-                :model-value="keyframe.scale"
-                type="number"
-                label="缩放"
-                :disable="disabled || !canEditTransform(keyframe)"
-                :step="0.01"
-                @update:model-value="updateKeyframeField(keyframe, 'scale', $event)"
-              />
-
+              <div v-if="canDeleteKeyframe(keyframe)" class="keyframe-delete-action q-mt-md">
+                <q-btn
+                  color="negative"
+                  icon="delete"
+                  label="删除此关键帧"
+                  outline
+                  :disable="disabled"
+                  @click="removeKeyframe(keyframe)"
+                />
+              </div>
               <q-banner
                 v-if="keyframe.type === MASK_KEYFRAME_TYPES.END"
                 dense
@@ -216,17 +230,6 @@
               >
                 结束关键帧的时间始终跟随蒙版结束时间。手动修改任一字段后，会切换为独立状态。
               </q-banner>
-
-              <q-btn
-                v-if="canDeleteKeyframe(keyframe)"
-                color="negative"
-                icon="delete"
-                label="删除此关键帧"
-                outline
-                :disable="disabled"
-                class="q-mt-md"
-                @click="removeKeyframe(keyframe)"
-              />
             </div>
           </q-expansion-item>
         </q-list>
@@ -248,7 +251,18 @@ import { normalizeButtonSize } from "src/config/ConfigManager";
 import { useConfigStore } from "src/stores/config";
 import { useVideoManagerStore } from "src/stores/videoManager";
 import { createTransparentMaskDataUrl } from "src/utils/maskTool";
-import { formatSeconds, MASK_KEYFRAME_TYPES, parseNumeric } from "src/utils/videoMaskUtils";
+import {
+  createMaskTransformFromRenderedCenter,
+  formatSeconds,
+  getMaskBoundsFromDataUrl,
+  getMaskKeyframeTransform,
+  getMaskKeyframeUniformScale,
+  getRenderedMaskCenter,
+  getVideoCenterAnchor,
+  isMaskKeyframeDeformed,
+  MASK_KEYFRAME_TYPES,
+  parseNumeric,
+} from "src/utils/videoMaskUtils";
 
 defineProps({
   disabled: {
@@ -272,6 +286,30 @@ const sections = reactive({
 
 const orderedKeyframes = computed(() => videoStore.selectedMaskOrderedKeyframes);
 
+const getFallbackBounds = () => {
+  const width = Math.max(1, Number(videoStore.videoWidth || 1));
+  const height = Math.max(1, Number(videoStore.videoHeight || 1));
+  const side = Math.max(96, Math.round(Math.min(width, height) * 0.2));
+  return {
+    x: (width - side) / 2,
+    y: (height - side) / 2,
+    width: side,
+    height: side,
+    centerX: width / 2,
+    centerY: height / 2,
+  };
+};
+
+const resolveMaskBounds = async (mask) => {
+  if (!mask?.baseMaskDataUrl) return getFallbackBounds();
+
+  try {
+    return (await getMaskBoundsFromDataUrl(mask.baseMaskDataUrl)) || getFallbackBounds();
+  } catch {
+    return getFallbackBounds();
+  }
+};
+
 const getKeyframeTitle = (keyframe) => {
   if (keyframe.type === MASK_KEYFRAME_TYPES.START) return "起始关键帧";
   if (keyframe.type === MASK_KEYFRAME_TYPES.END) return "结束关键帧";
@@ -282,19 +320,33 @@ const getKeyframeTitle = (keyframe) => {
   return `关键帧 ${index + 1}`;
 };
 
+const showRestoreOriginalAction = (keyframe) =>
+  canEditTransform(keyframe) &&
+  !videoStore.isKeyframeDeformationUiDeferred(keyframe?.id) &&
+  isMaskKeyframeDeformed(keyframe);
+
 const getKeyframeDescription = (keyframe) => {
   if (keyframe.type === MASK_KEYFRAME_TYPES.START) {
     return "起始关键帧不可编辑。";
   }
 
   if (keyframe.type === MASK_KEYFRAME_TYPES.END) {
+    if (showRestoreOriginalAction(keyframe)) {
+      return "结束关键帧当前存在非等比缩放，可恢复到创建时的原始形状。";
+    }
     return videoStore.selectedMask?.endStateExplicit
       ? "结束关键帧当前为独立状态。"
       : "结束关键帧当前继承上一个关键帧的状态。";
   }
 
-  return "用户关键帧可编辑时间、位置和缩放。";
+  if (showRestoreOriginalAction(keyframe)) {
+    return "当前关键帧存在非等比缩放，可恢复到该关键帧上一帧时形状。";
+  }
+
+  return "用户关键帧可编辑时间、位置和等比缩放。";
 };
+
+const getKeyframeScaleValue = (keyframe) => getMaskKeyframeUniformScale(keyframe);
 
 const showWarning = (message) => {
   $q.notify({
@@ -369,6 +421,63 @@ const updateKeyframeField = (keyframe, field, value) => {
 
   if (!result.ok) {
     showWarning(result.error || "关键帧更新失败。");
+  }
+};
+
+const updateKeyframeUniformScale = async (keyframe, value) => {
+  const mask = videoStore.selectedMask;
+  if (!keyframe || !mask) return;
+
+  const currentTransform = getMaskKeyframeTransform(keyframe);
+  const nextScale = Math.max(0.05, parseNumeric(value, getKeyframeScaleValue(keyframe)));
+  const bounds = await resolveMaskBounds(mask);
+  const anchor = getVideoCenterAnchor(videoStore.videoWidth || 1, videoStore.videoHeight || 1);
+  const center = getRenderedMaskCenter(bounds, currentTransform, anchor);
+  const nextTransform = createMaskTransformFromRenderedCenter({
+    bounds,
+    center,
+    scaleX: currentTransform.originScaleX * nextScale,
+    scaleY: currentTransform.originScaleY * nextScale,
+    anchor,
+    originScaleX: currentTransform.originScaleX,
+    originScaleY: currentTransform.originScaleY,
+  });
+
+  const result = videoStore.upsertKeyframe(mask.id, {
+    id: keyframe.id,
+    ...nextTransform,
+  });
+
+  if (!result.ok) {
+    showWarning(result.error || "关键帧缩放更新失败。");
+  }
+};
+
+const restoreKeyframeOriginalShape = async (keyframe) => {
+  const mask = videoStore.selectedMask;
+  if (!keyframe || !mask) return;
+
+  const currentTransform = getMaskKeyframeTransform(keyframe);
+  const bounds = await resolveMaskBounds(mask);
+  const anchor = getVideoCenterAnchor(videoStore.videoWidth || 1, videoStore.videoHeight || 1);
+  const center = getRenderedMaskCenter(bounds, currentTransform, anchor);
+  const nextTransform = createMaskTransformFromRenderedCenter({
+    bounds,
+    center,
+    scaleX: currentTransform.originScaleX,
+    scaleY: currentTransform.originScaleY,
+    anchor,
+    originScaleX: currentTransform.originScaleX,
+    originScaleY: currentTransform.originScaleY,
+  });
+
+  const result = videoStore.upsertKeyframe(mask.id, {
+    id: keyframe.id,
+    ...nextTransform,
+  });
+
+  if (!result.ok) {
+    showWarning(result.error || "恢复原形失败。");
   }
 };
 
@@ -506,6 +615,17 @@ const setEndFromCurrentTime = async () => {
 
 .keyframe-form-wrap {
   border-top: 1px solid rgba(17, 24, 39, 0.06);
+}
+
+.keyframe-inline-action {
+  display: flex;
+  align-items: flex-end;
+  height: 100%;
+}
+
+.keyframe-delete-action {
+  display: flex;
+  justify-content: center;
 }
 
 .empty-state {

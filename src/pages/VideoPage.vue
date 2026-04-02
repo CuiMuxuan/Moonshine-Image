@@ -128,7 +128,14 @@
                   track-color="grey-4"
                   thumb-color="primary"
                 />
-                <span class="timeline-time-display">{{ timelineTimeText }}</span>
+                <span
+                  class="timeline-time-display"
+                  :class="
+                    $q.dark.isActive ? 'timeline-time-display--dark' : 'timeline-time-display--light'
+                  "
+                >
+                  {{ timelineTimeText }}
+                </span>
               </div>
 
               <q-btn-dropdown
@@ -313,6 +320,11 @@ const timelineZoomStep = 5;
 const VIDEO_READY_TIMEOUT_MS = 30000;
 const PROCESSING_ETA_TICK_MS = 250;
 const PROCESSING_FINAL_STAGE_PLACEHOLDER_SECONDS = 5;
+const FINAL_CONCAT_GROUP_SIZE = 8;
+const FINAL_CONCAT_PROGRESS_BASE = 0.9;
+const FINAL_CONCAT_NO_AUDIO_PROGRESS_SPAN = 0.08;
+const FINAL_CONCAT_WITH_AUDIO_PROGRESS_SPAN = 0.05;
+const FINAL_AUDIO_MIX_PROGRESS = 0.95;
 const PROCESSING_ETA_MODES = {
   DYNAMIC: "dynamic",
   FREEZE: "freeze",
@@ -456,7 +468,7 @@ const timelineTimeText = computed(
 const computedBatchSize = computed(() => {
   const configured = Number(configStore.config.video?.batchFrameCount || 120);
   if (!Number.isFinite(configured)) return 120;
-  return Math.max(120, Math.round(configured));
+  return Math.max(1, Math.round(configured));
 });
 
 const canRun = computed(
@@ -607,7 +619,22 @@ const getMimeTypeForPath = (filePath) => {
   return "application/octet-stream";
 };
 
-const readFileBytes = async (filePath) => {
+const getLocalFileUrl = (filePath) => {
+  const normalizedPath = String(filePath || "").replace(/\\/g, "/");
+  if (!normalizedPath) {
+    throw new Error("文件路径不能为空");
+  }
+
+  if (window.electron) {
+    return `atom://${encodeURI(normalizedPath)}`;
+  }
+
+  return normalizedPath.startsWith("file://")
+    ? normalizedPath
+    : `file://${encodeURI(normalizedPath)}`;
+};
+
+const readLocalFileResponseViaIpc = async (filePath) => {
   if (!window.electron?.ipcRenderer?.invoke) {
     throw new Error("当前环境无法读取本地文件");
   }
@@ -617,7 +644,44 @@ const readFileBytes = async (filePath) => {
     throw new Error(result?.error || `读取文件失败: ${filePath}`);
   }
 
-  return new Uint8Array(result.data.buffer);
+  const bytes = new Uint8Array(result.data.buffer);
+  return new Response(bytes, {
+    status: 200,
+    headers: {
+      "Content-Type": result.data.type || getMimeTypeForPath(filePath),
+      "Content-Length": String(bytes.byteLength),
+    },
+  });
+};
+
+const fetchLocalFileResponse = async (filePath) => {
+  const localUrl = getLocalFileUrl(filePath);
+
+  try {
+    const response = await fetch(localUrl);
+    if (!response.ok && response.status !== 0) {
+      throw new Error(`读取文件失败: ${filePath}`);
+    }
+    return response;
+  } catch (error) {
+    const isRecoverableElectronFetchError =
+      window.electron?.ipcRenderer?.invoke &&
+      (
+        /URL scheme .* is not supported/i.test(String(error?.message || "")) ||
+        /Failed to fetch/i.test(String(error?.message || ""))
+      );
+    if (!isRecoverableElectronFetchError) {
+      throw error;
+    }
+
+    console.warn("Falling back to IPC local file read:", error);
+    return await readLocalFileResponseViaIpc(filePath);
+  }
+};
+
+const readFileBytes = async (filePath) => {
+  const response = await fetchLocalFileResponse(filePath);
+  return new Uint8Array(await response.arrayBuffer());
 };
 
 const unwrapElement = (value) => {
@@ -769,20 +833,85 @@ const ensureFileExists = async (filePath) => {
   return Boolean(result?.success);
 };
 
+const getFailureSnapshotHint = (failureSnapshotDir) =>
+  typeof failureSnapshotDir === "string" && failureSnapshotDir.trim()
+    ? `\n失败快照: ${failureSnapshotDir.trim()}`
+    : "";
+
+const getMissingFilePaths = async (filePaths = []) => {
+  const checks = await Promise.all(
+    filePaths
+      .filter(Boolean)
+      .map(async (filePath) => ({
+        filePath,
+        exists: await ensureFileExists(filePath),
+      }))
+  );
+
+  return checks.filter((item) => !item.exists).map((item) => item.filePath);
+};
+
+const validateVideoBatchResponse = async ({ batch, responseData }) => {
+  const results = Array.isArray(responseData?.results) ? responseData.results : [];
+  const failedResults = results.filter((item) => item?.success === false);
+  const failureSnapshotHint = getFailureSnapshotHint(responseData?.failure_snapshot_dir);
+
+  if (Number(responseData?.failed_count || 0) > 0 || failedResults.length > 0) {
+    const firstFailed = failedResults[0] || null;
+    const firstError = firstFailed?.error || "未知错误";
+    throw new Error(
+      `批次 ${batch.start + 1}-${batch.end} 存在失败帧: ${firstError}${failureSnapshotHint}`
+    );
+  }
+
+  if (results.length === 0) {
+    throw new Error(
+      `批次 ${batch.start + 1}-${batch.end} 未返回结果数据，无法继续处理。${failureSnapshotHint}`
+    );
+  }
+
+  const successFrameIndexes = new Set(
+    results
+      .filter((item) => item?.success)
+      .map((item) => Number(item.frame_index))
+      .filter((value) => Number.isFinite(value))
+  );
+  const missingFrameIndexes = batch.batchItems
+    .filter((item) => !successFrameIndexes.has(item.frame_index))
+    .map((item) => item.frame_index);
+
+  if (missingFrameIndexes.length > 0) {
+    const preview = missingFrameIndexes.slice(0, 8).join("、");
+    const suffix = missingFrameIndexes.length > 8 ? " 等" : "";
+    throw new Error(
+      `批次 ${batch.start + 1}-${batch.end} 后端返回结果不完整，缺少帧 ${preview}${suffix}。${failureSnapshotHint}`
+    );
+  }
+
+  const missingOutputPaths = await getMissingFilePaths(batch.batchResultPaths);
+  if (missingOutputPaths.length > 0) {
+    const preview = missingOutputPaths.slice(0, 2).join("；");
+    const suffix = missingOutputPaths.length > 2 ? " 等文件" : "";
+    throw new Error(
+      `批次 ${batch.start + 1}-${batch.end} 的结果文件未生成完成：${preview}${suffix}。${failureSnapshotHint}`
+    );
+  }
+};
+
 const loadVideoFileFromPath = async (filePath) => {
   if (!window.electron?.ipcRenderer?.invoke) {
     throw new Error("当前环境无法读取视频文件");
   }
 
-  const result = await window.electron.ipcRenderer.invoke("read-file", filePath);
-  if (!result?.success || !result.data?.buffer) {
-    throw new Error(result?.error || `读取视频失败: ${filePath}`);
-  }
+  const [bytes, statsResult] = await Promise.all([
+    readFileBytes(filePath),
+    window.electron.ipcRenderer.invoke("get-file-stats", filePath),
+  ]);
 
-  const bytes = new Uint8Array(result.data.buffer);
-  const file = new File([bytes], result.data.name || "video.mp4", {
-    type: result.data.type || "video/mp4",
-    lastModified: Number(result.data.lastModified || Date.now()),
+  const fallbackName = String(filePath || "").split(/[\\/]/).pop() || "video.mp4";
+  const file = new File([bytes], statsResult?.data?.name || fallbackName, {
+    type: statsResult?.data?.type || getMimeTypeForPath(filePath) || "video/mp4",
+    lastModified: Number(statsResult?.data?.lastModified || Date.now()),
   });
 
   Object.defineProperty(file, "path", {
@@ -1449,11 +1578,31 @@ const hideGlobalLoadingOverlay = () => {
   loadingControl?.hide?.();
 };
 
-const applyProcessingUi = (message, progress = processingProgress.value) => {
+const normalizeProcessingProgress = (progress = processingProgress.value) =>
+  Math.max(0, Math.min(1, Number(progress || 0)));
+
+const setProcessingUiState = (message, progress = processingProgress.value) => {
   const resolvedMessage = withBackendProgressHint(message);
   processingMessage.value = resolvedMessage;
-  processingProgress.value = Math.max(0, Math.min(1, Number(progress || 0)));
+  processingProgress.value = normalizeProcessingProgress(progress);
+  return resolvedMessage;
+};
+
+const applyProcessingUi = (message, progress = processingProgress.value) => {
+  const resolvedMessage = setProcessingUiState(message, progress);
   updateGlobalLoadingOverlay(resolvedMessage, processingProgress.value);
+};
+
+const updateProcessingUiWithoutOverlay = (message, progress = processingProgress.value) => {
+  clearProcessingBatchMessageContext();
+  setProcessingUiState(message, progress);
+};
+
+const flushProcessingUiFrame = async () => {
+  await nextTick();
+  if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+    await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+  }
 };
 
 const clearProcessingEtaTicker = () => {
@@ -1566,6 +1715,9 @@ const getRemainingBatchCount = ({
   return Math.max(0, totalBatches - batchNumber + 1);
 };
 
+const getActiveStageRemainingBatchCount = ({ batchNumber, totalBatches }) =>
+  Math.max(0, totalBatches - batchNumber + 1);
+
 const resolveProcessingEtaSnapshot = ({
   batchNumber,
   totalBatches,
@@ -1592,16 +1744,26 @@ const resolveProcessingEtaSnapshot = ({
     totalBatches,
     remainingBatchCount,
   });
-  const futureBatchCount = Math.max(0, nextRemainingBatchCount - 1);
+  const remainingBatchCountWithActive = getActiveStageRemainingBatchCount({
+    batchNumber,
+    totalBatches,
+  });
+  const includesCurrentBatch = nextRemainingBatchCount >= remainingBatchCountWithActive;
+  const currentBatchBudgetSeconds = includesCurrentBatch
+    ? Math.max(1, averageProcessingBatchSeconds)
+    : 0;
+  const futureBatchCount = includesCurrentBatch
+    ? Math.max(0, nextRemainingBatchCount - 1)
+    : nextRemainingBatchCount;
   const futureBatchSeconds =
     averagePipelineBatchSeconds * futureBatchCount +
     PROCESSING_FINAL_STAGE_PLACEHOLDER_SECONDS;
   const batchModelSeconds =
-    Math.max(averageProcessingBatchSeconds, processingEtaState.firstResponseSeconds) +
+    Math.max(currentBatchBudgetSeconds, processingEtaState.firstResponseSeconds) +
     futureBatchSeconds;
   const progressModelSeconds = getProgressBasedEtaSeconds(progress);
   const baseSeconds = Math.max(
-    futureBatchSeconds,
+    futureBatchSeconds + currentBatchBudgetSeconds,
     blendProcessingEtaSeconds({
       batchModelSeconds,
       progressModelSeconds,
@@ -1610,7 +1772,9 @@ const resolveProcessingEtaSnapshot = ({
     })
   );
   const floorSeconds =
-    nextRemainingBatchCount <= 1
+    !includesCurrentBatch
+      ? Math.max(1, futureBatchSeconds)
+      : nextRemainingBatchCount <= 1
       ? 1
       : Math.max(futureBatchSeconds, baseSeconds - processingEtaState.firstResponseSeconds);
 
@@ -1618,6 +1782,8 @@ const resolveProcessingEtaSnapshot = ({
     averageProcessingBatchSeconds,
     averagePipelineBatchSeconds,
     nextRemainingBatchCount,
+    includesCurrentBatch,
+    currentBatchBudgetSeconds,
     futureBatchCount,
     futureBatchSeconds,
     baseSeconds,
@@ -1695,9 +1861,11 @@ const primeProgressAwareEta = ({
     resetStageBase || !(processingEtaState.progressAwareStageBaseSeconds > 0);
   const fallbackBaseSeconds =
     initialEtaSeconds ?? processingEtaState.estimateBaseSeconds ?? snapshot.baseSeconds;
+  const minimumStageBaseSeconds =
+    snapshot.futureBatchSeconds + snapshot.currentBatchBudgetSeconds;
   const nextStageBaseSeconds = shouldResetStageBase
-    ? Math.max(snapshot.futureBatchSeconds, fallbackBaseSeconds)
-    : Math.max(processingEtaState.progressAwareStageBaseSeconds, snapshot.futureBatchSeconds);
+    ? Math.max(minimumStageBaseSeconds, fallbackBaseSeconds)
+    : Math.max(processingEtaState.progressAwareStageBaseSeconds, minimumStageBaseSeconds);
   const clampedProgress = Math.max(0, Math.min(1, Number(stageProgress || 0)));
 
   if (shouldResetStageBase) {
@@ -1793,6 +1961,11 @@ const updateBatchProcessingUi = ({
   const previousBatchMessageContext = processingBatchMessageContext;
   const previousEtaSeconds = getCurrentProcessingEtaSeconds();
   const shouldFreezeEta = etaMode === PROCESSING_ETA_MODES.FREEZE;
+  const resolvedRemainingBatchCount = getRemainingBatchCount({
+    batchNumber,
+    totalBatches,
+    remainingBatchCount,
+  });
   const normalizedEtaProgress = Number.isFinite(Number(etaProgress))
     ? Math.max(0, Math.min(1, Number(etaProgress)))
     : null;
@@ -1810,7 +1983,7 @@ const updateBatchProcessingUi = ({
       previousBatchMessageContext?.batchNumber !== batchNumber ||
       previousBatchMessageContext?.totalBatches !== totalBatches ||
       previousBatchMessageContext?.stageLabel !== stageLabel ||
-      previousBatchMessageContext?.remainingBatchCount !== remainingBatchCount ||
+      previousBatchMessageContext?.remainingBatchCount !== resolvedRemainingBatchCount ||
       processingEtaState.estimateBaseSeconds === null
     );
 
@@ -1820,7 +1993,7 @@ const updateBatchProcessingUi = ({
     stageLabel,
     batchDurations,
     pipelineBatchDurations,
-    remainingBatchCount,
+    remainingBatchCount: resolvedRemainingBatchCount,
     etaMode,
     progress,
     etaProgress: normalizedEtaProgress,
@@ -1891,6 +2064,11 @@ const updateProcessingUi = (message, progress = processingProgress.value) => {
   applyProcessingUi(message, progress);
 };
 
+const formatProcessingStageError = (stageLabel, error) => {
+  const detail = error?.message ? String(error.message) : String(error || "");
+  return detail ? `${stageLabel}失败: ${detail}` : `${stageLabel}失败`;
+};
+
 const ensureMp4ExportSupported = async (width, height) => {
   if (mp4ExportSupportChecked) return;
 
@@ -1915,18 +2093,220 @@ const removeTemporaryFiles = async (filePaths = []) => {
 };
 
 const openPathAsStream = async (filePath) => {
-  const bytes = await readFileBytes(filePath);
-  return new Blob([bytes], {
-    type: getMimeTypeForPath(filePath),
-  }).stream();
+  const response = await fetchLocalFileResponse(filePath);
+  if (response.body) {
+    return response.body;
+  }
+
+  const bytes = await response.arrayBuffer();
+  return new Blob([bytes], { type: getMimeTypeForPath(filePath) }).stream();
 };
 
 const saveStreamToPath = async (stream, outputPath) => {
-  const bytes = await readReadableStream(stream);
-  return window.electron.ipcRenderer.invoke("save-file", {
-    filePath: outputPath,
-    blob: bytes.buffer,
-  });
+  if (!window.electron?.ipcRenderer?.invoke) {
+    throw new Error("当前环境无法写入本地文件");
+  }
+
+  const openResult = await window.electron.ipcRenderer.invoke(
+    "open-file-write-stream",
+    outputPath
+  );
+  if (!openResult?.success || !openResult.streamId) {
+    throw new Error(openResult?.error || `无法创建输出文件: ${outputPath}`);
+  }
+
+  const reader = stream.getReader();
+  let streamClosed = false;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength <= 0) continue;
+
+      const writeResult = await window.electron.ipcRenderer.invoke(
+        "write-file-stream-chunk",
+        {
+          streamId: openResult.streamId,
+          chunk: value,
+        }
+      );
+      if (!writeResult?.success) {
+        throw new Error(writeResult?.error || `写入输出文件失败: ${outputPath}`);
+      }
+    }
+
+    const closeResult = await window.electron.ipcRenderer.invoke(
+      "close-file-write-stream",
+      openResult.streamId
+    );
+    streamClosed = Boolean(closeResult?.success);
+    if (!closeResult?.success) {
+      throw new Error(closeResult?.error || `完成输出文件写入失败: ${outputPath}`);
+    }
+
+    return closeResult.filePath || openResult.filePath || outputPath;
+  } catch (error) {
+    if (!streamClosed) {
+      await window.electron.ipcRenderer
+        .invoke("abort-file-write-stream", openResult.streamId)
+        .catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    reader.releaseLock?.();
+  }
+};
+
+const getDirectoryPath = (filePath) => String(filePath || "").replace(/[\\/][^\\/]+$/, "");
+
+const buildIntermediateConcatPath = ({ segmentDirectory, roundIndex, groupIndex }) =>
+  joinRendererPath(
+    segmentDirectory,
+    `concat_round_${String(roundIndex).padStart(2, "0")}_${String(groupIndex + 1).padStart(4, "0")}.mp4`
+  );
+
+const getConcatOperationCount = (segmentCount, groupSize = FINAL_CONCAT_GROUP_SIZE) => {
+  let pendingCount = Math.max(0, Math.floor(Number(segmentCount || 0)));
+  let operationCount = 0;
+
+  while (pendingCount > groupSize) {
+    let nextPendingCount = 0;
+    for (let start = 0; start < pendingCount; start += groupSize) {
+      const currentGroupSize = Math.min(groupSize, pendingCount - start);
+      if (currentGroupSize > 1) {
+        operationCount += 1;
+      }
+      nextPendingCount += 1;
+    }
+    pendingCount = nextPendingCount;
+  }
+
+  if (pendingCount > 1) {
+    operationCount += 1;
+  }
+
+  return operationCount;
+};
+
+const concatSegmentGroupToPath = async ({ segmentPaths, outputPath }) => {
+  if (!Array.isArray(segmentPaths) || segmentPaths.length === 0) {
+    throw new Error("没有可用于拼接的视频分段");
+  }
+  if (segmentPaths.length === 1) {
+    return segmentPaths[0];
+  }
+
+  const streams = await Promise.all(segmentPaths.map((segmentPath) => openPathAsStream(segmentPath)));
+  const mergedStream = await fastConcatMP4(streams);
+  return await saveStreamToPath(mergedStream, outputPath);
+};
+
+const concatSegmentPathsInLayers = async ({
+  segmentPaths,
+  finalOutputPath = "",
+  reserveProgressForAudio = false,
+}) => {
+  if (!Array.isArray(segmentPaths) || segmentPaths.length === 0) {
+    throw new Error("没有可用于拼接的视频分段");
+  }
+  if (segmentPaths.length === 1) {
+    return {
+      mergedPath: segmentPaths[0],
+      intermediatePaths: [],
+    };
+  }
+
+  const totalOperations = getConcatOperationCount(segmentPaths.length);
+  const progressSpan = reserveProgressForAudio
+    ? FINAL_CONCAT_WITH_AUDIO_PROGRESS_SPAN
+    : FINAL_CONCAT_NO_AUDIO_PROGRESS_SPAN;
+  const segmentDirectory = getDirectoryPath(segmentPaths[0]);
+  const transientPathSet = new Set();
+  const intermediatePaths = [];
+
+  let currentPaths = [...segmentPaths];
+  let roundIndex = 1;
+  let completedOperations = 0;
+
+  const updateConcatProgress = () => {
+    const ratio = totalOperations > 0 ? completedOperations / totalOperations : 1;
+    const displayStep = Math.min(completedOperations + 1, totalOperations);
+    const progress = FINAL_CONCAT_PROGRESS_BASE + progressSpan * ratio;
+    updateProcessingUi(`正在拼接视频分段（${displayStep}/${totalOperations}）`, progress);
+  };
+
+  while (currentPaths.length > 1) {
+    if (currentPaths.length <= FINAL_CONCAT_GROUP_SIZE) {
+      updateConcatProgress();
+      const targetPath =
+        finalOutputPath ||
+        buildIntermediateConcatPath({
+          segmentDirectory,
+          roundIndex,
+          groupIndex: 0,
+        });
+      const mergedPath = await concatSegmentGroupToPath({
+        segmentPaths: currentPaths,
+        outputPath: targetPath,
+      });
+      if (!finalOutputPath) {
+        transientPathSet.add(mergedPath);
+        intermediatePaths.push(mergedPath);
+      }
+      completedOperations += 1;
+
+      const obsoletePaths = currentPaths.filter((path) => transientPathSet.has(path));
+      if (obsoletePaths.length > 0) {
+        await removeTemporaryFiles(obsoletePaths);
+        obsoletePaths.forEach((path) => transientPathSet.delete(path));
+      }
+
+      return {
+        mergedPath,
+        intermediatePaths,
+      };
+    }
+
+    const nextPaths = [];
+    for (let start = 0, groupIndex = 0; start < currentPaths.length; start += FINAL_CONCAT_GROUP_SIZE, groupIndex += 1) {
+      const groupPaths = currentPaths.slice(start, start + FINAL_CONCAT_GROUP_SIZE);
+      if (groupPaths.length === 1) {
+        nextPaths.push(groupPaths[0]);
+        continue;
+      }
+
+      updateConcatProgress();
+      const outputPath = buildIntermediateConcatPath({
+        segmentDirectory,
+        roundIndex,
+        groupIndex,
+      });
+      const mergedPath = await concatSegmentGroupToPath({
+        segmentPaths: groupPaths,
+        outputPath,
+      });
+
+      transientPathSet.add(mergedPath);
+      intermediatePaths.push(mergedPath);
+      nextPaths.push(mergedPath);
+      completedOperations += 1;
+    }
+
+    const obsoletePaths = currentPaths.filter((path) => transientPathSet.has(path));
+    if (obsoletePaths.length > 0) {
+      await removeTemporaryFiles(obsoletePaths);
+      obsoletePaths.forEach((path) => transientPathSet.delete(path));
+    }
+
+    currentPaths = nextPaths;
+    roundIndex += 1;
+  }
+
+  return {
+    mergedPath: currentPaths[0],
+    intermediatePaths,
+  };
 };
 
 const exportProcessedBatchSegment = async ({
@@ -1943,6 +2323,12 @@ const exportProcessedBatchSegment = async ({
   pipelineBatchDurations,
 }) => {
   await ensureMp4ExportSupported(width, height);
+  const missingFramePaths = await getMissingFilePaths(framePaths);
+  if (missingFramePaths.length > 0) {
+    const preview = missingFramePaths.slice(0, 2).join("；");
+    const suffix = missingFramePaths.length > 2 ? " 等文件" : "";
+    throw new Error(`当前批次缺少结果帧文件：${preview}${suffix}`);
+  }
 
   const frameClip = new ProcessedFramesClip({ framePaths, width, height, fps });
   const mainSprite = new OffscreenSprite(frameClip);
@@ -1964,9 +2350,11 @@ const exportProcessedBatchSegment = async ({
       stageLabel: "正在编码临时视频分段",
       batchDurations,
       pipelineBatchDurations,
+      remainingBatchCount: getActiveStageRemainingBatchCount({ batchNumber, totalBatches }),
       progress: progressBase,
       etaProgress: 0,
     });
+    await flushProcessingUiFrame();
     unbindProgress = combinator.on("OutputProgress", (progress) => {
       const normalized = Math.max(0, Math.min(1, progress));
       updateBatchProcessingUi({
@@ -1975,6 +2363,7 @@ const exportProcessedBatchSegment = async ({
         stageLabel: "正在编码临时视频分段",
         batchDurations,
         pipelineBatchDurations,
+        remainingBatchCount: getActiveStageRemainingBatchCount({ batchNumber, totalBatches }),
         progress: progressBase + progressWeight * normalized,
         etaProgress: normalized,
       });
@@ -2019,29 +2408,120 @@ const finalizeProcessedVideo = async ({ segmentPaths, sourceFile, sourcePath, wi
   await ensureMp4ExportSupported(width, height);
   const outputPath = await buildOutputVideoPath(sourceFile, sourcePath);
 
-  updateProcessingUi("正在进行最后的拼接与封装", 0.9);
+  updateProcessingUi("正在进行最后的拼接与封装", FINAL_CONCAT_PROGRESS_BASE);
+  await flushProcessingUiFrame();
 
   if (segmentPaths.length === 0) {
     throw new Error("没有可用于封装的视频分段");
   }
 
-  const segmentStreams = await Promise.all(
-    segmentPaths.map((segmentPath) => openPathAsStream(segmentPath))
-  );
-  let finalStream =
-    segmentStreams.length === 1 ? segmentStreams[0] : await fastConcatMP4(segmentStreams);
-
-  const hasAudio = await detectSourceHasAudio(sourceFile);
-  if (hasAudio) {
-    updateProcessingUi("正在进行最后的拼接与封装", 0.95);
-    finalStream = mixinMP4AndAudio(finalStream, {
-      stream: sourceFile.stream(),
-      volume: 1,
-      loop: false,
-    });
+  let hasAudio = false;
+  try {
+    hasAudio = await detectSourceHasAudio(sourceFile);
+  } catch (error) {
+    throw new Error(formatProcessingStageError("检测源视频音轨", error));
   }
 
-  return await saveStreamToPath(finalStream, outputPath);
+  if (!hasAudio) {
+    if (segmentPaths.length === 1) {
+      updateProcessingUi("正在写入最终视频文件", 0.98);
+      await flushProcessingUiFrame();
+      try {
+        return await saveStreamToPath(await openPathAsStream(segmentPaths[0]), outputPath);
+      } catch (error) {
+        throw new Error(formatProcessingStageError("写入最终视频文件", error));
+      }
+    }
+
+    if (segmentPaths.length <= FINAL_CONCAT_GROUP_SIZE) {
+      updateProcessingUi("正在拼接视频分段（1/1）", FINAL_CONCAT_PROGRESS_BASE);
+      await flushProcessingUiFrame();
+      try {
+        return await concatSegmentGroupToPath({
+          segmentPaths,
+          outputPath,
+        });
+      } catch (error) {
+        throw new Error(formatProcessingStageError("拼接视频分段", error));
+      }
+    }
+
+    try {
+      const { mergedPath } = await concatSegmentPathsInLayers({
+        segmentPaths,
+        finalOutputPath: outputPath,
+        reserveProgressForAudio: false,
+      });
+      return mergedPath || outputPath;
+    } catch (error) {
+      throw new Error(formatProcessingStageError("拼接视频分段", error));
+    }
+  }
+
+  const transientPaths = [];
+
+  try {
+    let mergedPathForAudio = segmentPaths[0];
+    if (segmentPaths.length > 1) {
+      if (segmentPaths.length <= FINAL_CONCAT_GROUP_SIZE) {
+        updateProcessingUi("正在拼接视频分段（1/1）", FINAL_CONCAT_PROGRESS_BASE);
+        await flushProcessingUiFrame();
+        try {
+          mergedPathForAudio = await concatSegmentGroupToPath({
+            segmentPaths,
+            outputPath: buildIntermediateConcatPath({
+              segmentDirectory: getDirectoryPath(segmentPaths[0]),
+              roundIndex: 0,
+              groupIndex: 0,
+            }),
+          });
+          transientPaths.push(mergedPathForAudio);
+        } catch (error) {
+          throw new Error(formatProcessingStageError("拼接视频分段", error));
+        }
+      } else {
+        try {
+          const { mergedPath, intermediatePaths } = await concatSegmentPathsInLayers({
+            segmentPaths,
+            reserveProgressForAudio: true,
+          });
+          mergedPathForAudio = mergedPath;
+          transientPaths.push(...intermediatePaths);
+        } catch (error) {
+          throw new Error(formatProcessingStageError("拼接视频分段", error));
+        }
+      }
+    }
+
+    updateProcessingUi("正在混合原视频音频", FINAL_AUDIO_MIX_PROGRESS);
+    await flushProcessingUiFrame();
+
+    let finalStream = null;
+    try {
+      finalStream = mixinMP4AndAudio(await openPathAsStream(mergedPathForAudio), {
+        stream: sourceFile.stream(),
+        volume: 1,
+        loop: false,
+      });
+    } catch (error) {
+      throw new Error(formatProcessingStageError("混合原视频音频", error));
+    }
+
+    updateProcessingUi("正在写入最终视频文件", 0.98);
+    await flushProcessingUiFrame();
+    try {
+      return await saveStreamToPath(finalStream, outputPath);
+    } catch (error) {
+      throw new Error(formatProcessingStageError("写入最终视频文件", error));
+    }
+  } finally {
+    const removableTransientPaths = transientPaths.filter(
+      (filePath) => filePath && !segmentPaths.includes(filePath) && filePath !== outputPath
+    );
+    if (removableTransientPaths.length > 0) {
+      await removeTemporaryFiles(removableTransientPaths);
+    }
+  }
 };
 
 const buildBatchDescriptor = ({ start, batchSize, totalFrames, totalBatches }) => {
@@ -2093,6 +2573,7 @@ const prepareBatchArtifacts = async ({
         totalBatches,
         stageLabel: "正在生成帧与蒙版",
         batchDurations,
+        remainingBatchCount: getActiveStageRemainingBatchCount({ batchNumber, totalBatches }),
         progress:
           batchProgressBase +
           ((frameIndex - start) / Math.max(batchFrameCount, 1)) * batchProgressSpan * 0.3,
@@ -2194,7 +2675,6 @@ const runVideoProcessing = async () => {
 
   const fps = exportFps.value;
   const totalFrames = Math.max(1, Math.ceil(videoStore.videoDuration * fps));
-  const maxFrameCount = Math.max(1, Number(configStore.config.video?.maxFrameCount || 10000));
   const batchSize = computedBatchSize.value;
   const retryCount = Math.max(1, Number(configStore.config.video?.batchRetryCount || 3));
   const totalBatches = Math.max(1, Math.ceil(totalFrames / batchSize));
@@ -2207,12 +2687,6 @@ const runVideoProcessing = async () => {
   try {
     if (!window.electron) {
       throw new Error("视频处理仅支持 Electron 模式");
-    }
-
-    if (totalFrames > maxFrameCount) {
-      throw new Error(
-        `当前导出需要 ${totalFrames} 帧，已超过设置上限 ${maxFrameCount} 帧。请缩短视频、降低导出帧率，或在全局设置中提高上限。`
-      );
     }
 
     paths = await prepareTaskPaths();
@@ -2254,6 +2728,10 @@ const runVideoProcessing = async () => {
             stageLabel: "正在生成帧与蒙版",
             batchDurations,
             pipelineBatchDurations,
+            remainingBatchCount: getActiveStageRemainingBatchCount({
+              batchNumber: currentTask.descriptor.batchNumber,
+              totalBatches,
+            }),
             progress: currentTask.descriptor.batchProgressBase,
           });
         }
@@ -2294,10 +2772,15 @@ const runVideoProcessing = async () => {
               stageLabel: "正在提交后端批次",
               batchDurations,
               pipelineBatchDurations,
+              remainingBatchCount: getActiveStageRemainingBatchCount({
+                batchNumber: currentBatch.batchNumber,
+                totalBatches,
+              }),
               progress: currentBatch.batchProgressBase + currentBatch.batchProgressSpan * 0.45,
             });
+            await flushProcessingUiFrame();
 
-            const { data } = await submitVideoBatchInpaint({
+            const data = await submitVideoBatchInpaint({
               frames: currentBatch.batchItems,
               options: {
                 keep_mask_grayscale: false,
@@ -2323,11 +2806,10 @@ const runVideoProcessing = async () => {
               refreshProcessingEtaEstimate();
             }
 
-            const failed = (data?.results || []).filter((item) => !item.success);
-            if (failed.length > 0) {
-              const firstError = failed[0]?.error || "未知错误";
-              throw new Error(`批次中存在失败帧: ${firstError}`);
-            }
+            await validateVideoBatchResponse({
+              batch: currentBatch,
+              responseData: data,
+            });
 
             success = true;
             break;
@@ -2406,9 +2888,11 @@ const runVideoProcessing = async () => {
       }
       await extractor.dispose();
     }
-    } catch (error) {
+  } catch (error) {
     processingSucceeded.value = false;
-    updateProcessingUi("处理失败", processingProgress.value);
+    updateProcessingUiWithoutOverlay("处理失败", processingProgress.value);
+    hideGlobalLoadingOverlay();
+    console.error("Video processing failed:", error);
     $q.notify({
       type: "negative",
       message: `视频处理失败: ${error.message}`,
@@ -2450,7 +2934,10 @@ const prepareTaskPaths = async () => {
   const masksDir = window.electron.ipcRenderer.joinPath(taskRoot, "masks");
   const resultsDir = window.electron.ipcRenderer.joinPath(taskRoot, "results");
   const segmentsDir = window.electron.ipcRenderer.joinPath(taskRoot, "segments");
-  const failureRoot = window.electron.ipcRenderer.joinPath(taskRoot, "failed_batches");
+  const failureRoot = window.electron.ipcRenderer.joinPath(
+    tempBase,
+    "moonshine_video_failures"
+  );
 
   await window.electron.ipcRenderer.invoke("ensure-directory", taskRoot);
   await window.electron.ipcRenderer.invoke("ensure-directory", framesDir);
@@ -2620,10 +3107,13 @@ const createFrameExtractor = async (file, format, fps) => {
 };
 
 const createCombinedMaskRenderer = async ({ masks, width, height }) => {
-  const canvas = document.createElement("canvas");
+  const canvas =
+    typeof OffscreenCanvas !== "undefined"
+      ? new OffscreenCanvas(width, height)
+      : document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const ctx = canvas.getContext("2d");
   const anchor = getVideoCenterAnchor(width, height);
 
   const assets = await Promise.all(
@@ -2651,22 +3141,19 @@ const createCombinedMaskRenderer = async ({ masks, width, height }) => {
 
         ctx.save();
         ctx.translate(anchor.x + state.x, anchor.y + state.y);
-        ctx.scale(state.scale, state.scale);
+        ctx.scale(state.scaleX ?? state.scale ?? 1, state.scaleY ?? state.scale ?? 1);
         ctx.translate(-anchor.x, -anchor.y);
         ctx.drawImage(asset.image, 0, 0, width, height);
         ctx.restore();
       });
 
-      const imageData = ctx.getImageData(0, 0, width, height);
-      const { data } = imageData;
-      for (let index = 0; index < data.length; index += 4) {
-        const active = data[index + 3] > 0 ? 255 : 0;
-        data[index] = 255;
-        data[index + 1] = 255;
-        data[index + 2] = 255;
-        data[index + 3] = active;
-      }
-      ctx.putImageData(imageData, 0, 0);
+      // Replace the expensive full-frame pixel scan with GPU-friendly compositing:
+      // keep only the accumulated alpha, then fill the visible mask area with white.
+      ctx.save();
+      ctx.globalCompositeOperation = "source-in";
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, width, height);
+      ctx.restore();
 
       return canvasToBlob(canvas, {
         mimeType: "image/png",
@@ -2825,27 +3312,6 @@ const saveBlobToPath = async (blob, filePath) => {
   });
 };
 
-const readReadableStream = async (stream) => {
-  const reader = stream.getReader();
-  const chunks = [];
-  let totalLength = 0;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    totalLength += value.length;
-  }
-
-  const result = new Uint8Array(totalLength);
-  let offset = 0;
-  chunks.forEach((chunk) => {
-    result.set(chunk, offset);
-    offset += chunk.length;
-  });
-  return result;
-};
-
 class ProcessedFramesClip {
   constructor({ framePaths, width, height, fps }) {
     this.framePaths = framePaths;
@@ -2882,10 +3348,8 @@ class ProcessedFramesClip {
     if (this.cache.has(index)) return this.cache.get(index);
 
     const framePath = this.framePaths[index];
-    const bytes = await readFileBytes(framePath);
-    const blob = new Blob([bytes], {
-      type: getMimeTypeForPath(framePath),
-    });
+    const response = await fetchLocalFileResponse(framePath);
+    const blob = await response.blob();
     const bitmap = await createImageBitmap(blob);
     this.cache.set(index, bitmap);
 
@@ -3086,9 +3550,16 @@ onUnmounted(() => {
 .timeline-time-display {
   flex: 0 0 auto;
   min-width: 90px;
-  color: rgba(255, 255, 255, 0.85);
   font-size: 12px;
   text-align: right;
+}
+
+.timeline-time-display--dark {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.timeline-time-display--light {
+  color: rgba(17, 24, 39, 0.88);
 }
 
 .timeline-zoom-control {

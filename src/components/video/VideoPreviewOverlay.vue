@@ -46,7 +46,7 @@
         :key="handle"
         class="selection-handle"
         :class="`is-${handle}`"
-        @pointerdown.stop.prevent="startScale($event)"
+        @pointerdown.stop.prevent="startScale($event, handle)"
       ></div>
     </div>
   </div>
@@ -59,10 +59,16 @@ import { useRasterMaskEditor } from "src/composables/useRasterMaskEditor";
 import { useVideoManagerStore } from "src/stores/videoManager";
 import { MASK_TOOL_MODES, hexToRgba } from "src/utils/maskTool";
 import {
+  createMaskTransformFromRenderedCenter,
+  getMaskBoundsCornerPoint,
   getMaskBoundsFromDataUrl,
+  getMaskKeyframeTransform,
+  getMaskKeyframeUniformScale,
+  getRenderedMaskCenter,
   getTransformedBoundsRect,
   getVideoCenterAnchor,
   inverseTransformPointAroundAnchor,
+  isMaskKeyframeDeformed,
   loadImageElement,
 } from "src/utils/videoMaskUtils";
 
@@ -137,41 +143,45 @@ const getFallbackBounds = () => {
 
 const getRenderableBounds = (bounds) => bounds || getFallbackBounds();
 
-const selectedDisplayBox = computed(() => {
+const selectedSourceRect = computed(() => {
   if (!selectedAsset.value || !selectedState.value) return null;
 
   const bounds = getRenderableBounds(selectedAsset.value.bounds);
-  const transformedRect = getTransformedBoundsRect(bounds, selectedState.value, videoAnchor.value);
-  if (!transformedRect) return null;
+  return getTransformedBoundsRect(bounds, selectedState.value, videoAnchor.value);
+});
+
+const selectedDisplayBox = computed(() => {
+  if (!selectedSourceRect.value) return null;
 
   return {
-    left: transformedRect.left * scaleX.value,
-    top: transformedRect.top * scaleY.value,
-    width: transformedRect.width * scaleX.value,
-    height: transformedRect.height * scaleY.value,
-    centerX: transformedRect.centerX,
-    centerY: transformedRect.centerY,
+    left: selectedSourceRect.value.left * scaleX.value,
+    top: selectedSourceRect.value.top * scaleY.value,
+    width: selectedSourceRect.value.width * scaleX.value,
+    height: selectedSourceRect.value.height * scaleY.value,
+    centerX: selectedSourceRect.value.centerX,
+    centerY: selectedSourceRect.value.centerY,
   };
 });
 
 const rectPreviewDisplayBox = computed(() => {
   if (!rectPreview.value || !selectedState.value) return null;
 
-  const scale = Number(selectedState.value.scale || 1);
+  const maskScaleX = Number(selectedState.value.scaleX ?? selectedState.value.scale ?? 1);
+  const maskScaleY = Number(selectedState.value.scaleY ?? selectedState.value.scale ?? 1);
   const translatedLeft =
     videoAnchor.value.x +
     Number(selectedState.value.x || 0) +
-    scale * (rectPreview.value.x - videoAnchor.value.x);
+    maskScaleX * (rectPreview.value.x - videoAnchor.value.x);
   const translatedTop =
     videoAnchor.value.y +
     Number(selectedState.value.y || 0) +
-    scale * (rectPreview.value.y - videoAnchor.value.y);
+    maskScaleY * (rectPreview.value.y - videoAnchor.value.y);
 
   return {
     left: translatedLeft * scaleX.value,
     top: translatedTop * scaleY.value,
-    width: rectPreview.value.width * scale * scaleX.value,
-    height: rectPreview.value.height * scale * scaleY.value,
+    width: rectPreview.value.width * maskScaleX * scaleX.value,
+    height: rectPreview.value.height * maskScaleY * scaleY.value,
   };
 });
 
@@ -362,7 +372,7 @@ const renderOverlay = () => {
     ctx.save();
     ctx.globalAlpha = getMaskPreviewOpacity(mask.id);
     ctx.translate(videoAnchor.value.x + state.x, videoAnchor.value.y + state.y);
-    ctx.scale(state.scale, state.scale);
+    ctx.scale(state.scaleX ?? state.scale ?? 1, state.scaleY ?? state.scale ?? 1);
     ctx.translate(-videoAnchor.value.x, -videoAnchor.value.y);
     ctx.drawImage(imageSource, 0, 0, safeSourceWidth.value, safeSourceHeight.value);
     ctx.restore();
@@ -494,23 +504,28 @@ const startMove = (event) => {
 
   const keyframe = videoStore.ensureTransformKeyframeAtCurrentTime(videoStore.selectedMaskId);
   if (!keyframe) return;
+  const keyframeTransform = getMaskKeyframeTransform(keyframe, selectedState.value || undefined);
 
   interactionState.value = {
     type: "move",
     startPointer: getSourcePointFromEvent(event),
-    startX: keyframe.x,
-    startY: keyframe.y,
+    startX: keyframeTransform.x,
+    startY: keyframeTransform.y,
+    scaleX: keyframeTransform.scaleX,
+    scaleY: keyframeTransform.scaleY,
+    originScaleX: keyframeTransform.originScaleX,
+    originScaleY: keyframeTransform.originScaleY,
     keyframeId: keyframe.id,
   };
   window.addEventListener("pointermove", handleInteractionMove);
   window.addEventListener("pointerup", finishInteraction);
 };
 
-const startScale = (event) => {
+const startScale = (event, handle) => {
   if (
     props.disabled ||
     videoStore.maskTool.drawingEnabled ||
-    !selectedDisplayBox.value ||
+    !selectedSourceRect.value ||
     !selectedState.value
   ) {
     return;
@@ -518,24 +533,29 @@ const startScale = (event) => {
 
   const keyframe = videoStore.ensureTransformKeyframeAtCurrentTime(videoStore.selectedMaskId);
   if (!keyframe) return;
-
-  const pointer = getSourcePointFromEvent(event);
-  const distance = Math.max(
-    0.0001,
-    Math.hypot(
-      pointer.x - selectedDisplayBox.value.centerX,
-      pointer.y - selectedDisplayBox.value.centerY
-    )
-  );
+  const keyframeTransform = getMaskKeyframeTransform(keyframe, selectedState.value || undefined);
+  const bounds = getRenderableBounds(selectedAsset.value?.bounds);
+  const transformedRect =
+    getTransformedBoundsRect(bounds, keyframeTransform, videoAnchor.value) || selectedSourceRect.value;
+  const fixedHandle =
+    {
+      nw: "se",
+      ne: "sw",
+      se: "nw",
+      sw: "ne",
+    }[handle] || "nw";
 
   interactionState.value = {
     type: "scale",
-    centerX: selectedDisplayBox.value.centerX,
-    centerY: selectedDisplayBox.value.centerY,
-    startDistance: distance,
-    startScale: keyframe.scale,
+    handle,
+    bounds,
+    fixedHandle,
+    fixedPoint: getMaskBoundsCornerPoint(transformedRect, fixedHandle),
+    originScaleX: keyframeTransform.originScaleX,
+    originScaleY: keyframeTransform.originScaleY,
     keyframeId: keyframe.id,
   };
+  videoStore.deferKeyframeDeformationUi(keyframe.id);
   window.addEventListener("pointermove", handleInteractionMove);
   window.addEventListener("pointerup", finishInteraction);
 };
@@ -551,33 +571,97 @@ const handleInteractionMove = (event) => {
       id: interactionState.value.keyframeId,
       x: interactionState.value.startX + dx,
       y: interactionState.value.startY + dy,
-      scale: videoStore.selectedKeyframe?.scale ?? selectedState.value?.scale ?? 1,
+      scaleX: interactionState.value.scaleX,
+      scaleY: interactionState.value.scaleY,
+      originScaleX: interactionState.value.originScaleX,
+      originScaleY: interactionState.value.originScaleY,
     });
   } else if (interactionState.value.type === "scale") {
+    const bounds = interactionState.value.bounds || getRenderableBounds(selectedAsset.value?.bounds);
+    const fixedPoint = interactionState.value.fixedPoint;
     const pointer = getSourcePointFromEvent(event);
-    const distance = Math.max(
-      0.0001,
-      Math.hypot(
-        pointer.x - interactionState.value.centerX,
-        pointer.y - interactionState.value.centerY
-      )
-    );
+    if (!bounds || !fixedPoint) return;
+
+    let nextLeft = Math.min(fixedPoint.x, pointer.x);
+    let nextRight = Math.max(fixedPoint.x, pointer.x);
+    let nextTop = Math.min(fixedPoint.y, pointer.y);
+    let nextBottom = Math.max(fixedPoint.y, pointer.y);
+    const minWidth = Math.max(1, Number(bounds.width || 0) * 0.05);
+    const minHeight = Math.max(1, Number(bounds.height || 0) * 0.05);
+
+    if (nextRight - nextLeft < minWidth) {
+      if (pointer.x >= fixedPoint.x) {
+        nextRight = fixedPoint.x + minWidth;
+      } else {
+        nextLeft = fixedPoint.x - minWidth;
+      }
+    }
+
+    if (nextBottom - nextTop < minHeight) {
+      if (pointer.y >= fixedPoint.y) {
+        nextBottom = fixedPoint.y + minHeight;
+      } else {
+        nextTop = fixedPoint.y - minHeight;
+      }
+    }
+
+    const nextTransform = createMaskTransformFromRenderedCenter({
+      bounds,
+      center: {
+        x: (nextLeft + nextRight) / 2,
+        y: (nextTop + nextBottom) / 2,
+      },
+      scaleX: (nextRight - nextLeft) / Math.max(Number(bounds.width || 1), 1),
+      scaleY: (nextBottom - nextTop) / Math.max(Number(bounds.height || 1), 1),
+      anchor: videoAnchor.value,
+      originScaleX: interactionState.value.originScaleX,
+      originScaleY: interactionState.value.originScaleY,
+    });
+
     videoStore.upsertKeyframe(videoStore.selectedMaskId, {
       id: interactionState.value.keyframeId,
-      x: videoStore.selectedKeyframe?.x ?? selectedState.value?.x ?? 0,
-      y: videoStore.selectedKeyframe?.y ?? selectedState.value?.y ?? 0,
-      scale: Math.max(
-        0.05,
-        interactionState.value.startScale * (distance / interactionState.value.startDistance)
-      ),
+      ...nextTransform,
     });
   }
 };
 
 const finishInteraction = () => {
+  const completedInteraction = interactionState.value;
   interactionState.value = null;
   window.removeEventListener("pointermove", handleInteractionMove);
   window.removeEventListener("pointerup", finishInteraction);
+  videoStore.deferKeyframeDeformationUi(null);
+
+  if (
+    completedInteraction?.type !== "scale" ||
+    !videoStore.selectedMaskId ||
+    !completedInteraction.bounds
+  ) {
+    return;
+  }
+
+  const mask = videoStore.getMaskById(videoStore.selectedMaskId);
+  const keyframe =
+    mask?.keyframes.find((item) => item.id === completedInteraction.keyframeId) || null;
+  if (!keyframe || isMaskKeyframeDeformed(keyframe)) {
+    return;
+  }
+
+  const normalizedScale = getMaskKeyframeUniformScale(keyframe);
+  const nextTransform = createMaskTransformFromRenderedCenter({
+    bounds: completedInteraction.bounds,
+    center: getRenderedMaskCenter(completedInteraction.bounds, keyframe, videoAnchor.value),
+    scaleX: keyframe.originScaleX * normalizedScale,
+    scaleY: keyframe.originScaleY * normalizedScale,
+    anchor: videoAnchor.value,
+    originScaleX: keyframe.originScaleX,
+    originScaleY: keyframe.originScaleY,
+  });
+
+  videoStore.upsertKeyframe(videoStore.selectedMaskId, {
+    id: keyframe.id,
+    ...nextTransform,
+  });
 };
 
 watch(
@@ -620,7 +704,17 @@ watch(
           mask.enabled,
           ...(mask.keyframes || []).map(
             (keyframe) =>
-              `${keyframe.id}:${keyframe.time}:${keyframe.x}:${keyframe.y}:${keyframe.scale}`
+              [
+                keyframe.id,
+                keyframe.time,
+                keyframe.x,
+                keyframe.y,
+                keyframe.scale,
+                keyframe.scaleX,
+                keyframe.scaleY,
+                keyframe.originScaleX,
+                keyframe.originScaleY,
+              ].join(":")
           ),
         ].join("|")
       )

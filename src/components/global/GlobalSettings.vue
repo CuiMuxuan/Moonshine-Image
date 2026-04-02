@@ -186,9 +186,8 @@
 
                   <q-tab-panel name="video" class="q-pa-none">
                     <div class="grid">
-                      <q-input v-model.number="localConfig.video.batchFrameCount" label="固定批次帧数" type="number" :min="120" :max="5000" />
+                      <q-input v-model.number="localConfig.video.batchFrameCount" label="固定批次帧数" type="number" :min="1" />
                       <q-select v-model="localConfig.video.frameExtractionFormat" label="拆帧存储格式" emit-value map-options :options="frameFormatOptions" />
-                      <q-input v-model.number="localConfig.video.maxFrameCount" label="最大导出帧数" type="number" :min="1" />
                       <q-input v-model.number="localConfig.video.historyLimit" label="视频历史记录上限" type="number" :min="1" :max="50" />
                       <q-input v-model.number="localConfig.video.batchRetryCount" label="批次重试次数" type="number" :min="1" :max="10" />
                       <q-input v-model.number="localConfig.video.failureRetentionCount" label="失败现场保留数量" type="number" :min="1" :max="50" />

@@ -83,7 +83,8 @@ const checkCUDAAvailability = async () => {
     const response = await api.get("/api/v1/check_cuda");
 
     // 更新CUDA状态
-    cudaAvailable.value = response.cuda_available;
+    cudaAvailable.value =
+      response.cuda_available && response.cuda_compatible !== false;
     cudaInfo.value = response;
 
     emit('cuda-status-changed', {

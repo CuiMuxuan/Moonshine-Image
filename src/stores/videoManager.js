@@ -11,6 +11,8 @@ import { MASK_TOOL_MODES, normalizeMaskToolMode } from "src/utils/maskTool";
 import {
   getInterpolatedMaskTransform,
   getMaskKeyframeTransform,
+  getMaskKeyframeUniformScale,
+  isMaskKeyframeDeformed,
   MASK_KEYFRAME_TYPES,
   sortMaskKeyframes,
 } from "src/utils/videoMaskUtils";
@@ -20,6 +22,10 @@ const DEFAULT_TRANSFORM = Object.freeze({
   x: 0,
   y: 0,
   scale: 1,
+  scaleX: 1,
+  scaleY: 1,
+  originScaleX: 1,
+  originScaleY: 1,
 });
 
 const DEFAULT_MASK_TOOL = Object.freeze({
@@ -74,7 +80,11 @@ const normalizeKeyframe = (
     time: Number(keyframe.time ?? fallbackTime),
     x: transform.x,
     y: transform.y,
-    scale: transform.scale,
+    scale: getMaskKeyframeUniformScale(transform),
+    scaleX: transform.scaleX,
+    scaleY: transform.scaleY,
+    originScaleX: transform.originScaleX,
+    originScaleY: transform.originScaleY,
   };
 };
 
@@ -158,7 +168,11 @@ const syncInheritedEndKeyframe = (mask) => {
           ...item,
           x: previousKeyframe.x,
           y: previousKeyframe.y,
-          scale: previousKeyframe.scale,
+          scale: 1,
+          scaleX: previousKeyframe.scaleX,
+          scaleY: previousKeyframe.scaleY,
+          originScaleX: previousKeyframe.scaleX,
+          originScaleY: previousKeyframe.scaleY,
         }
       : item
   );
@@ -205,7 +219,7 @@ const reconcileMask = (mask = {}, duration = 0) => {
     enabled: mask.enabled !== false,
     displayColor: normalizeMaskDisplayColor(mask.displayColor || mask.color),
     baseMaskDataUrl: mask.baseMaskDataUrl || "",
-    interpolation: mask.interpolation || "linear",
+    interpolation: "linear",
     startTime,
     endTime,
     endStateExplicit: Boolean(mask.endStateExplicit),
@@ -251,6 +265,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
   const currentSourceIsReplacement = ref(false);
   const videoHistory = ref([]);
   const maskDrawHistory = ref({});
+  const deferredDeformationUiKeyframeId = ref(null);
 
   const selectedMask = computed(
     () => masks.value.find((item) => item.id === selectedMaskId.value) || null
@@ -265,6 +280,12 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
   );
   const selectedMaskUserKeyframes = computed(() =>
     selectedMaskOrderedKeyframes.value.filter((item) => item.type === MASK_KEYFRAME_TYPES.USER)
+  );
+  const selectedKeyframeUniformScale = computed(() =>
+    selectedKeyframe.value ? getMaskKeyframeUniformScale(selectedKeyframe.value) : 1
+  );
+  const selectedKeyframeIsDeformed = computed(() =>
+    selectedKeyframe.value ? isMaskKeyframeDeformed(selectedKeyframe.value) : false
   );
   const hasSelectedMask = computed(() => Boolean(selectedMask.value));
   const canDeleteSelectedKeyframe = computed(
@@ -306,6 +327,11 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
   const clearMaskDrawHistory = () => {
     maskDrawHistory.value = {};
   };
+  const deferKeyframeDeformationUi = (keyframeId = null) => {
+    deferredDeformationUiKeyframeId.value = keyframeId || null;
+  };
+  const isKeyframeDeformationUiDeferred = (keyframeId) =>
+    Boolean(keyframeId) && deferredDeformationUiKeyframeId.value === keyframeId;
   const ensureMaskDrawHistory = (maskId, baseMaskDataUrl = "") => {
     const normalized = baseMaskDataUrl || "";
     const state = maskDrawHistory.value[maskId];
@@ -380,6 +406,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
       brushColor: maskToolDefaults.value.color,
     });
     clearMaskDrawHistory();
+    deferKeyframeDeformationUi(null);
   };
 
   const clearVideoInfo = () => {
@@ -646,6 +673,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     if (!mask) {
       selectedMaskId.value = null;
       selectedKeyframeId.value = null;
+      deferKeyframeDeformationUi(null);
       return;
     }
 
@@ -660,12 +688,16 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
 
     if (keyframeId === null) {
       selectedKeyframeId.value = null;
+      deferKeyframeDeformationUi(null);
       return;
     }
 
     selectedKeyframeId.value = mask.keyframes.some((item) => item.id === keyframeId)
       ? keyframeId
       : null;
+    if (selectedKeyframeId.value !== keyframeId) {
+      deferKeyframeDeformationUi(null);
+    }
   };
 
   const selectKeyframe = (maskId, keyframeId) => {
@@ -700,18 +732,22 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
         endTime: clampedEnd,
         endStateExplicit: false,
         keyframes: [
-          {
-            id: uuidv4(),
-            type: MASK_KEYFRAME_TYPES.START,
-            time: clampedStart,
-            ...initialTransform,
-          },
-          {
-            id: uuidv4(),
-            type: MASK_KEYFRAME_TYPES.END,
-            time: clampedEnd,
-            ...initialTransform,
-          },
+        {
+          id: uuidv4(),
+          type: MASK_KEYFRAME_TYPES.START,
+          time: clampedStart,
+          ...initialTransform,
+          originScaleX: initialTransform.scaleX,
+          originScaleY: initialTransform.scaleY,
+        },
+        {
+          id: uuidv4(),
+          type: MASK_KEYFRAME_TYPES.END,
+          time: clampedEnd,
+          ...initialTransform,
+          originScaleX: initialTransform.scaleX,
+          originScaleY: initialTransform.scaleY,
+        },
         ],
       },
       duration
@@ -825,6 +861,10 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
           x: 0,
           y: 0,
           scale: 1,
+          scaleX: 1,
+          scaleY: 1,
+          originScaleX: 1,
+          originScaleY: 1,
         },
         {
           select: true,
@@ -840,6 +880,10 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
         x: 0,
         y: 0,
         scale: 1,
+        scaleX: 1,
+        scaleY: 1,
+        originScaleX: 1,
+        originScaleY: 1,
       },
       {
         select: true,
@@ -940,6 +984,10 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
         type: MASK_KEYFRAME_TYPES.USER,
         time: requestedTime,
         ...baseTransform,
+        originScaleX:
+          keyframeInput.originScaleX ?? baseTransform.originScaleX ?? baseTransform.scaleX,
+        originScaleY:
+          keyframeInput.originScaleY ?? baseTransform.originScaleY ?? baseTransform.scaleY,
       },
       requestedTime,
       MASK_KEYFRAME_TYPES.USER
@@ -1021,7 +1069,9 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
       if (
         Object.prototype.hasOwnProperty.call(keyframeInput, "x") ||
         Object.prototype.hasOwnProperty.call(keyframeInput, "y") ||
-        Object.prototype.hasOwnProperty.call(keyframeInput, "scale")
+        Object.prototype.hasOwnProperty.call(keyframeInput, "scale") ||
+        Object.prototype.hasOwnProperty.call(keyframeInput, "scaleX") ||
+        Object.prototype.hasOwnProperty.call(keyframeInput, "scaleY")
       ) {
         nextEndStateExplicit = true;
       }
@@ -1291,10 +1341,13 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     currentSourceName,
     currentSourceIsReplacement,
     videoHistory,
+    deferredDeformationUiKeyframeId,
     selectedMask,
     selectedKeyframe,
     selectedMaskOrderedKeyframes,
     selectedMaskUserKeyframes,
+    selectedKeyframeUniformScale,
+    selectedKeyframeIsDeformed,
     hasSelectedMask,
     canDeleteSelectedKeyframe,
     canEditSelectedKeyframeTime,
@@ -1346,6 +1399,8 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     renameMask,
     updateMaskTool,
     setMaskToolDefaults,
+    deferKeyframeDeformationUi,
+    isKeyframeDeformationUiDeferred,
     getMaskById,
     getMaskStateAtTime,
     ensureTransformKeyframeAtCurrentTime,

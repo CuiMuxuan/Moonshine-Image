@@ -1,4 +1,7 @@
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+const MIN_MASK_SCALE = 0.05;
+const SAFE_POINT_SCALE = 0.0001;
+const SCALE_RATIO_TOLERANCE = 0.0005;
 
 export const MASK_KEYFRAME_TYPES = Object.freeze({
   START: "start",
@@ -50,59 +53,203 @@ export const parseNumeric = (value, fallback = 0) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
-export const getMaskKeyframeTransform = (keyframe, fallback = {}) => ({
-  x: parseNumeric(keyframe?.x, parseNumeric(fallback?.x, 0)),
-  y: parseNumeric(keyframe?.y, parseNumeric(fallback?.y, 0)),
-  scale: Math.max(0.05, parseNumeric(keyframe?.scale, parseNumeric(fallback?.scale, 1))),
-});
+const clampMaskScale = (value, fallback = 1) =>
+  Math.max(MIN_MASK_SCALE, parseNumeric(value, fallback));
+
+const getSafeOriginScale = (value, fallback = 1) =>
+  Math.max(SAFE_POINT_SCALE, clampMaskScale(value, fallback));
+
+const getScaleRatio = (scale, originScale) =>
+  clampMaskScale(scale, 1) / getSafeOriginScale(originScale, 1);
+
+const getUniformScaleRatioFromAxes = ({
+  scaleX,
+  scaleY,
+  originScaleX = 1,
+  originScaleY = 1,
+}) =>
+  (getScaleRatio(scaleX, originScaleX) + getScaleRatio(scaleY, originScaleY)) / 2;
+
+const areRatiosEquivalent = (left, right, tolerance = SCALE_RATIO_TOLERANCE) =>
+  Math.abs(Number(left || 0) - Number(right || 0)) <= tolerance;
+
+export const isMaskKeyframeDeformed = (keyframe, tolerance = SCALE_RATIO_TOLERANCE) => {
+  const transform = getMaskKeyframeTransform(keyframe);
+  return !areRatiosEquivalent(
+    getScaleRatio(transform.scaleX, transform.originScaleX),
+    getScaleRatio(transform.scaleY, transform.originScaleY),
+    tolerance
+  );
+};
+
+export const getMaskKeyframeUniformScale = (keyframe) => {
+  const transform = getMaskKeyframeTransform(keyframe);
+  return getUniformScaleRatioFromAxes(transform);
+};
+
+export const getMaskKeyframeTransform = (keyframe, fallback = {}) => {
+  const fallbackScaleX = clampMaskScale(fallback?.scaleX, parseNumeric(fallback?.scale, 1));
+  const fallbackScaleY = clampMaskScale(fallback?.scaleY, parseNumeric(fallback?.scale, 1));
+  const fallbackOriginScaleX = getSafeOriginScale(fallback?.originScaleX, 1);
+  const fallbackOriginScaleY = getSafeOriginScale(fallback?.originScaleY, 1);
+  const scaleX = clampMaskScale(keyframe?.scaleX, parseNumeric(keyframe?.scale, fallbackScaleX));
+  const scaleY = clampMaskScale(keyframe?.scaleY, parseNumeric(keyframe?.scale, fallbackScaleY));
+  const originScaleX = getSafeOriginScale(keyframe?.originScaleX, fallbackOriginScaleX);
+  const originScaleY = getSafeOriginScale(keyframe?.originScaleY, fallbackOriginScaleY);
+
+  return {
+    x: parseNumeric(keyframe?.x, parseNumeric(fallback?.x, 0)),
+    y: parseNumeric(keyframe?.y, parseNumeric(fallback?.y, 0)),
+    scale: clampMaskScale(keyframe?.scale, getUniformScaleRatioFromAxes({
+      scaleX,
+      scaleY,
+      originScaleX,
+      originScaleY,
+    })),
+    scaleX,
+    scaleY,
+    originScaleX,
+    originScaleY,
+  };
+};
 
 export const getVideoCenterAnchor = (width, height) => ({
   x: parseNumeric(width, 1) / 2,
   y: parseNumeric(height, 1) / 2,
 });
 
+export const getBoundsCenterPoint = (bounds) => ({
+  x: parseNumeric(bounds?.centerX, 0),
+  y: parseNumeric(bounds?.centerY, 0),
+});
+
+export const getMaskBoundsCornerPoint = (bounds, corner = "se") => {
+  if (!bounds) {
+    return {
+      x: 0,
+      y: 0,
+    };
+  }
+
+  const left = parseNumeric(bounds.left, parseNumeric(bounds.x, 0));
+  const top = parseNumeric(bounds.top, parseNumeric(bounds.y, 0));
+  const width = parseNumeric(bounds.width, 0);
+  const height = parseNumeric(bounds.height, 0);
+  const right = left + width;
+  const bottom = top + height;
+
+  switch (corner) {
+    case "nw":
+      return { x: left, y: top };
+    case "ne":
+      return { x: right, y: top };
+    case "sw":
+      return { x: left, y: bottom };
+    default:
+      return { x: right, y: bottom };
+  }
+};
+
 export const transformPointAroundAnchor = (point, transform, anchor) => {
-  const safeScale = Math.max(0.0001, parseNumeric(transform?.scale, 1));
+  const safeScaleX = Math.max(
+    SAFE_POINT_SCALE,
+    parseNumeric(transform?.scaleX, parseNumeric(transform?.scale, 1))
+  );
+  const safeScaleY = Math.max(
+    SAFE_POINT_SCALE,
+    parseNumeric(transform?.scaleY, parseNumeric(transform?.scale, 1))
+  );
   return {
     x:
       parseNumeric(anchor?.x, 0) +
       parseNumeric(transform?.x, 0) +
-      (parseNumeric(point?.x, 0) - parseNumeric(anchor?.x, 0)) * safeScale,
+      (parseNumeric(point?.x, 0) - parseNumeric(anchor?.x, 0)) * safeScaleX,
     y:
       parseNumeric(anchor?.y, 0) +
       parseNumeric(transform?.y, 0) +
-      (parseNumeric(point?.y, 0) - parseNumeric(anchor?.y, 0)) * safeScale,
+      (parseNumeric(point?.y, 0) - parseNumeric(anchor?.y, 0)) * safeScaleY,
   };
 };
 
 export const inverseTransformPointAroundAnchor = (point, transform, anchor) => {
-  const safeScale = Math.max(0.0001, parseNumeric(transform?.scale, 1));
+  const safeScaleX = Math.max(
+    SAFE_POINT_SCALE,
+    parseNumeric(transform?.scaleX, parseNumeric(transform?.scale, 1))
+  );
+  const safeScaleY = Math.max(
+    SAFE_POINT_SCALE,
+    parseNumeric(transform?.scaleY, parseNumeric(transform?.scale, 1))
+  );
   return {
     x:
       parseNumeric(anchor?.x, 0) +
       (parseNumeric(point?.x, 0) - parseNumeric(anchor?.x, 0) - parseNumeric(transform?.x, 0)) /
-        safeScale,
+        safeScaleX,
     y:
       parseNumeric(anchor?.y, 0) +
       (parseNumeric(point?.y, 0) - parseNumeric(anchor?.y, 0) - parseNumeric(transform?.y, 0)) /
-        safeScale,
+        safeScaleY,
+  };
+};
+
+export const getRenderedMaskCenter = (bounds, transform, anchor) =>
+  transformPointAroundAnchor(getBoundsCenterPoint(bounds), transform, anchor);
+
+export const createMaskTransformFromRenderedCenter = ({
+  bounds,
+  center,
+  scaleX,
+  scaleY,
+  anchor,
+  originScaleX = 1,
+  originScaleY = 1,
+}) => {
+  const safeBoundsCenter = getBoundsCenterPoint(bounds);
+  const safeAnchor = {
+    x: parseNumeric(anchor?.x, 0),
+    y: parseNumeric(anchor?.y, 0),
+  };
+  const safeScaleX = clampMaskScale(scaleX, 1);
+  const safeScaleY = clampMaskScale(scaleY, 1);
+  const safeOriginScaleX = getSafeOriginScale(originScaleX, 1);
+  const safeOriginScaleY = getSafeOriginScale(originScaleY, 1);
+
+  return {
+    x:
+      parseNumeric(center?.x, 0) -
+      safeAnchor.x -
+      (safeBoundsCenter.x - safeAnchor.x) * safeScaleX,
+    y:
+      parseNumeric(center?.y, 0) -
+      safeAnchor.y -
+      (safeBoundsCenter.y - safeAnchor.y) * safeScaleY,
+    scale: getUniformScaleRatioFromAxes({
+      scaleX: safeScaleX,
+      scaleY: safeScaleY,
+      originScaleX: safeOriginScaleX,
+      originScaleY: safeOriginScaleY,
+    }),
+    scaleX: safeScaleX,
+    scaleY: safeScaleY,
+    originScaleX: safeOriginScaleX,
+    originScaleY: safeOriginScaleY,
   };
 };
 
 export const getTransformedBoundsRect = (bounds, transform, anchor) => {
   if (!bounds) return null;
 
-  const safeScale = Math.max(0.0001, parseNumeric(transform?.scale, 1));
-  const center = transformPointAroundAnchor(
-    {
-      x: parseNumeric(bounds.centerX, 0),
-      y: parseNumeric(bounds.centerY, 0),
-    },
-    transform,
-    anchor
+  const safeScaleX = Math.max(
+    SAFE_POINT_SCALE,
+    parseNumeric(transform?.scaleX, parseNumeric(transform?.scale, 1))
   );
-  const width = parseNumeric(bounds.width, 0) * safeScale;
-  const height = parseNumeric(bounds.height, 0) * safeScale;
+  const safeScaleY = Math.max(
+    SAFE_POINT_SCALE,
+    parseNumeric(transform?.scaleY, parseNumeric(transform?.scale, 1))
+  );
+  const center = getRenderedMaskCenter(bounds, transform, anchor);
+  const width = parseNumeric(bounds.width, 0) * safeScaleX;
+  const height = parseNumeric(bounds.height, 0) * safeScaleY;
 
   return {
     centerX: center.x,
@@ -192,13 +339,13 @@ export const getInterpolatedMaskTransform = (mask, time) => {
 
   const exact = ordered.find((item) => Math.abs(parseNumeric(item.time, 0) - safeTime) <= 0.0005);
   if (exact) {
+    const exactTransform = getMaskKeyframeTransform(exact);
     return {
-      x: parseNumeric(exact.x, 0),
-      y: parseNumeric(exact.y, 0),
-      scale: parseNumeric(exact.scale, 1),
+      ...exactTransform,
       fromKeyframe: exact,
       toKeyframe: exact,
       progress: 1,
+      isDeformed: isMaskKeyframeDeformed(exactTransform),
     };
   }
 
@@ -218,41 +365,38 @@ export const getInterpolatedMaskTransform = (mask, time) => {
 
   if (!previous || !next) return null;
   if (previous.id === next.id || parseNumeric(previous.time, 0) === parseNumeric(next.time, 0)) {
+    const previousTransform = getMaskKeyframeTransform(previous);
     return {
-      x: parseNumeric(previous.x, 0),
-      y: parseNumeric(previous.y, 0),
-      scale: parseNumeric(previous.scale, 1),
+      ...previousTransform,
       fromKeyframe: previous,
       toKeyframe: next,
       progress: 1,
+      isDeformed: isMaskKeyframeDeformed(previousTransform),
     };
   }
 
-  const rawProgress = clamp(
+  const progress = clamp(
     (safeTime - parseNumeric(previous.time, 0)) /
       (parseNumeric(next.time, 0) - parseNumeric(previous.time, 0)),
     0,
     1
   );
-  const easedProgress =
-    mask.interpolation === "ease-in-out"
-      ? rawProgress < 0.5
-        ? 2 * rawProgress * rawProgress
-        : 1 - Math.pow(-2 * rawProgress + 2, 2) / 2
-      : rawProgress;
+  const previousTransform = getMaskKeyframeTransform(previous);
+  const nextTransform = getMaskKeyframeTransform(next);
+  const scaleX = previousTransform.scaleX + (nextTransform.scaleX - previousTransform.scaleX) * progress;
+  const scaleY = previousTransform.scaleY + (nextTransform.scaleY - previousTransform.scaleY) * progress;
 
   return {
-    x:
-      parseNumeric(previous.x, 0) +
-      (parseNumeric(next.x, 0) - parseNumeric(previous.x, 0)) * easedProgress,
-    y:
-      parseNumeric(previous.y, 0) +
-      (parseNumeric(next.y, 0) - parseNumeric(previous.y, 0)) * easedProgress,
-    scale:
-      parseNumeric(previous.scale, 1) +
-      (parseNumeric(next.scale, 1) - parseNumeric(previous.scale, 1)) * easedProgress,
+    x: previousTransform.x + (nextTransform.x - previousTransform.x) * progress,
+    y: previousTransform.y + (nextTransform.y - previousTransform.y) * progress,
+    scale: 1,
+    scaleX,
+    scaleY,
+    originScaleX: scaleX,
+    originScaleY: scaleY,
     fromKeyframe: previous,
     toKeyframe: next,
-    progress: easedProgress,
+    progress,
+    isDeformed: false,
   };
 };

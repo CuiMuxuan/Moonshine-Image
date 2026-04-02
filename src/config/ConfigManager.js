@@ -112,7 +112,6 @@ export class ConfigManager {
     },
     shortcuts: createDefaultShortcuts(),
     video: {
-      maxFrameCount: 10000,
       frameExtractionFormat: "jpg",
       batchFrameCount: 120,
       historyLimit: 5,
@@ -239,7 +238,7 @@ export class ConfigManager {
 
     const video = config.video || {};
     const videoFields = [
-      { key: "batchFrameCount", min: 120, max: 5000, name: "视频固定批次帧数" },
+      { key: "batchFrameCount", min: 1, name: "视频固定批次帧数" },
       { key: "historyLimit", min: 1, max: 50, name: "视频历史记录上限" },
       { key: "batchRetryCount", min: 1, max: 10, name: "视频批次重试次数" },
       {
@@ -257,7 +256,11 @@ export class ConfigManager {
         errors.push(`${field.name}必须是数字。`);
         return;
       }
-      if (value < field.min || value > field.max) {
+      if (value < field.min) {
+        errors.push(`${field.name}必须大于等于 ${field.min}。`);
+        return;
+      }
+      if (field.max !== undefined && value > field.max) {
         errors.push(`${field.name}必须在 ${field.min}-${field.max} 范围内。`);
       }
     });
@@ -281,6 +284,9 @@ export class ConfigManager {
 
     if (merged?.video && Object.prototype.hasOwnProperty.call(merged.video, "outputPath")) {
       delete merged.video.outputPath;
+    }
+    if (merged?.video && Object.prototype.hasOwnProperty.call(merged.video, "maxFrameCount")) {
+      delete merged.video.maxFrameCount;
     }
 
     merged.ui = {
