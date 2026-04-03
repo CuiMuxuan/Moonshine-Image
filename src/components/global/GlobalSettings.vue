@@ -182,6 +182,7 @@
                         <q-input v-if="localConfig.advanced.imageOutputNamingMode === 'prefixUuid'" v-model.trim="localConfig.advanced.imageOutputFixedPrefix" outlined label="固定前缀" class="q-mt-md" />
                       </div>
                     </div>
+
                   </q-tab-panel>
 
                   <q-tab-panel name="video" class="q-pa-none">
@@ -192,6 +193,22 @@
                       <q-input v-model.number="localConfig.video.batchRetryCount" label="批次重试次数" type="number" :min="1" :max="10" />
                       <q-input v-model.number="localConfig.video.failureRetentionCount" label="失败现场保留数量" type="number" :min="1" :max="50" />
                       <q-input v-model.number="localConfig.video.proxyMaxSide" label="代理预览最大边长" type="number" :min="256" :max="4096" />
+                    </div>
+
+                    <div class="mini-block q-mt-md">
+                      <div class="text-subtitle2 text-weight-medium q-mb-sm">视频临时文件</div>
+                      <div class="text-caption text-grey-7 q-mb-md">
+                        只清理更旧的、已不再作为最近失败任务的临时目录。处理进行中时此操作会被禁用。
+                      </div>
+                      <q-btn
+                        color="primary"
+                        outline
+                        icon="cleaning_services"
+                        label="清理临时文件"
+                        :loading="cleaningVideoTemp"
+                        :disable="isVideoTempCleanupDisabled"
+                        @click="cleanupVideoTempDirectories"
+                      />
                     </div>
                   </q-tab-panel>
                 </q-tab-panels>
@@ -230,7 +247,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
 import { useQuasar } from "quasar";
 import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, UI_BUTTON_SIZE_OPTIONS } from "src/config/ConfigManager";
 import { createDefaultShortcuts, formatShortcutKeys, getShortcutDefinition, getShortcutTokenFromKeyboardEvent, getShortcutsByGroup, normalizeShortcutKeys, SHORTCUT_GROUP_META, SHORTCUT_GROUPS, validateShortcutConfig } from "src/utils/shortcutConfig";
@@ -242,6 +259,7 @@ const $q = useQuasar();
 const configStore = useConfigStore();
 const appStateStore = useAppStateStore();
 const fileManagerStore = useFileManagerStore();
+const globalLoadingState = inject("globalLoadingState", ref({ showing: false }));
 
 const launchModeOptions = [{ label: "CUDA 加速", value: "cuda" }, { label: "CPU 模式", value: "cpu" }];
 const imageProcessingOptions = [{ label: "文件路径（推荐）", value: "path", description: "更适合本地 Electron 批处理，前端内存压力更低。" }, { label: "Base64", value: "base64", description: "兼容性更直接，但大量图片时更占内存。" }];
@@ -258,6 +276,7 @@ const showDialog = computed({ get: () => props.modelValue, set: (value) => emit(
 const activeTab = ref("general");
 const advancedTab = ref("image");
 const saving = ref(false);
+const cleaningVideoTemp = ref(false);
 const showConfirmDialog = ref(false);
 const confirmMessage = ref("");
 const pendingAction = ref(null);
@@ -277,6 +296,9 @@ const validationErrors = computed(() => {
   return [...(portError.value && portErrorMessage.value ? [portErrorMessage.value] : []), ...errors];
 });
 const hasErrors = computed(() => validationErrors.value.length > 0);
+const isVideoTempCleanupDisabled = computed(
+  () => saving.value || cleaningVideoTemp.value || Boolean(globalLoadingState.value?.showing)
+);
 
 const validatePort = (port) => {
   if (!port || port < 1024 || port > 65535) {
@@ -358,6 +380,38 @@ const selectBackendProjectPath = async () => {
     $q.notify({ type: "negative", message: `无效的后端项目路径：${checkResult.error}`, position: "top" });
   } catch (error) {
     $q.notify({ type: "negative", message: `选择后端项目路径失败：${error.message}`, position: "top" });
+  }
+};
+const cleanupVideoTempDirectories = async () => {
+  if (!window.electron?.ipcRenderer?.invoke || isVideoTempCleanupDisabled.value) return;
+
+  cleaningVideoTemp.value = true;
+  try {
+    const result = await window.electron.ipcRenderer.invoke("cleanup-video-processing-temp");
+    if (!result?.success) {
+      throw new Error(result?.error || "清理旧的临时目录失败");
+    }
+
+    const removedTaskCount = Number(result?.data?.removedTaskCount || 0);
+    const removedDirectoryCount = Number(result?.data?.removedDirectoryCount || 0);
+    $q.notify({
+      type: "positive",
+      message:
+        removedTaskCount > 0 || removedDirectoryCount > 0
+          ? `已清理 ${removedTaskCount} 个旧任务，删除 ${removedDirectoryCount} 个临时目录。`
+          : "没有可清理的旧视频临时目录。",
+      position: "top",
+      timeout: 3000,
+    });
+  } catch (error) {
+    $q.notify({
+      type: "negative",
+      message: `清理视频临时目录失败：${error.message}`,
+      position: "top",
+      timeout: 3500,
+    });
+  } finally {
+    cleaningVideoTemp.value = false;
   }
 };
 const doSaveSettings = async () => {

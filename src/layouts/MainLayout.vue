@@ -271,6 +271,7 @@ const normalizeBackendHintBreak = (message = "") =>
   );
 
 provide("backendRunning", backendRunning);
+provide("globalLoadingState", loadingState);
 provide("layoutFooter", {
   setPageFooter,
   clearPageFooter,

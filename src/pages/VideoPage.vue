@@ -277,6 +277,19 @@ import {
   MASK_KEYFRAME_TYPES,
   sortMaskKeyframes,
 } from "src/utils/videoMaskUtils";
+import {
+  buildProcessingConfigSnapshot,
+  createEmptyVideoProcessingRegistry,
+  findLatestResumableTaskSummary,
+  hasProcessingConfigMismatch,
+  isResumableVideoTaskStatus,
+  normalizeVideoProcessingRegistry,
+  normalizeVideoTaskMeta,
+  removeVideoProcessingRegistryTask,
+  upsertVideoProcessingRegistryTask,
+  VIDEO_TASK_DIRECTORY_PREFIX,
+  VIDEO_TASK_META_FILE_NAME,
+} from "src/utils/videoProcessingResume";
 
 import CanvasPlayer from "src/components/video/CanvasPlayer.vue";
 import ResourceManage from "src/components/video/ResourceManage.vue";
@@ -315,6 +328,8 @@ let processingBatchMessageContext = null;
 let preserveLastOutputPathOnNextVideoChange = false;
 let previewStageResizeObserver = null;
 let pendingLayoutFrameId = 0;
+let cachedVideoProcessingRegistryPath = "";
+let suppressSourceCleanupWatcher = false;
 const playbackRates = [0.5, 1, 1.5, 2, 3];
 const timelineScaleWidth = 160;
 const timelineStartLeft = 20;
@@ -1184,6 +1199,29 @@ watch(
 );
 
 watch(
+  () => getCurrentVideoSourcePath(),
+  async (newSourcePath, previousSourcePath) => {
+    if (
+      suppressSourceCleanupWatcher ||
+      isProcessing.value ||
+      !previousSourcePath ||
+      previousSourcePath === newSourcePath
+    ) {
+      return;
+    }
+
+    try {
+      await discardLatestResumableTaskForSourcePath({
+        sourcePath: previousSourcePath,
+        nextSourcePath: newSourcePath,
+      });
+    } catch (error) {
+      console.warn("Failed to discard previous resumable task:", error);
+    }
+  }
+);
+
+watch(
   () => (videoStore.selectedKeyframe ? `${videoStore.selectedKeyframe.id}:${videoStore.selectedKeyframe.time}` : ""),
   (signature) => {
     if (!signature || !videoStore.selectedKeyframe) return;
@@ -1557,6 +1595,7 @@ const observePreviewStageSize = () => {
 
 const INPUT_FRAME_QUALITY = 0.92;
 const RESULT_FRAME_FORMAT = "jpg";
+const FRAME_CAPTURE_FALLBACK_EPSILON_SECONDS = 0.002;
 let mp4ExportSupportChecked = false;
 
 const normalizeImageFormat = (format, fallback = "jpg") => {
@@ -1587,6 +1626,181 @@ const joinRendererPath = (...parts) => {
   return normalizedParts.join("/").replace(/\/+/g, "/");
 };
 
+const writeJsonToPath = async (filePath, data) => {
+  if (!filePath || !window.electron?.ipcRenderer?.writeFile) return;
+  await window.electron.ipcRenderer.writeFile(filePath, `${JSON.stringify(data, null, 2)}\n`);
+};
+
+const readTextFromPath = async (filePath) => {
+  if (!filePath || !window.electron?.ipcRenderer?.invoke) {
+    return "";
+  }
+
+  const result = await window.electron.ipcRenderer.invoke("read-file", filePath);
+  if (!result?.success || !Array.isArray(result?.data?.buffer)) {
+    return "";
+  }
+
+  return new TextDecoder().decode(new Uint8Array(result.data.buffer));
+};
+
+const readJsonFromPath = async (filePath, fallbackValue = null) => {
+  const text = await readTextFromPath(filePath);
+  if (!text.trim()) {
+    return fallbackValue;
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    console.warn("Failed to parse JSON file:", filePath, error);
+    return fallbackValue;
+  }
+};
+
+const getVideoProcessingRegistryPath = async () => {
+  if (cachedVideoProcessingRegistryPath) {
+    return cachedVideoProcessingRegistryPath;
+  }
+
+  const result = await window.electron.ipcRenderer.invoke("get-video-processing-registry-path");
+  if (!result?.success || !result?.data?.registryPath) {
+    throw new Error(result?.error || "无法获取视频处理注册表路径");
+  }
+
+  cachedVideoProcessingRegistryPath = result.data.registryPath;
+  return cachedVideoProcessingRegistryPath;
+};
+
+const readVideoProcessingRegistry = async () => {
+  const registryPath = await getVideoProcessingRegistryPath();
+  return normalizeVideoProcessingRegistry(
+    await readJsonFromPath(registryPath, createEmptyVideoProcessingRegistry())
+  );
+};
+
+const writeVideoProcessingRegistry = async (registry) => {
+  const registryPath = await getVideoProcessingRegistryPath();
+  await writeJsonToPath(registryPath, normalizeVideoProcessingRegistry(registry));
+};
+
+const buildVideoTaskMetaPath = (taskRoot) =>
+  joinRendererPath(taskRoot, VIDEO_TASK_META_FILE_NAME);
+
+const buildVideoTaskSummary = (taskMeta) => ({
+  taskId: taskMeta.taskId,
+  fingerprint: taskMeta.fingerprint,
+  taskRoot: taskMeta.taskRoot,
+  tempBase: taskMeta.tempBase,
+  sourcePath: taskMeta.sourcePath,
+  sourceName: taskMeta.sourceName,
+  temporarySourcePath: taskMeta.temporarySourcePath,
+  status: taskMeta.status,
+  createdAt: taskMeta.createdAt,
+  updatedAt: taskMeta.updatedAt,
+});
+
+const persistVideoTaskMeta = async (taskMetaInput) => {
+  const taskMeta = normalizeVideoTaskMeta({
+    ...taskMetaInput,
+    updatedAt: Date.now(),
+  });
+  const metaPath = buildVideoTaskMetaPath(taskMeta.taskRoot);
+  await writeJsonToPath(metaPath, taskMeta);
+
+  const registry = await readVideoProcessingRegistry();
+  await writeVideoProcessingRegistry(
+    upsertVideoProcessingRegistryTask(registry, buildVideoTaskSummary(taskMeta))
+  );
+
+  return taskMeta;
+};
+
+const removeVideoTaskFromRegistry = async (taskId) => {
+  if (!taskId) return;
+  const registry = await readVideoProcessingRegistry();
+  await writeVideoProcessingRegistry(removeVideoProcessingRegistryTask(registry, taskId));
+};
+
+const readVideoTaskMetaFromRoot = async (taskRoot) => {
+  if (!taskRoot) {
+    return null;
+  }
+
+  const taskMeta = await readJsonFromPath(buildVideoTaskMetaPath(taskRoot), null);
+  if (!taskMeta) {
+    return null;
+  }
+
+  const normalized = normalizeVideoTaskMeta(taskMeta);
+  return normalized.taskId ? normalized : null;
+};
+
+const removeVideoTaskArtifacts = async (taskMeta, { preserveTemporarySourcePath = "" } = {}) => {
+  if (!taskMeta?.taskRoot || !window.electron?.ipcRenderer?.invoke) {
+    return;
+  }
+
+  const shouldRemoveTemporarySource =
+    taskMeta.temporarySourcePath &&
+    taskMeta.temporarySourcePath !== preserveTemporarySourcePath;
+  const results = await Promise.allSettled([
+    window.electron.ipcRenderer.invoke("remove-directory-recursive", taskMeta.taskRoot),
+    shouldRemoveTemporarySource
+      ? window.electron.ipcRenderer.invoke("cleanup-temp-file", taskMeta.temporarySourcePath)
+      : Promise.resolve({ success: true }),
+  ]);
+
+  const firstError = results.find(
+    (item) =>
+      item.status === "rejected" ||
+      (item.status === "fulfilled" && item.value?.success === false)
+  );
+
+  if (firstError?.status === "rejected") {
+    throw firstError.reason;
+  }
+
+  if (firstError?.status === "fulfilled") {
+    throw new Error(firstError.value?.error || "删除任务临时文件失败");
+  }
+};
+
+const discardVideoTask = async (taskMeta, options = {}) => {
+  if (!taskMeta?.taskId) return;
+  await removeVideoTaskArtifacts(taskMeta, options);
+  await removeVideoTaskFromRegistry(taskMeta.taskId);
+};
+
+const resolveConfiguredTempBase = (sourcePath) =>
+  configStore.config.fileManagement?.tempPath || sourcePath.replace(/[\\/][^\\/]+$/, "");
+
+const computeVideoFileFingerprint = async (filePath) => {
+  const result = await window.electron.ipcRenderer.invoke(
+    "compute-video-file-fingerprint",
+    filePath
+  );
+
+  if (!result?.success || !result?.data?.fingerprint) {
+    throw new Error(result?.error || "无法计算视频内容指纹");
+  }
+
+  return result.data;
+};
+
+const buildCurrentProcessingConfigSnapshot = ({ fps, batchSize, frameFormat }) =>
+  buildProcessingConfigSnapshot({
+    fps,
+    exportFpsMode: exportFpsMode.value,
+    batchSize,
+    frameFormat,
+    masks: videoStore.masks,
+    videoWidth: videoStore.videoWidth,
+    videoHeight: videoStore.videoHeight,
+    videoDuration: videoStore.videoDuration,
+    defaultModel: configStore.config.general?.defaultModel || "",
+  });
+
 const getOutputDirectory = (sourcePath) => {
   const downloadPath = configStore.config.fileManagement?.downloadPath || "";
   const videoFolderName = configStore.config.fileManagement?.videoFolderName || "videos";
@@ -1603,6 +1817,209 @@ const buildOutputVideoPath = async (sourceFile, sourcePath) => {
   const outputName = `${sourceFile.name.replace(/\.[^/.]+$/, "")}_processed_${Date.now()}.mp4`;
   return window.electron.ipcRenderer.joinPath(outputDir, outputName);
 };
+
+const getTaskDirectoryName = (taskRoot) => String(taskRoot || "").split(/[\\/]/).pop() || "";
+
+const findFallbackResumeTaskInTempBase = async ({ fingerprint, tempBase }) => {
+  if (!fingerprint || !tempBase || !window.electron?.ipcRenderer?.readdir) {
+    return null;
+  }
+
+  let directoryEntries = [];
+  try {
+    directoryEntries = await window.electron.ipcRenderer.readdir(tempBase);
+  } catch {
+    return null;
+  }
+
+  let latestTask = null;
+  for (const entryName of directoryEntries) {
+    if (!String(entryName || "").startsWith(VIDEO_TASK_DIRECTORY_PREFIX)) {
+      continue;
+    }
+
+    const taskRoot = joinRendererPath(tempBase, entryName);
+    const taskMeta = await readVideoTaskMetaFromRoot(taskRoot);
+    if (!taskMeta) {
+      continue;
+    }
+    if (taskMeta.fingerprint !== fingerprint || !isResumableVideoTaskStatus(taskMeta.status)) {
+      continue;
+    }
+
+    if (!latestTask || latestTask.updatedAt <= taskMeta.updatedAt) {
+      latestTask = taskMeta;
+    }
+  }
+
+  return latestTask;
+};
+
+const findLatestResumableVideoTask = async ({ fingerprint, tempBase }) => {
+  const registry = await readVideoProcessingRegistry();
+  const summary = findLatestResumableTaskSummary(registry, fingerprint);
+
+  if (summary?.taskRoot) {
+    const taskMeta = await readVideoTaskMetaFromRoot(summary.taskRoot);
+    if (
+      taskMeta &&
+      taskMeta.fingerprint === fingerprint &&
+      isResumableVideoTaskStatus(taskMeta.status)
+    ) {
+      return taskMeta;
+    }
+
+    if (summary.taskId) {
+      await removeVideoTaskFromRegistry(summary.taskId);
+    }
+  }
+
+  const fallbackTask = await findFallbackResumeTaskInTempBase({ fingerprint, tempBase });
+  if (fallbackTask) {
+    await persistVideoTaskMeta(fallbackTask);
+  }
+  return fallbackTask;
+};
+
+const getValidatedCompletedSegments = async (taskMeta) => {
+  const contiguousSegments = [];
+  const segments = normalizeVideoTaskMeta(taskMeta).completedSegments;
+
+  for (const segment of segments) {
+    if (segment.segmentIndex !== contiguousSegments.length + 1) {
+      break;
+    }
+
+    const stats = await window.electron.ipcRenderer.invoke("get-file-stats", segment.path);
+    if (!stats?.success || !(Number(stats?.data?.size || 0) > 0)) {
+      break;
+    }
+
+    contiguousSegments.push(segment);
+  }
+
+  return contiguousSegments;
+};
+
+const promptResumeVideoTaskDecision = async ({ taskMeta, hasConfigMismatch }) =>
+  new Promise((resolve) => {
+    const completedSegmentCount = taskMeta.completedSegments.length;
+    const segmentLabel =
+      completedSegmentCount > 0
+        ? `已生成 ${completedSegmentCount} 个分段视频。`
+        : "上次任务尚未生成可复用的分段视频。";
+    const configHint = hasConfigMismatch
+      ? "\n检测到当前界面配置与上次失败任务不一致，继续处理时将沿用旧 segments，并使用当前配置生成后续段落。"
+      : "";
+
+    $q.dialog({
+      title: "发现上次未完成的视频处理任务",
+      message: `${segmentLabel}\n是否从最近一次失败断点继续处理？${configHint}`,
+      ok: {
+        label: "继续处理",
+        color: "primary",
+        unelevated: true,
+      },
+      cancel: {
+        label: "重新处理",
+        color: "negative",
+        flat: true,
+      },
+      persistent: true,
+    })
+      .onOk(() => resolve("resume"))
+      .onCancel(() => resolve("restart"))
+      .onDismiss(() => resolve(null));
+  });
+
+const getCurrentVideoSourcePath = () =>
+  videoStore.currentSourcePath || videoStore.videoFile?.path || "";
+
+const discardLatestResumableTaskForSourcePath = async ({
+  sourcePath,
+  nextSourcePath = "",
+} = {}) => {
+  if (!sourcePath || !window.electron?.ipcRenderer?.invoke) {
+    return;
+  }
+
+  let sourceFingerprint = null;
+  try {
+    sourceFingerprint = await computeVideoFileFingerprint(sourcePath);
+  } catch {
+    return;
+  }
+
+  if (nextSourcePath) {
+    try {
+      const nextFingerprint = await computeVideoFileFingerprint(nextSourcePath);
+      if (nextFingerprint.fingerprint === sourceFingerprint.fingerprint) {
+        return;
+      }
+    } catch {
+      // If the next source cannot be fingerprinted yet, fall back to cleaning the old task.
+    }
+  }
+
+  const taskMeta = await findLatestResumableVideoTask({
+    fingerprint: sourceFingerprint.fingerprint,
+    tempBase: resolveConfiguredTempBase(sourcePath),
+  });
+
+  if (!taskMeta) {
+    return;
+  }
+
+  await discardVideoTask(taskMeta);
+};
+
+const discardVideoTasksBySourcePath = async (sourcePath) => {
+  if (!sourcePath) {
+    return;
+  }
+
+  const registry = await readVideoProcessingRegistry();
+  const tasks = Object.values(registry.tasks || {}).filter(
+    (task) => String(task?.sourcePath || "") === String(sourcePath || "")
+  );
+
+  for (const task of tasks) {
+    const taskMeta = await readVideoTaskMetaFromRoot(task.taskRoot);
+    if (taskMeta?.taskId) {
+      await discardVideoTask(taskMeta, {
+        preserveTemporarySourcePath: "",
+      });
+    } else if (task?.taskId) {
+      await removeVideoTaskFromRegistry(task.taskId);
+    }
+  }
+};
+
+const estimateRemainingBatchCount = ({
+  totalFrames,
+  startFrame,
+  batchSize,
+}) => {
+  const remainingFrames = Math.max(0, Math.round(Number(totalFrames || 0) - Number(startFrame || 0)));
+  if (!(remainingFrames > 0)) {
+    return 0;
+  }
+  return Math.max(1, Math.ceil(remainingFrames / Math.max(1, Number(batchSize || 1))));
+};
+
+const buildCompletedSegmentEntry = ({
+  segmentIndex,
+  start,
+  end,
+  path,
+}) => ({
+  segmentIndex: Math.max(1, Math.round(Number(segmentIndex || 1))),
+  start: Math.max(0, Math.round(Number(start || 0))),
+  end: Math.max(0, Math.round(Number(end || 0))),
+  path: String(path || ""),
+  fileName: String(path || "").split(/[\\/]/).pop() || "",
+  completedAt: Date.now(),
+});
 
 const withBackendProgressHint = (message = "") =>
   backendRunningState?.value ? `${message}\n可打开后端管理页面查看进度` : message;
@@ -2571,12 +2988,24 @@ const finalizeProcessedVideo = async ({ segmentPaths, sourceFile, sourcePath, wi
   }
 };
 
-const buildBatchDescriptor = ({ start, batchSize, totalFrames, totalBatches }) => {
-  const batchNumber = Math.floor(start / batchSize) + 1;
+const buildBatchDescriptor = ({
+  start,
+  batchSize,
+  totalFrames,
+  batchNumber: explicitBatchNumber = null,
+}) => {
+  const batchNumber =
+    explicitBatchNumber !== null && explicitBatchNumber !== undefined
+      ? Math.max(1, Math.round(Number(explicitBatchNumber || 1)))
+      : Math.floor(start / batchSize) + 1;
   const end = Math.min(totalFrames, start + batchSize);
   const batchFrameCount = end - start;
-  const batchProgressBase = ((batchNumber - 1) / totalBatches) * 0.85;
-  const batchProgressSpan = (1 / totalBatches) * 0.85;
+  const batchProgressBase =
+    totalFrames > 0 ? Math.max(0, Math.min(0.85, (start / totalFrames) * 0.85)) : 0;
+  const batchProgressSpan =
+    totalFrames > 0
+      ? Math.max(0, Math.min(0.85 - batchProgressBase, (batchFrameCount / totalFrames) * 0.85))
+      : 0;
 
   return {
     start,
@@ -2612,6 +3041,7 @@ const prepareBatchArtifacts = async ({
   const batchItems = [];
   const batchArtifactPaths = [];
   const batchResultPaths = [];
+  const frameDecodeFallbacks = [];
 
   for (let frameIndex = start; frameIndex < end; frameIndex += 1) {
     if (reportProgress) {
@@ -2636,15 +3066,28 @@ const prepareBatchArtifacts = async ({
     const maskPath = window.electron.ipcRenderer.joinPath(paths.masksDir, maskName);
     const outputPath = window.electron.ipcRenderer.joinPath(paths.resultsDir, resultName);
 
-    const [frameBlob, maskBlob] = await Promise.all([
+    const [frameCaptureResult, maskBlob] = await Promise.all([
       extractor.capture(ts),
       maskRenderer.render(ts),
     ]);
+    const frameBlob = frameCaptureResult?.blob || frameCaptureResult;
 
     await Promise.all([
       saveBlobToPath(frameBlob, framePath),
       saveBlobToPath(maskBlob, maskPath),
     ]);
+
+    if (frameCaptureResult?.degraded) {
+      frameDecodeFallbacks.push({
+        frameIndex,
+        requestedTime: Number(ts.toFixed(6)),
+        fallbackType: frameCaptureResult.fallbackType || "unknown",
+        fallbackSourceTime: Number(
+          Number(frameCaptureResult.fallbackSourceTime ?? ts).toFixed(6)
+        ),
+        error: frameCaptureResult.error || "",
+      });
+    }
 
     batchItems.push({
       frame_index: frameIndex,
@@ -2662,6 +3105,7 @@ const prepareBatchArtifacts = async ({
     batchItems,
     batchArtifactPaths,
     batchResultPaths,
+    frameDecodeFallbacks,
   };
 };
 
@@ -2670,6 +3114,7 @@ const createPreparedBatchTask = ({
   totalFrames,
   batchSize,
   totalBatches,
+  batchNumber = null,
   paths,
   fps,
   frameFormat,
@@ -2685,6 +3130,7 @@ const createPreparedBatchTask = ({
     batchSize,
     totalFrames,
     totalBatches,
+    batchNumber,
   });
 
   const preparationPromise = prepareBatchArtifacts({
@@ -2720,42 +3166,192 @@ const runVideoProcessing = async () => {
   processingEtaState.sessionStartedAtMs = performance.now();
   applyProcessingUi("准备处理任务", 0);
 
-  const fps = exportFps.value;
-  const totalFrames = Math.max(1, Math.ceil(videoStore.videoDuration * fps));
-  const batchSize = computedBatchSize.value;
-  const retryCount = Math.max(1, Number(configStore.config.video?.batchRetryCount || 3));
-  const totalBatches = Math.max(1, Math.ceil(totalFrames / batchSize));
-  const frameFormat = normalizeImageFormat(configStore.config.video?.frameExtractionFormat, "jpg");
   let paths = null;
-  let tempSourcePath = null;
+  let tempSourcePath = "";
   let preparedBatchTask = null;
   let firstBatchRequestStartedAt = null;
+  let extractor = null;
+  let currentTaskMeta = null;
+  let taskCleanupErrorMessage = "";
+  let shouldCleanupCurrentTask = false;
+  const frameDecodeFallbacks = [];
+  let frameDecodeFallbackReportPath = "";
 
   try {
     if (!window.electron) {
       throw new Error("视频处理仅支持 Electron 模式");
     }
 
-    paths = await prepareTaskPaths();
-    tempSourcePath = videoStore.videoFile?.path ? null : paths.sourcePath;
-    const extractor = await createFrameExtractor(videoStore.videoFile, frameFormat, fps);
-
+    const requestedBatchSize = computedBatchSize.value;
+    const requestedFrameFormat = normalizeImageFormat(
+      configStore.config.video?.frameExtractionFormat,
+      "jpg"
+    );
+    const retryCount = Math.max(1, Number(configStore.config.video?.batchRetryCount || 3));
+    const currentRequestedFps = Math.max(1, Number(exportFps.value || sourceFps.value || 30));
+    const currentRequestedSnapshot = buildCurrentProcessingConfigSnapshot({
+      fps: currentRequestedFps,
+      batchSize: requestedBatchSize,
+      frameFormat: requestedFrameFormat,
+    });
+    const sourceInfo = await resolveVideoSourcePath(videoStore.videoFile);
+    const sourcePath = sourceInfo.sourcePath;
+    tempSourcePath = sourceInfo.temporarySourcePath || "";
+    let fingerprintInfo = null;
     try {
-      const maskRenderer = await createCombinedMaskRenderer({
-        masks: videoStore.masks,
-        width: videoStore.videoWidth,
-        height: videoStore.videoHeight,
+      fingerprintInfo = await computeVideoFileFingerprint(sourcePath);
+    } catch (error) {
+      if (/File does not exist/i.test(String(error?.message || ""))) {
+        await discardVideoTasksBySourcePath(sourcePath).catch(() => undefined);
+      }
+      throw error;
+    }
+    let resumeTaskMeta = await findLatestResumableVideoTask({
+      fingerprint: fingerprintInfo.fingerprint,
+      tempBase: resolveConfiguredTempBase(sourcePath),
+    });
+
+    if (resumeTaskMeta) {
+      const validatedSegments = await getValidatedCompletedSegments(resumeTaskMeta);
+      resumeTaskMeta = normalizeVideoTaskMeta({
+        ...resumeTaskMeta,
+        completedSegments: validatedSegments,
       });
 
-      const segmentPaths = [];
+      const resumeDecision = await promptResumeVideoTaskDecision({
+        taskMeta: resumeTaskMeta,
+        hasConfigMismatch:
+          resumeTaskMeta.configSnapshot &&
+          hasProcessingConfigMismatch(resumeTaskMeta.configSnapshot, currentRequestedSnapshot),
+      });
+
+      if (resumeDecision === "restart") {
+        await discardVideoTask(resumeTaskMeta, {
+          preserveTemporarySourcePath: tempSourcePath,
+        });
+        resumeTaskMeta = null;
+      } else if (resumeDecision !== "resume") {
+        return;
+      }
+    }
+
+    const reusableSegments = resumeTaskMeta?.completedSegments || [];
+    const resumeHasReusableSegments = reusableSegments.length > 0;
+    const previousSnapshot = resumeTaskMeta?.configSnapshot || null;
+    const structuralResumeFps =
+      Number(previousSnapshot?.fps || 0) > 0
+        ? Number(previousSnapshot.fps)
+        : Math.max(
+            1,
+            Number(resumeTaskMeta?.totalFrames || 0) /
+              Math.max(Number(videoStore.videoDuration || 0), 0.001)
+          );
+    const fps = resumeHasReusableSegments
+      ? Math.max(1, structuralResumeFps || currentRequestedFps)
+      : currentRequestedFps;
+    const totalFrames =
+      resumeHasReusableSegments && Number(resumeTaskMeta?.totalFrames || 0) > 0
+        ? Math.max(1, Math.round(Number(resumeTaskMeta.totalFrames)))
+        : Math.max(1, Math.ceil(videoStore.videoDuration * fps));
+    const batchSize = Math.max(
+      1,
+      Math.round(Number(requestedBatchSize || previousSnapshot?.batchSize || 120))
+    );
+    const frameFormat = normalizeImageFormat(
+      requestedFrameFormat || previousSnapshot?.frameFormat,
+      "jpg"
+    );
+    const effectiveSnapshot = buildCurrentProcessingConfigSnapshot({
+      fps,
+      batchSize,
+      frameFormat,
+    });
+    const resumeStartFrame =
+      reusableSegments.length > 0 ? reusableSegments[reusableSegments.length - 1].end : 0;
+    const totalBatches = Math.max(
+      reusableSegments.length || 0,
+      reusableSegments.length + estimateRemainingBatchCount({
+        totalFrames,
+        startFrame: resumeStartFrame,
+        batchSize,
+      }),
+      1
+    );
+
+    paths = await prepareTaskPaths({
+      sourcePath,
+      temporarySourcePath: tempSourcePath || resumeTaskMeta?.temporarySourcePath || "",
+      resumeTaskMeta,
+    });
+    frameDecodeFallbackReportPath = paths.frameDecodeFallbackReportPath || "";
+
+    currentTaskMeta = await persistVideoTaskMeta({
+      ...(resumeTaskMeta || {}),
+      taskId: paths.taskId,
+      taskRoot: paths.taskRoot,
+      tempBase: paths.tempBase,
+      sourcePath: paths.sourcePath,
+      sourceName:
+        videoStore.currentSourceName ||
+        videoStore.videoFile?.name ||
+        getTaskDirectoryName(paths.sourcePath) ||
+        "video.mp4",
+      temporarySourcePath: paths.temporarySourcePath || "",
+      fingerprint: fingerprintInfo.fingerprint,
+      status: "running",
+      createdAt: resumeTaskMeta?.createdAt || Date.now(),
+      totalFrames,
+      totalBatches,
+      videoWidth: videoStore.videoWidth,
+      videoHeight: videoStore.videoHeight,
+      videoDuration: videoStore.videoDuration,
+      completedSegments: reusableSegments,
+      configSnapshot: effectiveSnapshot,
+      frameDecodeFallbackReportPath,
+      lastError: "",
+    });
+
+    if (
+      resumeTaskMeta?.temporarySourcePath &&
+      resumeTaskMeta.temporarySourcePath !== paths.temporarySourcePath
+    ) {
+      await window.electron.ipcRenderer
+        .invoke("cleanup-temp-file", resumeTaskMeta.temporarySourcePath)
+        .catch(() => undefined);
+    }
+
+    if (resumeStartFrame < totalFrames) {
+      extractor = await createFrameExtractor(videoStore.videoFile, frameFormat, fps);
+    }
+
+    try {
+      const maskRenderer =
+        resumeStartFrame < totalFrames
+          ? await createCombinedMaskRenderer({
+              masks: videoStore.masks,
+              width: videoStore.videoWidth,
+              height: videoStore.videoHeight,
+            })
+          : null;
+
+      const segmentPaths = reusableSegments.map((segment) => segment.path);
       const batchDurations = [];
       const pipelineBatchDurations = [];
-      let processedFrames = 0;
+      let processedFrames = resumeStartFrame;
+
+      if (segmentPaths.length > 0) {
+        updateProcessingUi(
+          "已复用上次任务中已完成的分段，正在继续处理",
+          (processedFrames / totalFrames) * 0.85
+        );
+      }
+
       preparedBatchTask = createPreparedBatchTask({
-        start: 0,
+        start: resumeStartFrame,
         totalFrames,
         batchSize,
         totalBatches,
+        batchNumber: reusableSegments.length + 1,
         paths,
         fps,
         frameFormat,
@@ -2788,6 +3384,9 @@ const runVideoProcessing = async () => {
           throw currentBatchResult.error;
         }
         const currentBatch = currentBatchResult.value;
+        if (Array.isArray(currentBatch.frameDecodeFallbacks)) {
+          frameDecodeFallbacks.push(...currentBatch.frameDecodeFallbacks);
+        }
         const batchStartedAt = performance.now();
 
         preparedBatchTask = createPreparedBatchTask({
@@ -2795,6 +3394,7 @@ const runVideoProcessing = async () => {
           totalFrames,
           batchSize,
           totalBatches,
+          batchNumber: currentBatch.batchNumber + 1,
           paths,
           fps,
           frameFormat,
@@ -2809,7 +3409,7 @@ const runVideoProcessing = async () => {
 
         for (let attempt = 1; attempt <= retryCount; attempt += 1) {
           try {
-            if (currentBatch.batchNumber === 1 && firstBatchRequestStartedAt === null) {
+            if (firstBatchRequestStartedAt === null) {
               firstBatchRequestStartedAt = performance.now();
             }
 
@@ -2844,7 +3444,6 @@ const runVideoProcessing = async () => {
             });
 
             if (
-              currentBatch.batchNumber === 1 &&
               !(processingEtaState.firstResponseSeconds > 0) &&
               firstBatchRequestStartedAt !== null
             ) {
@@ -2893,13 +3492,29 @@ const runVideoProcessing = async () => {
         processedFrames += currentBatch.batchFrameCount;
         const currentBatchProcessingSeconds = (performance.now() - batchStartedAt) / 1000;
         batchDurations.push(currentBatchProcessingSeconds);
-        pipelineBatchDurations.push(
-          currentBatch.batchNumber === 1
+          pipelineBatchDurations.push(
+          currentBatch.batchNumber === reusableSegments.length + 1
             ? Number(currentBatch.preparationSeconds || 0) + currentBatchProcessingSeconds
             : Math.max(Number(currentBatch.preparationSeconds || 0), currentBatchProcessingSeconds)
         );
 
-        await removeTemporaryFiles(currentBatch.batchArtifactPaths);
+        const completedSegmentEntry = buildCompletedSegmentEntry({
+          segmentIndex: currentBatch.batchNumber,
+          start: currentBatch.start,
+          end: currentBatch.end,
+          path: savedSegmentPath || segmentPath,
+        });
+        currentTaskMeta = await persistVideoTaskMeta({
+          ...currentTaskMeta,
+          completedSegments: [
+            ...currentTaskMeta.completedSegments.filter(
+              (segment) => segment.segmentIndex !== completedSegmentEntry.segmentIndex
+            ),
+            completedSegmentEntry,
+          ].sort((left, right) => left.segmentIndex - right.segmentIndex),
+          totalBatches: Math.max(currentTaskMeta.totalBatches, currentBatch.batchNumber),
+        });
+
         updateBatchProcessingUi({
           batchNumber: currentBatch.batchNumber,
           totalBatches,
@@ -2921,21 +3536,47 @@ const runVideoProcessing = async () => {
 
       lastOutputPath.value = outputPath;
       processingSucceeded.value = true;
+      shouldCleanupCurrentTask = true;
       processingProgress.value = 1;
-      updateProcessingUi("处理完成", 1);
+      const fallbackSummary =
+        frameDecodeFallbacks.length > 0
+          ? `处理完成（${frameDecodeFallbacks.length} 帧拆帧降级，已自动复用相邻成功帧）`
+          : "处理完成";
+      currentTaskMeta = await persistVideoTaskMeta({
+        ...currentTaskMeta,
+        status: "succeeded",
+        lastOutputPath: outputPath,
+        lastError: "",
+      });
+      updateProcessingUi(fallbackSummary, 1);
       $q.notify({
         type: "positive",
-        message: `视频处理完成，已导出: ${outputPath}`,
+        message:
+          frameDecodeFallbacks.length > 0
+            ? `视频处理完成，已导出: ${outputPath}\n其中 ${frameDecodeFallbacks.length} 帧发生本地解码降级，已自动补齐。\n诊断文件: ${frameDecodeFallbackReportPath}`
+            : `视频处理完成，已导出: ${outputPath}`,
         position: "top",
-        timeout: 4500,
+        timeout: frameDecodeFallbacks.length > 0 ? 6500 : 4500,
       });
     } finally {
       if (preparedBatchTask?.promise) {
         await Promise.allSettled([preparedBatchTask.promise]);
       }
-      await extractor.dispose();
+      await extractor?.dispose?.();
     }
   } catch (error) {
+    if (currentTaskMeta?.taskId) {
+      try {
+        currentTaskMeta = await persistVideoTaskMeta({
+          ...currentTaskMeta,
+          status: "failed",
+          lastError: error.message || String(error),
+        });
+      } catch (metaError) {
+        console.warn("Failed to persist video task failure state:", metaError);
+      }
+    }
+
     processingSucceeded.value = false;
     updateProcessingUiWithoutOverlay("处理失败", processingProgress.value);
     hideGlobalLoadingOverlay();
@@ -2951,31 +3592,65 @@ const runVideoProcessing = async () => {
     resetProcessingEtaState();
     loadingControl?.hide?.();
     const cleanupTasks = [];
-    if (paths?.taskRoot && window.electron) {
+    if (
+      frameDecodeFallbacks.length > 0 &&
+      frameDecodeFallbackReportPath &&
+      window.electron?.ipcRenderer?.writeFile
+    ) {
       cleanupTasks.push(
-        window.electron.ipcRenderer.invoke("remove-directory-recursive", paths.taskRoot)
+        writeJsonToPath(frameDecodeFallbackReportPath, {
+          createdAt: new Date().toISOString(),
+          sourcePath: paths?.sourcePath || videoStore.videoFile?.path || "",
+          outputPath: lastOutputPath.value || "",
+          totalFallbackFrames: frameDecodeFallbacks.length,
+          frames: frameDecodeFallbacks,
+        }).catch((reportError) => {
+          console.warn("Failed to write frame decode fallback report:", reportError);
+        })
       );
     }
-    if (tempSourcePath && window.electron) {
+
+    if (shouldCleanupCurrentTask && currentTaskMeta?.taskId) {
+      cleanupTasks.push(
+        discardVideoTask(currentTaskMeta).catch((cleanupError) => {
+          taskCleanupErrorMessage = cleanupError?.message || "清理视频临时目录失败";
+        })
+      );
+    } else if (tempSourcePath && window.electron && !currentTaskMeta?.taskId) {
       cleanupTasks.push(window.electron.ipcRenderer.invoke("cleanup-temp-file", tempSourcePath));
     }
     if (cleanupTasks.length > 0) {
       await Promise.allSettled(cleanupTasks);
     }
+    if (taskCleanupErrorMessage) {
+      $q.notify({
+        type: "warning",
+        message: `${taskCleanupErrorMessage}，可在全局设置中手动清理旧的临时目录。`,
+        position: "top",
+        timeout: 4500,
+      });
+    }
   }
 };
 
-const prepareTaskPaths = async () => {
-  const file = videoStore.videoFile;
-  const sourcePath = await resolveVideoSourcePath(file);
+const createVideoTaskId = () =>
+  `video_task_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
 
-  const tempBase =
-    configStore.config.fileManagement?.tempPath || sourcePath.replace(/[\\/][^\\/]+$/, "");
-
-  const taskRoot = window.electron.ipcRenderer.joinPath(
-    tempBase,
-    `moonshine_video_task_${Date.now()}`
-  );
+const prepareTaskPaths = async ({
+  sourcePath,
+  temporarySourcePath = "",
+  resumeTaskMeta = null,
+} = {}) => {
+  const tempBase = resumeTaskMeta?.tempBase || resolveConfiguredTempBase(sourcePath);
+  const taskRoot =
+    resumeTaskMeta?.taskRoot ||
+    window.electron.ipcRenderer.joinPath(
+      tempBase,
+      `${VIDEO_TASK_DIRECTORY_PREFIX}${Date.now()}_${Math.random()
+        .toString(16)
+        .slice(2, 8)}`
+    );
+  const taskId = resumeTaskMeta?.taskId || createVideoTaskId();
 
   const framesDir = window.electron.ipcRenderer.joinPath(taskRoot, "frames");
   const masksDir = window.electron.ipcRenderer.joinPath(taskRoot, "masks");
@@ -2984,6 +3659,10 @@ const prepareTaskPaths = async () => {
   const failureRoot = window.electron.ipcRenderer.joinPath(
     tempBase,
     "moonshine_video_failures"
+  );
+  const frameDecodeFallbackReportPath = window.electron.ipcRenderer.joinPath(
+    failureRoot,
+    `${taskRoot.split(/[\\/]/).pop()}_frontend_decode_fallbacks.json`
   );
 
   await window.electron.ipcRenderer.invoke("ensure-directory", taskRoot);
@@ -2994,25 +3673,39 @@ const prepareTaskPaths = async () => {
   await window.electron.ipcRenderer.invoke("ensure-directory", failureRoot);
 
   return {
+    taskId,
     sourcePath,
+    temporarySourcePath,
+    tempBase,
     taskRoot,
     framesDir,
     masksDir,
     resultsDir,
     segmentsDir,
     failureRoot,
+    frameDecodeFallbackReportPath,
   };
 };
 
 const resolveVideoSourcePath = async (file) => {
-  if (file?.path) return file.path;
+  if (file?.path) {
+    return {
+      sourcePath: file.path,
+      temporarySourcePath: "",
+    };
+  }
   if (!window.electron) throw new Error("无法解析视频文件路径");
 
   const buffer = await file.arrayBuffer();
-  return window.electron.ipcRenderer.invoke("save-temp-video", {
+  const sourcePath = await window.electron.ipcRenderer.invoke("save-temp-video", {
     fileName: file.name,
     buffer: new Uint8Array(buffer),
   });
+
+  return {
+    sourcePath,
+    temporarySourcePath: sourcePath,
+  };
 };
 
 const createFrameExtractor = async (file, format, fps) => {
@@ -3030,6 +3723,8 @@ const createFrameExtractor = async (file, format, fps) => {
 
   let clip = await createClipInstance();
   let clipDurationSeconds = getClipDurationSeconds(clip);
+  let lastSuccessfulFrameBlob = null;
+  let lastSuccessfulFrameTime = null;
 
   const canvas =
     typeof OffscreenCanvas !== "undefined"
@@ -3046,15 +3741,7 @@ const createFrameExtractor = async (file, format, fps) => {
   const endGuardSeconds = Math.min(frameStepSeconds * 0.5, 0.02);
   const fallbackOffsets = [
     0,
-    endGuardSeconds,
-    frameStepSeconds * 0.25,
-    frameStepSeconds * 0.5,
-    frameStepSeconds,
-    frameStepSeconds * 1.5,
-    frameStepSeconds * 2,
-    frameStepSeconds * 3,
-    frameStepSeconds * 5,
-    frameStepSeconds * 8,
+    Math.min(FRAME_CAPTURE_FALLBACK_EPSILON_SECONDS, endGuardSeconds),
   ].filter((value, index, values) => value >= 0 && values.indexOf(value) === index);
 
   const decodeFrameFromClip = async (activeClip, requestedTime, maxSafeTime) => {
@@ -3128,10 +3815,18 @@ const createFrameExtractor = async (file, format, fps) => {
     try {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(decodedFrame, 0, 0, canvas.width, canvas.height);
-      return await canvasToBlob(canvas, {
+      const nextBlob = await canvasToBlob(canvas, {
         mimeType: getMimeTypeForFormat(format),
         quality: INPUT_FRAME_QUALITY,
       });
+      lastSuccessfulFrameBlob = nextBlob.slice(0, nextBlob.size, nextBlob.type);
+      lastSuccessfulFrameTime = lastTriedTime;
+      return {
+        blob: nextBlob,
+        degraded: false,
+        fallbackType: "exact",
+        fallbackSourceTime: lastTriedTime,
+      };
     } finally {
       if (typeof decodedFrame.close === "function") {
         decodedFrame.close();
@@ -3141,7 +3836,43 @@ const createFrameExtractor = async (file, format, fps) => {
 
   return {
     capture: (time) => {
-      const task = captureQueue.then(() => captureImpl(time));
+      const task = captureQueue.then(async () => {
+        try {
+          return await captureImpl(time);
+        } catch (error) {
+          if (lastSuccessfulFrameBlob) {
+            return {
+              blob: lastSuccessfulFrameBlob.slice(
+                0,
+                lastSuccessfulFrameBlob.size,
+                lastSuccessfulFrameBlob.type
+              ),
+              degraded: true,
+              fallbackType: "reuse_previous_successful_frame",
+              fallbackSourceTime: lastSuccessfulFrameTime,
+              error: error?.message || String(error),
+            };
+          }
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          const placeholderBlob = await canvasToBlob(canvas, {
+            mimeType: getMimeTypeForFormat(format),
+            quality: INPUT_FRAME_QUALITY,
+          });
+          lastSuccessfulFrameBlob = placeholderBlob.slice(
+            0,
+            placeholderBlob.size,
+            placeholderBlob.type
+          );
+          lastSuccessfulFrameTime = Math.max(0, Number(time || 0));
+          return {
+            blob: placeholderBlob,
+            degraded: true,
+            fallbackType: "blank_frame_placeholder",
+            fallbackSourceTime: lastSuccessfulFrameTime,
+            error: error?.message || String(error),
+          };
+        }
+      });
       captureQueue = task.catch(() => undefined);
       return task;
     },

@@ -156,6 +156,8 @@ const BUNDLED_RUNTIME_STATE_FILE = "runtime-state.json";
 const BUNDLED_RUNTIME_LOCK_FILE = ".prepare.lock";
 const BUNDLED_RUNTIME_LOCK_WAIT_MS = 300000;
 const BUNDLED_RUNTIME_LOCK_STALE_MS = 120000;
+const VIDEO_PROCESSING_REGISTRY_FILE = "moonshine_video_resume_index.json";
+const QUICK_FINGERPRINT_SAMPLE_SIZE = 64 * 1024;
 let packagedIntegrityStatus = null;
 
 function normalizeShortcutKeys(keys = []) {
@@ -271,6 +273,162 @@ function getBundledRuntimeStatePath() {
 
 function getBundledRuntimeLockPath() {
   return path.join(getBundledRuntimeRootPath(), BUNDLED_RUNTIME_LOCK_FILE);
+}
+
+function getVideoProcessingStateDirectory() {
+  return path.join(app.getPath("userData"), "video-processing");
+}
+
+function getVideoProcessingRegistryPath() {
+  return path.join(getVideoProcessingStateDirectory(), VIDEO_PROCESSING_REGISTRY_FILE);
+}
+
+function ensureParentDirectory(filePath) {
+  const parentDirectory = path.dirname(filePath);
+  if (!fs.existsSync(parentDirectory)) {
+    fs.mkdirSync(parentDirectory, { recursive: true });
+  }
+}
+
+function readJsonFileSafe(filePath, fallbackValue = null) {
+  try {
+    if (!fs.existsSync(filePath)) {
+      return fallbackValue;
+    }
+
+    const rawText = fs.readFileSync(filePath, "utf8");
+    if (!rawText.trim()) {
+      return fallbackValue;
+    }
+
+    return JSON.parse(rawText);
+  } catch (error) {
+    console.error(`Failed to read JSON file: ${filePath}`, error);
+    return fallbackValue;
+  }
+}
+
+function writeJsonFileSafe(filePath, data) {
+  ensureParentDirectory(filePath);
+  fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+}
+
+function readVideoProcessingRegistry() {
+  const registry =
+    readJsonFileSafe(getVideoProcessingRegistryPath(), {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      tasks: {},
+    }) || {};
+
+  return {
+    version: 1,
+    updatedAt: registry.updatedAt || new Date().toISOString(),
+    tasks:
+      registry.tasks && typeof registry.tasks === "object" && !Array.isArray(registry.tasks)
+        ? registry.tasks
+        : {},
+  };
+}
+
+function writeVideoProcessingRegistry(registry) {
+  writeJsonFileSafe(getVideoProcessingRegistryPath(), {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    tasks:
+      registry?.tasks && typeof registry.tasks === "object" && !Array.isArray(registry.tasks)
+        ? registry.tasks
+        : {},
+  });
+}
+
+function buildQuickFingerprintSpans(fileSize, sampleSize = QUICK_FINGERPRINT_SAMPLE_SIZE) {
+  const normalizedSize = Math.max(0, Number(fileSize || 0));
+  const normalizedSampleSize = Math.max(1, Number(sampleSize || QUICK_FINGERPRINT_SAMPLE_SIZE));
+  const spans = [];
+
+  const pushSpan = (start, length) => {
+    const normalizedStart = Math.max(0, Math.min(normalizedSize, Math.floor(start)));
+    const normalizedLength = Math.max(
+      0,
+      Math.min(normalizedSize - normalizedStart, Math.floor(length))
+    );
+
+    if (!(normalizedLength > 0)) {
+      return;
+    }
+
+    spans.push({
+      start: normalizedStart,
+      end: normalizedStart + normalizedLength,
+    });
+  };
+
+  pushSpan(0, Math.min(normalizedSampleSize, normalizedSize));
+  pushSpan(
+    Math.max(0, Math.floor(normalizedSize / 2) - Math.floor(normalizedSampleSize / 2)),
+    Math.min(normalizedSampleSize, normalizedSize)
+  );
+  pushSpan(
+    Math.max(0, normalizedSize - normalizedSampleSize),
+    Math.min(normalizedSampleSize, normalizedSize)
+  );
+
+  spans.sort((left, right) => left.start - right.start);
+
+  const mergedSpans = [];
+  spans.forEach((span) => {
+    const previousSpan = mergedSpans.at(-1);
+    if (!previousSpan || span.start > previousSpan.end) {
+      mergedSpans.push({ ...span });
+      return;
+    }
+
+    previousSpan.end = Math.max(previousSpan.end, span.end);
+  });
+
+  return mergedSpans.map((span) => ({
+    start: span.start,
+    length: Math.max(0, span.end - span.start),
+  }));
+}
+
+function createQuickFileFingerprint(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) {
+    throw new Error(`File does not exist: ${filePath}`);
+  }
+
+  const stats = fs.statSync(filePath);
+  if (!stats.isFile()) {
+    throw new Error(`Unsupported file path: ${filePath}`);
+  }
+
+  const sampleSpans = buildQuickFingerprintSpans(stats.size);
+  const hash = crypto.createHash("sha256");
+  hash.update(`size:${stats.size};`);
+
+  const fd = fs.openSync(filePath, "r");
+  try {
+    sampleSpans.forEach((span) => {
+      const chunk = Buffer.alloc(span.length);
+      const bytesRead = fs.readSync(fd, chunk, 0, span.length, span.start);
+      hash.update(`offset:${span.start};length:${bytesRead};`);
+      hash.update(chunk.subarray(0, bytesRead));
+    });
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  return {
+    fingerprint: `quicksha256:${hash.digest("hex")}`,
+    size: stats.size,
+    sampleSize: QUICK_FINGERPRINT_SAMPLE_SIZE,
+    lastModified: stats.mtime.getTime(),
+  };
+}
+
+function getVideoTaskTimestamp(task = {}) {
+  return Math.max(0, Number(task.updatedAt || task.createdAt || 0));
 }
 
 function getPackagedBackendRuntimeProjectPath() {
@@ -3206,6 +3364,41 @@ ipcMain.handle("get-file-stats", async (event, filePath) => {
   }
 });
 
+ipcMain.handle("get-video-processing-registry-path", async () => {
+  try {
+    const registryPath = getVideoProcessingRegistryPath();
+    ensureParentDirectory(registryPath);
+    return {
+      success: true,
+      data: {
+        registryPath,
+      },
+    };
+  } catch (error) {
+    console.error("Failed to get video processing registry path:", error);
+    return {
+      success: false,
+      error: error.message,
+    };
+  }
+});
+
+ipcMain.handle("compute-video-file-fingerprint", async (event, filePath) => {
+  try {
+    const fingerprintInfo = createQuickFileFingerprint(filePath);
+    return {
+      success: true,
+      data: fingerprintInfo,
+    };
+  } catch (error) {
+    console.error("Failed to compute video file fingerprint:", error);
+    return {
+      success: false,
+      error: error.message,
+    };
+  }
+});
+
 // IPC handler - read file with progress
 ipcMain.handle("read-file-with-progress", async (event, filePath) => {
   try {
@@ -3302,6 +3495,98 @@ ipcMain.handle("cleanup-temp-files", async (event, tempDir) => {
     }
   } catch (error) {
     console.error("Failed to clean up temporary files:", error);
+  }
+});
+ipcMain.handle("cleanup-video-processing-temp", async (event, options = {}) => {
+  try {
+    const preserveTaskIds = new Set(
+      Array.isArray(options?.preserveTaskIds)
+        ? options.preserveTaskIds.filter((taskId) => typeof taskId === "string" && taskId.trim())
+        : []
+    );
+    const registry = readVideoProcessingRegistry();
+    const tasks = Object.entries(registry.tasks || {});
+    const latestFailedTaskIds = new Set();
+    const latestFailedTaskByFingerprint = new Map();
+
+    tasks.forEach(([taskId, task]) => {
+      const status = String(task?.status || "");
+      const fingerprint = String(task?.fingerprint || "").trim();
+      if (!fingerprint || !["failed", "running"].includes(status)) {
+        return;
+      }
+
+      const previous = latestFailedTaskByFingerprint.get(fingerprint);
+      if (!previous || getVideoTaskTimestamp(task) >= getVideoTaskTimestamp(previous.task)) {
+        latestFailedTaskByFingerprint.set(fingerprint, { taskId, task });
+      }
+    });
+
+    latestFailedTaskByFingerprint.forEach(({ taskId }) => {
+      latestFailedTaskIds.add(taskId);
+    });
+
+    const nextTasks = {};
+    let removedTaskCount = 0;
+    let removedDirectoryCount = 0;
+    let removedTempSourceCount = 0;
+    let missingTaskCount = 0;
+
+    tasks.forEach(([taskId, task]) => {
+      const preserveTask = preserveTaskIds.has(taskId) || latestFailedTaskIds.has(taskId);
+      const taskRoot = typeof task?.taskRoot === "string" ? task.taskRoot : "";
+      const temporarySourcePath =
+        typeof task?.temporarySourcePath === "string" ? task.temporarySourcePath : "";
+      const hasTaskRoot = Boolean(taskRoot) && fs.existsSync(taskRoot);
+      const hasTemporarySource = Boolean(temporarySourcePath) && fs.existsSync(temporarySourcePath);
+
+      if (preserveTask) {
+        if (hasTaskRoot || hasTemporarySource) {
+          nextTasks[taskId] = task;
+        } else {
+          missingTaskCount += 1;
+        }
+        return;
+      }
+
+      if (hasTaskRoot) {
+        fs.rmSync(taskRoot, { recursive: true, force: true });
+        removedDirectoryCount += 1;
+      }
+
+      if (hasTemporarySource) {
+        fs.rmSync(temporarySourcePath, { force: true });
+        removedTempSourceCount += 1;
+      }
+
+      if (hasTaskRoot || hasTemporarySource) {
+        removedTaskCount += 1;
+      } else {
+        missingTaskCount += 1;
+      }
+    });
+
+    writeVideoProcessingRegistry({
+      ...registry,
+      tasks: nextTasks,
+    });
+
+    return {
+      success: true,
+      data: {
+        removedTaskCount,
+        removedDirectoryCount,
+        removedTempSourceCount,
+        preservedTaskCount: Object.keys(nextTasks).length,
+        missingTaskCount,
+      },
+    };
+  } catch (error) {
+    console.error("Failed to clean up video processing temp directories:", error);
+    return {
+      success: false,
+      error: error.message,
+    };
   }
 });
 ipcMain.handle("remove-directory-recursive", async (event, dirPath) => {
