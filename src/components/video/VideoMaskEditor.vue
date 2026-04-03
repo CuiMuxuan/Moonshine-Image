@@ -32,9 +32,6 @@
           @undo="undoDraw"
           @clear="clearMask"
         />
-        <q-banner dense rounded class="bg-grey-2 text-grey-8">
-          视频蒙版关键帧插值已固定为线性。
-        </q-banner>
       </div>
     </q-expansion-item>
 
@@ -340,10 +337,10 @@ const getKeyframeDescription = (keyframe) => {
   }
 
   if (showRestoreOriginalAction(keyframe)) {
-    return "当前关键帧存在非等比缩放，可恢复到该关键帧上一帧时形状。";
+    return "当前关键帧存在形变，可恢复到该上一关键帧形状。";
   }
 
-  return "用户关键帧可编辑时间、位置和等比缩放。";
+  return "关键帧可编辑时间、位置和缩放。";
 };
 
 const getKeyframeScaleValue = (keyframe) => getMaskKeyframeUniformScale(keyframe);

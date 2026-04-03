@@ -33,7 +33,7 @@
             </div>
             <div class="info-item">
               <span class="label">预览分辨率</span>
-              <span class="value">{{ proxySizeText }}</span>
+              <span class="value">{{ previewSizeText }}</span>
             </div>
             <div class="info-item">
               <span class="label">文件大小</span>
@@ -258,7 +258,7 @@ defineProps({
     type: Array,
     default: () => [],
   },
-  proxySizeText: {
+  previewSizeText: {
     type: String,
     default: "-",
   },

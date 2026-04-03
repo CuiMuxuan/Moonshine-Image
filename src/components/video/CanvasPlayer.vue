@@ -504,6 +504,7 @@ onUnmounted(() => {
 }
 
 .canvas-stage {
+  flex: 0 0 auto;
   position: relative;
   background-color: #000;
   border-radius: 4px;

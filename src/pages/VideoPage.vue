@@ -8,7 +8,7 @@
             <ResourceManage
               v-model:export-fps-mode="exportFpsMode"
               :fps-options="fpsOptions"
-              :proxy-size-text="proxySizeText"
+              :preview-size-text="previewSizeText"
               :export-size-text="exportSizeText"
               :computed-batch-size="computedBatchSize"
               :can-run="canRun"
@@ -30,8 +30,8 @@
         </q-card>
 
         <q-card class="center-panel">
-          <q-card-section class="player-section" ref="playerContainer">
-            <div class="preview-stage-wrap">
+          <q-card-section class="player-section">
+            <div ref="previewStageWrapRef" class="preview-stage-wrap">
               <CanvasPlayer ref="canvasPlayerRef" class="player-canvas">
                 <template #overlay>
                   <VideoPreviewOverlay
@@ -289,7 +289,7 @@ const configStore = useConfigStore();
 const loadingControl = inject("loadingControl", null);
 const backendRunningState = inject("backendRunning", ref(false));
 
-const playerContainer = ref(null);
+const previewStageWrapRef = ref(null);
 const canvasPlayerRef = ref(null);
 const timelineRef = ref(null);
 const timelineViewportRef = ref(null);
@@ -313,6 +313,8 @@ let syncingTimelineFromStore = false;
 let processingEtaTickerId = null;
 let processingBatchMessageContext = null;
 let preserveLastOutputPathOnNextVideoChange = false;
+let previewStageResizeObserver = null;
+let pendingLayoutFrameId = 0;
 const playbackRates = [0.5, 1, 1.5, 2, 3];
 const timelineScaleWidth = 160;
 const timelineStartLeft = 20;
@@ -397,8 +399,15 @@ const proxyDimensions = computed(() => {
   };
 });
 
-const proxySizeText = computed(() => {
+const previewSizeText = computed(() => {
   if (!videoStore.videoWidth || !videoStore.videoHeight) return "-";
+
+  const width = Math.max(0, Math.round(Number(videoStore.displayWidth || 0)));
+  const height = Math.max(0, Math.round(Number(videoStore.displayHeight || 0)));
+  if (width > 0 && height > 0) {
+    return `${width} x ${height}`;
+  }
+
   return `${proxyDimensions.value.width} x ${proxyDimensions.value.height}`;
 });
 
@@ -689,6 +698,18 @@ const unwrapElement = (value) => {
   return value instanceof HTMLElement ? value : null;
 };
 
+const disconnectPreviewStageResizeObserver = () => {
+  if (!previewStageResizeObserver) return;
+  previewStageResizeObserver.disconnect();
+  previewStageResizeObserver = null;
+};
+
+const cancelScheduledLayoutUpdate = () => {
+  if (!pendingLayoutFrameId) return;
+  window.cancelAnimationFrame(pendingLayoutFrameId);
+  pendingLayoutFrameId = 0;
+};
+
 const updateTimelineViewportWidth = () => {
   const element = unwrapElement(timelineViewportRef.value);
   timelineViewportWidth.value = Math.max(0, element?.clientWidth || 0);
@@ -697,6 +718,17 @@ const updateTimelineViewportWidth = () => {
 const updateLayoutMetrics = () => {
   adjustPlayerSize();
   updateTimelineViewportWidth();
+};
+
+const scheduleLayoutMetricsUpdate = () => {
+  if (pendingLayoutFrameId) return;
+
+  pendingLayoutFrameId = window.requestAnimationFrame(async () => {
+    pendingLayoutFrameId = 0;
+    await nextTick();
+    updateLayoutMetrics();
+    syncTimelineViewport({ center: videoStore.currentTime > 0.0005 });
+  });
 };
 
 const getTimelineTotalWidth = () =>
@@ -1495,17 +1527,32 @@ const restoreVideoHistory = async (entryId) => {
 };
 
 const adjustPlayerSize = () => {
-  if (!playerContainer.value) return;
-  const target =
-    playerContainer.value?.$el instanceof HTMLElement
-      ? playerContainer.value.$el
-      : playerContainer.value;
+  const target = unwrapElement(previewStageWrapRef.value);
   if (!(target instanceof HTMLElement)) return;
 
-  const rect = target.getBoundingClientRect();
-  const availableWidth = Math.max(0, rect.width - 20);
-  const availableHeight = Math.max(0, rect.height - 20);
+  const availableWidth = Math.max(
+    0,
+    Math.floor(target.clientWidth || target.getBoundingClientRect().width || 0)
+  );
+  const availableHeight = Math.max(
+    0,
+    Math.floor(target.clientHeight || target.getBoundingClientRect().height || 0)
+  );
   videoStore.adjustPlayerSize(availableWidth, availableHeight);
+};
+
+const observePreviewStageSize = () => {
+  disconnectPreviewStageResizeObserver();
+
+  const target = unwrapElement(previewStageWrapRef.value);
+  if (!(target instanceof HTMLElement) || typeof ResizeObserver === "undefined") {
+    return;
+  }
+
+  previewStageResizeObserver = new ResizeObserver(() => {
+    scheduleLayoutMetricsUpdate();
+  });
+  previewStageResizeObserver.observe(target);
 };
 
 const INPUT_FRAME_QUALITY = 0.92;
@@ -3382,10 +3429,8 @@ class ProcessedFramesClip {
   }
 }
 
-const handleResize = async () => {
-  await nextTick();
-  updateLayoutMetrics();
-  syncTimelineViewport({ center: videoStore.currentTime > 0.0005 });
+const handleResize = () => {
+  scheduleLayoutMetricsUpdate();
 };
 
 const applyVideoBrushDefaults = () => {
@@ -3410,6 +3455,7 @@ onMounted(async () => {
   await configStore.loadConfig();
   applyVideoBrushDefaults();
   await nextTick();
+  observePreviewStageSize();
   updateLayoutMetrics();
   window.addEventListener("resize", handleResize);
 });
@@ -3431,6 +3477,8 @@ onBeforeRouteLeave(() => {
 onUnmounted(() => {
   preserveVideoPagePlaybackState();
   window.removeEventListener("resize", handleResize);
+  disconnectPreviewStageResizeObserver();
+  cancelScheduledLayoutUpdate();
 });
 </script>
 
