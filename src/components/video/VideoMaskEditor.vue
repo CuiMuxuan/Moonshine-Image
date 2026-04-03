@@ -329,7 +329,7 @@ const getKeyframeDescription = (keyframe) => {
 
   if (keyframe.type === MASK_KEYFRAME_TYPES.END) {
     if (showRestoreOriginalAction(keyframe)) {
-      return "结束关键帧当前存在非等比缩放，可恢复到创建时的原始形状。";
+      return "结束关键帧当前存在非等比缩放，可恢复到上一关键帧形状。";
     }
     return videoStore.selectedMask?.endStateExplicit
       ? "结束关键帧当前为独立状态。"
