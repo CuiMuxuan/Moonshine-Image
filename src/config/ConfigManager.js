@@ -6,6 +6,7 @@ import {
 
 const DEFAULT_THEME_MODE = "light";
 const DEFAULT_UI_BUTTON_SIZE = "sm";
+const CONFIG_SCHEMA_VERSION = 2;
 const UI_BUTTON_SIZE_OPTIONS = Object.freeze(["xs", "sm", "md"]);
 const IMAGE_OUTPUT_NAMING_MODES = Object.freeze(["original", "prefixUuid"]);
 
@@ -54,10 +55,20 @@ const normalizeThemeMode = (theme) =>
 const normalizeButtonSize = (value) =>
   UI_BUTTON_SIZE_OPTIONS.includes(value) ? value : DEFAULT_UI_BUTTON_SIZE;
 
+const normalizeBoolean = (value, fallback = true) =>
+  typeof value === "boolean" ? value : fallback;
+
+const normalizeInteger = (value, fallback, min, max = Number.MAX_SAFE_INTEGER) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return clamp(Math.round(numeric), min, max);
+};
+
 const cloneConfig = (value) => JSON.parse(JSON.stringify(value));
 
 export {
   DEFAULT_BRAND_COLORS,
+  CONFIG_SCHEMA_VERSION,
   DEFAULT_IMAGE_BRUSH,
   DEFAULT_THEME_MODE,
   DEFAULT_UI_BUTTON_SIZE,
@@ -72,6 +83,7 @@ export {
 
 export class ConfigManager {
   static defaultConfig = {
+    schemaVersion: CONFIG_SCHEMA_VERSION,
     general: {
       backendPort: 8080,
       launchMode: "cuda",
@@ -106,6 +118,7 @@ export class ConfigManager {
       theme: DEFAULT_THEME_MODE,
       buttonSize: DEFAULT_UI_BUTTON_SIZE,
       brandColors: { ...DEFAULT_BRAND_COLORS },
+      showStartupAnimation: true,
       showWelcomeDialog: true,
       confirmBeforeExit: true,
       autoSaveInterval: 30000,
@@ -280,7 +293,21 @@ export class ConfigManager {
   }
 
   static mergeWithDefault(userConfig) {
-    const merged = this.deepMerge(cloneConfig(this.defaultConfig), userConfig || {});
+    if (
+      userConfig &&
+      typeof userConfig === "object" &&
+      !userConfig.general &&
+      typeof userConfig.apiPort === "number"
+    ) {
+      userConfig = {
+        general: {
+          backendPort: userConfig.apiPort,
+        },
+      };
+    }
+
+    const merged = this.alignWithDefaultSchema(this.defaultConfig, userConfig || {});
+    merged.schemaVersion = CONFIG_SCHEMA_VERSION;
 
     if (merged?.video && Object.prototype.hasOwnProperty.call(merged.video, "outputPath")) {
       delete merged.video.outputPath;
@@ -289,11 +316,21 @@ export class ConfigManager {
       delete merged.video.maxFrameCount;
     }
 
+    merged.general = {
+      ...merged.general,
+      backendPort: normalizeInteger(merged.general?.backendPort, 8080, 1024, 65535),
+      launchMode: ["cuda", "cpu"].includes(merged.general?.launchMode)
+        ? merged.general.launchMode
+        : "cuda",
+      autoStart: normalizeBoolean(merged.general?.autoStart, true),
+    };
+
     merged.ui = {
       ...merged.ui,
       theme: normalizeThemeMode(merged.ui?.theme),
       buttonSize: normalizeButtonSize(merged.ui?.buttonSize),
       brandColors: normalizeBrandColors(merged.ui?.brandColors),
+      showStartupAnimation: normalizeBoolean(merged.ui?.showStartupAnimation, true),
     };
 
     merged.advanced = {
@@ -317,6 +354,20 @@ export class ConfigManager {
       ),
     };
 
+    merged.video = {
+      ...merged.video,
+      historyLimit: normalizeInteger(merged.video?.historyLimit, 5, 1, 50),
+      batchFrameCount: normalizeInteger(merged.video?.batchFrameCount, 120, 1),
+      batchRetryCount: normalizeInteger(merged.video?.batchRetryCount, 3, 1, 10),
+      failureRetentionCount: normalizeInteger(merged.video?.failureRetentionCount, 3, 1, 50),
+      proxyMaxSide: normalizeInteger(merged.video?.proxyMaxSide, 1280, 256, 4096),
+      frameExtractionFormat: ["jpg", "jpeg", "png", "webp"].includes(
+        String(merged.video?.frameExtractionFormat || "").toLowerCase()
+      )
+        ? String(merged.video.frameExtractionFormat).toLowerCase()
+        : "jpg",
+    };
+
     merged.shortcuts = normalizeShortcutConfig(merged.shortcuts);
 
     return merged;
@@ -334,5 +385,42 @@ export class ConfigManager {
     }
 
     return result;
+  }
+
+  static isPlainObject(value) {
+    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  }
+
+  static isTypeCompatible(defaultValue, candidateValue) {
+    if (candidateValue === undefined) return false;
+    if (Array.isArray(defaultValue)) return Array.isArray(candidateValue);
+    if (this.isPlainObject(defaultValue)) return this.isPlainObject(candidateValue);
+    if (typeof defaultValue === "number") {
+      return typeof candidateValue === "number" && !Number.isNaN(candidateValue);
+    }
+    return typeof candidateValue === typeof defaultValue;
+  }
+
+  static alignWithDefaultSchema(defaultValue, candidateValue) {
+    const defaultClone = cloneConfig(defaultValue);
+
+    if (Array.isArray(defaultValue)) {
+      return Array.isArray(candidateValue) ? cloneConfig(candidateValue) : defaultClone;
+    }
+
+    if (this.isPlainObject(defaultValue)) {
+      if (!this.isPlainObject(candidateValue)) {
+        return defaultClone;
+      }
+
+      return Object.keys(defaultValue).reduce((result, key) => {
+        result[key] = this.alignWithDefaultSchema(defaultValue[key], candidateValue[key]);
+        return result;
+      }, {});
+    }
+
+    return this.isTypeCompatible(defaultValue, candidateValue)
+      ? cloneConfig(candidateValue)
+      : defaultClone;
   }
 }

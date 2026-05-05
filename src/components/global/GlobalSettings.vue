@@ -97,6 +97,17 @@
 
             <q-tab-panel name="appearance" class="q-px-none">
               <div class="section q-gutter-lg">
+                <div class="startup-preferences-row">
+                  <div class="startup-preference">
+                    <div class="startup-preference-label">开始动画</div>
+                    <q-toggle v-model="localConfig.ui.showStartupAnimation" color="primary" />
+                  </div>
+                  <div class="startup-preference">
+                    <div class="startup-preference-label">静默启动</div>
+                    <q-toggle v-model="localConfig.general.autoStart" color="primary" />
+                  </div>
+                </div>
+
                 <div class="block">
                   <div class="row items-center q-mb-md">
                     <div class="text-subtitle1 text-weight-medium">主题品牌色</div>
@@ -488,6 +499,9 @@ onUnmounted(() => {
 .native-color-input { width: 52px; height: 40px; border: 0; padding: 0; background: transparent; cursor: pointer; }
 .color-row :deep(.q-field) { flex: 1 1 auto; }
 .brush-dot { display: inline-block; border-radius: 999px; border: 1px solid rgba(255,255,255,.72); box-shadow: 0 0 0 1px rgba(17,24,39,.08); }
+.startup-preferences-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.startup-preference { display: flex; align-items: center; justify-content: space-between; min-height: 56px; padding: 12px 16px; border: 1px solid rgba(17, 24, 39, 0.08); border-radius: 16px; background: rgba(255, 255, 255, 0.72); }
+.startup-preference-label { font-size: 15px; font-weight: 500; }
 .confirm-dialog { z-index: 3100 !important; }
 :deep(.confirm-dialog .q-dialog), :deep(.confirm-dialog .q-dialog__backdrop) { z-index: 3100 !important; }
 @media (max-width: 900px) {
@@ -496,5 +510,6 @@ onUnmounted(() => {
 }
 @media (max-width: 700px) {
   .settings-card { width: calc(100vw - 12px); max-width: calc(100vw - 12px); }
+  .startup-preferences-row { grid-template-columns: 1fr; }
 }
 </style>

@@ -491,8 +491,8 @@ const toggleThemeMode = async () => {
 };
 
 onMounted(async () => {
-  showStartupOverlay.value = true;
   await configStore.loadConfig();
+  showStartupOverlay.value = configStore.config.ui?.showStartupAnimation !== false;
   applyUiPreferences();
   api.updateConfig(configStore.config);
   await appStateStore.loadState();

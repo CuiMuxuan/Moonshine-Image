@@ -92,8 +92,10 @@ const SHORTCUT_KEY_COUNTS = Object.freeze({
   imageSelectAll: 2,
 });
 const IMAGE_OUTPUT_NAMING_MODES = Object.freeze(["original", "prefixUuid"]);
+const CONFIG_SCHEMA_VERSION = 2;
 // Default configuration
 const DEFAULT_CONFIG = {
+  schemaVersion: CONFIG_SCHEMA_VERSION,
   general: {
     backendPort: 8080,
     launchMode: "cuda", // 'cuda' | 'cpu'
@@ -101,6 +103,7 @@ const DEFAULT_CONFIG = {
     modelDir: "",
     backendProjectPath: "",
     defaultModel: "lama",
+    autoStart: true,
   },
   fileManagement: {
     downloadPath: "",
@@ -122,6 +125,7 @@ const DEFAULT_CONFIG = {
     theme: "light",
     buttonSize: "sm",
     brandColors: { ...DEFAULT_BRAND_COLORS },
+    showStartupAnimation: true,
     showWelcomeDialog: true,
     confirmBeforeExit: true,
     autoSaveInterval: 30000,
@@ -217,6 +221,61 @@ function validateShortcutConfig(shortcuts = {}) {
     seen.add(signature);
     return true;
   });
+}
+
+function cloneConfig(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isTypeCompatible(defaultValue, candidateValue) {
+  if (candidateValue === undefined) return false;
+  if (Array.isArray(defaultValue)) return Array.isArray(candidateValue);
+  if (isPlainObject(defaultValue)) return isPlainObject(candidateValue);
+  if (typeof defaultValue === "number") {
+    return typeof candidateValue === "number" && !Number.isNaN(candidateValue);
+  }
+  return typeof candidateValue === typeof defaultValue;
+}
+
+function alignConfigWithDefaultSchema(defaultValue, candidateValue) {
+  const defaultClone = cloneConfig(defaultValue);
+
+  if (Array.isArray(defaultValue)) {
+    return Array.isArray(candidateValue) ? cloneConfig(candidateValue) : defaultClone;
+  }
+
+  if (isPlainObject(defaultValue)) {
+    if (!isPlainObject(candidateValue)) {
+      return defaultClone;
+    }
+
+    return Object.keys(defaultValue).reduce((result, key) => {
+      result[key] = alignConfigWithDefaultSchema(defaultValue[key], candidateValue[key]);
+      return result;
+    }, {});
+  }
+
+  return isTypeCompatible(defaultValue, candidateValue)
+    ? cloneConfig(candidateValue)
+    : defaultClone;
+}
+
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeInteger(value, fallback, min, max = Number.MAX_SAFE_INTEGER) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return clampNumber(Math.round(numeric), min, max);
+}
+
+function normalizeBoolean(value, fallback = true) {
+  return typeof value === "boolean" ? value : fallback;
 }
 
 function getResourcesRootPath() {
@@ -1277,38 +1336,22 @@ function getConfigPath() {
 }
 
 function mergeConfigWithDefaults(config = {}) {
-  return {
-    ...DEFAULT_CONFIG,
-    ...config,
-    general: {
-      ...DEFAULT_CONFIG.general,
-      ...(config.general || {}),
-    },
-    fileManagement: {
-      ...DEFAULT_CONFIG.fileManagement,
-      ...(config.fileManagement || {}),
-    },
-    advanced: {
-      ...DEFAULT_CONFIG.advanced,
-      ...(config.advanced || {}),
-    },
-    ui: {
-      ...DEFAULT_CONFIG.ui,
-      ...(config.ui || {}),
-      brandColors: {
-        ...DEFAULT_CONFIG.ui.brandColors,
-        ...(config.ui?.brandColors || {}),
+  if (
+    config &&
+    typeof config === "object" &&
+    !config.general &&
+    typeof config.apiPort === "number"
+  ) {
+    config = {
+      general: {
+        backendPort: config.apiPort,
       },
-    },
-    shortcuts: {
-      ...SHORTCUT_DEFAULTS,
-      ...(config.shortcuts || {}),
-    },
-    video: {
-      ...DEFAULT_CONFIG.video,
-      ...(config.video || {}),
-    },
-  };
+    };
+  }
+
+  const merged = alignConfigWithDefaultSchema(DEFAULT_CONFIG, config);
+  merged.schemaVersion = CONFIG_SCHEMA_VERSION;
+  return merged;
 }
 
 async function getUsableProjectVenvInfo(projectPath) {
@@ -1368,9 +1411,15 @@ async function resolveValidatedProjectPath(inputPath) {
 
 function sanitizeAppConfig(config = {}) {
   const merged = mergeConfigWithDefaults(config);
+  merged.general.backendPort = normalizeInteger(merged.general?.backendPort, 8080, 1024, 65535);
+  merged.general.launchMode = ["cuda", "cpu"].includes(merged.general?.launchMode)
+    ? merged.general.launchMode
+    : "cuda";
+  merged.general.autoStart = normalizeBoolean(merged.general?.autoStart, true);
   merged.general.backendProjectPath = normalizeStoredBackendProjectPath(
     merged.general.backendProjectPath
   );
+  merged.ui.showStartupAnimation = normalizeBoolean(merged.ui?.showStartupAnimation, true);
   merged.advanced.imageProcessingMethod =
     merged.advanced?.imageProcessingMethod === "base64" ? "base64" : "path";
   merged.advanced.imageOutputNamingMode = IMAGE_OUTPUT_NAMING_MODES.includes(
@@ -1391,6 +1440,21 @@ function sanitizeAppConfig(config = {}) {
   if (merged?.video && Object.prototype.hasOwnProperty.call(merged.video, "maxFrameCount")) {
     delete merged.video.maxFrameCount;
   }
+  merged.video.historyLimit = normalizeInteger(merged.video?.historyLimit, 5, 1, 50);
+  merged.video.batchFrameCount = normalizeInteger(merged.video?.batchFrameCount, 120, 1);
+  merged.video.batchRetryCount = normalizeInteger(merged.video?.batchRetryCount, 3, 1, 10);
+  merged.video.failureRetentionCount = normalizeInteger(
+    merged.video?.failureRetentionCount,
+    3,
+    1,
+    50
+  );
+  merged.video.proxyMaxSide = normalizeInteger(merged.video?.proxyMaxSide, 1280, 256, 4096);
+  merged.video.frameExtractionFormat = ["jpg", "jpeg", "png", "webp"].includes(
+    String(merged.video?.frameExtractionFormat || "").toLowerCase()
+  )
+    ? String(merged.video.frameExtractionFormat).toLowerCase()
+    : "jpg";
   return merged;
 }
 
