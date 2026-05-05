@@ -101,6 +101,7 @@ import GlobalSettings from "src/components/global/GlobalSettings.vue";
 import MainToolbar from "src/components/global/MainToolbar.vue";
 import StartupOverlay from "src/components/global/StartupOverlay.vue";
 import { DEFAULT_BRAND_COLORS, normalizeThemeMode } from "src/config/ConfigManager";
+import { classifyMoonshineError } from "src/services/ErrorClassifier";
 import { useAppStateStore } from "src/stores/appState";
 import { useBackendEngineStore } from "src/stores/backendEngine";
 import { useConfigStore } from "src/stores/config";
@@ -355,9 +356,10 @@ const checkBackendStatus = async ({ notifyOnFailure = true } = {}) => {
   } catch (error) {
     backendRunning.value = false;
     if (notifyOnFailure) {
+      const classifiedError = classifyMoonshineError(error, "后端服务未启动");
       $q.notify({
         type: "warning",
-        message: `${error} 后端服务未启动，请点击后端管理按钮启动服务。`,
+        message: classifiedError.message,
         position: "top",
         timeout: 5000,
         actions: [
@@ -449,7 +451,9 @@ const prepareBackendEngine = async () => {
     }
   } catch (error) {
     backendRunning.value = false;
-    backendEngineStore.setFailed(error?.message || "Moonshine AI 引擎准备失败");
+    backendEngineStore.setFailed(
+      classifyMoonshineError(error, "Moonshine AI 引擎准备失败").message
+    );
   }
 };
 

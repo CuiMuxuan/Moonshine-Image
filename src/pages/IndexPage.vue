@@ -915,7 +915,7 @@ const runSlbrModel = async () => {
   } catch (error) {
     $q.notify({
       type: "negative",
-      message: `透明水印去除失败: ${error.message}`,
+      message: error.message || "透明水印去除失败",
       position: "top",
     });
     console.error("透明水印去除失败:", error);
@@ -1053,7 +1053,7 @@ const runRemoveModel = async () => {
     // 显示错误通知
     $q.notify({
       type: "negative",
-      message: `图像处理失败: ${error.message}`,
+      message: error.message || "图像处理失败",
       position: "top",
     });
     console.error("图像处理失败:", error);
@@ -1104,7 +1104,7 @@ const processFolderImages = async () => {
   } catch (error) {
     $q.notify({
       type: "negative",
-      message: `处理文件夹失败: ${error.message}`,
+      message: error.message || "处理文件夹失败",
       position: "top",
     });
     console.error("处理文件夹失败:", error);
@@ -1143,7 +1143,7 @@ const processSlbrFolderImages = async () => {
   } catch (error) {
     $q.notify({
       type: "negative",
-      message: `透明水印文件夹处理失败: ${error.message}`,
+      message: error.message || "透明水印文件夹处理失败",
       position: "top",
     });
     console.error("透明水印文件夹处理失败:", error);

@@ -1,5 +1,6 @@
 import { api } from 'src/boot/axios';
 import { useFileManagerStore } from 'src/stores/fileManager'
+import { classifyMoonshineError } from 'src/services/ErrorClassifier';
 
 // Extract raw base64 from a data URL.
 const getBase64FromDataURL = (dataUrl) => {
@@ -17,50 +18,6 @@ const fileToBase64 = (file) => {
     reader.onload = () => resolve(reader.result);
     reader.onerror = error => reject(error);
   });
-};
-
-const formatDetailItem = (item) => {
-  if (item == null) return '';
-  if (typeof item === 'string') return item;
-  if (typeof item === 'number' || typeof item === 'boolean') return String(item);
-
-  if (Array.isArray(item)) {
-    return item.map(formatDetailItem).filter(Boolean).join('; ');
-  }
-
-  if (typeof item === 'object') {
-    if (Array.isArray(item.loc) && item.msg) {
-      const fieldPath = item.loc.join('.');
-      return `${fieldPath}: ${item.msg}`;
-    }
-    if (item.msg) {
-      return String(item.msg);
-    }
-    if (item.message) {
-      return formatDetailItem(item.message);
-    }
-    if (item.detail) {
-      return formatDetailItem(item.detail);
-    }
-
-    try {
-      return JSON.stringify(item);
-    } catch {
-      return String(item);
-    }
-  }
-
-  return String(item);
-};
-
-const extractApiErrorMessage = (error, fallback = '服务器处理失败') => {
-  const data = error?.response?.data;
-  if (!data) return fallback;
-
-  const message = formatDetailItem(data.message);
-  const detail = formatDetailItem(data.detail);
-  const bodyError = formatDetailItem(data.error);
-  return message || detail || bodyError || fallback;
 };
 
 const getRequestItemId = (requestData, index) => {
@@ -130,11 +87,10 @@ const performBatchInpainting = async (requestData) => {
     console.error('调用batch_inpaint API时出错:', error);
 
     if (error.response) {
-      const errorMessage = extractApiErrorMessage(error, '服务器处理失败');
-      throw new Error(`服务器错误 (${error.response.status}): ${errorMessage}`);
+      throw new Error(classifyMoonshineError(error, '图像处理失败').message);
     }
     if (error.request) {
-      throw new Error('网络连接失败，请检查后端服务是否正常运行');
+      throw new Error(classifyMoonshineError(error, '图像处理失败').message);
     }
     throw new Error(`请求配置错误: ${error.message}`);
   }
@@ -154,11 +110,10 @@ const performMoonshineImageProcessing = async (requestData) => {
     console.error('调用Moonshine图片处理API时出错:', error);
 
     if (error.response) {
-      const errorMessage = extractApiErrorMessage(error, 'Moonshine图片处理失败');
-      throw new Error(`服务器错误(${error.response.status}): ${errorMessage}`);
+      throw new Error(classifyMoonshineError(error, 'Moonshine图片处理失败').message);
     }
     if (error.request) {
-      throw new Error('网络连接失败，请检查后端服务是否正常运行');
+      throw new Error(classifyMoonshineError(error, 'Moonshine图片处理失败').message);
     }
     throw new Error(`请求配置错误: ${error.message}`);
   }
@@ -228,11 +183,10 @@ const performFolderInpainting = async (folderData) => {
     console.error('调用batch_inpaint_by_folder API时出错:', error);
 
     if (error.response) {
-      const errorMessage = extractApiErrorMessage(error, '文件夹批处理失败');
-      throw new Error(`服务器错误 (${error.response.status}): ${errorMessage}`);
+      throw new Error(classifyMoonshineError(error, '文件夹批处理失败').message);
     }
     if (error.request) {
-      throw new Error('网络连接失败，请检查后端服务是否正常运行');
+      throw new Error(classifyMoonshineError(error, '文件夹批处理失败').message);
     }
     throw new Error(`请求配置错误: ${error.message}`);
   }
@@ -249,11 +203,10 @@ const performMoonshineFolderProcessing = async (folderData) => {
     console.error('调用Moonshine文件夹处理API时出错:', error);
 
     if (error.response) {
-      const errorMessage = extractApiErrorMessage(error, 'Moonshine文件夹处理失败');
-      throw new Error(`服务器错误(${error.response.status}): ${errorMessage}`);
+      throw new Error(classifyMoonshineError(error, 'Moonshine文件夹处理失败').message);
     }
     if (error.request) {
-      throw new Error('网络连接失败，请检查后端服务是否正常运行');
+      throw new Error(classifyMoonshineError(error, 'Moonshine文件夹处理失败').message);
     }
     throw new Error(`请求配置错误: ${error.message}`);
   }

@@ -1,10 +1,8 @@
 import { api } from "src/boot/axios";
+import { classifyMoonshineError } from "src/services/ErrorClassifier";
 
 const formatError = (error, fallback = "视频处理失败") => {
-  if (error?.response?.data?.detail) return String(error.response.data.detail);
-  if (error?.response?.data?.message) return String(error.response.data.message);
-  if (error?.response?.data?.error) return String(error.response.data.error);
-  return error?.message || fallback;
+  return classifyMoonshineError(error, fallback).message;
 };
 
 export const submitVideoBatchInpaint = async (request) => {
