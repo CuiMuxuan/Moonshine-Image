@@ -33,6 +33,10 @@
                   <strong>可用显存:</strong>
                   {{ cudaInfo.free_memory_mb?.toFixed(2) }} MB
                 </p>
+                <p v-if="cudaInfo.used_memory_mb != null">
+                  <strong>已用显存:</strong>
+                  {{ cudaInfo.used_memory_mb?.toFixed(2) }} MB
+                </p>
               </div>
               <div v-else>
                 <p>CUDA不可用，将使用CPU进行处理</p>

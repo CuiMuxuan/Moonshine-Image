@@ -603,6 +603,63 @@ export const useFileManagerStore = defineStore("fileManager", {
       };
     },
 
+    async prepareMoonshineImageProcessData(filesToProcess) {
+      const configStore = useConfigStore();
+      const imageType = this.processingConfig.imageType === "base64" ? "base64" : "path";
+      const responseType = this.processingConfig.responseType === "base64" ? "base64" : "path";
+      const tempRoot = configStore.config.fileManagement?.tempPath || "";
+      const imageFolderName = configStore.config.fileManagement?.imageFolderName || "images";
+      const tempPath =
+        tempRoot && window.electron?.ipcRenderer?.joinPath
+          ? window.electron.ipcRenderer.joinPath(tempRoot, imageFolderName).replace(/\\/g, "/")
+          : "";
+
+      const batchItems = [];
+      for (const file of filesToProcess) {
+        const latestImage = file.history[file.history.length - 1];
+
+        let imageData = "";
+        if (imageType === "path") {
+          if (latestImage.type === "path") {
+            imageData = latestImage.data;
+          } else if (file.history.length <= 1) {
+            imageData = resolveOriginalFilePath(file);
+          } else {
+            throw new Error(
+              `当前图像仅保存在内存中，无法按路径模式继续处理，请切换为 base64 模式或重新导入：${file.name}`
+            );
+          }
+          if (!imageData) {
+            throw new Error(`无法读取图片路径: ${file.name}`);
+          }
+          if (!(await this.fileExists(imageData))) {
+            throw new Error(buildMissingFileMessage(file.name));
+          }
+        } else if (latestImage.type === "base64") {
+          imageData = latestImage.data;
+        } else {
+          const fileBase64 = await this.fileToBase64({
+            name: file.name,
+            type: file.type,
+            path: latestImage.data || resolveOriginalFilePath(file),
+          });
+          imageData = fileBase64.split(",")[1];
+        }
+
+        batchItems.push({
+          id: file.id,
+          image: imageData,
+        });
+      }
+
+      return {
+        data: batchItems,
+        image_type: imageType,
+        response_type: responseType,
+        temp_path: responseType === "path" ? tempPath : "",
+      };
+    },
+
     getSelectedFilesForProcessing() {
       return this.selectedFiles.filter((file) => file.mask?.data);
     },

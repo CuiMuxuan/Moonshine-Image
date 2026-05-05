@@ -20,6 +20,7 @@ const normalizeModel = (model = {}) => ({
   requiresMask: model.requiresMask !== false,
   downloadable: Boolean(model.downloadable),
   sourceLinks: Array.isArray(model.sourceLinks) ? model.sourceLinks : [],
+  parameters: model.parameters && typeof model.parameters === "object" ? model.parameters : {},
 });
 
 const getImageModels = async () => {

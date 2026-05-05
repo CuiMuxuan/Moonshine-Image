@@ -12,8 +12,8 @@ import {
   PACKAGED_RUNTIME_RESOURCE_DIR,
   PACKAGED_RUNTIME_TARGET_DIR,
 } from "../src-electron/integrity/public-key.js";
+import { prepareBackendResources } from "./prepare-backend-resources.mjs";
 import { buildPackagedWindowsRuntime } from "./build-runtime-win.mjs";
-import { materializePackagedBackend } from "./materialize-iopaint-backend.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,6 +29,7 @@ const defaultPrivateKeyPath = path.join(
 );
 
 const excludedDirNames = new Set(["__pycache__"]);
+const excludedFileNames = new Set([".DS_Store"]);
 const protectedResourceDirs = [
   {
     rootDir: path.join(buildResourcesRoot, "backend"),
@@ -68,7 +69,7 @@ function toPosixPath(filePath) {
   return filePath.replace(/\\/g, "/");
 }
 
-function listFiles(rootDir) {
+function listFiles(rootDir, ignoredDirNames = excludedDirNames) {
   if (!fs.existsSync(rootDir)) {
     return [];
   }
@@ -83,10 +84,13 @@ function listFiles(rootDir) {
     for (const entry of entries) {
       const fullPath = path.join(currentPath, entry.name);
       if (entry.isDirectory()) {
-        if (excludedDirNames.has(entry.name)) {
+        if (ignoredDirNames.has(entry.name)) {
           continue;
         }
         queue.push(fullPath);
+        continue;
+      }
+      if (excludedFileNames.has(entry.name) || entry.name.endsWith(".pyc") || entry.name.endsWith(".pyo")) {
         continue;
       }
       files.push(fullPath);
@@ -161,7 +165,7 @@ function readPrivateKey() {
 }
 
 export function prepareElectronResources() {
-  materializePackagedBackend();
+  prepareBackendResources();
   buildPackagedWindowsRuntime({ allowFallback: true });
   copyPackagedModels();
   resetDir(integrityRoot);

@@ -32,6 +32,12 @@ import {
   PACKAGED_RUNTIME_TARGET_DIR,
 } from "./integrity/public-key.js";
 const execAsync = promisify(exec);
+const APP_DISPLAY_NAME = "Moonshine-Image";
+const LEGACY_APP_NAME = "moonshine-client";
+
+app.setName(APP_DISPLAY_NAME);
+app.setPath("userData", path.join(app.getPath("appData"), APP_DISPLAY_NAME));
+
 // Backend service process
 let backendProcess = null;
 global.projectPath = "";
@@ -314,12 +320,37 @@ function getPackagedModelsPath() {
   return path.join(getResourcesRootPath(), PACKAGED_MODELS_RESOURCE_DIR);
 }
 
+function getDefaultModelDir() {
+  return app.isPackaged
+    ? getPackagedModelsPath()
+    : path.join(process.cwd(), PACKAGED_MODELS_RESOURCE_DIR);
+}
+
+function isLegacyDefaultModelPath(modelPath) {
+  const normalized = path.normalize(String(modelPath || ""));
+  if (!normalized) {
+    return true;
+  }
+
+  return (
+    normalized === path.normalize(path.join(os.homedir(), ".cache", "torch", "hub", "checkpoints"))
+  );
+}
+
 function getBundledDefaultModelPath() {
   return path.join(getPackagedModelsPath(), PACKAGED_DEFAULT_MODEL_FILE);
 }
 
 function getBundledRuntimeRootPath() {
   return path.join(app.getPath("userData"), "runtime");
+}
+
+function getLegacyUserDataPath() {
+  return path.join(app.getPath("appData"), LEGACY_APP_NAME);
+}
+
+function getLegacyRuntimeBackendPath() {
+  return path.join(getLegacyUserDataPath(), "runtime", "backend");
 }
 
 function getBundledRuntimeEnvPath() {
@@ -789,6 +820,22 @@ async function ensurePackagedBackendIntegrity(projectPath) {
     ...integrityResult,
     runtimeProjectPath,
   };
+}
+
+function isBackendProjectStructureComplete(projectPath) {
+  if (!projectPath || !fs.existsSync(projectPath)) {
+    return false;
+  }
+
+  const requiredFiles = ["requirements.txt", "main.py"];
+  const requiredDirs = ["moonshine_server"];
+  return (
+    requiredFiles.every((fileName) => fs.existsSync(path.join(projectPath, fileName))) &&
+    requiredDirs.every((dirName) => {
+      const dirPath = path.join(projectPath, dirName);
+      return fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory();
+    })
+  );
 }
 
 function getBundledRuntimeCommandEnv(overrides = {}) {
@@ -1298,7 +1345,7 @@ function validateProjectPath(inputPath) {
   }
 
   const requiredFiles = ["requirements.txt", "main.py"];
-  const requiredDirs = ["iopaint"];
+  const requiredDirs = ["moonshine_server"];
   const missingFiles = requiredFiles.filter(
     (fileName) => !fs.existsSync(path.join(checkPath, fileName))
   );
@@ -1307,13 +1354,21 @@ function validateProjectPath(inputPath) {
     return !fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory();
   });
 
-  if (missingFiles.length > 0 || missingDirs.length > 0) {
+  if (!isBackendProjectStructureComplete(checkPath)) {
+    const runtimeBackendCleanupPaths = [
+      path.join(app.getPath("userData"), "runtime", "backend"),
+      getLegacyRuntimeBackendPath(),
+    ];
     return {
       success: false,
       code: "PROJECT_STRUCTURE_INVALID",
       error: "Backend project structure is incomplete.",
       missingFiles,
       missingDirs,
+      currentCheckPath: checkPath,
+      runtimeBackendCleanupPaths,
+      recoveryHint:
+        `如果你是从旧版本更新，请删除 ${runtimeBackendCleanupPaths.join(" 或 ")} 后重试。`,
       defaultProjectPath,
       defaultProjectParentPath,
     };
@@ -1406,7 +1461,8 @@ async function resolveValidatedProjectPath(inputPath) {
     };
   }
 
-  return validateProjectPath(effectivePath);
+  const checkPath = integrityResult.runtimeProjectPath || effectivePath;
+  return validateProjectPath(checkPath);
 }
 
 function sanitizeAppConfig(config = {}) {
@@ -1430,8 +1486,11 @@ function sanitizeAppConfig(config = {}) {
   merged.advanced.imageOutputFixedPrefix =
     String(merged.advanced?.imageOutputFixedPrefix || "moonshine").trim() || "moonshine";
   merged.shortcuts = normalizeShortcutConfig(merged.shortcuts);
+  if (isLegacyDefaultModelPath(merged.general.modelPath)) {
+    merged.general.modelPath = getDefaultModelDir();
+  }
   if (app.isPackaged && isBundledBackendMode(merged.general.backendProjectPath)) {
-    merged.general.modelPath = getPackagedModelsPath();
+    merged.general.modelPath = getDefaultModelDir();
     merged.general.modelDir = "";
   }
   if (merged?.video && Object.prototype.hasOwnProperty.call(merged.video, "outputPath")) {
@@ -1614,15 +1673,12 @@ function createDefaultConfig() {
 
     // Initialize default paths
     const userDataPath = app.getPath("userData");
-    const userPath = app.getPath("home");
     DEFAULT_CONFIG.fileManagement.downloadPath = path.join(
       userDataPath,
       "downloads"
     );
     DEFAULT_CONFIG.fileManagement.tempPath = path.join(userDataPath, "temp");
-    DEFAULT_CONFIG.general.modelPath = app.isPackaged
-      ? getPackagedModelsPath()
-      : path.join(userPath, ".cache", "torch", "hub", "checkpoints");
+    DEFAULT_CONFIG.general.modelPath = getDefaultModelDir();
     DEFAULT_CONFIG.general.modelDir = "";
     DEFAULT_CONFIG.general.backendProjectPath = getDefaultBackendProjectPath();
     DEFAULT_CONFIG.general.defaultModel = "lama";
@@ -2641,7 +2697,7 @@ ipcMain.handle("check-dependencies", async () => {
 
       try {
         await execCommand(
-          `${quoteArg(bundledResult.pythonPath)} -c "import fastapi,uvicorn,numpy,PIL,torch,diffusers,transformers"`,
+          `${quoteArg(bundledResult.pythonPath)} -c "import fastapi,uvicorn,numpy,PIL,torch,transformers"`,
           {
             cwd: bundledResult.path,
             timeout: 30000,
@@ -3769,9 +3825,6 @@ async function createWindow() {
     // Remove the menu bar in production
     Menu.setApplicationMenu(null);
   }
-
-  // Set application name
-  app.setName("Moonshine-Image");
 
   // Set Content Security Policy
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {

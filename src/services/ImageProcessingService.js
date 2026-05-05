@@ -140,6 +140,30 @@ const performBatchInpainting = async (requestData) => {
   }
 };
 
+const performMoonshineImageProcessing = async (requestData) => {
+  try {
+    validateMoonshineImageRequestData(requestData);
+    const response = await api.post('/api/v1/moonshine/image/process', requestData, {
+      headers: {
+        'Content-Type': 'application/json',
+      }
+    });
+
+    return await processBatchResults(response, requestData);
+  } catch (error) {
+    console.error('调用Moonshine图片处理API时出错:', error);
+
+    if (error.response) {
+      const errorMessage = extractApiErrorMessage(error, 'Moonshine图片处理失败');
+      throw new Error(`服务器错误(${error.response.status}): ${errorMessage}`);
+    }
+    if (error.request) {
+      throw new Error('网络连接失败，请检查后端服务是否正常运行');
+    }
+    throw new Error(`请求配置错误: ${error.message}`);
+  }
+};
+
 const processBatchResults = async (response, requestData = {}) => {
   const fileManagerStore = useFileManagerStore();
   const processedResults = [];
@@ -214,6 +238,58 @@ const performFolderInpainting = async (folderData) => {
   }
 };
 
+const performMoonshineFolderProcessing = async (folderData) => {
+  try {
+    return await api.post('/api/v1/moonshine/image/process_folder', folderData, {
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+  } catch (error) {
+    console.error('调用Moonshine文件夹处理API时出错:', error);
+
+    if (error.response) {
+      const errorMessage = extractApiErrorMessage(error, 'Moonshine文件夹处理失败');
+      throw new Error(`服务器错误(${error.response.status}): ${errorMessage}`);
+    }
+    if (error.request) {
+      throw new Error('网络连接失败，请检查后端服务是否正常运行');
+    }
+    throw new Error(`请求配置错误: ${error.message}`);
+  }
+};
+
+const validateMoonshineImageRequestData = (requestData) => {
+  if (!requestData) {
+    throw new Error('请求数据不能为空');
+  }
+
+  if (!requestData.model_id) {
+    throw new Error('请求必须包含 model_id');
+  }
+
+  if (!Array.isArray(requestData.data) || requestData.data.length === 0) {
+    throw new Error('data 数组不能为空');
+  }
+
+  const idSet = new Set();
+  for (const item of requestData.data) {
+    if (!item || typeof item !== 'object') {
+      throw new Error('data 中存在无效项');
+    }
+    if (!item.id) {
+      throw new Error('data 中每项都必须包含 id');
+    }
+    if (!item.image) {
+      throw new Error('data 中每项都必须包含 image');
+    }
+    if (idSet.has(item.id)) {
+      throw new Error(`data 中存在重复id: ${item.id}`);
+    }
+    idSet.add(item.id);
+  }
+};
+
 // Validate request payload for both old/new protocol.
 const validateRequestData = (requestData) => {
   if (!requestData) {
@@ -266,7 +342,9 @@ const validateRequestData = (requestData) => {
 export default {
   performInpainting,
   performBatchInpainting,
+  performMoonshineImageProcessing,
   performFolderInpainting,
+  performMoonshineFolderProcessing,
   getBase64FromDataURL,
   fileToBase64,
   validateRequestData

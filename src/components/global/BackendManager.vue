@@ -745,17 +745,26 @@ const applyDependenciesStatus = (ready) => {
 };
 
 const appendProjectPathGuidance = (result) => {
-  if (!result || !["PROJECT_NOT_SELECTED", "PROJECT_PATH_NOT_FOUND"].includes(result.code)) {
+  if (!result) {
+    return;
+  }
+
+  if (result.code === "PROJECT_STRUCTURE_INVALID" && result.recoveryHint) {
+    addTerminalLog(result.recoveryHint, "warning");
+    return;
+  }
+
+  if (!["PROJECT_NOT_SELECTED", "PROJECT_PATH_NOT_FOUND"].includes(result.code)) {
     return;
   }
 
   if (result.defaultProjectParentPath) {
     addTerminalLog(
-      `请将 IOPaint 后端项目移动到 ${result.defaultProjectParentPath} 路径下。`,
+      `请将 Moonshine 后端项目移动到 ${result.defaultProjectParentPath} 路径下。`,
       "warning"
     );
   } else {
-    addTerminalLog("请将 IOPaint 后端项目移动到默认后端目录下。", "warning");
+    addTerminalLog("请将 Moonshine 后端项目移动到默认后端目录下。", "warning");
   }
 
   addTerminalLog(
@@ -1087,7 +1096,7 @@ const startService = async () => {
         port: backendConfig.port,
         device: backendConfig.device,
         model: backendConfig.model,
-        modelDir: backendConfig.modelDir,
+        modelDir: backendConfig.modelDir || backendConfig.modelPath,
       }
     );
 

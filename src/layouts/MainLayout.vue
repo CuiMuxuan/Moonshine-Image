@@ -404,7 +404,10 @@ const prepareBackendEngine = async () => {
       configStore.config.general?.backendProjectPath || ""
     );
     if (!projectResult?.success) {
-      throw new Error(projectResult?.error || "后端项目检测失败");
+      const message = [projectResult?.error || "后端项目检测失败", projectResult?.recoveryHint]
+        .filter(Boolean)
+        .join(" ");
+      throw new Error(message);
     }
 
     const prepareResult = await invoke("prepare-project-python", projectResult.path);

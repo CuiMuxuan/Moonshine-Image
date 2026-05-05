@@ -58,6 +58,14 @@ const normalizeButtonSize = (value) =>
 const normalizeBoolean = (value, fallback = true) =>
   typeof value === "boolean" ? value : fallback;
 
+const normalizeModelPath = (value) => {
+  const normalized = String(value || "").trim().replace(/\\/g, "/");
+  if (!normalized || normalized.endsWith("/.cache/torch/hub/checkpoints")) {
+    return "";
+  }
+  return value;
+};
+
 const normalizeInteger = (value, fallback, min, max = Number.MAX_SAFE_INTEGER) => {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return fallback;
@@ -322,6 +330,7 @@ export class ConfigManager {
       launchMode: ["cuda", "cpu"].includes(merged.general?.launchMode)
         ? merged.general.launchMode
         : "cuda",
+      modelPath: normalizeModelPath(merged.general?.modelPath) || this.defaultConfig.general.modelPath,
       autoStart: normalizeBoolean(merged.general?.autoStart, true),
     };
 

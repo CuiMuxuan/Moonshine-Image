@@ -26,7 +26,7 @@
             "
             ref="editorRef"
             :selected-file="currentFile.originalFile"
-            :show-masker="showMaskTools"
+            :show-masker="showMaskTools && currentModel === 'lama'"
             :drawing-mode="isMaskDrawingMode"
             :tool-state="imageMaskToolState"
             :mask="currentFile.mask"
@@ -125,6 +125,17 @@ const savePath = ref("");
 const savePathSourceMode = ref("managed");
 const folderPath = ref("");
 const maskFolderPath = ref("");
+const slbrSettings = ref({
+  tileSize: 384,
+  tileBatch: 4,
+  recommended: {
+    tile_size: 384,
+    tile_batch: 4,
+    overlap: 96,
+    pad_multiple: 16,
+  },
+  tileSizeOptions: [256, 384, 512],
+});
 const ocrLang = ref("中文");
 const autoLayout = ref(true);
 const editorRef = ref(null);
@@ -286,6 +297,7 @@ const isImageMaskerReady = computed(
   () =>
     Boolean(
       currentFile.value &&
+        currentModel.value === "lama" &&
         showMaskTools.value &&
         editorRef.value?.isMaskerReady?.()
     )
@@ -343,6 +355,13 @@ const toggleFileSelection = (file) => {
 
 const handleModelChange = (model) => {
   currentModel.value = model;
+  if (model === "slbr") {
+    showMaskTools.value = false;
+    setMaskDrawingMode(false);
+  } else if (model === "lama") {
+    showMaskTools.value = true;
+    setMaskDrawingMode(runtimeUiStore.imageMaskDrawingEnabled);
+  }
   const selectedOption = imageModelOptions.value.find((option) => option.value === model);
   $q.notify({
     type: "info",
@@ -762,7 +781,12 @@ const resizeMaskData = (
 
 // 运行当前模型
 const runCurrentModel = async () => {
-  if (!currentFile.value) return;
+  if (
+    !currentFile.value &&
+    !(currentModel.value === "slbr" && actionScope.value.value === "folder")
+  ) {
+    return;
+  }
   if (backendEngineValue.value.runDisabled) {
     if (backendEngineValue.value.hasFailed) {
       backendEngineValue.value.openDiagnostics();
@@ -773,6 +797,9 @@ const runCurrentModel = async () => {
   switch (currentModel.value) {
     case "lama":
       runRemoveModel();
+      break;
+    case "slbr":
+      runSlbrModel();
       break;
     case "ocr":
       startOcr();
@@ -806,6 +833,98 @@ const startRepair = () => {
   });
 };
 // 运行去除模型
+const getSlbrOptions = () => ({
+  tile_size: Number(slbrSettings.value.tileSize) || 384,
+  tile_batch: Math.max(1, Math.min(32, Math.round(Number(slbrSettings.value.tileBatch) || 4))),
+});
+
+const runSlbrModel = async () => {
+  let filesToProcess = [];
+
+  if (actionScope.value.value === "folder") {
+    if (!folderPath.value) {
+      $q.notify({
+        type: "negative",
+        message: "请先选择输入文件夹路径",
+        position: "top",
+      });
+      return;
+    }
+
+    if (!effectiveSavePath.value) {
+      $q.notify({
+        type: "negative",
+        message: "请先选择保存路径",
+        position: "top",
+      });
+      return;
+    }
+
+    await processSlbrFolderImages();
+    return;
+  }
+
+  if (fileManagerStore.selectedFiles.length > 0) {
+    filesToProcess = fileManagerStore.selectedFiles.filter(
+      (file) => file.originalFile?.type.startsWith("image/")
+    );
+  } else if (
+    fileManagerStore.currentFile &&
+    fileManagerStore.currentFile.originalFile?.type.startsWith("image/")
+  ) {
+    filesToProcess = [fileManagerStore.currentFile];
+  }
+
+  if (filesToProcess.length === 0) {
+    $q.notify({
+      type: "negative",
+      message: "请先选择图片文件",
+      position: "top",
+    });
+    return;
+  }
+
+  for (const file of filesToProcess) {
+    const proceed = await checkHistoryLimit(file.id);
+    if (!proceed) return;
+  }
+
+  try {
+    loadingControl.show(
+      `正在处理 ${filesToProcess.length} 张图像，你可以打开终端管理页面查看进度`
+    );
+    isPageDisabled.value = true;
+
+    const requestData = await fileManagerStore.prepareMoonshineImageProcessData(
+      filesToProcess
+    );
+    requestData.model_id = "slbr";
+    requestData.options = getSlbrOptions();
+
+    const response = await InpaintService.performMoonshineImageProcessing(requestData);
+    const successfulResults = (response.results || []).filter((result) => result?.success);
+    if (successfulResults.length > 0) {
+      $q.notify({
+        type: "positive",
+        message: `成功处理了 ${successfulResults.length} 张图像，总共 ${response.processed_count} 张`,
+        position: "top",
+      });
+    } else {
+      throw new Error(response.results?.[0]?.error || "处理结果为空");
+    }
+  } catch (error) {
+    $q.notify({
+      type: "negative",
+      message: `透明水印去除失败: ${error.message}`,
+      position: "top",
+    });
+    console.error("透明水印去除失败:", error);
+  } finally {
+    loadingControl.hide();
+    isPageDisabled.value = false;
+  }
+};
+
 const runRemoveModel = async () => {
   const maskUiState = captureMaskUiState();
   // 确定要处理的文件列表
@@ -996,6 +1115,44 @@ const processFolderImages = async () => {
   }
 };
 // 下载按钮点击事件处理函数
+const processSlbrFolderImages = async () => {
+  try {
+    loadingControl.show(
+      "正在批量处理文件夹图像，你可以打开终端管理页面查看进度"
+    );
+    isPageDisabled.value = true;
+
+    const folderData = {
+      model_id: "slbr",
+      device: cudaAvailable.value ? "cuda" : "cpu",
+      image_folder: folderPath.value,
+      output_folder: effectiveSavePath.value,
+      options: getSlbrOptions(),
+    };
+    const response = await InpaintService.performMoonshineFolderProcessing(folderData);
+    if (response.success) {
+      $q.notify({
+        type: "positive",
+        message: `文件夹处理完成，共处理 ${response.processed_count} 张图像，成功 ${response.success_count} 张`,
+        position: "top",
+        timeout: 5000,
+      });
+    } else {
+      throw new Error(response.message || response.error || "处理失败");
+    }
+  } catch (error) {
+    $q.notify({
+      type: "negative",
+      message: `透明水印文件夹处理失败: ${error.message}`,
+      position: "top",
+    });
+    console.error("透明水印文件夹处理失败:", error);
+  } finally {
+    loadingControl.hide();
+    isPageDisabled.value = false;
+  }
+};
+
 const downloadProcessedImages = async () => {
   let filesToDownload = [];
 
@@ -1302,11 +1459,20 @@ watch(
   (newValue) => {
     if (newValue?.value === "folder") {
       // 如果没有设置必要的路径，自动打开右侧设置面板
-      if (!folderPath.value || !maskFolderPath.value || !effectiveSavePath.value) {
+      const needsMaskFolder = currentModel.value === "lama";
+      if (
+        !folderPath.value ||
+        (needsMaskFolder && !maskFolderPath.value) ||
+        !effectiveSavePath.value
+      ) {
         rightDrawerOpen.value = true;
 
         // 显示提示信息
-        if (!folderPath.value || !maskFolderPath.value || !effectiveSavePath.value) {
+        if (
+          !folderPath.value ||
+          (needsMaskFolder && !maskFolderPath.value) ||
+          !effectiveSavePath.value
+        ) {
           $q.notify({
             type: "info",
             message: "请在设置面板中设置所有必要的文件夹路径",
@@ -1395,6 +1561,9 @@ const syncLayoutFooter = () => {
       },
       "rejected-files": onRejectedFiles,
       "toggle-mask-tools": () => {
+        if (currentModel.value !== "lama") {
+          return;
+        }
         showMaskTools.value = !showMaskTools.value;
       },
       "show-original": showOriginalImage,
@@ -1468,18 +1637,43 @@ const handleDrawerSelectAllChange = (value) => {
   handleSelectAll(value);
 };
 
+const applySlbrRecommendedSettings = () => {
+  const recommended = slbrSettings.value.recommended || {};
+  slbrSettings.value.tileSize = recommended.tile_size || 384;
+  slbrSettings.value.tileBatch = recommended.tile_batch || 4;
+};
+
 const loadImageModelOptions = async () => {
   const models = await ModelRegistryService.getImageModels();
+  const slbrModel = models.find((model) => model.id === "slbr");
+  const slbrParams = slbrModel?.parameters || {};
+  const recommended = slbrParams.recommended || {};
+  if (Array.isArray(slbrParams.tileSizeOptions) && slbrParams.tileSizeOptions.length > 0) {
+    slbrSettings.value.tileSizeOptions = slbrParams.tileSizeOptions;
+  }
+  if (recommended.tile_size || recommended.tile_batch) {
+    slbrSettings.value.recommended = {
+      ...slbrSettings.value.recommended,
+      ...recommended,
+    };
+    slbrSettings.value.tileSize = recommended.tile_size || slbrSettings.value.tileSize;
+    slbrSettings.value.tileBatch = recommended.tile_batch || slbrSettings.value.tileBatch;
+  }
   imageModelOptions.value = models.map((model) => ({
     label: model.label || model.id,
     value: model.id,
     description: model.description,
     installed: model.installed,
     requiresMask: model.requiresMask,
+    parameters: model.parameters || {},
   }));
 
   if (!imageModelOptions.value.some((option) => option.value === currentModel.value)) {
     currentModel.value = imageModelOptions.value[0]?.value || "lama";
+  }
+  if (currentModel.value === "slbr") {
+    showMaskTools.value = false;
+    setMaskDrawingMode(false);
   }
 };
 
@@ -1529,6 +1723,10 @@ const syncLayoutDrawers = () => {
       currentMask: currentMask.value,
       folderPath: folderPath.value,
       maskFolderPath: maskFolderPath.value,
+      slbrTileSize: slbrSettings.value.tileSize,
+      slbrTileBatch: slbrSettings.value.tileBatch,
+      slbrRecommended: slbrSettings.value.recommended,
+      slbrTileSizeOptions: slbrSettings.value.tileSizeOptions,
       savePath: effectiveSavePath.value,
       canOpenSavePath: canOpenSavePath.value,
       ocrLang: ocrLang.value,
@@ -1550,6 +1748,16 @@ const syncLayoutDrawers = () => {
       "update:mask-folder-path": (value) => {
         maskFolderPath.value = value;
       },
+      "update:slbr-tile-size": (value) => {
+        slbrSettings.value.tileSize = Number(value) || 384;
+      },
+      "update:slbr-tile-batch": (value) => {
+        slbrSettings.value.tileBatch = Math.max(
+          1,
+          Math.min(32, Math.round(Number(value) || 1))
+        );
+      },
+      "apply-slbr-recommended": applySlbrRecommendedSettings,
       "update:save-path": (value) => {
         savePathSourceMode.value = resolveManagedSavePathMode({
           candidatePath: value,
@@ -1744,6 +1952,7 @@ const savePageState = async () => {
       savePathSourceMode: savePathSourceMode.value,
       folderPath: folderPath.value,
       maskFolderPath: maskFolderPath.value,
+      slbrSettings: slbrSettings.value,
       ocrLang: ocrLang.value,
       autoLayout: autoLayout.value,
       showingOriginal: showingOriginal.value,
@@ -1800,6 +2009,10 @@ const restorePageState = async () => {
         savePathSourceMode.value = savedUIState.savePathSourceMode || "managed";
         folderPath.value = savedUIState.folderPath || "";
         maskFolderPath.value = savedUIState.maskFolderPath || "";
+        slbrSettings.value = {
+          ...slbrSettings.value,
+          ...(savedUIState.slbrSettings || {}),
+        };
         ocrLang.value = savedUIState.ocrLang || "中文";
         autoLayout.value = savedUIState.autoLayout ?? true;
         showingOriginal.value = savedUIState.showingOriginal ?? false;
@@ -1810,6 +2023,10 @@ const restorePageState = async () => {
       // 应用恢复后的状态副作用
       if (selectAll.value) {
         fileManagerStore.selectAllFiles(true);
+      }
+      if (currentModel.value === "slbr") {
+        showMaskTools.value = false;
+        setMaskDrawingMode(false);
       }
     }
   } catch (error) {

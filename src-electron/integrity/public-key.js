@@ -1,5 +1,5 @@
 export const PACKAGED_BACKEND_RESOURCE_DIR = "backend";
-export const PACKAGED_BACKEND_PROJECT_DIR = "IOPaint";
+export const PACKAGED_BACKEND_PROJECT_DIR = "server";
 export const PACKAGED_RUNTIME_RESOURCE_DIR = "runtime";
 export const PACKAGED_RUNTIME_TARGET_DIR = "win-x64";
 export const PACKAGED_RUNTIME_ENV_DIR = "env";

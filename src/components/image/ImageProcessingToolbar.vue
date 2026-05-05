@@ -274,7 +274,10 @@ const fileAccept = computed(() => {
     : ".png,.jpg,.jpeg,.webp";
 });
 
-const runButtonDisabled = computed(() => !props.selectedFile || props.engineRunDisabled);
+const runButtonDisabled = computed(() => {
+  if (props.engineRunDisabled) return true;
+  return !props.selectedFile && props.currentModel !== "slbr";
+});
 const runButtonTooltip = computed(() => {
   if (props.engineRunDisabled && props.engineRunTooltip) {
     return props.engineRunTooltip;

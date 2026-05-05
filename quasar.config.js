@@ -7,10 +7,10 @@ import { prepareElectronResources } from "./scripts/prepare-electron-resources.m
 const DEV_WATCH_IGNORED = [
   "**/IOPaint",
   "**/IOPaint/**",
+  "**/server",
+  "**/server/**",
   "**/models",
   "**/models/**",
-  "**/iopaint-change",
-  "**/iopaint-change/**",
 ];
 
 export default defineConfig((ctx) => {
@@ -270,7 +270,7 @@ export default defineConfig((ctx) => {
           "/dist/spa($|/)",
           "/build-resources($|/)",
           "/IOPaint($|/)",
-          "/iopaint-change($|/)",
+          "/server($|/)",
           "/models($|/)",
           "/scripts($|/)",
         ],

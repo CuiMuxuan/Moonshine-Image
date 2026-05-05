@@ -28,7 +28,7 @@ Moonshine 图像/视频处理客户端
 
 > 注：✅ 已实现 | 🔄 正在实现 | 📝 计划实现
 
-目前项目没有独立的后端，后续开发过程中若有必要会建立独立的后端程序（目前可以在前端UI页面中半自动地配置后端。**v1.0.0以上版本发布的windows软件包可以一键启动，不再需要考虑配置环境和模型**）。
+项目现在包含独立后端服务，源码位于 `server/`，桌面端可通过“后端管理”或启动流程自动拉起本地服务。**v1.0.0以上版本发布的 Windows 软件包可以一键启动，不再需要考虑配置环境和模型**。
 ## 快速使用
 方法一：获取本项目v0.0.2发行版本的zip文件并解压缩，双击 bat 一键启动脚本。
 
@@ -40,78 +40,48 @@ Moonshine 图像/视频处理客户端
 > 全局配置的后端设置仅于使用后端管理功能时有效
 
 ## 开发本项目的准备
-由于本仓库只存在iopaint-change用以记录与iopaint项目的变动文件，所以开发前你应该获取一个iopaint项目作为后端服务。
 
-### 方式一：手动配置后端服务
+本仓库现在直接包含后端服务源码，后端项目位于 `server/`，内部 Python 包名为 `moonshine_server`。开发时不再需要单独拉取 IOPaint，也不再需要使用旧覆盖目录。
 
-1. 将 IOPaint 项目拉取或下载到本地：
+### 手动启动后端服务
 
-    ```bash
-    git clone https://github.com/Sanster/IOPaint.git
-    ```
+1. 准备 Python 环境，推荐 Python 3.11.x。
 
-2. 配置后端环境：
-首先要有 Python 环境，推荐 3.10 版本的环境(开发环境为3.11.5)。
-安装依赖：
+2. 安装后端依赖：
 
     ```bash
-    pip install -r requirements.txt
+    pip install -r server/requirements.txt
     ```
 
-    注意，如果需要使用 CUDA，请下载 CUDA 版本的 torch。
+    如需使用 CUDA，请按显卡与 CUDA 版本安装匹配的 PyTorch。
 
-3. 初次启动后端项目会自动下载模型文件，若下载失败则需要手动下载 [big-lama 模型](https://huggingface.co/CuiMuxuan/big-lama/tree/main)并将其放置于 'path\to\\%当前用户名%\\.cache\torch\hub\checkpoints' 路径下。
-示例：作者用户名为CuiMuxuan，模型文件放置路径为'C:\Users\CuiMuxuan\\.cache\torch\hub\checkpoints'
-v1.0.0版本后也可以将模型文件放置于项目根目录models路径下（手动创建并放置模型
-）
-4. 将本项目 iopaint-change 目录下的文件替换掉 IOPaint 项目 iopaint 目录下的同名文件。（本项目重构了大量api，不与iopaint兼容，且v1.0.0版本不与低版本兼容）
+3. 准备模型文件。默认模型目录为项目根目录下的 `models/`，模型文件不会提交到仓库。`big-lama` 可放到 `models/big-lama.pt`，后续其它模型会继续放入该目录结构。
 
-5. 在 IOPaint 目录下使用以下命令开启后端程序：
+4. 启动后端服务：
+
     ```bash
-    python main.py start --model=lama --device=cuda --port=8080
+    python server/main.py start --model=lama --device=cuda --port=8080 --model-dir=models
     ```
 
-### 方式二：使用后端管理功能配置后端服务
+### 使用后端管理功能
 
-1. 启动具有后端功能的软件
-    - 方式1：从发行版本中获取v0.1.0及以上版本的软件=>双击exe文件启动软件。
-    - 方式2：git本项目和IOPaint项目=>将本项目 iopaint-change 目录下的文件替换掉 IOPaint 项目 iopaint 目录下的同名文件=>配置node环境=>以electron开发模式启动
+Electron 开发模式会默认检测仓库内的 `server/` 后端项目。点击右上角“后端管理”后，可以配置端口、设备、模型目录并启动服务。
 
-2. 点击右上角的后端管理按钮，配置后端服务环境。
+> 软件压缩包中的后端项目路径为 **resources\backend\server**
 
-> 软件压缩包中的后端项目路径为**resources\backend\IOPaint**
+> 软件压缩包中的 Python 运行时位于 **resources\runtime\win-x64\env**
 
-> 软件压缩包中的python环境存在于**resources\runtime\win-x64\env**
+> 软件压缩包中的模型文件位于 **resources\models**
 
-> 软件压缩包中的模型文件存在于**resources\models**
+环境检测完成后，程序会检查后端项目目录是否包含 `requirements.txt`、`main.py` 和 `moonshine_server/`。若检测失败，请确认全局配置中的后端项目路径指向仓库内的 `server/` 或安装包内的 `resources\backend\server`。
 
-3. 根据后端管理页面的提示，开启后端服务。
+环境配置步骤：
+1. 检查 Python 环境与依赖包是否存在。
+2. 若缺少依赖，则通过 pip 安装 `server/requirements.txt` 中的依赖。
 
-![后端管理](assets/后端管理.png)
-> 自动配置环境的功能仅在v0.1.0及以上版本的软件中有效
-> 此页面考虑到一些用户的电脑配置，可能会自动配置失败。若失败，则需要手动配置。
-> 项目中存在linux系统和macOS系统适配处理的代码，但作者仅对windows系统做过测试。
-
-> v1.0.0版本后的发行版**内置离线运行时**，程序能在离线的情况下成功运行（不要将其装在受保护目录，或者当 U 盘/安全策略/杀软阻止修改 resources/runtime/...时，会导致conda-unpack 失败，进而造成**离线运行时启动失败**）。
-
-环境检测步骤考虑以下几种情况：
-1. 无python环境，无conda环境
-    - 处理：点击'安装python按钮'，自动从python.org下载python3.11.5安装包并安装python环境。
-2. 无python环境，有conda环境
-    - 处理：检查是否存在名为moonshine-image的虚拟环境，若有则激活，若没有则自动创建该环境并激活。(该处理功能未测试，若正常可用或存在问题，请予我反馈)
-3. 有任何可用python环境
-    - 处理：显示python版本
-
-- python环境检测完成后，检测是否存在IOPaint项目(检查路径可于全局配置中配置)
-    - 处理：若不存在则显示未检测到后端项目，需要自行获取一个后端项目。
-
-环境配置步骤
-1. 检查环境中的依赖包是否存在
-2. 若不存在则自动pip从镜像源下载python依赖包
-
-服务管理步骤
-1. 确认后端服务启动参数（参数初始化于全局配置中）
-2. 点击‘启动服务’按钮，启动后端服务。
+服务管理步骤：
+1. 确认后端服务启动参数（端口、设备、模型、模型目录）。
+2. 点击“启动服务”按钮，启动后端服务。
 
 ## 开发环境
 使用完整功能请完成开发本项目的准备，若仅需要改动前端交互页面则不需要。
