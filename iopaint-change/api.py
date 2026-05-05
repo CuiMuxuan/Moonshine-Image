@@ -183,6 +183,8 @@ class Api:
         self.add_api_route("/api/v1/check_cuda", self.api_check_cuda, methods=["GET"])
         self.add_api_route("/api/v1/batch_inpaint_by_folder", self.api_batch_inpaint_by_folder, methods=["POST"])
         self.add_api_route("/api/v1/video_batch_inpaint", self.api_video_batch_inpaint, methods=["POST"])
+        self.add_api_route("/api/v1/moonshine/models", self.api_moonshine_models, methods=["GET"])
+        self.add_api_route("/api/v1/moonshine/models/refresh", self.api_moonshine_models, methods=["POST"])
         
         # self.app.mount("/", StaticFiles(directory=WEB_APP_DIR, html=True), name="assets")
         # fmt: on
@@ -262,6 +264,46 @@ class Api:
             disableModelSwitch=False,
             isDesktop=False,
             samplers=self.api_samplers(),
+        )
+
+    def api_moonshine_models(self):
+        """Return the model registry shape used by the Moonshine client.
+
+        This endpoint intentionally exposes only installed/runnable models for now.
+        Future iterations can add source links and downloadable models without
+        changing the frontend selector contract.
+        """
+        self.model_manager.scan_models()
+        installed_ids = set(self.model_manager.available_models.keys())
+
+        models = [
+            {
+                "id": "lama",
+                "label": "Lama去除模型",
+                "description": "通用擦除与修复模型",
+                "installed": "lama" in installed_ids,
+                "requiresMask": True,
+                "downloadable": False,
+                "sourceLinks": [],
+            },
+            {
+                "id": "slbr",
+                "label": "透明水印去除模型",
+                "description": "透明水印去除模型预留项，下一轮接入模型文件与推理",
+                "installed": False,
+                "requiresMask": False,
+                "downloadable": False,
+                "sourceLinks": [],
+            },
+        ]
+
+        return JSONResponse(
+            content=jsonable_encoder(
+                {
+                    "currentModel": self.model_manager.name,
+                    "models": models,
+                }
+            )
         )
 
     def api_input_image(self) -> FileResponse:

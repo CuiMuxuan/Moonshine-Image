@@ -158,17 +158,18 @@
             </template>
 
             <!-- 通用按钮 -->
-            <q-btn
-              flat
-              icon="play_arrow"
-              color="primary"
-              :label="$q.screen.gt.sm ? '运行' : ''"
-              class="col-auto"
-              :disable="!selectedFile"
-              @click="$emit('run-model')"
-            >
-              <q-tooltip v-if="!$q.screen.gt.sm">运行</q-tooltip>
-            </q-btn>
+            <span class="run-button-wrap col-auto" @click="handleRunWrapperClick">
+              <q-btn
+                flat
+                icon="play_arrow"
+                color="primary"
+                :label="$q.screen.gt.sm ? '运行' : ''"
+                class="full-width"
+                :disable="runButtonDisabled"
+                @click="$emit('run-model')"
+              />
+              <q-tooltip v-if="runButtonTooltip">{{ runButtonTooltip }}</q-tooltip>
+            </span>
 
             <q-btn
               flat
@@ -230,6 +231,18 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  engineRunDisabled: {
+    type: Boolean,
+    default: false,
+  },
+  engineRunTooltip: {
+    type: String,
+    default: "",
+  },
+  engineFailed: {
+    type: Boolean,
+    default: false,
+  },
   type: {
     type: String,
     default: "image",
@@ -247,6 +260,7 @@ const emit = defineEmits([
   "recognize-text",
   "copy-text",
   "run-model",
+  "open-diagnostics",
   "download",
   "toggle-settings",
 ]);
@@ -259,6 +273,20 @@ const fileAccept = computed(() => {
     ? ".mp4,.avi,.mov,.mkv"
     : ".png,.jpg,.jpeg,.webp";
 });
+
+const runButtonDisabled = computed(() => !props.selectedFile || props.engineRunDisabled);
+const runButtonTooltip = computed(() => {
+  if (props.engineRunDisabled && props.engineRunTooltip) {
+    return props.engineRunTooltip;
+  }
+  return $q.screen.gt.sm ? "" : "运行";
+});
+
+const handleRunWrapperClick = () => {
+  if (props.engineFailed) {
+    emit("open-diagnostics");
+  }
+};
 
 // 监听 props.files 变化，同步到本地状态
 watch(
@@ -319,6 +347,10 @@ const handleFilesUpdate = (newFiles) => {
 
 .image-processing-toolbar :deep(.q-toolbar) {
   min-height: var(--image-toolbar-height, 60px);
+}
+
+.run-button-wrap {
+  display: inline-flex;
 }
 
 :global(body.body--dark) .image-processing-toolbar {

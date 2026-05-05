@@ -16,7 +16,9 @@
         <workspace
           :selected-file="currentFile"
           :checkerboard="true"
+          droppable
           :class="{ 'pointer-events-none': isPageDisabled }"
+          @files-dropped="handleWorkspaceFilesDropped"
         >
           <ImageEditor
             v-if="
@@ -62,6 +64,7 @@ import { useFileManagerStore } from "src/stores/fileManager";
 import { useRuntimeUiStore } from "src/stores/runtimeUi";
 import { useConfiguredShortcuts } from "src/composables/useConfiguredShortcuts";
 import InpaintService from "src/services/ImageProcessingService";
+import ModelRegistryService from "src/services/ModelRegistryService";
 import { buildImageOutputBaseName, splitFileName } from "src/utils/fileNaming";
 import { MASK_TOOL_MODES } from "src/utils/maskTool";
 import ImageEditor from "../components/image/ImageEditor.vue";
@@ -105,10 +108,16 @@ const defaultDrawerState = getDefaultDrawerState();
 const leftDrawerOpen = ref(defaultDrawerState.left);
 const rightDrawerOpen = ref(defaultDrawerState.right);
 const currentModel = ref("lama");
+const imageModelOptions = ref([
+  {
+    label: "Lama去除模型",
+    value: "lama",
+  },
+]);
 const showMaskTools = ref(true);
 const isMaskDrawingMode = ref(runtimeUiStore.imageMaskDrawingEnabled);
 const imageMaskToolState = computed(() => runtimeUiStore.imageMaskToolState);
-const actionScope = ref({ label: "仅当前文件", value: "current" });
+const actionScope = ref({ label: "仅选中文件", value: "selected" });
 const selectAll = ref(false);
 const exportPath = ref("");
 const imageFolderName = ref("");
@@ -124,7 +133,6 @@ const showingOriginal = ref(false);
 const cudaAvailable = ref(false);
 const cudaInfo = ref({});
 const dontShowMaxHistoryWarning = ref(false);
-const dontShowBackendWarning = ref(false);
 const isElectron = ref(false);
 const resourcesPath = ref("");
 const imageStageRef = ref(null);
@@ -231,6 +239,7 @@ const props = defineProps({
   },
 });
 const backendRunning = computed(() => props.backendRunning);
+const backendEngine = inject("backendEngine", ref({}));
 const loadingControl = inject("loadingControl");
 const layoutFooter = inject("layoutFooter", null);
 const layoutDrawers = inject("layoutDrawers", null);
@@ -240,6 +249,16 @@ const imagePageLeftDrawerOwner = Symbol("image-page-left-drawer");
 const imagePageRightDrawerOwner = Symbol("image-page-right-drawer");
 const currentFile = computed(() => fileManagerStore.currentFile);
 const selectedFiles = computed(() => fileManagerStore.selectedFiles);
+const backendEngineValue = computed(() => {
+  const value = backendEngine?.value || {};
+  return {
+    runDisabled: Boolean(value.runDisabled?.value ?? value.runDisabled),
+    runDisabledTooltip: String((value.runDisabledTooltip?.value ?? value.runDisabledTooltip) || ""),
+    hasFailed: Boolean(value.hasFailed?.value ?? value.hasFailed),
+    openDiagnostics:
+      typeof value.openDiagnostics === "function" ? value.openDiagnostics : () => {},
+  };
+});
 const currentDisplayUrl = computed(() => {
   const file = fileManagerStore.currentFile;
   if (!file || !file.history?.length) {
@@ -324,9 +343,10 @@ const toggleFileSelection = (file) => {
 
 const handleModelChange = (model) => {
   currentModel.value = model;
+  const selectedOption = imageModelOptions.value.find((option) => option.value === model);
   $q.notify({
     type: "info",
-    message: `已切换到${model}模型`,
+    message: `已切换到${selectedOption?.label || model}`,
     position: "top",
   });
 };
@@ -743,13 +763,11 @@ const resizeMaskData = (
 // 运行当前模型
 const runCurrentModel = async () => {
   if (!currentFile.value) return;
-  // 检查后端服务状态
-  if (!backendRunning.value && !dontShowBackendWarning.value) {
-    const userChoice = await showBackendWarningDialog();
-    if (userChoice === "return") {
-      return; // 用户选择返回，不执行后续操作
+  if (backendEngineValue.value.runDisabled) {
+    if (backendEngineValue.value.hasFailed) {
+      backendEngineValue.value.openDiagnostics();
     }
-    // 用户选择继续，继续执行后续操作
+    return;
   }
 
   switch (currentModel.value) {
@@ -770,53 +788,6 @@ const runCurrentModel = async () => {
       });
   }
 };
-// 显示后端服务警告对话框
-const showBackendWarningDialog = () => {
-  return new Promise((resolve) => {
-    $q.dialog({
-      title: "后端服务检查",
-      message:
-        "未检测到Moonshine-Image具有后端服务子进程，请检查后端服务是否已开启，并选择继续运行本次任务处理或返回开启后端？",
-      persistent: true,
-      ok: {
-        label: "继续",
-        color: "primary",
-        push: true,
-      },
-      cancel: {
-        label: "返回",
-        color: "negative",
-        push: true,
-      },
-      options: {
-        type: "checkbox",
-        model: [],
-        items: [
-          {
-            label: "不再提醒",
-            value: "dont_show",
-            color: "primary",
-          },
-        ],
-      },
-    })
-      .onOk((data) => {
-        // 检查是否勾选了不再提醒
-        if (data && data.includes("dont_show")) {
-          dontShowBackendWarning.value = true;
-        }
-        resolve("continue"); // 用户选择继续
-      })
-      .onCancel((data) => {
-        // 检查是否勾选了不再提醒
-        if (data && data.includes("dont_show")) {
-          dontShowBackendWarning.value = true;
-        }
-        resolve("return"); // 用户选择返回
-      });
-  });
-};
-
 // OCR处理函数
 const startOcr = () => {
   $q.notify({
@@ -891,10 +862,7 @@ const runRemoveModel = async () => {
       });
     }
     return;
-  } else if (
-    actionScope.value.value === "selected" &&
-    fileManagerStore.selectedFiles.length > 0
-  ) {
+  } else if (fileManagerStore.selectedFiles.length > 0) {
     // 处理所有选中的文件
     filesToProcess = fileManagerStore.selectedFiles.filter(
       (file) => file.originalFile?.type.startsWith("image/") && file.mask?.data
@@ -1031,10 +999,7 @@ const processFolderImages = async () => {
 const downloadProcessedImages = async () => {
   let filesToDownload = [];
 
-  if (
-    actionScope.value.value === "selected" &&
-    fileManagerStore.selectedFiles.length > 0
-  ) {
+  if (fileManagerStore.selectedFiles.length > 0) {
     filesToDownload = fileManagerStore.selectedFiles.filter(
       (file) => file.history?.length > 1
     );
@@ -1335,7 +1300,7 @@ watch(
 watch(
   () => actionScope.value,
   (newValue) => {
-    if (newValue === "folder") {
+    if (newValue?.value === "folder") {
       // 如果没有设置必要的路径，自动打开右侧设置面板
       if (!folderPath.value || !maskFolderPath.value || !effectiveSavePath.value) {
         rightDrawerOpen.value = true;
@@ -1417,6 +1382,9 @@ const syncLayoutFooter = () => {
       files: fileManagerStore.files,
       selectedFile: currentFile.value?.originalFile || null,
       currentModel: currentModel.value,
+      engineRunDisabled: backendEngineValue.value.runDisabled,
+      engineRunTooltip: backendEngineValue.value.runDisabledTooltip,
+      engineFailed: backendEngineValue.value.hasFailed,
       showMaskTools: showMaskTools.value,
       hasProcessedImages: hasProcessedImages.value,
       type: "image",
@@ -1433,12 +1401,62 @@ const syncLayoutFooter = () => {
       "show-processed": showProcessedImage,
       "undo-processing": undoProcessing,
       "run-model": runCurrentModel,
+      "open-diagnostics": backendEngineValue.value.openDiagnostics,
       download: downloadProcessedImages,
       "toggle-settings": () => {
         rightDrawerOpen.value = !rightDrawerOpen.value;
       },
     },
   });
+};
+
+const getImageExtension = (name = "") =>
+  String(name || "").split(".").pop()?.toLowerCase() || "";
+
+const isSupportedImageFile = (file) => {
+  const extension = getImageExtension(file?.name);
+  return ["png", "jpg", "jpeg", "webp"].includes(extension);
+};
+
+const addImageFiles = async (files = []) => {
+  const supportedFiles = Array.from(files).filter(isSupportedImageFile);
+  const rejectedCount = Math.max(0, files.length - supportedFiles.length);
+
+  if (rejectedCount > 0) {
+    $q.notify({
+      type: "negative",
+      message: "只支持 PNG、JPG、JPEG 和 WebP 格式的图片文件",
+      position: "top",
+    });
+  }
+
+  if (supportedFiles.length === 0) return;
+
+  let addedCount = 0;
+  try {
+    for (const file of supportedFiles) {
+      await fileManagerStore.addFile(file);
+      addedCount += 1;
+    }
+
+    if (addedCount > 0) {
+      $q.notify({
+        type: "positive",
+        message: `成功添加 ${addedCount} 个文件`,
+        position: "top",
+      });
+    }
+  } catch (error) {
+    $q.notify({
+      type: "negative",
+      message: `文件处理失败：${error.message}`,
+      position: "top",
+    });
+  }
+};
+
+const handleWorkspaceFilesDropped = async (files) => {
+  await addImageFiles(files);
 };
 
 const handleDrawerModelChange = (model) => {
@@ -1448,6 +1466,21 @@ const handleDrawerModelChange = (model) => {
 const handleDrawerSelectAllChange = (value) => {
   selectAll.value = value;
   handleSelectAll(value);
+};
+
+const loadImageModelOptions = async () => {
+  const models = await ModelRegistryService.getImageModels();
+  imageModelOptions.value = models.map((model) => ({
+    label: model.label || model.id,
+    value: model.id,
+    description: model.description,
+    installed: model.installed,
+    requiresMask: model.requiresMask,
+  }));
+
+  if (!imageModelOptions.value.some((option) => option.value === currentModel.value)) {
+    currentModel.value = imageModelOptions.value[0]?.value || "lama";
+  }
 };
 
 const syncLayoutDrawers = () => {
@@ -1489,6 +1522,7 @@ const syncLayoutDrawers = () => {
     props: {
       drawerOpen: rightDrawerOpen.value,
       currentModel: currentModel.value,
+      modelOptions: imageModelOptions.value,
       actionScope: actionScope.value,
       selectAll: selectAll.value,
       selectedFiles: selectedFiles.value,
@@ -1714,7 +1748,6 @@ const savePageState = async () => {
       autoLayout: autoLayout.value,
       showingOriginal: showingOriginal.value,
       dontShowMaxHistoryWarning: dontShowMaxHistoryWarning.value,
-      dontShowBackendWarning: dontShowBackendWarning.value,
     };
     appStateStore.saveUIState("image", uiState);
 
@@ -1758,10 +1791,10 @@ const restorePageState = async () => {
         currentModel.value = savedUIState.currentModel || "lama";
         showMaskTools.value = savedUIState.showMaskTools ?? true;
         setMaskDrawingMode(runtimeUiStore.imageMaskDrawingEnabled);
-        actionScope.value = savedUIState.actionScope || {
-          label: "仅当前文件",
-          value: "current",
-        };
+        actionScope.value =
+          savedUIState.actionScope?.value === "folder"
+            ? { label: "整个文件夹", value: "folder" }
+            : { label: "仅选中文件", value: "selected" };
         selectAll.value = savedUIState.selectAll ?? false;
         savePath.value = savedUIState.savePath || "";
         savePathSourceMode.value = savedUIState.savePathSourceMode || "managed";
@@ -1771,7 +1804,6 @@ const restorePageState = async () => {
         autoLayout.value = savedUIState.autoLayout ?? true;
         showingOriginal.value = savedUIState.showingOriginal ?? false;
         dontShowMaxHistoryWarning.value = savedUIState.dontShowMaxHistoryWarning ?? false;
-        dontShowBackendWarning.value = savedUIState.dontShowBackendWarning ?? false;
       });
       await nextTick();
       updateVisibleAreaInsets();
@@ -1795,6 +1827,7 @@ onMounted(async () => {
 
   // 3. 恢复页面状态
   await restorePageState();
+  await loadImageModelOptions();
 
   // 4. 应用配置到UI状态
   if (configStore.config.fileManagement) {

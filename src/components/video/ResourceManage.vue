@@ -126,21 +126,28 @@
           </div>
 
           <div ref="actionButtonsRef" class="action-buttons-row q-pt-md">
-            <q-btn
-              color="primary"
-              icon="play_arrow"
-              :label="actionButtonMode === 'icon' ? undefined : runButtonLabel"
-              :disable="!canRun || isProcessing"
-              :loading="isProcessing"
+            <span
               :class="[
-                'action-button',
-                'action-button-primary',
+                'action-button-tooltip-wrap',
                 { 'action-button-icon-only': actionButtonMode === 'icon' },
               ]"
-              @click="emit('run')"
+              @click="handleRunWrapperClick"
             >
-              <q-tooltip>运行处理</q-tooltip>
-            </q-btn>
+              <q-btn
+                color="primary"
+                icon="play_arrow"
+                :label="actionButtonMode === 'icon' ? undefined : runButtonLabel"
+                :disable="!canRun || isProcessing || engineRunDisabled"
+                :loading="isProcessing"
+                :class="[
+                  'action-button',
+                  'action-button-primary',
+                  { 'action-button-icon-only': actionButtonMode === 'icon' },
+                ]"
+                @click.stop="emit('run')"
+              />
+              <q-tooltip>{{ runActionTooltip }}</q-tooltip>
+            </span>
 
             <q-btn
               flat
@@ -249,7 +256,7 @@ import { formatSeconds } from "src/utils/videoMaskUtils";
 
 import VideoUploaderButton from "./VideoUploaderButton.vue";
 
-defineProps({
+const props = defineProps({
   exportFpsMode: {
     type: String,
     default: "source",
@@ -306,6 +313,18 @@ defineProps({
     type: Boolean,
     default: false,
   },
+  engineRunDisabled: {
+    type: Boolean,
+    default: false,
+  },
+  engineRunTooltip: {
+    type: String,
+    default: "",
+  },
+  engineFailed: {
+    type: Boolean,
+    default: false,
+  },
   historyEntries: {
     type: Array,
     default: () => [],
@@ -315,6 +334,7 @@ defineProps({
 const emit = defineEmits([
   "update:exportFpsMode",
   "run",
+  "open-diagnostics",
   "open-output",
   "replace-source",
   "restore-history",
@@ -344,6 +364,12 @@ const fileSizeText = computed(() => {
 const runButtonLabel = computed(() =>
   actionButtonMode.value === "full" ? "运行处理" : "运行"
 );
+const runActionTooltip = computed(() => {
+  if (props.engineRunDisabled && props.engineRunTooltip) {
+    return props.engineRunTooltip;
+  }
+  return "运行处理";
+});
 const openButtonLabel = computed(() =>
   actionButtonMode.value === "full" ? "打开目录" : "打开"
 );
@@ -373,6 +399,12 @@ const createMask = () => {
     startTime: 0,
     endTime: videoStore.videoDuration,
   });
+};
+
+const handleRunWrapperClick = () => {
+  if (props.engineFailed) {
+    emit("open-diagnostics");
+  }
 };
 
 const formatHistoryTime = (timestamp) => {
@@ -472,6 +504,12 @@ onUnmounted(() => {
 }
 
 .action-button {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.action-button-tooltip-wrap {
+  display: inline-flex;
   flex: 1 1 0;
   min-width: 0;
 }

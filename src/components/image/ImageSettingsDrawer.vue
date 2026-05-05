@@ -10,6 +10,7 @@
         <q-item-section>
           <model-selector
             :model-value="currentModel"
+            :options="modelOptions"
             type="image"
             @update:model-value="$emit('update:current-model', $event)"
           />
@@ -157,7 +158,6 @@ import FolderSelector from "src/components/common/FolderSelector.vue";
 import ModelSelector from "src/components/common/ModelSelector.vue";
 
 const actionScopeOptions = [
-  { label: "仅当前文件", value: "current" },
   { label: "仅选中文件", value: "selected" },
   { label: "整个文件夹", value: "folder" },
 ];
@@ -173,9 +173,13 @@ const props = defineProps({
     type: String,
     default: "lama",
   },
+  modelOptions: {
+    type: Array,
+    default: () => [],
+  },
   actionScope: {
     type: Object,
-    default: () => ({ label: "仅当前文件", value: "current" }),
+    default: () => ({ label: "仅选中文件", value: "selected" }),
   },
   selectAll: {
     type: Boolean,

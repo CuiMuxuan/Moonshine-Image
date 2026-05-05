@@ -20,8 +20,12 @@
               :processing-succeeded="processingSucceeded"
               :can-replace-source="canReplaceCurrentSource"
               :can-rollback-history="videoStore.canOpenVideoHistory"
+              :engine-run-disabled="backendEngineValue.runDisabled"
+              :engine-run-tooltip="backendEngineValue.runDisabledTooltip"
+              :engine-failed="backendEngineValue.hasFailed"
               :history-entries="historyEntries"
               @run="runVideoProcessing"
+              @open-diagnostics="backendEngineValue.openDiagnostics"
               @open-output="openOutputDir"
               @replace-source="replaceCurrentVideoSource"
               @restore-history="restoreVideoHistory"
@@ -31,7 +35,14 @@
 
         <q-card class="center-panel">
           <q-card-section class="player-section">
-            <div ref="previewStageWrapRef" class="preview-stage-wrap">
+            <div
+              ref="previewStageWrapRef"
+              class="preview-stage-wrap"
+              @dragenter.prevent="handleVideoDragEnter"
+              @dragover.prevent="handleVideoDragOver"
+              @dragleave.prevent="handleVideoDragLeave"
+              @drop.prevent="handleVideoDrop"
+            >
               <CanvasPlayer ref="canvasPlayerRef" class="player-canvas">
                 <template #overlay>
                   <VideoPreviewOverlay
@@ -301,6 +312,7 @@ const videoStore = useVideoManagerStore();
 const configStore = useConfigStore();
 const loadingControl = inject("loadingControl", null);
 const backendRunningState = inject("backendRunning", ref(false));
+const backendEngine = inject("backendEngine", ref({}));
 
 const previewStageWrapRef = ref(null);
 const canvasPlayerRef = ref(null);
@@ -321,6 +333,7 @@ const timelineRows = ref([]);
 const timelineViewportWidth = ref(0);
 const timelineScrollLeft = ref(0);
 const timelineZoomPercent = ref(0);
+const videoDropDepth = ref(0);
 
 let syncingTimelineFromStore = false;
 let processingEtaTickerId = null;
@@ -493,6 +506,78 @@ const computedBatchSize = computed(() => {
   const configured = Number(configStore.config.video?.batchFrameCount || 120);
   if (!Number.isFinite(configured)) return 120;
   return Math.max(1, Math.round(configured));
+});
+
+const getSupportedVideoExtensions = () =>
+  configStore.config.video?.supportedFormats || ["mp4", "mov", "avi", "mkv", "wmv"];
+
+const isSupportedVideoFile = (file) => {
+  const extension = String(file?.name || "").split(".").pop()?.toLowerCase();
+  return Boolean(extension && getSupportedVideoExtensions().includes(extension));
+};
+
+const loadDroppedVideoFile = async (file) => {
+  await videoStore.setVideoFile(file, {
+    resetEditor: true,
+    resetHistory: true,
+    isReplacementSource: false,
+    sourcePath: file.path || "",
+    sourceName: file.name || "",
+  });
+};
+
+const handleVideoDragEnter = (event) => {
+  event.dataTransfer.dropEffect = "copy";
+  videoDropDepth.value += 1;
+};
+
+const handleVideoDragOver = (event) => {
+  event.dataTransfer.dropEffect = "copy";
+};
+
+const handleVideoDragLeave = () => {
+  videoDropDepth.value = Math.max(0, videoDropDepth.value - 1);
+};
+
+const handleVideoDrop = async (event) => {
+  videoDropDepth.value = 0;
+  const files = Array.from(event.dataTransfer?.files || []);
+  const videoFile = files.find(isSupportedVideoFile);
+
+  if (!videoFile) {
+    $q.notify({
+      type: "negative",
+      message: `只支持 ${getSupportedVideoExtensions().map((item) => item.toUpperCase()).join(" / ")} 视频文件`,
+      position: "top",
+    });
+    return;
+  }
+
+  try {
+    await loadDroppedVideoFile(videoFile);
+    $q.notify({
+      type: "positive",
+      message: `已导入视频 ${videoFile.name}`,
+      position: "top",
+    });
+  } catch (error) {
+    $q.notify({
+      type: "negative",
+      message: `视频导入失败：${error.message}`,
+      position: "top",
+    });
+  }
+};
+
+const backendEngineValue = computed(() => {
+  const value = backendEngine?.value || {};
+  return {
+    runDisabled: Boolean(value.runDisabled?.value ?? value.runDisabled),
+    runDisabledTooltip: String((value.runDisabledTooltip?.value ?? value.runDisabledTooltip) || ""),
+    hasFailed: Boolean(value.hasFailed?.value ?? value.hasFailed),
+    openDiagnostics:
+      typeof value.openDiagnostics === "function" ? value.openDiagnostics : () => {},
+  };
 });
 
 const canRun = computed(
@@ -3156,6 +3241,12 @@ const createPreparedBatchTask = ({
 };
 
 const runVideoProcessing = async () => {
+  if (backendEngineValue.value.runDisabled) {
+    if (backendEngineValue.value.hasFailed) {
+      backendEngineValue.value.openDiagnostics();
+    }
+    return;
+  }
   if (!canRun.value || isProcessing.value) return;
 
   isProcessing.value = true;

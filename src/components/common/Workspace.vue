@@ -1,6 +1,13 @@
 <!-- eslint-disable vue/multi-word-component-names -->
 <template>
-  <div class="workspace-shell relative" :class="{ 'workspace-shell--checkerboard': checkerboard }">
+  <div
+    class="workspace-shell relative"
+    :class="{ 'workspace-shell--checkerboard': checkerboard }"
+    @dragenter.prevent="handleDragEnter"
+    @dragover.prevent="handleDragOver"
+    @dragleave.prevent="handleDragLeave"
+    @drop.prevent="handleDrop"
+  >
     <div v-if="checkerboard" class="workspace-grid-shadow-layer" aria-hidden="true"></div>
     <div class="workspace-content-layer">
       <slot v-if="hasContent" />
@@ -31,7 +38,7 @@
 </template>
 
 <script setup>
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { resolvePublicAssetPath } from "src/utils/publicAsset";
 
 const props = defineProps({
@@ -43,10 +50,44 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  droppable: {
+    type: Boolean,
+    default: false,
+  },
 });
+
+const emit = defineEmits(["files-dropped"]);
 
 const appAvatarImage = resolvePublicAssetPath("images/moonshine300x300.jpg");
 const hasContent = computed(() => Boolean(props.selectedFile));
+const dragDepth = ref(0);
+
+const getDroppedFiles = (event) => Array.from(event.dataTransfer?.files || []);
+
+const handleDragEnter = (event) => {
+  if (!props.droppable) return;
+  event.dataTransfer.dropEffect = "copy";
+  dragDepth.value += 1;
+};
+
+const handleDragOver = (event) => {
+  if (!props.droppable) return;
+  event.dataTransfer.dropEffect = "copy";
+};
+
+const handleDragLeave = () => {
+  if (!props.droppable) return;
+  dragDepth.value = Math.max(0, dragDepth.value - 1);
+};
+
+const handleDrop = (event) => {
+  if (!props.droppable) return;
+  dragDepth.value = 0;
+  const files = getDroppedFiles(event);
+  if (files.length > 0) {
+    emit("files-dropped", files);
+  }
+};
 </script>
 
 <style scoped>

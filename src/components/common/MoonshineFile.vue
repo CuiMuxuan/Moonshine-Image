@@ -54,6 +54,7 @@
           <q-card
             v-show="showFileList && canShowFloatingList"
             class="file-list-popup"
+            :class="{ 'file-list-popup--dark': $q.dark.isActive }"
             :style="popupStyle"
             @mouseenter="handleMouseEnter"
             @mouseleave="handleMouseLeave"
@@ -558,7 +559,7 @@ defineExpose({
 .file-list-popup {
   position: fixed;
   z-index: 3200;
-  border-radius: 12px;
+  border-radius: 8px;
   border: 1px solid rgba(59, 130, 246, 0.16);
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
   backdrop-filter: blur(10px);
@@ -577,6 +578,52 @@ defineExpose({
 
 .file-item-active {
   background: rgba(59, 130, 246, 0.1);
+}
+
+:global(body.body--dark) .file-list-popup {
+  border-color: rgba(148, 163, 184, 0.24);
+  background: rgba(24, 24, 27, 0.98);
+  color: rgba(244, 244, 245, 0.94);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
+}
+
+:global(.file-list-popup--dark) {
+  border-color: rgba(148, 163, 184, 0.24) !important;
+  background: rgba(24, 24, 27, 0.98) !important;
+  color: rgba(244, 244, 245, 0.94) !important;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
+}
+
+:global(body.body--dark) .file-list-popup :deep(.text-primary) {
+  color: #c4b5fd !important;
+}
+
+:global(.file-list-popup--dark .text-primary) {
+  color: #c4b5fd !important;
+}
+
+:global(body.body--dark) .file-list-popup :deep(.q-item__label--caption) {
+  color: rgba(212, 212, 216, 0.72);
+}
+
+:global(.file-list-popup--dark .q-item__label--caption) {
+  color: rgba(212, 212, 216, 0.72) !important;
+}
+
+:global(body.body--dark) .file-item:hover {
+  background: rgba(119, 88, 196, 0.18);
+}
+
+:global(.file-list-popup--dark .file-item:hover) {
+  background: rgba(119, 88, 196, 0.18);
+}
+
+:global(body.body--dark) .file-item-active {
+  background: rgba(119, 88, 196, 0.26);
+}
+
+:global(.file-list-popup--dark .file-item-active) {
+  background: rgba(119, 88, 196, 0.26);
 }
 
 .ellipsis {

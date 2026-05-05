@@ -87,19 +87,22 @@
 
   <backend-manager v-model="showBackendManager" />
   <global-settings v-model="showSettings" />
+  <startup-overlay v-model="showStartupOverlay" />
 </template>
 
 <script setup>
 import { setCssVar, useQuasar } from "quasar";
-import { markRaw, onMounted, provide, ref, shallowRef, watch } from "vue";
+import { computed, markRaw, onMounted, provide, ref, shallowRef, watch } from "vue";
 import { useRouter } from "vue-router";
 
 import { api } from "src/boot/axios";
 import BackendManager from "src/components/global/BackendManager.vue";
 import GlobalSettings from "src/components/global/GlobalSettings.vue";
 import MainToolbar from "src/components/global/MainToolbar.vue";
+import StartupOverlay from "src/components/global/StartupOverlay.vue";
 import { DEFAULT_BRAND_COLORS, normalizeThemeMode } from "src/config/ConfigManager";
 import { useAppStateStore } from "src/stores/appState";
+import { useBackendEngineStore } from "src/stores/backendEngine";
 import { useConfigStore } from "src/stores/config";
 import { resolvePublicAssetPath } from "src/utils/publicAsset";
 
@@ -107,11 +110,13 @@ const $q = useQuasar();
 const router = useRouter();
 const configStore = useConfigStore();
 const appStateStore = useAppStateStore();
+const backendEngineStore = useBackendEngineStore();
 const globalLoadingLogo = resolvePublicAssetPath("icons/cmx-logo256.png");
 
 const showBackendManager = ref(false);
 const showSettings = ref(false);
 const backendRunning = ref(false);
+const showStartupOverlay = ref(false);
 
 const loadingState = ref({
   showing: false,
@@ -270,7 +275,24 @@ const normalizeBackendHintBreak = (message = "") =>
     "\n\u53ef\u6253\u5f00\u540e\u7aef\u7ba1\u7406\u9875\u9762\u67e5\u770b\u8fdb\u5ea6"
   );
 
+const openBackendDiagnostics = () => {
+  showBackendManager.value = true;
+};
+
+const backendEngineContext = computed(() => ({
+  status: backendEngineStore.status,
+  phase: backendEngineStore.phase,
+  phaseLabel: backendEngineStore.phaseLabel,
+  isRunning: backendEngineStore.isRunning,
+  isPreparing: backendEngineStore.isPreparing,
+  hasFailed: backendEngineStore.hasFailed,
+  runDisabled: backendEngineStore.runDisabled,
+  runDisabledTooltip: backendEngineStore.runDisabledTooltip,
+  openDiagnostics: openBackendDiagnostics,
+}));
+
 provide("backendRunning", backendRunning);
+provide("backendEngine", backendEngineContext);
 provide("globalLoadingState", loadingState);
 provide("layoutFooter", {
   setPageFooter,
@@ -324,27 +346,107 @@ const handleLoadingUpdate = (state) => {
   };
 };
 
-const checkBackendStatus = async () => {
+const checkBackendStatus = async ({ notifyOnFailure = true } = {}) => {
   try {
     await api.get("/api/v1/check_cuda");
     backendRunning.value = true;
+    backendEngineStore.setRunning();
+    return true;
   } catch (error) {
     backendRunning.value = false;
-    $q.notify({
-      type: "warning",
-      message: `${error} 后端服务未启动，请点击后端管理按钮启动服务。`,
-      position: "top",
-      timeout: 5000,
-      actions: [
-        {
-          label: "启动后端",
-          color: "white",
-          handler: () => {
-            showBackendManager.value = true;
+    if (notifyOnFailure) {
+      $q.notify({
+        type: "warning",
+        message: `${error} 后端服务未启动，请点击后端管理按钮启动服务。`,
+        position: "top",
+        timeout: 5000,
+        actions: [
+          {
+            label: "启动后端",
+            color: "white",
+            handler: openBackendDiagnostics,
           },
-        },
-      ],
+        ],
+      });
+    }
+    return false;
+  }
+};
+
+const getElectronInvoke = () => window.electron?.ipcRenderer?.invoke;
+
+const prepareBackendEngine = async () => {
+  const invoke = getElectronInvoke();
+  if (!invoke || configStore.config.general?.autoStart === false) {
+    const reachable = await checkBackendStatus({ notifyOnFailure: false });
+    if (!reachable) {
+      backendEngineStore.setFailed("当前环境未自动启动 Moonshine AI 引擎");
+    }
+    return;
+  }
+
+  backendEngineStore.setPreparing("preparing");
+
+  try {
+    const processStatus = await invoke("check-backend-status");
+    if (processStatus?.success && processStatus.running) {
+      backendEngineStore.setPhase("verifying");
+      const reachable = await checkBackendStatus({ notifyOnFailure: false });
+      if (!reachable) {
+        throw new Error("Moonshine AI 引擎进程存在，但接口未响应");
+      }
+      return;
+    }
+
+    backendEngineStore.setPhase("checkingRuntime");
+    const projectResult = await invoke(
+      "check-project",
+      configStore.config.general?.backendProjectPath || ""
+    );
+    if (!projectResult?.success) {
+      throw new Error(projectResult?.error || "后端项目检测失败");
+    }
+
+    const prepareResult = await invoke("prepare-project-python", projectResult.path);
+    if (!prepareResult?.success) {
+      throw new Error(prepareResult?.error || "运行时准备失败");
+    }
+
+    backendEngineStore.setPhase("loadingModel");
+    const depsResult = await invoke("check-dependencies");
+    if (!depsResult?.success) {
+      const installResult = await invoke("install-dependencies", projectResult.path);
+      if (!installResult?.success) {
+        throw new Error(installResult?.error || depsResult?.error || "依赖准备失败");
+      }
+    }
+
+    backendEngineStore.setPhase("startingEngine");
+    const generalConfig = configStore.config.general || {};
+    const startResult = await invoke("start-backend-service", {
+      port: generalConfig.backendPort || 8080,
+      device: generalConfig.launchMode || "cuda",
+      model: generalConfig.defaultModel || "lama",
+      modelDir: generalConfig.modelDir || generalConfig.modelPath || "",
     });
+    if (!startResult?.success) {
+      throw new Error(startResult?.error || "AI 引擎启动失败");
+    }
+
+    backendEngineStore.setPhase("verifying");
+    let reachable = false;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      reachable = await checkBackendStatus({ notifyOnFailure: false });
+      if (reachable) break;
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+    }
+
+    if (!reachable) {
+      throw new Error("AI 引擎启动后未响应");
+    }
+  } catch (error) {
+    backendRunning.value = false;
+    backendEngineStore.setFailed(error?.message || "Moonshine AI 引擎准备失败");
   }
 };
 
@@ -389,11 +491,12 @@ const toggleThemeMode = async () => {
 };
 
 onMounted(async () => {
+  showStartupOverlay.value = true;
   await configStore.loadConfig();
   applyUiPreferences();
   api.updateConfig(configStore.config);
   await appStateStore.loadState();
-  await checkBackendStatus();
+  void prepareBackendEngine();
 });
 
 watch(
@@ -407,7 +510,7 @@ watch(
 
 watch(showBackendManager, (newVal) => {
   if (!newVal) {
-    setTimeout(checkBackendStatus, 1000);
+    setTimeout(() => checkBackendStatus({ notifyOnFailure: false }), 1000);
   }
 });
 
