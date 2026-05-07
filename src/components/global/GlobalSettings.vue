@@ -204,6 +204,7 @@
                       <q-input v-model.number="localConfig.video.batchRetryCount" label="批次重试次数" type="number" :min="1" :max="10" />
                       <q-input v-model.number="localConfig.video.failureRetentionCount" label="失败现场保留数量" type="number" :min="1" :max="50" />
                       <q-input v-model.number="localConfig.video.proxyMaxSide" label="代理预览最大边长" type="number" :min="256" :max="4096" />
+                      <q-select v-model="localConfig.video.previewTrialSeconds" label="样片试跑时长" emit-value map-options :options="previewTrialOptions" />
                     </div>
 
                     <div class="mini-block q-mt-md">
@@ -276,6 +277,7 @@ const launchModeOptions = [{ label: "CUDA 加速", value: "cuda" }, { label: "CP
 const imageProcessingOptions = [{ label: "文件路径（推荐）", value: "path", description: "更适合本地 Electron 批处理，前端内存压力更低。" }, { label: "Base64", value: "base64", description: "兼容性更直接，但大量图片时更占内存。" }];
 const imageNamingOptions = [{ label: "原文件名", value: "original" }, { label: "固定前缀 + UUID", value: "prefixUuid" }];
 const frameFormatOptions = [{ label: "JPG", value: "jpg" }, { label: "PNG", value: "png" }, { label: "WebP", value: "webp" }];
+const previewTrialOptions = [{ label: "3 秒", value: 3 }, { label: "10 秒", value: 10 }];
 const themeColorFields = [{ key: "primary", label: "Primary" }, { key: "secondary", label: "Secondary" }, { key: "accent", label: "Accent" }];
 const brushConfigFields = [{ key: "imageBrushDefault", label: "图片默认画笔" }, { key: "videoBrushDefault", label: "视频默认画笔" }];
 const buttonSizeOptions = UI_BUTTON_SIZE_OPTIONS.slice().reverse().map((value) => ({ label: value.toUpperCase(), value }));

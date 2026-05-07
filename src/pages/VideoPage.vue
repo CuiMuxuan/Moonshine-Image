@@ -18,6 +18,9 @@
               :processing-message="processingMessage"
               :last-output-path="lastOutputPath"
               :processing-succeeded="processingSucceeded"
+              :last-output-is-preview="lastOutputIsPreview"
+              :preview-trial-seconds="previewTrialSeconds"
+              :preview-trial-options="previewTrialOptions"
               :can-replace-source="canReplaceCurrentSource"
               :can-rollback-history="videoStore.canOpenVideoHistory"
               :engine-run-disabled="backendEngineValue.runDisabled"
@@ -25,6 +28,8 @@
               :engine-failed="backendEngineValue.hasFailed"
               :history-entries="historyEntries"
               @run="runVideoProcessing"
+              @run-preview="runVideoPreviewTrial"
+              @update:preview-trial-seconds="previewTrialSeconds = $event"
               @open-diagnostics="backendEngineValue.openDiagnostics"
               @open-output="openOutputDir"
               @replace-source="replaceCurrentVideoSource"
@@ -153,7 +158,8 @@
                 dense
                 no-caps
                 color="primary"
-                unelevated
+                outline
+                class="timeline-playback-dropdown"
                 :label="`${videoStore.playbackRate}x`"
                 :disable="timelineControlsDisabled"
               >
@@ -327,7 +333,9 @@ const processingSucceeded = ref(false);
 const processingProgress = ref(0);
 const processingMessage = ref("");
 const lastOutputPath = ref("");
+const lastOutputIsPreview = ref(false);
 const exportFpsMode = ref("source");
+const previewTrialSeconds = ref(3);
 const sourceFps = ref(30);
 const timelineRows = ref([]);
 const timelineViewportWidth = ref(0);
@@ -355,6 +363,7 @@ const FINAL_CONCAT_PROGRESS_BASE = 0.9;
 const FINAL_CONCAT_NO_AUDIO_PROGRESS_SPAN = 0.08;
 const FINAL_CONCAT_WITH_AUDIO_PROGRESS_SPAN = 0.05;
 const FINAL_AUDIO_MIX_PROGRESS = 0.95;
+const VIDEO_PREVIEW_TRIAL_DURATIONS = [3, 10];
 const PROCESSING_ETA_MODES = {
   DYNAMIC: "dynamic",
   FREEZE: "freeze",
@@ -394,6 +403,13 @@ const fpsOptions = computed(() => [
   { label: "60 fps", value: "60" },
 ]);
 
+const previewTrialOptions = computed(() =>
+  VIDEO_PREVIEW_TRIAL_DURATIONS.map((seconds) => ({
+    label: `${seconds} 秒样片`,
+    value: seconds,
+  }))
+);
+
 const exportFps = computed(() => {
   if (exportFpsMode.value === "source") return sourceFps.value;
   return Number(exportFpsMode.value) || sourceFps.value;
@@ -401,7 +417,7 @@ const exportFps = computed(() => {
 
 const historyEntries = computed(() => [...videoStore.videoHistory].reverse());
 const canReplaceCurrentSource = computed(
-  () => Boolean(lastOutputPath.value) && processingSucceeded.value
+  () => Boolean(lastOutputPath.value) && processingSucceeded.value && !lastOutputIsPreview.value
 );
 const canOpenOutput = computed(
   () =>
@@ -1212,6 +1228,7 @@ watch(
     const shouldPreserveLastOutputPath = preserveLastOutputPathOnNextVideoChange;
     preserveLastOutputPathOnNextVideoChange = false;
     processingSucceeded.value = false;
+    lastOutputIsPreview.value = false;
     if (!shouldPreserveLastOutputPath) {
       lastOutputPath.value = "";
     }
@@ -1781,6 +1798,8 @@ const buildVideoTaskSummary = (taskMeta) => ({
   sourceName: taskMeta.sourceName,
   temporarySourcePath: taskMeta.temporarySourcePath,
   status: taskMeta.status,
+  previewTrial: taskMeta.previewTrial === true,
+  previewTrialSeconds: Math.max(0, Number(taskMeta.previewTrialSeconds || 0)),
   createdAt: taskMeta.createdAt,
   updatedAt: taskMeta.updatedAt,
 });
@@ -1886,6 +1905,16 @@ const buildCurrentProcessingConfigSnapshot = ({ fps, batchSize, frameFormat }) =
     defaultModel: configStore.config.general?.defaultModel || "",
   });
 
+const getConfiguredPreviewTrialSeconds = () => {
+  const configured = Number(
+    previewTrialSeconds.value || configStore.config.video?.previewTrialSeconds || 3
+  );
+  if (VIDEO_PREVIEW_TRIAL_DURATIONS.includes(configured)) {
+    return configured;
+  }
+  return 3;
+};
+
 const getOutputDirectory = (sourcePath) => {
   const downloadPath = configStore.config.fileManagement?.downloadPath || "";
   const videoFolderName = configStore.config.fileManagement?.videoFolderName || "videos";
@@ -1895,11 +1924,14 @@ const getOutputDirectory = (sourcePath) => {
   return sourcePath.replace(/[\\/][^\\/]+$/, "");
 };
 
-const buildOutputVideoPath = async (sourceFile, sourcePath) => {
+const buildOutputVideoPath = async (sourceFile, sourcePath, options = {}) => {
   const outputDir = getOutputDirectory(sourcePath);
   await window.electron.ipcRenderer.invoke("ensure-directory", outputDir);
 
-  const outputName = `${sourceFile.name.replace(/\.[^/.]+$/, "")}_processed_${Date.now()}.mp4`;
+  const suffix = options.previewTrialSeconds
+    ? `preview_${Math.max(1, Math.round(Number(options.previewTrialSeconds)))}s`
+    : "processed";
+  const outputName = `${sourceFile.name.replace(/\.[^/.]+$/, "")}_${suffix}_${Date.now()}.mp4`;
   return window.electron.ipcRenderer.joinPath(outputDir, outputName);
 };
 
@@ -1926,6 +1958,9 @@ const findFallbackResumeTaskInTempBase = async ({ fingerprint, tempBase }) => {
     const taskRoot = joinRendererPath(tempBase, entryName);
     const taskMeta = await readVideoTaskMetaFromRoot(taskRoot);
     if (!taskMeta) {
+      continue;
+    }
+    if (taskMeta.previewTrial === true) {
       continue;
     }
     if (taskMeta.fingerprint !== fingerprint || !isResumableVideoTaskStatus(taskMeta.status)) {
@@ -2106,8 +2141,18 @@ const buildCompletedSegmentEntry = ({
   completedAt: Date.now(),
 });
 
-const withBackendProgressHint = (message = "") =>
-  backendRunningState?.value ? `${message}\n可打开后端管理页面查看进度` : message;
+const withBackendProgressHint = (message = "") => {
+  const normalizedMessage = String(message || "");
+  if (
+    normalizedMessage.startsWith("处理完成") ||
+    normalizedMessage.startsWith("样片试跑完成")
+  ) {
+    return "可点击打开目录查看视频文件";
+  }
+  return backendRunningState?.value
+    ? `${normalizedMessage}\n可打开后端管理页面查看进度`
+    : normalizedMessage;
+};
 
 const updateGlobalLoadingOverlay = (message, progress = null) => {
   if (loadingControl?.update) {
@@ -2953,9 +2998,18 @@ const detectSourceHasAudio = async (sourceFile) => {
   }
 };
 
-const finalizeProcessedVideo = async ({ segmentPaths, sourceFile, sourcePath, width, height }) => {
+const finalizeProcessedVideo = async ({
+  segmentPaths,
+  sourceFile,
+  sourcePath,
+  width,
+  height,
+  previewTrialSeconds = null,
+}) => {
   await ensureMp4ExportSupported(width, height);
-  const outputPath = await buildOutputVideoPath(sourceFile, sourcePath);
+  const outputPath = await buildOutputVideoPath(sourceFile, sourcePath, {
+    previewTrialSeconds,
+  });
 
   updateProcessingUi("正在进行最后的拼接与封装", FINAL_CONCAT_PROGRESS_BASE);
   await flushProcessingUiFrame();
@@ -3240,7 +3294,13 @@ const createPreparedBatchTask = ({
   };
 };
 
-const runVideoProcessing = async () => {
+const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
+  const normalizedPreviewTrialSeconds =
+    previewTrialSeconds === null || previewTrialSeconds === undefined
+      ? null
+      : Math.max(1, Number(previewTrialSeconds || 0));
+  const isPreviewTrial = normalizedPreviewTrialSeconds !== null;
+
   if (backendEngineValue.value.runDisabled) {
     if (backendEngineValue.value.hasFailed) {
       backendEngineValue.value.openDiagnostics();
@@ -3253,9 +3313,10 @@ const runVideoProcessing = async () => {
   processingSucceeded.value = false;
   processingProgress.value = 0;
   lastOutputPath.value = "";
+  lastOutputIsPreview.value = false;
   resetProcessingEtaState();
   processingEtaState.sessionStartedAtMs = performance.now();
-  applyProcessingUi("准备处理任务", 0);
+  applyProcessingUi(isPreviewTrial ? "准备试跑样片" : "准备处理任务", 0);
 
   let paths = null;
   let tempSourcePath = "";
@@ -3285,6 +3346,10 @@ const runVideoProcessing = async () => {
       batchSize: requestedBatchSize,
       frameFormat: requestedFrameFormat,
     });
+    if (isPreviewTrial) {
+      currentRequestedSnapshot.previewTrial = true;
+      currentRequestedSnapshot.previewTrialSeconds = normalizedPreviewTrialSeconds;
+    }
     const sourceInfo = await resolveVideoSourcePath(videoStore.videoFile);
     const sourcePath = sourceInfo.sourcePath;
     tempSourcePath = sourceInfo.temporarySourcePath || "";
@@ -3297,10 +3362,12 @@ const runVideoProcessing = async () => {
       }
       throw error;
     }
-    let resumeTaskMeta = await findLatestResumableVideoTask({
-      fingerprint: fingerprintInfo.fingerprint,
-      tempBase: resolveConfiguredTempBase(sourcePath),
-    });
+    let resumeTaskMeta = isPreviewTrial
+      ? null
+      : await findLatestResumableVideoTask({
+          fingerprint: fingerprintInfo.fingerprint,
+          tempBase: resolveConfiguredTempBase(sourcePath),
+        });
 
     if (resumeTaskMeta) {
       const validatedSegments = await getValidatedCompletedSegments(resumeTaskMeta);
@@ -3340,10 +3407,17 @@ const runVideoProcessing = async () => {
     const fps = resumeHasReusableSegments
       ? Math.max(1, structuralResumeFps || currentRequestedFps)
       : currentRequestedFps;
+    const sourceTotalFrames = Math.max(1, Math.ceil(videoStore.videoDuration * fps));
+    const previewTotalFrames = isPreviewTrial
+      ? Math.max(
+          1,
+          Math.min(sourceTotalFrames, Math.ceil(normalizedPreviewTrialSeconds * fps))
+        )
+      : sourceTotalFrames;
     const totalFrames =
       resumeHasReusableSegments && Number(resumeTaskMeta?.totalFrames || 0) > 0
         ? Math.max(1, Math.round(Number(resumeTaskMeta.totalFrames)))
-        : Math.max(1, Math.ceil(videoStore.videoDuration * fps));
+        : previewTotalFrames;
     const batchSize = Math.max(
       1,
       Math.round(Number(requestedBatchSize || previousSnapshot?.batchSize || 120))
@@ -3357,6 +3431,10 @@ const runVideoProcessing = async () => {
       batchSize,
       frameFormat,
     });
+    if (isPreviewTrial) {
+      effectiveSnapshot.previewTrial = true;
+      effectiveSnapshot.previewTrialSeconds = normalizedPreviewTrialSeconds;
+    }
     const resumeStartFrame =
       reusableSegments.length > 0 ? reusableSegments[reusableSegments.length - 1].end : 0;
     const totalBatches = Math.max(
@@ -3395,7 +3473,11 @@ const runVideoProcessing = async () => {
       totalBatches,
       videoWidth: videoStore.videoWidth,
       videoHeight: videoStore.videoHeight,
-      videoDuration: videoStore.videoDuration,
+      videoDuration: isPreviewTrial
+        ? Math.min(videoStore.videoDuration, normalizedPreviewTrialSeconds)
+        : videoStore.videoDuration,
+      previewTrial: isPreviewTrial,
+      previewTrialSeconds: normalizedPreviewTrialSeconds || 0,
       completedSegments: reusableSegments,
       configSnapshot: effectiveSnapshot,
       frameDecodeFallbackReportPath,
@@ -3583,7 +3665,7 @@ const runVideoProcessing = async () => {
         processedFrames += currentBatch.batchFrameCount;
         const currentBatchProcessingSeconds = (performance.now() - batchStartedAt) / 1000;
         batchDurations.push(currentBatchProcessingSeconds);
-          pipelineBatchDurations.push(
+        pipelineBatchDurations.push(
           currentBatch.batchNumber === reusableSegments.length + 1
             ? Number(currentBatch.preparationSeconds || 0) + currentBatchProcessingSeconds
             : Math.max(Number(currentBatch.preparationSeconds || 0), currentBatchProcessingSeconds)
@@ -3623,15 +3705,19 @@ const runVideoProcessing = async () => {
         sourcePath: paths.sourcePath,
         width: videoStore.videoWidth,
         height: videoStore.videoHeight,
+        previewTrialSeconds: normalizedPreviewTrialSeconds,
       });
 
       lastOutputPath.value = outputPath;
       processingSucceeded.value = true;
+      lastOutputIsPreview.value = isPreviewTrial;
       shouldCleanupCurrentTask = true;
       processingProgress.value = 1;
       const fallbackSummary =
         frameDecodeFallbacks.length > 0
-          ? `处理完成（${frameDecodeFallbacks.length} 帧拆帧降级，已自动复用相邻成功帧）`
+          ? `${isPreviewTrial ? "样片试跑完成" : "处理完成"}（${frameDecodeFallbacks.length} 帧拆帧降级，已自动复用相邻成功帧）`
+          : isPreviewTrial
+          ? "样片试跑完成"
           : "处理完成";
       currentTaskMeta = await persistVideoTaskMeta({
         ...currentTaskMeta,
@@ -3644,8 +3730,8 @@ const runVideoProcessing = async () => {
         type: "positive",
         message:
           frameDecodeFallbacks.length > 0
-            ? `视频处理完成，已导出: ${outputPath}\n其中 ${frameDecodeFallbacks.length} 帧发生本地解码降级，已自动补齐。\n诊断文件: ${frameDecodeFallbackReportPath}`
-            : `视频处理完成，已导出: ${outputPath}`,
+            ? `${isPreviewTrial ? "样片试跑完成" : "视频处理完成"}，已导出: ${outputPath}\n其中 ${frameDecodeFallbacks.length} 帧发生本地解码降级，已自动补齐。\n诊断文件: ${frameDecodeFallbackReportPath}`
+            : `${isPreviewTrial ? "样片试跑完成" : "视频处理完成"}，已导出: ${outputPath}`,
         position: "top",
         timeout: frameDecodeFallbacks.length > 0 ? 6500 : 4500,
       });
@@ -3669,12 +3755,15 @@ const runVideoProcessing = async () => {
     }
 
     processingSucceeded.value = false;
-    updateProcessingUiWithoutOverlay("处理失败", processingProgress.value);
+    updateProcessingUiWithoutOverlay(
+      isPreviewTrial ? "样片试跑失败" : "处理失败",
+      processingProgress.value
+    );
     hideGlobalLoadingOverlay();
     console.error("Video processing failed:", error);
     $q.notify({
       type: "negative",
-      message: `视频处理失败: ${error.message}`,
+      message: `${isPreviewTrial ? "样片试跑失败" : "视频处理失败"}: ${error.message}`,
       position: "top",
       timeout: 6000,
     });
@@ -3723,6 +3812,13 @@ const runVideoProcessing = async () => {
     }
   }
 };
+
+const runVideoProcessing = () => runVideoProcessingTask();
+
+const runVideoPreviewTrial = () =>
+  runVideoProcessingTask({
+    previewTrialSeconds: getConfiguredPreviewTrialSeconds(),
+  });
 
 const createVideoTaskId = () =>
   `video_task_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
@@ -4275,6 +4371,7 @@ const preserveVideoPagePlaybackState = () => {
 
 onMounted(async () => {
   await configStore.loadConfig();
+  previewTrialSeconds.value = getConfiguredPreviewTrialSeconds();
   applyVideoBrushDefaults();
   await nextTick();
   observePreviewStageSize();
@@ -4402,6 +4499,10 @@ onUnmounted(() => {
   gap: 8px;
   min-width: 0;
   white-space: nowrap;
+}
+
+.timeline-playback-dropdown {
+  min-width: 66px;
 }
 
 .timeline-progress-control {

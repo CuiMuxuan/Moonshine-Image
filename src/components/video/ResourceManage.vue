@@ -56,6 +56,7 @@
           <div class="row q-col-gutter-sm q-mb-sm">
             <div class="col-12">
               <q-btn
+                outline
                 color="primary"
                 icon="add"
                 label="新建蒙版"
@@ -118,11 +119,47 @@
             v-if="processingSucceeded && lastOutputPath"
             class="result-status text-positive text-weight-medium q-mt-md"
           >
-            处理完成
+            {{ lastOutputIsPreview ? "样片试跑完成" : "处理完成" }}
           </div>
 
           <div v-if="processingMessage" class="text-caption q-mt-sm text-grey-7">
             {{ processingMessage }}
+          </div>
+
+          <div class="preview-trial-row q-mt-md">
+            <q-select
+              dense
+              outlined
+              class="preview-trial-select"
+              :model-value="previewTrialSeconds"
+              :options="previewTrialOptions"
+              emit-value
+              map-options
+              label="样片长度"
+              :disable="isProcessing"
+              @update:model-value="emit('update:previewTrialSeconds', $event)"
+            />
+            <span
+              :class="[
+                'preview-trial-button-wrap',
+                { 'action-button-icon-only': actionButtonMode === 'icon' },
+              ]"
+              @click="handleRunWrapperClick"
+            >
+              <q-btn
+                outline
+                color="primary"
+                icon="movie_filter"
+                :label="actionButtonMode === 'icon' ? undefined : previewButtonLabel"
+                :disable="!canRun || isProcessing || engineRunDisabled"
+                :class="[
+                  'action-button',
+                  { 'action-button-icon-only': actionButtonMode === 'icon' },
+                ]"
+                @click.stop="emit('run-preview')"
+              />
+              <q-tooltip>{{ previewActionTooltip }}</q-tooltip>
+            </span>
           </div>
 
           <div ref="actionButtonsRef" class="action-buttons-row q-pt-md">
@@ -134,6 +171,7 @@
               @click="handleRunWrapperClick"
             >
               <q-btn
+                outline
                 color="primary"
                 icon="play_arrow"
                 :label="actionButtonMode === 'icon' ? undefined : runButtonLabel"
@@ -150,7 +188,7 @@
             </span>
 
             <q-btn
-              flat
+              outline
               color="primary"
               icon="folder_open"
               :label="actionButtonMode === 'icon' ? undefined : openButtonLabel"
@@ -305,6 +343,18 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  lastOutputIsPreview: {
+    type: Boolean,
+    default: false,
+  },
+  previewTrialSeconds: {
+    type: Number,
+    default: 3,
+  },
+  previewTrialOptions: {
+    type: Array,
+    default: () => [],
+  },
   canReplaceSource: {
     type: Boolean,
     default: false,
@@ -333,7 +383,9 @@ const props = defineProps({
 
 const emit = defineEmits([
   "update:exportFpsMode",
+  "update:previewTrialSeconds",
   "run",
+  "run-preview",
   "open-diagnostics",
   "open-output",
   "replace-source",
@@ -369,6 +421,15 @@ const runActionTooltip = computed(() => {
     return props.engineRunTooltip;
   }
   return "运行处理";
+});
+const previewButtonLabel = computed(() =>
+  actionButtonMode.value === "full" ? "试跑样片" : "试跑"
+);
+const previewActionTooltip = computed(() => {
+  if (props.engineRunDisabled && props.engineRunTooltip) {
+    return props.engineRunTooltip;
+  }
+  return `先处理前 ${props.previewTrialSeconds || 3} 秒样片`;
 });
 const openButtonLabel = computed(() =>
   actionButtonMode.value === "full" ? "打开目录" : "打开"
@@ -503,6 +564,18 @@ onUnmounted(() => {
   min-width: 0;
 }
 
+.preview-trial-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+
+.preview-trial-select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .action-button {
   flex: 1 1 0;
   min-width: 0;
@@ -511,6 +584,12 @@ onUnmounted(() => {
 .action-button-tooltip-wrap {
   display: inline-flex;
   flex: 1 1 0;
+  min-width: 0;
+}
+
+.preview-trial-button-wrap {
+  display: inline-flex;
+  flex: 0 0 auto;
   min-width: 0;
 }
 

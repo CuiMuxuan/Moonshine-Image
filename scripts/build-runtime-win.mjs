@@ -28,6 +28,7 @@ const smokeOutputDir = path.join(buildResourcesRoot, ".tmp", "runtime-smoke-outp
 const smokeInputDir = path.join(buildResourcesRoot, ".tmp", "runtime-smoke-input");
 const smokeMaskDir = path.join(buildResourcesRoot, ".tmp", "runtime-smoke-mask");
 const runtimeTmpDir = path.join(buildResourcesRoot, ".tmp", "runtime");
+const runtimePythonScriptDir = path.join(runtimeTmpDir, "python-scripts");
 const missingRequirementsPath = path.join(runtimeTmpDir, "missing-requirements.txt");
 const pinnedRuntimePackagesPath = path.join(runtimeTmpDir, "pinned-runtime-packages.txt");
 const requirementsPath = path.join(repoRoot, "server", "requirements.txt");
@@ -91,6 +92,31 @@ function runCommandCapture(command, args, options = {}) {
   return String(result.stdout || "").trim();
 }
 
+function writeRuntimePythonScript(scriptName, script) {
+  ensureDir(runtimePythonScriptDir);
+  const scriptPath = path.join(runtimePythonScriptDir, scriptName);
+  fs.writeFileSync(scriptPath, `${String(script).trim()}\n`, "utf8");
+  return scriptPath;
+}
+
+function runRuntimePythonScript(scriptName, script, args = [], options = {}) {
+  const scriptPath = writeRuntimePythonScript(scriptName, script);
+  runCommand(
+    "conda",
+    ["run", "-n", runtimeEnvName, "python", scriptPath, ...args],
+    options
+  );
+}
+
+function runRuntimePythonScriptCapture(scriptName, script, args = [], options = {}) {
+  const scriptPath = writeRuntimePythonScript(scriptName, script);
+  return runCommandCapture(
+    "conda",
+    ["run", "-n", runtimeEnvName, "python", scriptPath, ...args],
+    options
+  );
+}
+
 function ensureSourceModelExists() {
   if (!fs.existsSync(sourceModelPath)) {
     throw new Error(
@@ -152,15 +178,11 @@ for raw_name in sys.argv[1:]:
 print(json.dumps(result))
 `;
 
-  const output = runCommandCapture("conda", [
-    "run",
-    "-n",
-    runtimeEnvName,
-    "python",
-    "-c",
+  const output = runRuntimePythonScriptCapture(
+    "installed-package-names.py",
     script,
-    ...packageNames,
-  ]);
+    packageNames
+  );
 
   try {
     return JSON.parse(output);
@@ -247,13 +269,7 @@ with open(sys.argv[1], "r", encoding="utf-8") as req_file:
 print("\n".join(missing))
 `;
 
-  const output = runCommandCapture("conda", [
-    "run",
-    "-n",
-    runtimeEnvName,
-    "python",
-    "-c",
-    script,
+  const output = runRuntimePythonScriptCapture("missing-requirements.py", script, [
     requirementsPath,
   ]);
 
@@ -291,15 +307,11 @@ for raw_name in sys.argv[1:]:
 print(json.dumps(result))
 `;
 
-  const output = runCommandCapture("conda", [
-    "run",
-    "-n",
-    runtimeEnvName,
-    "python",
-    "-c",
+  const output = runRuntimePythonScriptCapture(
+    "installed-package-constraints.py",
     script,
-    ...packageNames,
-  ]);
+    packageNames
+  );
 
   try {
     return JSON.parse(output);
@@ -364,28 +376,27 @@ function createSmokeFixtures() {
   ensureDir(smokeInputDir);
   ensureDir(smokeMaskDir);
 
-  const script = [
-    "from pathlib import Path",
-    "from PIL import Image, ImageDraw",
-    `image_path = Path(${JSON.stringify(smokeImagePath)})`,
-    `mask_path = Path(${JSON.stringify(smokeMaskPath)})`,
-    "image = Image.new('RGB', (64, 64), (236, 240, 244))",
-    "draw = ImageDraw.Draw(image)",
-    "draw.rectangle((20, 20, 44, 44), fill=(52, 101, 164))",
-    "mask = Image.new('L', (64, 64), 0)",
-    "mask_draw = ImageDraw.Draw(mask)",
-    "mask_draw.rectangle((20, 20, 44, 44), fill=255)",
-    "image.save(image_path)",
-    "mask.save(mask_path)",
-  ].join(";");
+  const script = String.raw`
+from pathlib import Path
+import sys
 
-  runCommand("conda", [
-    "run",
-    "-n",
-    runtimeEnvName,
-    "python",
-    "-c",
-    script,
+from PIL import Image, ImageDraw
+
+image_path = Path(sys.argv[1])
+mask_path = Path(sys.argv[2])
+image = Image.new("RGB", (64, 64), (236, 240, 244))
+draw = ImageDraw.Draw(image)
+draw.rectangle((20, 20, 44, 44), fill=(52, 101, 164))
+mask = Image.new("L", (64, 64), 0)
+mask_draw = ImageDraw.Draw(mask)
+mask_draw.rectangle((20, 20, 44, 44), fill=255)
+image.save(image_path)
+mask.save(mask_path)
+`;
+
+  runRuntimePythonScript("create-smoke-fixtures.py", script, [
+    smokeImagePath,
+    smokeMaskPath,
   ]);
 }
 

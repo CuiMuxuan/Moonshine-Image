@@ -149,6 +149,7 @@ export class ConfigManager {
       batchRetryCount: 3,
       failureRetentionCount: 3,
       proxyMaxSide: 1280,
+      previewTrialSeconds: 3,
     },
   };
 
@@ -295,6 +296,13 @@ export class ConfigManager {
       errors.push("视频拆帧格式仅支持 jpg、jpeg、png 或 webp。");
     }
 
+    if (
+      video.previewTrialSeconds !== undefined &&
+      ![3, 10].includes(Number(video.previewTrialSeconds))
+    ) {
+      errors.push("视频样片试跑时长仅支持 3 秒或 10 秒。");
+    }
+
     errors.push(...validateShortcutConfig(config.shortcuts));
 
     return errors;
@@ -370,6 +378,9 @@ export class ConfigManager {
       batchRetryCount: normalizeInteger(merged.video?.batchRetryCount, 3, 1, 10),
       failureRetentionCount: normalizeInteger(merged.video?.failureRetentionCount, 3, 1, 50),
       proxyMaxSide: normalizeInteger(merged.video?.proxyMaxSide, 1280, 256, 4096),
+      previewTrialSeconds: [3, 10].includes(Number(merged.video?.previewTrialSeconds))
+        ? Number(merged.video.previewTrialSeconds)
+        : 3,
       frameExtractionFormat: ["jpg", "jpeg", "png", "webp"].includes(
         String(merged.video?.frameExtractionFormat || "").toLowerCase()
       )

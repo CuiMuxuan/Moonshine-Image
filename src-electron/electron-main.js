@@ -154,6 +154,7 @@ const DEFAULT_CONFIG = {
     batchRetryCount: 3,
     failureRetentionCount: 3,
     proxyMaxSide: 1280,
+    previewTrialSeconds: 3,
   },
 };
 // Global configuration object
@@ -1509,6 +1510,9 @@ function sanitizeAppConfig(config = {}) {
     50
   );
   merged.video.proxyMaxSide = normalizeInteger(merged.video?.proxyMaxSide, 1280, 256, 4096);
+  merged.video.previewTrialSeconds = [3, 10].includes(Number(merged.video?.previewTrialSeconds))
+    ? Number(merged.video.previewTrialSeconds)
+    : 3;
   merged.video.frameExtractionFormat = ["jpg", "jpeg", "png", "webp"].includes(
     String(merged.video?.frameExtractionFormat || "").toLowerCase()
   )
@@ -1614,6 +1618,13 @@ function validateConfig(config) {
         Number.isNaN(config.video.failureRetentionCount) ||
         config.video.failureRetentionCount < 1 ||
         config.video.failureRetentionCount > 50)
+    ) {
+      return false;
+    }
+
+    if (
+      config.video.previewTrialSeconds !== undefined &&
+      ![3, 10].includes(Number(config.video.previewTrialSeconds))
     ) {
       return false;
     }

@@ -120,6 +120,9 @@ export const findLatestResumableTaskSummary = (registry, fingerprint) => {
     if (String(task?.fingerprint || "") !== normalizedFingerprint) {
       return;
     }
+    if (task?.previewTrial === true) {
+      return;
+    }
     if (!isResumableVideoTaskStatus(task?.status)) {
       return;
     }
@@ -201,6 +204,8 @@ export const normalizeVideoTaskMeta = (taskMeta = {}) => {
     sourceName: String(safeTaskMeta.sourceName || "").trim(),
     temporarySourcePath: String(safeTaskMeta.temporarySourcePath || "").trim(),
     status: String(safeTaskMeta.status || "running"),
+    previewTrial: safeTaskMeta.previewTrial === true,
+    previewTrialSeconds: Math.max(0, Number(safeTaskMeta.previewTrialSeconds || 0)),
     createdAt: Number(safeTaskMeta.createdAt || Date.now()),
     updatedAt: Number(safeTaskMeta.updatedAt || Date.now()),
     totalFrames: Math.max(1, Math.round(Number(safeTaskMeta.totalFrames || 1))),

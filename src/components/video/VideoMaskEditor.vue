@@ -107,10 +107,11 @@
       <div class="section-body">
         <div class="keyframe-toolbar">
           <q-btn
-            dense
+            outline
             color="primary"
             icon="add"
             label="在当前时间添加关键帧"
+            class="full-width"
             :disable="disabled"
             @click="createKeyframeAtCurrentTime"
           />
