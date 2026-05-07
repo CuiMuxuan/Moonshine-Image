@@ -1,1 +1,32 @@
 // app global css in SCSS form
+
+html,
+body,
+#q-app {
+  height: 100%;
+}
+
+body {
+  overflow: hidden;
+}
+
+body.body--dark {
+  .q-btn.text-primary,
+  .q-btn .text-primary {
+    color: var(--q-secondary) !important;
+  }
+
+  .q-btn.bg-primary {
+    background: var(--q-secondary) !important;
+    color: #262238 !important;
+  }
+
+  .q-btn.bg-primary .q-icon,
+  .q-btn.bg-primary .q-btn__content {
+    color: #262238 !important;
+  }
+
+  .q-btn--outline.text-primary::before {
+    border-color: var(--q-secondary) !important;
+  }
+}

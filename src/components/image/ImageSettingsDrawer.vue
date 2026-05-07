@@ -1,5 +1,10 @@
 <template>
-  <q-drawer v-model="drawerModel" show-if-above overlay side="right" bordered>
+  <q-drawer
+    v-model="drawerModel"
+    overlay
+    side="right"
+    bordered
+  >
     <div class="q-pa-md">
       <div class="text-h6 q-mb-md flex items-center">
         <q-icon name="settings" class="q-mr-sm" />
@@ -44,9 +49,12 @@
           <q-item>
             <q-item-section>
               <q-btn
+                outline
+                no-caps
                 color="negative"
                 icon="delete"
                 label="删除选中文件"
+                class="full-width settings-action-button"
                 :disable="selectedFiles.length === 0"
                 @click="$emit('confirm-delete-selected')"
               />
@@ -56,9 +64,12 @@
           <q-item>
             <q-item-section>
               <q-btn
+                outline
+                no-caps
                 color="primary"
                 icon="content_copy"
                 label="将当前蒙版作用于选中文件"
+                class="full-width settings-action-button"
                 :disable="selectedFiles.length === 0 || !currentMask?.data"
                 @click="$emit('apply-current-mask-to-selected')"
               />
@@ -99,9 +110,11 @@
             <q-item-section>
               <q-btn
                 outline
+                no-caps
                 color="primary"
                 icon="folder_open"
                 label="打开保存路径"
+                class="full-width settings-action-button"
                 :disable="!canOpenSavePath"
                 @click="$emit('open-save-path')"
               />
@@ -146,9 +159,12 @@
           <q-item>
             <q-item-section>
               <q-btn
+                outline
+                no-caps
                 color="negative"
                 icon="delete"
                 label="删除选中文件"
+                class="full-width settings-action-button"
                 :disable="selectedFiles.length === 0"
                 @click="$emit('confirm-delete-selected')"
               />
@@ -209,9 +225,11 @@
             <q-item-section>
               <q-btn
                 outline
+                no-caps
                 color="primary"
                 icon="auto_fix_high"
                 label="使用推荐参数"
+                class="full-width settings-action-button"
                 @click="$emit('apply-slbr-recommended')"
               />
             </q-item-section>
@@ -221,9 +239,11 @@
             <q-item-section>
               <q-btn
                 outline
+                no-caps
                 color="primary"
                 icon="folder_open"
                 label="打开保存路径"
+                class="full-width settings-action-button"
                 :disable="!canOpenSavePath"
                 @click="$emit('open-save-path')"
               />
@@ -412,3 +432,17 @@ const drawerModel = computed({
   set: (value) => emit("update:drawer-open", value),
 });
 </script>
+
+<style scoped>
+.settings-action-button {
+  min-height: 46px;
+}
+
+.settings-action-button :deep(.q-btn__content) {
+  width: 100%;
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  white-space: nowrap;
+}
+</style>

@@ -57,10 +57,11 @@
             <div class="col-12">
               <q-btn
                 outline
+                no-caps
                 color="primary"
                 icon="add"
                 label="新建蒙版"
-                class="full-width"
+                class="full-width sidebar-action-button"
                 :disable="isProcessing"
                 @click="createMask"
               />
@@ -148,12 +149,14 @@
             >
               <q-btn
                 outline
+                no-caps
                 color="primary"
                 icon="movie_filter"
                 :label="actionButtonMode === 'icon' ? undefined : previewButtonLabel"
                 :disable="!canRun || isProcessing || engineRunDisabled"
                 :class="[
                   'action-button',
+                  'sidebar-action-button',
                   { 'action-button-icon-only': actionButtonMode === 'icon' },
                 ]"
                 @click.stop="emit('run-preview')"
@@ -172,6 +175,7 @@
             >
               <q-btn
                 outline
+                no-caps
                 color="primary"
                 icon="play_arrow"
                 :label="actionButtonMode === 'icon' ? undefined : runButtonLabel"
@@ -179,6 +183,7 @@
                 :loading="isProcessing"
                 :class="[
                   'action-button',
+                  'sidebar-action-button',
                   'action-button-primary',
                   { 'action-button-icon-only': actionButtonMode === 'icon' },
                 ]"
@@ -189,11 +194,16 @@
 
             <q-btn
               outline
+              no-caps
               color="primary"
               icon="folder_open"
               :label="actionButtonMode === 'icon' ? undefined : openButtonLabel"
               :disable="!canOpenOutput"
-              :class="['action-button', { 'action-button-icon-only': actionButtonMode === 'icon' }]"
+              :class="[
+                'action-button',
+                'sidebar-action-button',
+                { 'action-button-icon-only': actionButtonMode === 'icon' },
+              ]"
               @click="emit('open-output')"
             >
               <q-tooltip>打开目录</q-tooltip>
@@ -204,10 +214,11 @@
             <div class="col-12">
               <q-btn
                 outline
+                no-caps
                 color="primary"
                 icon="swap_horiz"
                 label="替换当前视频源文件"
-                class="full-width"
+                class="full-width sidebar-action-button"
                 :disable="!canReplaceSource || isProcessing"
                 @click="emit('replace-source')"
               />
@@ -215,10 +226,11 @@
             <div class="col-12" v-if="canRollbackHistory">
               <q-btn
                 outline
+                no-caps
                 color="secondary"
                 icon="history"
                 label="回退到历史记录"
-                class="full-width"
+                class="full-width sidebar-action-button"
                 :disable="isProcessing"
                 @click="showHistoryDialog = true"
               />
@@ -400,8 +412,8 @@ const actionButtonsRef = ref(null);
 const actionButtonMode = ref("full");
 let actionButtonsObserver = null;
 
-const FULL_ACTION_WIDTH = 252;
-const SHORT_ACTION_WIDTH = 176;
+const FULL_ACTION_WIDTH = 236;
+const SHORT_ACTION_WIDTH = 150;
 
 const videoInfo = computed(() => videoStore.getVideoFileInfo());
 const durationText = computed(() => formatSeconds(videoStore.videoDuration));
@@ -557,49 +569,67 @@ onUnmounted(() => {
 }
 
 .action-buttons-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: stretch;
-  gap: 8px;
-  flex-wrap: nowrap;
+  gap: 10px;
   min-width: 0;
 }
 
 .preview-trial-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: stretch;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
 }
 
 .preview-trial-select {
-  flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
+}
+
+.preview-trial-select :deep(.q-field__control) {
+  min-height: 48px;
 }
 
 .action-button {
-  flex: 1 1 0;
+  width: 100%;
   min-width: 0;
+  min-height: 48px;
 }
 
 .action-button-tooltip-wrap {
-  display: inline-flex;
-  flex: 1 1 0;
+  display: flex;
+  width: 100%;
   min-width: 0;
 }
 
 .preview-trial-button-wrap {
-  display: inline-flex;
-  flex: 0 0 auto;
+  display: flex;
+  width: 100%;
   min-width: 0;
 }
 
 .action-button-icon-only {
-  flex: 0 0 auto;
   min-width: 40px;
 }
 
 .action-button-primary {
   min-width: 0;
+}
+
+.sidebar-action-button {
+  min-height: 48px;
+}
+
+.sidebar-action-button :deep(.q-btn__content),
+.action-button :deep(.q-btn__content) {
+  width: 100%;
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  white-space: nowrap;
 }
 
 .history-dialog-card {

@@ -1,7 +1,13 @@
 <template>
-  <div class="image-processing-toolbar bg-grey-8 text-white">
+  <div
+    class="image-processing-toolbar"
+    :class="$q.dark.isActive ? 'bg-primary text-secondary' : 'bg-secondary text-primary'"
+  >
     <div class="row no-wrap shadow-1">
-      <q-toolbar class="col-4 bg-deep-purple-2">
+      <q-toolbar
+        class="col-4"
+        :class="$q.dark.isActive ? 'bg-primary' : 'bg-secondary'"
+      >
         <q-btn
           flat
           round
@@ -75,7 +81,10 @@
         />
       </q-toolbar>
 
-      <q-toolbar class="col-8 bg-deep-purple-2 text-white">
+      <q-toolbar
+        class="col-8"
+        :class="$q.dark.isActive ? 'bg-primary text-secondary' : 'bg-secondary text-primary'"
+      >
         <q-space />
         <div class="row full-width justify-end">
           <div class="col-12 row justify-around items-center">
@@ -339,21 +348,27 @@ const handleFilesUpdate = (newFiles) => {
   display: flex;
   align-items: stretch;
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
   border-top: 1px solid rgba(17, 24, 39, 0.08);
 }
 
 .image-processing-toolbar > .row {
   width: 100%;
+  min-width: 0;
   min-height: var(--image-toolbar-height, 60px);
   align-items: stretch;
 }
 
 .image-processing-toolbar :deep(.q-toolbar) {
+  min-width: 0;
   min-height: var(--image-toolbar-height, 60px);
 }
 
 .run-button-wrap {
   display: inline-flex;
+  min-width: 0;
 }
 
 :global(body.body--dark) .image-processing-toolbar {

@@ -4529,6 +4529,18 @@ onUnmounted(() => {
   color: rgba(255, 255, 255, 0.85);
 }
 
+:global(body.body--dark) .video-page {
+  background: var(--q-primary);
+}
+
+:global(body.body--dark) .left-panel,
+:global(body.body--dark) .center-panel,
+:global(body.body--dark) .right-panel,
+:global(body.body--dark) .timeline-panel {
+  background: var(--q-primary);
+  color: rgba(255, 255, 255, 0.92);
+}
+
 .timeline-time-display--light {
   color: rgba(17, 24, 39, 0.88);
 }

@@ -1,13 +1,13 @@
 <template>
   <q-dialog v-model="showDialog" persistent class="settings-dialog">
-    <q-card class="settings-card">
-      <q-card-section class="row items-center q-pb-none">
+    <q-card :class="['settings-card', { 'settings-card--dark': $q.dark.isActive }]">
+      <q-card-section class="settings-header row items-center q-pb-none">
         <div class="text-h6">全局设置</div>
         <q-space />
         <q-btn icon="close" flat round dense v-close-popup />
       </q-card-section>
 
-      <q-card-section class="q-pt-sm">
+      <q-card-section class="settings-tabs-section q-pt-sm">
         <q-tabs v-model="activeTab" dense align="justify" active-color="primary" indicator-color="primary">
           <q-tab name="general" label="通用配置" />
           <q-tab name="backend" label="后端配置" />
@@ -16,7 +16,9 @@
           <q-tab name="advanced" label="高级配置" />
         </q-tabs>
         <q-separator class="q-mt-sm" />
+      </q-card-section>
 
+      <q-card-section class="settings-content-section">
         <q-scroll-area class="settings-scroll-area">
           <q-tab-panels v-model="activeTab" animated class="bg-transparent">
             <q-tab-panel name="general" class="q-px-none">
@@ -32,7 +34,7 @@
                   <q-btn outline color="primary" icon="restart_alt" label="恢复全部默认" @click="restoreAllShortcutDefaults" />
                 </div>
 
-                <q-banner rounded class="bg-blue-1 text-blue-10 q-mb-md">
+                <q-banner rounded class="settings-info-banner q-mb-md">
                   单键动作只能设置为单键，双键只能设置为双键，三键只能设置为三键；重复冲突会阻止保存。
                 </q-banner>
 
@@ -54,13 +56,29 @@
                       :label="recordingShortcutId === definition.id ? '录制中' : '快捷键'"
                     />
                     <div class="shortcut-actions">
-                      <q-btn color="primary" unelevated :label="recordingShortcutId === definition.id ? '停止录制' : '录制'" @click="toggleShortcutRecording(definition.id)" />
-                      <q-btn flat color="primary" label="恢复默认" @click="restoreShortcutDefault(definition.id)" />
+                      <q-btn
+                        outline
+                        no-caps
+                        color="primary"
+                        icon="fiber_manual_record"
+                        :label="recordingShortcutId === definition.id ? '停止录制' : '录制'"
+                        class="settings-action-button"
+                        @click="toggleShortcutRecording(definition.id)"
+                      />
+                      <q-btn
+                        outline
+                        no-caps
+                        color="primary"
+                        icon="restart_alt"
+                        label="恢复默认"
+                        class="settings-action-button"
+                        @click="restoreShortcutDefault(definition.id)"
+                      />
                     </div>
                   </div>
                 </div>
 
-                <q-banner v-for="error in shortcutErrors" :key="error" rounded class="bg-orange-1 text-orange-10 q-mb-sm">
+                <q-banner v-for="error in shortcutErrors" :key="error" rounded class="settings-warning-banner q-mb-sm">
                   {{ error }}
                 </q-banner>
               </div>
@@ -189,7 +207,7 @@
 
                       <div class="mini-block">
                         <div class="text-subtitle2 text-weight-medium q-mb-sm">图片输出命名方式</div>
-                        <q-btn-toggle v-model="localConfig.advanced.imageOutputNamingMode" spread unelevated toggle-color="primary" color="grey-3" text-color="dark" :options="imageNamingOptions" />
+                        <q-btn-toggle v-model="localConfig.advanced.imageOutputNamingMode" spread unelevated toggle-color="primary" :color="$q.dark.isActive ? 'grey-9' : 'grey-3'" :text-color="$q.dark.isActive ? 'grey-2' : 'dark'" :options="imageNamingOptions" />
                         <q-input v-if="localConfig.advanced.imageOutputNamingMode === 'prefixUuid'" v-model.trim="localConfig.advanced.imageOutputFixedPrefix" outlined label="固定前缀" class="q-mt-md" />
                       </div>
                     </div>
@@ -208,19 +226,25 @@
                     </div>
 
                     <div class="mini-block q-mt-md">
-                      <div class="text-subtitle2 text-weight-medium q-mb-sm">视频临时文件</div>
-                      <div class="text-caption text-grey-7 q-mb-md">
-                        只清理更旧的、已不再作为最近失败任务的临时目录。处理进行中时此操作会被禁用。
+                      <div class="cleanup-row">
+                        <div class="cleanup-copy">
+                          <div class="text-subtitle2 text-weight-medium q-mb-sm">视频临时文件</div>
+                          <div class="text-caption text-grey-7">
+                            只清理更旧的、已不再作为最近失败任务的临时目录。处理进行中时此操作会被禁用。
+                          </div>
+                        </div>
+                        <q-btn
+                          color="primary"
+                          outline
+                          no-caps
+                          icon="cleaning_services"
+                          label="清理临时文件"
+                          class="settings-action-button cleanup-button"
+                          :loading="cleaningVideoTemp"
+                          :disable="isVideoTempCleanupDisabled"
+                          @click="cleanupVideoTempDirectories"
+                        />
                       </div>
-                      <q-btn
-                        color="primary"
-                        outline
-                        icon="cleaning_services"
-                        label="清理临时文件"
-                        :loading="cleaningVideoTemp"
-                        :disable="isVideoTempCleanupDisabled"
-                        @click="cleanupVideoTempDirectories"
-                      />
                     </div>
                   </q-tab-panel>
                 </q-tab-panels>
@@ -231,14 +255,24 @@
       </q-card-section>
 
       <q-card-section v-if="validationErrors.length" class="q-pt-none q-pb-none">
-        <q-banner rounded class="bg-orange-1 text-orange-10">
+        <q-banner rounded class="settings-warning-banner">
           <div v-for="error in validationErrors" :key="error">{{ error }}</div>
         </q-banner>
       </q-card-section>
 
-      <q-card-actions align="right" class="q-pa-md">
-        <q-btn flat label="取消" v-close-popup />
-        <q-btn color="primary" label="保存" :loading="saving" :disable="hasErrors" @click="saveSettings" />
+      <q-card-actions align="right" class="settings-actions q-pa-md">
+        <q-btn flat no-caps label="取消" v-close-popup />
+        <q-btn
+          outline
+          no-caps
+          color="primary"
+          icon="save"
+          label="保存"
+          class="settings-action-button"
+          :loading="saving"
+          :disable="hasErrors"
+          @click="saveSettings"
+        />
       </q-card-actions>
     </q-card>
   </q-dialog>
@@ -278,7 +312,15 @@ const imageProcessingOptions = [{ label: "文件路径（推荐）", value: "pat
 const imageNamingOptions = [{ label: "原文件名", value: "original" }, { label: "固定前缀 + UUID", value: "prefixUuid" }];
 const frameFormatOptions = [{ label: "JPG", value: "jpg" }, { label: "PNG", value: "png" }, { label: "WebP", value: "webp" }];
 const previewTrialOptions = [{ label: "3 秒", value: 3 }, { label: "10 秒", value: 10 }];
-const themeColorFields = [{ key: "primary", label: "Primary" }, { key: "secondary", label: "Secondary" }, { key: "accent", label: "Accent" }];
+const themeColorFields = [
+  { key: "primary", label: "Primary" },
+  { key: "secondary", label: "Secondary" },
+  { key: "accent", label: "Accent" },
+  { key: "positive", label: "Positive" },
+  { key: "negative", label: "Negative" },
+  { key: "info", label: "Info" },
+  { key: "warning", label: "Warning" },
+];
 const brushConfigFields = [{ key: "imageBrushDefault", label: "图片默认画笔" }, { key: "videoBrushDefault", label: "视频默认画笔" }];
 const buttonSizeOptions = UI_BUTTON_SIZE_OPTIONS.slice().reverse().map((value) => ({ label: value.toUpperCase(), value }));
 
@@ -484,9 +526,31 @@ onUnmounted(() => {
 
 <style scoped>
 .settings-dialog { z-index: 3000 !important; }
-:deep(.settings-dialog .q-dialog), :deep(.settings-dialog .q-dialog__backdrop) { z-index: 3000 !important; }
-.settings-card { width: min(1040px, calc(100vw - 24px)); max-width: min(1040px, calc(100vw - 24px)); }
-.settings-scroll-area { height: min(70vh, 760px); }
+:deep(.settings-dialog .q-dialog),
+:deep(.settings-dialog .q-dialog__backdrop) {
+  z-index: 3000 !important;
+}
+.settings-card {
+  width: min(1040px, calc(100vw - clamp(16px, 4vw, 48px)));
+  max-width: calc(100vw - clamp(16px, 4vw, 48px));
+  height: min(900px, calc(100vh - clamp(16px, 4vh, 48px)));
+  max-height: calc(100vh - clamp(16px, 4vh, 48px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.settings-header,
+.settings-tabs-section,
+.settings-actions {
+  flex: 0 0 auto;
+}
+.settings-tabs-section { padding-bottom: 0; }
+.settings-content-section {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding-top: 8px;
+}
+.settings-scroll-area { height: 100%; }
 .section { padding-top: 4px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
 .block, .mini-block { border: 1px solid rgba(17, 24, 39, 0.08); border-radius: 16px; background: rgba(255, 255, 255, 0.72); }
@@ -497,6 +561,17 @@ onUnmounted(() => {
 .shortcut-meta { min-width: 0; }
 .shortcut-input { min-width: 0; }
 .shortcut-actions { display: flex; gap: 8px; }
+.settings-action-button { min-height: 40px; }
+.settings-action-button :deep(.q-btn__content) {
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+  white-space: nowrap;
+}
+.settings-action-button :deep(.q-icon.on-left) { margin-right: 0; }
+.cleanup-row { display: flex; align-items: center; gap: 16px; }
+.cleanup-copy { flex: 1 1 auto; min-width: 0; }
+.cleanup-button { flex: 0 0 auto; }
 .color-row { display: flex; align-items: center; gap: 12px; }
 .native-color-input { width: 52px; height: 40px; border: 0; padding: 0; background: transparent; cursor: pointer; }
 .color-row :deep(.q-field) { flex: 1 1 auto; }
@@ -504,14 +579,102 @@ onUnmounted(() => {
 .startup-preferences-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .startup-preference { display: flex; align-items: center; justify-content: space-between; min-height: 56px; padding: 12px 16px; border: 1px solid rgba(17, 24, 39, 0.08); border-radius: 16px; background: rgba(255, 255, 255, 0.72); }
 .startup-preference-label { font-size: 15px; font-weight: 500; }
+.settings-info-banner {
+  background: #e8efff;
+  color: #233a7a;
+  border: 1px solid rgba(122, 141, 190, 0.22);
+}
+.settings-warning-banner {
+  background: #fff4d7;
+  color: #735000;
+  border: 1px solid rgba(230, 172, 0, 0.28);
+}
 .confirm-dialog { z-index: 3100 !important; }
 :deep(.confirm-dialog .q-dialog), :deep(.confirm-dialog .q-dialog__backdrop) { z-index: 3100 !important; }
+:global(body.body--dark) .settings-card {
+  background: #242426;
+  color: rgba(255, 255, 255, 0.9);
+}
+.settings-card--dark {
+  background: #242426;
+  color: rgba(255, 255, 255, 0.9);
+}
+:global(body.body--dark) .settings-card :deep(.text-grey-7),
+.settings-card--dark :deep(.text-grey-7) {
+  color: rgba(255, 255, 255, 0.62) !important;
+}
+:global(body.body--dark) .block,
+:global(body.body--dark) .mini-block,
+:global(body.body--dark) .startup-preference,
+.settings-card--dark .block,
+.settings-card--dark .mini-block,
+.settings-card--dark .startup-preference {
+  background: #2f2f32;
+  border-color: rgba(255, 255, 255, 0.12);
+}
+:global(body.body--dark) .mini-block,
+.settings-card--dark .mini-block {
+  background: #363638;
+}
+:global(body.body--dark) .startup-preference,
+.settings-card--dark .startup-preference {
+  background: #303033;
+}
+:global(body.body--dark) .shortcut-row,
+.settings-card--dark .shortcut-row {
+  background: #38373d;
+  border-color: rgba(138, 113, 212, 0.28);
+}
+:global(body.body--dark) .shortcut-row.recording,
+.settings-card--dark .shortcut-row.recording {
+  background: rgba(138, 113, 212, 0.18);
+  border-color: rgba(138, 113, 212, 0.42);
+}
+:global(body.body--dark) .settings-info-banner,
+.settings-card--dark .settings-info-banner {
+  background: rgba(122, 141, 190, 0.2);
+  color: #dce4ff;
+  border-color: rgba(122, 141, 190, 0.34);
+}
+:global(body.body--dark) .settings-warning-banner,
+.settings-card--dark .settings-warning-banner {
+  background: rgba(230, 172, 0, 0.18);
+  color: #ffe1a0;
+  border-color: rgba(230, 172, 0, 0.34);
+}
+:global(body.body--dark) .settings-card :deep(.q-field--outlined .q-field__control),
+.settings-card--dark :deep(.q-field--outlined .q-field__control) {
+  background: rgba(255, 255, 255, 0.045);
+}
+:global(body.body--dark) .settings-card :deep(.q-field--outlined .q-field__native),
+:global(body.body--dark) .settings-card :deep(.q-field--outlined .q-field__label),
+.settings-card--dark :deep(.q-field--outlined .q-field__native),
+.settings-card--dark :deep(.q-field--outlined .q-field__label) {
+  color: rgba(255, 255, 255, 0.86);
+}
+:global(body.body--dark) .settings-card :deep(.q-tab-panels),
+:global(body.body--dark) .settings-card :deep(.q-tab-panel),
+.settings-card--dark :deep(.q-tab-panels),
+.settings-card--dark :deep(.q-tab-panel) {
+  background: transparent;
+}
+:global(body.body--dark) .native-color-input,
+.settings-card--dark .native-color-input {
+  filter: brightness(0.92);
+}
 @media (max-width: 900px) {
   .shortcut-row { grid-template-columns: 1fr; }
   .shortcut-actions { justify-content: flex-end; flex-wrap: wrap; }
+  .cleanup-row { align-items: stretch; flex-direction: column; }
+  .cleanup-button { width: 100%; }
 }
 @media (max-width: 700px) {
-  .settings-card { width: calc(100vw - 12px); max-width: calc(100vw - 12px); }
+  .settings-card {
+    width: calc(100vw - 12px);
+    max-width: calc(100vw - 12px);
+    height: calc(100vh - 12px);
+    max-height: calc(100vh - 12px);
+  }
   .startup-preferences-row { grid-template-columns: 1fr; }
 }
 </style>

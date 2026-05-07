@@ -2147,15 +2147,14 @@ watch(
 <style scoped>
 .page-disabled-overlay {
   position: absolute;
-  top: 50px; /* 设置为头部高度，避免遮住头部工具栏 */
-  left: 0;
-  width: 100vw;
   top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   width: 100%;
-  height: calc(100vh - 50px); /* 减去头部高度 */
+  height: 100%;
   background-color: rgba(0, 0, 0, 0.1);
   z-index: 1200;
-  height: 100%;
   cursor: not-allowed;
 }
 

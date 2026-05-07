@@ -11,9 +11,13 @@ const UI_BUTTON_SIZE_OPTIONS = Object.freeze(["xs", "sm", "md"]);
 const IMAGE_OUTPUT_NAMING_MODES = Object.freeze(["original", "prefixUuid"]);
 
 const DEFAULT_BRAND_COLORS = Object.freeze({
-  primary: "#7758c4",
-  secondary: "#2679a6",
-  accent: "#9C27B0",
+  primary: "#8a71d4",
+  secondary: "#c1bee6",
+  accent: "#e6cfad",
+  positive: "#189e7a",
+  negative: "#cc455d",
+  info: "#7a8dbe",
+  warning: "#e6ac00",
 });
 
 const DEFAULT_IMAGE_BRUSH = Object.freeze({
@@ -43,11 +47,11 @@ const normalizeBrushConfig = (brush = {}, fallback = DEFAULT_IMAGE_BRUSH) => ({
   alpha: clamp(Number(brush.alpha ?? fallback.alpha) || fallback.alpha, 0.05, 1),
 });
 
-const normalizeBrandColors = (colors = {}) => ({
-  primary: normalizeHexColor(colors.primary, DEFAULT_BRAND_COLORS.primary),
-  secondary: normalizeHexColor(colors.secondary, DEFAULT_BRAND_COLORS.secondary),
-  accent: normalizeHexColor(colors.accent, DEFAULT_BRAND_COLORS.accent),
-});
+const normalizeBrandColors = (colors = {}) =>
+  Object.keys(DEFAULT_BRAND_COLORS).reduce((result, key) => {
+    result[key] = normalizeHexColor(colors?.[key], DEFAULT_BRAND_COLORS[key]);
+    return result;
+  }, {});
 
 const normalizeThemeMode = (theme) =>
   ["light", "dark"].includes(theme) ? theme : DEFAULT_THEME_MODE;
@@ -228,7 +232,7 @@ export class ConfigManager {
       errors.push("按钮大小必须是 xs、sm 或 md。");
     }
 
-    ["primary", "secondary", "accent"].forEach((key) => {
+    Object.keys(DEFAULT_BRAND_COLORS).forEach((key) => {
       if (!isValidHexColor(config.ui?.brandColors?.[key])) {
         errors.push(`主题颜色 ${key} 必须是有效的 Hex 颜色。`);
       }

@@ -16,7 +16,7 @@ import crypto from "node:crypto";
 import fs from "fs";
 import https from "https";
 import { spawn, spawnSync, exec } from "child_process";
-import { promisify } from "util";
+import { TextDecoder, promisify } from "util";
 import {
   INTEGRITY_MANIFEST_FILE,
   INTEGRITY_PUBLIC_KEY_PEM,
@@ -55,9 +55,13 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 const DEFAULT_BRAND_COLORS = Object.freeze({
-  primary: "#7758c4",
-  secondary: "#2679a6",
-  accent: "#9C27B0",
+  primary: "#8a71d4",
+  secondary: "#c1bee6",
+  accent: "#e6cfad",
+  positive: "#189e7a",
+  negative: "#cc455d",
+  info: "#7a8dbe",
+  warning: "#e6ac00",
 });
 const DEFAULT_IMAGE_BRUSH = Object.freeze({
   size: 20,
@@ -536,12 +540,65 @@ function quoteArg(arg) {
   return `"${String(arg).replace(/"/g, '\\"')}"`;
 }
 
+function getUtf8ProcessEnv(overrides = {}) {
+  return {
+    ...process.env,
+    ...(overrides || {}),
+    PYTHONUTF8: "1",
+    PYTHONIOENCODING: "utf-8",
+    PYTHONUNBUFFERED: "1",
+    LANG: "C.UTF-8",
+    LC_ALL: "C.UTF-8",
+  };
+}
+
+function wrapUtf8ShellCommand(command) {
+  if (os.platform() !== "win32") {
+    return command;
+  }
+
+  return `chcp 65001 > nul && ${command}`;
+}
+
+function decodeProcessOutput(data) {
+  if (!data) {
+    return "";
+  }
+
+  const buffer = Buffer.isBuffer(data) ? data : Buffer.from(String(data));
+  if (buffer.length === 0) {
+    return "";
+  }
+
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+  } catch {
+    if (os.platform() === "win32") {
+      try {
+        return new TextDecoder("gb18030").decode(buffer);
+      } catch {
+        // Fall through to Node's UTF-8 decoder.
+      }
+    }
+  }
+
+  return buffer.toString("utf8");
+}
+
 async function execCommand(command, options = {}) {
-  return execAsync(command, {
-    env: { ...process.env },
+  const { env, ...execOptions } = options;
+  const result = await execAsync(wrapUtf8ShellCommand(command), {
     shell: true,
-    ...options,
+    ...execOptions,
+    encoding: "buffer",
+    env: getUtf8ProcessEnv(env),
   });
+
+  return {
+    ...result,
+    stdout: decodeProcessOutput(result.stdout),
+    stderr: decodeProcessOutput(result.stderr),
+  };
 }
 
 function parsePythonVersion(text) {
@@ -862,7 +919,7 @@ async function runProcess(command, args = [], options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
-      env: { ...process.env, ...(options.env || {}) },
+      env: getUtf8ProcessEnv(options.env),
       stdio: options.stdio || "pipe",
       shell: options.shell || false,
     });
@@ -872,7 +929,7 @@ async function runProcess(command, args = [], options = {}) {
 
     if (child.stdout) {
       child.stdout.on("data", (data) => {
-        const text = data.toString();
+        const text = decodeProcessOutput(data);
         stdout += text;
         options.onStdout?.(text);
       });
@@ -880,7 +937,7 @@ async function runProcess(command, args = [], options = {}) {
 
     if (child.stderr) {
       child.stderr.on("data", (data) => {
-        const text = data.toString();
+        const text = decodeProcessOutput(data);
         stderr += text;
         options.onStderr?.(text);
       });
@@ -2166,7 +2223,7 @@ ipcMain.handle("check-python", async (event) => {
 
   try {
     // Snapshot current system environment variables
-    const systemEnv = { ...process.env };
+    const systemEnv = getUtf8ProcessEnv();
     sendLog("Checking Python environment...", "info");
 
     // Windows-specific detection flow
@@ -2181,16 +2238,18 @@ ipcMain.handle("check-python", async (event) => {
           const { stdout } = await execAsync(`${cmd} --version`, {
             env: systemEnv,
             shell: true,
+            encoding: "buffer",
             timeout: 10000,
           });
-          if (stdout) {
+          const decodedStdout = decodeProcessOutput(stdout);
+          if (decodedStdout) {
             sendLog(
-              `Command ${cmd} --version succeeded: ${stdout.trim()}`,
+              `Command ${cmd} --version succeeded: ${decodedStdout.trim()}`,
               "success"
             );
             return {
               success: true,
-              version: stdout.trim(),
+              version: decodedStdout.trim(),
               type: "python",
               command: cmd,
             };
@@ -2223,13 +2282,15 @@ ipcMain.handle("check-python", async (event) => {
             const { stdout } = await execAsync(`"${pythonPath}" --version`, {
               env: systemEnv,
               shell: true,
+              encoding: "buffer",
               timeout: 10000,
             });
-            if (stdout) {
-              sendLog(`Python version check succeeded: ${stdout.trim()}`, "success");
+            const decodedStdout = decodeProcessOutput(stdout);
+            if (decodedStdout) {
+              sendLog(`Python version check succeeded: ${decodedStdout.trim()}`, "success");
               return {
                 success: true,
-                version: stdout.trim(),
+                version: decodedStdout.trim(),
                 type: "python",
                 path: pythonPath,
               };
@@ -2253,13 +2314,15 @@ ipcMain.handle("check-python", async (event) => {
         const { stdout: pythonStdout } = await execAsync("python --version", {
           env: systemEnv,
           shell: true,
+          encoding: "buffer",
           timeout: 10000,
         });
-        if (pythonStdout) {
-          sendLog(`python command succeeded: ${pythonStdout.trim()}`, "success");
+        const decodedPythonStdout = decodeProcessOutput(pythonStdout);
+        if (decodedPythonStdout) {
+          sendLog(`python command succeeded: ${decodedPythonStdout.trim()}`, "success");
           return {
             success: true,
-            version: pythonStdout.trim(),
+            version: decodedPythonStdout.trim(),
             type: "python",
           };
         }
@@ -2272,14 +2335,16 @@ ipcMain.handle("check-python", async (event) => {
             {
               env: systemEnv,
               shell: true,
+              encoding: "buffer",
               timeout: 10000,
             }
           );
-          if (python3Stdout) {
-            sendLog(`python3 command succeeded: ${python3Stdout.trim()}`, "success");
+          const decodedPython3Stdout = decodeProcessOutput(python3Stdout);
+          if (decodedPython3Stdout) {
+            sendLog(`python3 command succeeded: ${decodedPython3Stdout.trim()}`, "success");
             return {
               success: true,
-              version: python3Stdout.trim(),
+              version: decodedPython3Stdout.trim(),
               type: "python",
             };
           }
@@ -2296,20 +2361,24 @@ ipcMain.handle("check-python", async (event) => {
       const { stdout: condaStdout } = await execAsync("conda -V", {
         env: systemEnv,
         shell: true,
+        encoding: "buffer",
         timeout: 10000,
       });
-      if (condaStdout) {
-        sendLog(`Found conda: ${condaStdout.trim()}`, "success");
+      const decodedCondaStdout = decodeProcessOutput(condaStdout);
+      if (decodedCondaStdout) {
+        sendLog(`Found conda: ${decodedCondaStdout.trim()}`, "success");
         try {
           // Check whether the moonshine-image environment exists
           sendLog("Checking moonshine-image conda environment...", "info");
           const { stdout: envCheckStdout } = await execAsync("conda env list", {
             env: systemEnv,
             shell: true,
+            encoding: "buffer",
             timeout: 10000,
           });
+          const decodedEnvCheckStdout = decodeProcessOutput(envCheckStdout);
 
-          if (!envCheckStdout.includes("moonshine-image")) {
+          if (!decodedEnvCheckStdout.includes("moonshine-image")) {
             // Create the moonshine-image environment if needed
             sendLog("Creating moonshine-image conda environment...", "info");
             await execAsync(
@@ -2317,6 +2386,7 @@ ipcMain.handle("check-python", async (event) => {
               {
                 env: systemEnv,
                 shell: true,
+                encoding: "buffer",
                 timeout: 300000,
               }
             );
@@ -2335,23 +2405,25 @@ ipcMain.handle("check-python", async (event) => {
           const { stdout: envPythonStdout } = await execAsync(activateCmd, {
             env: systemEnv,
             shell: true,
+            encoding: "buffer",
             timeout: 30000,
           });
+          const decodedEnvPythonStdout = decodeProcessOutput(envPythonStdout);
 
           sendLog(
-            `Conda environment Python version: ${envPythonStdout.trim()}`,
+            `Conda environment Python version: ${decodedEnvPythonStdout.trim()}`,
             "success"
           );
           return {
             success: true,
-            version: envPythonStdout.trim(),
+            version: decodedEnvPythonStdout.trim(),
             type: "conda",
           };
         } catch (envError) {
           sendLog(`Conda environment operation failed: ${envError.message}`, "error");
           return {
             success: false,
-            error: `Found conda (${condaStdout.trim()}), but creating or activating the environment failed: ${
+            error: `Found conda (${decodedCondaStdout.trim()}), but creating or activating the environment failed: ${
               envError.message
             }`,
           };
@@ -3008,6 +3080,7 @@ ipcMain.handle("install-dependencies", async (event, projectPath) => {
       {
         cwd: workingPath,
         stdio: "pipe",
+        env: getUtf8ProcessEnv(),
       }
     );
 
@@ -3015,14 +3088,14 @@ ipcMain.handle("install-dependencies", async (event, projectPath) => {
     installProcess.stdout.on("data", (data) => {
       mainWindow.webContents.send("backend-output", {
         type: "info",
-        message: data.toString(),
+        message: decodeProcessOutput(data),
       });
     });
 
     installProcess.stderr.on("data", (data) => {
       mainWindow.webContents.send("backend-output", {
         type: "warning",
-        message: data.toString(),
+        message: decodeProcessOutput(data),
       });
     });
 
@@ -3066,13 +3139,13 @@ ipcMain.handle("install-conda-dependencies", async (event) => {
       return { success: false, error: "Project path is not set." };
     }
 
-    const systemEnv = { ...process.env };
+    const systemEnv = getUtf8ProcessEnv();
     sendLog("Starting conda dependency installation...", "info");
 
     // Activate the environment and install dependencies
     const activateAndInstallCmd =
       os.platform() === "win32"
-        ? `conda activate moonshine-image && pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`
+        ? wrapUtf8ShellCommand(`conda activate moonshine-image && pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`)
         : `source activate moonshine-image && pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`;
 
     const installProcess = spawn("cmd", ["/c", activateAndInstallCmd], {
@@ -3084,11 +3157,11 @@ ipcMain.handle("install-conda-dependencies", async (event) => {
 
     // Stream install output in real time
     installProcess.stdout.on("data", (data) => {
-      sendLog(data.toString(), "info");
+      sendLog(decodeProcessOutput(data), "info");
     });
 
     installProcess.stderr.on("data", (data) => {
-      sendLog(data.toString(), "warning");
+      sendLog(decodeProcessOutput(data), "warning");
     });
 
     return new Promise((resolve) => {
@@ -3178,8 +3251,8 @@ print(json.dumps(result))
 
   try {
     const probeResult = spawnSync(pythonPath, ["-c", probeScript], {
-      env: runtimeEnv,
-      encoding: "utf8",
+      env: getUtf8ProcessEnv(runtimeEnv),
+      encoding: "buffer",
       windowsHide: true,
     });
 
@@ -3190,11 +3263,11 @@ print(json.dumps(result))
       };
     }
 
-    const stdout = String(probeResult.stdout || "").trim();
+    const stdout = decodeProcessOutput(probeResult.stdout).trim();
     if (!stdout) {
       return {
         success: false,
-        message: String(probeResult.stderr || "CUDA probe returned no output").trim(),
+        message: decodeProcessOutput(probeResult.stderr || "CUDA probe returned no output").trim(),
       };
     }
 
@@ -3235,7 +3308,7 @@ ipcMain.handle("start-backend-service", async (event, config) => {
 
     global.projectPath = projectResult.path;
     let backendPython = "";
-    let backendEnv = { ...process.env };
+    let backendEnv = getUtf8ProcessEnv();
     const args = [
       "main.py",
       "start",
@@ -3253,7 +3326,7 @@ ipcMain.handle("start-backend-service", async (event, config) => {
       }
 
       backendPython = bundledResult.pythonPath;
-      backendEnv = getBundledRuntimeCommandEnv();
+      backendEnv = getUtf8ProcessEnv(getBundledRuntimeCommandEnv());
       args.push(`--model-dir=${getEffectiveBundledModelDir()}`);
     } else {
       const venvInfo = await getUsableProjectVenvInfo(global.projectPath);
@@ -3309,14 +3382,14 @@ ipcMain.handle("start-backend-service", async (event, config) => {
     backendProcess.stdout.on("data", (data) => {
       mainWindow.webContents.send("backend-output", {
         type: "info",
-        message: data.toString(),
+        message: decodeProcessOutput(data),
       });
     });
 
     backendProcess.stderr.on("data", (data) => {
       mainWindow.webContents.send("backend-output", {
         type: "info",
-        message: data.toString(),
+        message: decodeProcessOutput(data),
       });
     });
 
@@ -3401,13 +3474,8 @@ ipcMain.handle("check-backend-status", async () => {
 // IPC handler - execute command
 ipcMain.handle("execute-command", async (event, { command, cwd }) => {
   try {
-    // Snapshot current system environment variables
-    const systemEnv = { ...process.env };
-
-    const { stdout, stderr } = await execAsync(command, {
+    const { stdout, stderr } = await execCommand(command, {
       cwd: cwd || global.projectPath,
-      env: systemEnv,
-      shell: true,
     });
 
     return {

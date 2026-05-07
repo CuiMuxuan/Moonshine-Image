@@ -564,14 +564,132 @@ const modelOptions = ["lama"];
 const terminalOutput = ref([]);
 const terminalInput = ref("");
 const terminalRef = ref(null);
+const MAX_TERMINAL_LINES = 2000;
+const TERMINAL_PROGRESS_SYNC_MS = 500;
+const TERMINAL_TRUNCATION_MESSAGE = `较早的终端输出已折叠，仅保留最近 ${MAX_TERMINAL_LINES} 行。`;
+const ansiPattern =
+  // eslint-disable-next-line no-control-regex
+  /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
+let activeTerminalLine = null;
+let pendingTerminalLogs = [];
+let terminalFlushTimerId = 0;
+let lastTerminalFlushAt = 0;
+
+const sanitizeTerminalText = (message) =>
+  String(message ?? "")
+    .replace(ansiPattern, "")
+    .split(String.fromCharCode(8))
+    .join("");
+
+const getProgressLineKey = (message = "") => {
+  const text = String(message || "").trim();
+  if (!text.includes("%") || !text.includes("|")) {
+    return "";
+  }
+
+  const prefix = text.split("|", 1)[0].replace(/\s*\d+%\s*$/, "").trim();
+  return prefix || "terminal-progress";
+};
+
+const createTerminalLine = (message, type = "info", options = {}) => ({
+  message,
+  type,
+  timestamp: options.timestamp || new Date().toLocaleTimeString(),
+  system: Boolean(options.system),
+  progressKey: options.progressKey || "",
+  progressActive: Boolean(options.progressActive),
+});
+
+const findActiveProgressLine = (progressKey) => {
+  if (!progressKey) {
+    return null;
+  }
+
+  for (let index = terminalOutput.value.length - 1; index >= 0; index -= 1) {
+    const line = terminalOutput.value[index];
+    if (line?.progressKey === progressKey && line.progressActive) {
+      return line;
+    }
+  }
+
+  return null;
+};
+
+const trimTerminalOutput = () => {
+  if (terminalOutput.value.length <= MAX_TERMINAL_LINES) {
+    return;
+  }
+
+  const maxDataLines = Math.max(1, MAX_TERMINAL_LINES - 1);
+  const recentLines = terminalOutput.value
+    .filter((line) => !line.system)
+    .slice(-maxDataLines);
+
+  terminalOutput.value = [
+    createTerminalLine(TERMINAL_TRUNCATION_MESSAGE, "warning", {
+      system: true,
+      timestamp: "--:--:--",
+    }),
+    ...recentLines,
+  ];
+
+  if (activeTerminalLine && !terminalOutput.value.includes(activeTerminalLine)) {
+    activeTerminalLine = null;
+  }
+};
+
+const scrollTerminalToBottom = () => {
+  nextTick(() => {
+    if (terminalRef.value) {
+      terminalRef.value.scrollTop = terminalRef.value.scrollHeight;
+    }
+  });
+};
 
 const clearTerminal = () => {
   terminalOutput.value = [];
+  activeTerminalLine = null;
+  pendingTerminalLogs = [];
+  if (terminalFlushTimerId) {
+    window.clearTimeout(terminalFlushTimerId);
+    terminalFlushTimerId = 0;
+  }
   addTerminalLog("终端已清空", "info");
+};
+
+const flushPendingTerminalLogs = () => {
+  terminalFlushTimerId = 0;
+  if (pendingTerminalLogs.length === 0) {
+    return;
+  }
+
+  const logs = pendingTerminalLogs;
+  pendingTerminalLogs = [];
+  lastTerminalFlushAt = Date.now();
+  logs.forEach((item) => addTerminalLog(item.message, item.type));
+};
+
+const queueTerminalLog = (message, type = "info") => {
+  pendingTerminalLogs.push({ message, type });
+
+  const elapsed = Date.now() - lastTerminalFlushAt;
+  const delay = Math.max(0, TERMINAL_PROGRESS_SYNC_MS - elapsed);
+  if (delay === 0) {
+    if (terminalFlushTimerId) {
+      window.clearTimeout(terminalFlushTimerId);
+      terminalFlushTimerId = 0;
+    }
+    flushPendingTerminalLogs();
+    return;
+  }
+
+  if (!terminalFlushTimerId) {
+    terminalFlushTimerId = window.setTimeout(flushPendingTerminalLogs, delay);
+  }
 };
 // IPC 监听器处理后端输出
 const handleBackendOutput = (event, data) => {
-  addTerminalLog(data.message, data.type);
+  queueTerminalLog(data.message, data.type);
 };
 // 检查服务状态的函数
 const checkServiceStatus = async () => {
@@ -647,18 +765,108 @@ watch(showDialog, (newVal) => {
 
 // 添加终端日志
 const addTerminalLog = (message, type = "info") => {
-  const timestamp = new Date().toLocaleTimeString();
-  terminalOutput.value.push({
-    message,
-    type,
-    timestamp,
-  });
+  const cleanText = sanitizeTerminalText(message);
+  if (!cleanText) {
+    return;
+  }
 
-  nextTick(() => {
-    if (terminalRef.value) {
-      terminalRef.value.scrollTop = terminalRef.value.scrollHeight;
+  const timestamp = new Date().toLocaleTimeString();
+  const hasCursorControl = cleanText.includes("\r") || cleanText.includes("\n");
+  if (!hasCursorControl) {
+    terminalOutput.value.push(createTerminalLine(cleanText, type, { timestamp }));
+    if (!activeTerminalLine?.progressKey) {
+      activeTerminalLine = null;
     }
-  });
+    trimTerminalOutput();
+    scrollTerminalToBottom();
+    return;
+  }
+
+  let buffer = "";
+  let shouldOverwriteCurrentLine = false;
+
+  const writeActiveLine = (text) => {
+    const progressKey = getProgressLineKey(text);
+    const existingProgressLine = findActiveProgressLine(progressKey);
+    if (existingProgressLine) {
+      existingProgressLine.message = text;
+      existingProgressLine.type = type;
+      existingProgressLine.timestamp = timestamp;
+      activeTerminalLine = existingProgressLine;
+      return;
+    }
+
+    if (
+      activeTerminalLine &&
+      terminalOutput.value.includes(activeTerminalLine) &&
+      !activeTerminalLine.system
+    ) {
+      activeTerminalLine.message = text;
+      activeTerminalLine.type = type;
+      activeTerminalLine.timestamp = timestamp;
+      activeTerminalLine.progressKey = progressKey;
+      activeTerminalLine.progressActive = Boolean(progressKey);
+      return;
+    }
+
+    activeTerminalLine = createTerminalLine(text, type, {
+      timestamp,
+      progressKey,
+      progressActive: Boolean(progressKey),
+    });
+    terminalOutput.value.push(activeTerminalLine);
+  };
+
+  const writeFinalLine = (text) => {
+    terminalOutput.value.push(createTerminalLine(text, type, { timestamp }));
+    activeTerminalLine = null;
+  };
+
+  const flushBuffer = ({ active = false, finalize = false } = {}) => {
+    if (!buffer) {
+      if (finalize) {
+        if (activeTerminalLine) {
+          activeTerminalLine.progressActive = false;
+        }
+        activeTerminalLine = null;
+      }
+      return;
+    }
+
+    if (active || shouldOverwriteCurrentLine) {
+      writeActiveLine(buffer);
+    } else {
+      writeFinalLine(buffer);
+    }
+
+    buffer = "";
+    shouldOverwriteCurrentLine = false;
+    if (finalize) {
+      if (activeTerminalLine) {
+        activeTerminalLine.progressActive = false;
+      }
+      activeTerminalLine = null;
+    }
+    trimTerminalOutput();
+  };
+
+  for (const char of cleanText.split("\r\n").join("\n")) {
+    if (char === "\r") {
+      flushBuffer({ active: true });
+      shouldOverwriteCurrentLine = true;
+      continue;
+    }
+
+    if (char === "\n") {
+      flushBuffer({ finalize: true });
+      continue;
+    }
+
+    buffer += char;
+  }
+
+  flushBuffer();
+  scrollTerminalToBottom();
 };
 
 const persistConfig = async (nextConfig) => {
@@ -1187,11 +1395,7 @@ const executeCommand = async () => {
 
     if (result.success) {
       if (result.output) {
-        result.output.split("\n").forEach((line) => {
-          if (line.trim()) {
-            addTerminalLog(line, "info");
-          }
-        });
+        addTerminalLog(result.output, "info");
       }
     } else {
       addTerminalLog(result.error, "error");
@@ -1219,6 +1423,10 @@ onMounted(() => {
 onUnmounted(() => {
   if (window.electron && window.electron.ipcRenderer) {
     window.electron.ipcRenderer.removeListener('backend-output', handleBackendOutput);
+  }
+  if (terminalFlushTimerId) {
+    window.clearTimeout(terminalFlushTimerId);
+    terminalFlushTimerId = 0;
   }
 });
 </script>
