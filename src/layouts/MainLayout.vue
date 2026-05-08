@@ -86,7 +86,14 @@
   </q-layout>
 
   <backend-manager v-model="showBackendManager" />
-  <global-settings v-model="showSettings" />
+  <global-settings
+    v-model="showSettings"
+    :initial-tab="settingsTarget.tab"
+    :initial-model-id="settingsTarget.modelId"
+    :backend-running="backendRunning"
+    @open-backend-manager="showBackendManager = true"
+    @model-downloaded="handleModelDownloaded"
+  />
   <startup-overlay v-model="showStartupOverlay" />
 </template>
 
@@ -116,6 +123,10 @@ const globalLoadingLogo = resolvePublicAssetPath("icons/cmx-logo256.png");
 
 const showBackendManager = ref(false);
 const showSettings = ref(false);
+const settingsTarget = ref({
+  tab: "",
+  modelId: "",
+});
 const backendRunning = ref(false);
 const showStartupOverlay = ref(false);
 
@@ -280,6 +291,41 @@ const openBackendDiagnostics = () => {
   showBackendManager.value = true;
 };
 
+const openGlobalSettings = ({ tab = "", modelId = "" } = {}) => {
+  settingsTarget.value = {
+    tab,
+    modelId,
+  };
+  showSettings.value = true;
+};
+
+const handleModelDownloaded = (modelId) => {
+  window.dispatchEvent(
+    new CustomEvent("moonshine-model-registry-updated", {
+      detail: { modelId },
+    })
+  );
+
+  $q.dialog({
+    title: "模型下载完成",
+    message: "是否切换到刚下载的模型？",
+    cancel: {
+      label: "暂不切换",
+      flat: true,
+    },
+    ok: {
+      label: "切换",
+      color: "primary",
+    },
+  }).onOk(() => {
+    window.dispatchEvent(
+      new CustomEvent("moonshine-switch-model", {
+        detail: { modelId },
+      })
+    );
+  });
+};
+
 const backendEngineContext = computed(() => ({
   status: backendEngineStore.status,
   phase: backendEngineStore.phase,
@@ -295,6 +341,9 @@ const backendEngineContext = computed(() => ({
 provide("backendRunning", backendRunning);
 provide("backendEngine", backendEngineContext);
 provide("globalLoadingState", loadingState);
+provide("globalSettings", {
+  open: openGlobalSettings,
+});
 provide("layoutFooter", {
   setPageFooter,
   clearPageFooter,
@@ -377,12 +426,17 @@ const checkBackendStatus = async ({ notifyOnFailure = true } = {}) => {
 
 const getElectronInvoke = () => window.electron?.ipcRenderer?.invoke;
 
+const getSkippedAutoStartMessage = () =>
+  import.meta.env.DEV
+    ? "开发环境已跳过自动启动 Moonshine AI 引擎；需要时请打开后端管理手动启动。"
+    : "当前环境未自动启动 Moonshine AI 引擎";
+
 const prepareBackendEngine = async () => {
   const invoke = getElectronInvoke();
-  if (!invoke || configStore.config.general?.autoStart === false) {
+  if (!invoke || import.meta.env.DEV || configStore.config.general?.autoStart === false) {
     const reachable = await checkBackendStatus({ notifyOnFailure: false });
     if (!reachable) {
-      backendEngineStore.setFailed("当前环境未自动启动 Moonshine AI 引擎");
+      backendEngineStore.setFailed(getSkippedAutoStartMessage());
     }
     return;
   }

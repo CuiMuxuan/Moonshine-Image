@@ -4,291 +4,260 @@
     overlay
     side="right"
     bordered
+    class="image-settings-drawer"
   >
-    <div class="q-pa-md">
-      <div class="text-h6 q-mb-md flex items-center">
-        <q-icon name="settings" class="q-mr-sm" />
-        运行设置
-      </div>
+    <q-scroll-area class="drawer-scroll">
+      <div class="settings-content q-pa-md">
+        <div class="settings-title">
+          <q-icon name="tune" size="24px" />
+          <div>
+            <div class="text-h6">运行设置</div>
+            <div class="text-caption text-grey-7">
+              {{ backendAvailable ? "按当前模型动态配置运行条件" : "后端启动后会恢复模型运行设置" }}
+            </div>
+          </div>
+        </div>
 
-      <q-item>
-        <q-item-section>
+        <section
+          v-if="!backendAvailable"
+          class="settings-section backend-status-card"
+          :class="`backend-status-card--${backendStatusTone}`"
+        >
+          <div class="backend-status-main">
+            <div class="backend-status-icon">
+              <q-spinner
+                v-if="backendPreparing"
+                color="primary"
+                size="22px"
+                thickness="4"
+              />
+              <q-icon
+                v-else
+                :name="backendFailed ? 'error_outline' : 'terminal'"
+                size="22px"
+              />
+            </div>
+            <div class="backend-status-copy">
+              <div class="backend-status-title">{{ backendStatusTitle }}</div>
+              <div class="backend-status-message">{{ backendStatusMessage }}</div>
+            </div>
+          </div>
+
+          <div class="backend-status-actions">
+            <q-btn
+              outline
+              no-caps
+              color="primary"
+              icon="terminal"
+              :label="backendPreparing ? '查看后端管理' : '打开后端管理'"
+              class="backend-status-button"
+              @click="$emit('open-backend-manager')"
+            />
+          </div>
+        </section>
+
+        <section v-if="backendAvailable" class="settings-section">
+          <div class="section-heading section-heading--split">
+            <div class="section-heading-main">
+              <q-icon name="memory" />
+              <span>模型与范围</span>
+            </div>
+            <div class="heading-cuda-status">
+              <cuda-status
+                :backend-running="backendRunning"
+                @cuda-status-changed="$emit('cuda-status-changed', $event)"
+              />
+            </div>
+          </div>
+
           <model-selector
             :model-value="currentModel"
             :options="modelOptions"
             type="image"
             @update:model-value="$emit('update:current-model', $event)"
+            @open-model-management="$emit('open-model-management', $event)"
           />
-        </q-item-section>
-      </q-item>
 
-      <div v-if="currentModel === 'lama'">
-        <q-list>
-          <q-item>
-            <q-item-section>
+          <div class="q-mt-md">
+            <div class="field-label">作用范围</div>
+            <div class="scope-options">
+              <q-btn
+                v-for="option in scopedActionOptions"
+                :key="option.value"
+                outline
+                no-caps
+                class="scope-button"
+                :color="normalizedActionScope.value === option.value ? 'primary' : 'grey-7'"
+                :disable="option.disable"
+                :label="option.label"
+                @click="selectScope(option)"
+              >
+                <q-tooltip v-if="option.disable">
+                  {{ option.disableReason }}
+                </q-tooltip>
+              </q-btn>
+            </div>
+          </div>
+
+        </section>
+
+        <section v-if="backendAvailable && parameterFields.length > 0" class="settings-section">
+          <div class="section-heading">
+            <q-icon name="tune" />
+            <span>模型参数</span>
+          </div>
+
+          <div class="parameter-grid">
+            <div
+              v-for="field in parameterFields"
+              :key="field.key"
+              class="parameter-field"
+            >
               <q-select
-                :model-value="normalizedActionScope"
-                :options="actionScopeOptions"
-                label="作用范围"
-                filled
-                @update:model-value="$emit('update:action-scope', $event)"
-              />
-            </q-item-section>
-          </q-item>
-
-          <q-item>
-            <q-item-section>
-              <q-toggle
-                :model-value="selectAll"
-                label="全选文件"
-                @update:model-value="$emit('update:select-all', $event)"
-              />
-            </q-item-section>
-          </q-item>
-
-          <q-item>
-            <q-item-section>
-              <q-btn
-                outline
-                no-caps
-                color="negative"
-                icon="delete"
-                label="删除选中文件"
-                class="full-width settings-action-button"
-                :disable="selectedFiles.length === 0"
-                @click="$emit('confirm-delete-selected')"
-              />
-            </q-item-section>
-          </q-item>
-
-          <q-item>
-            <q-item-section>
-              <q-btn
-                outline
-                no-caps
-                color="primary"
-                icon="content_copy"
-                label="将当前蒙版作用于选中文件"
-                class="full-width settings-action-button"
-                :disable="selectedFiles.length === 0 || !currentMask?.data"
-                @click="$emit('apply-current-mask-to-selected')"
-              />
-            </q-item-section>
-          </q-item>
-
-          <q-item v-if="normalizedActionScope?.value === 'folder'">
-            <q-item-section>
-              <folder-selector
-                :model-value="folderPath"
-                label="输入文件夹"
-                @update:model-value="$emit('update:folder-path', $event)"
-              />
-            </q-item-section>
-          </q-item>
-
-          <q-item v-if="normalizedActionScope?.value === 'folder'">
-            <q-item-section>
-              <folder-selector
-                :model-value="maskFolderPath"
-                label="蒙版文件夹"
-                @update:model-value="$emit('update:mask-folder-path', $event)"
-              />
-            </q-item-section>
-          </q-item>
-
-          <q-item>
-            <q-item-section>
-              <folder-selector
-                :model-value="savePath"
-                label="保存路径"
-                @update:model-value="$emit('update:save-path', $event)"
-              />
-            </q-item-section>
-          </q-item>
-
-          <q-item>
-            <q-item-section>
-              <q-btn
-                outline
-                no-caps
-                color="primary"
-                icon="folder_open"
-                label="打开保存路径"
-                class="full-width settings-action-button"
-                :disable="!canOpenSavePath"
-                @click="$emit('open-save-path')"
-              />
-            </q-item-section>
-          </q-item>
-
-          <q-item>
-            <q-item-section>
-              <cuda-status
-                :backend-running="backendRunning"
-                @cuda-status-changed="$emit('cuda-status-changed', $event)"
-              />
-            </q-item-section>
-          </q-item>
-        </q-list>
-      </div>
-
-      <div v-else-if="currentModel === 'slbr'">
-        <q-list>
-          <q-item>
-            <q-item-section>
-              <q-select
-                :model-value="normalizedActionScope"
-                :options="actionScopeOptions"
-                label="作用范围"
-                filled
-                @update:model-value="$emit('update:action-scope', $event)"
-              />
-            </q-item-section>
-          </q-item>
-
-          <q-item>
-            <q-item-section>
-              <q-toggle
-                :model-value="selectAll"
-                label="全选文件"
-                @update:model-value="$emit('update:select-all', $event)"
-              />
-            </q-item-section>
-          </q-item>
-
-          <q-item>
-            <q-item-section>
-              <q-btn
-                outline
-                no-caps
-                color="negative"
-                icon="delete"
-                label="删除选中文件"
-                class="full-width settings-action-button"
-                :disable="selectedFiles.length === 0"
-                @click="$emit('confirm-delete-selected')"
-              />
-            </q-item-section>
-          </q-item>
-
-          <q-item v-if="normalizedActionScope?.value === 'folder'">
-            <q-item-section>
-              <folder-selector
-                :model-value="folderPath"
-                label="输入文件夹"
-                @update:model-value="$emit('update:folder-path', $event)"
-              />
-            </q-item-section>
-          </q-item>
-
-          <q-item>
-            <q-item-section>
-              <folder-selector
-                :model-value="savePath"
-                label="保存路径"
-                @update:model-value="$emit('update:save-path', $event)"
-              />
-            </q-item-section>
-          </q-item>
-
-          <q-item>
-            <q-item-section>
-              <q-select
-                :model-value="slbrTileSize"
-                :options="normalizedSlbrTileSizeOptions"
-                label="tile_size"
+                v-if="field.type === 'select'"
+                :model-value="modelParameterValues[field.key]"
+                :options="getSelectOptions(field)"
+                :label="field.label"
                 filled
                 emit-value
                 map-options
-                @update:model-value="$emit('update:slbr-tile-size', $event)"
+                @update:model-value="updateParameter(field.key, $event)"
               />
-            </q-item-section>
-          </q-item>
 
-          <q-item>
-            <q-item-section>
-              <q-input
-                :model-value="slbrTileBatch"
-                type="number"
-                label="tile_batch"
-                filled
-                :min="1"
-                :max="32"
-                :step="1"
-                :rules="slbrTileBatchRules"
-                @update:model-value="$emit('update:slbr-tile-batch', $event)"
-              />
-            </q-item-section>
-          </q-item>
-
-          <q-item>
-            <q-item-section>
-              <q-btn
-                outline
-                no-caps
-                color="primary"
-                icon="auto_fix_high"
-                label="使用推荐参数"
-                class="full-width settings-action-button"
-                @click="$emit('apply-slbr-recommended')"
-              />
-            </q-item-section>
-          </q-item>
-
-          <q-item>
-            <q-item-section>
-              <q-btn
-                outline
-                no-caps
-                color="primary"
-                icon="folder_open"
-                label="打开保存路径"
-                class="full-width settings-action-button"
-                :disable="!canOpenSavePath"
-                @click="$emit('open-save-path')"
-              />
-            </q-item-section>
-          </q-item>
-
-          <q-item>
-            <q-item-section>
-              <cuda-status
-                :backend-running="backendRunning"
-                @cuda-status-changed="$emit('cuda-status-changed', $event)"
-              />
-            </q-item-section>
-          </q-item>
-        </q-list>
-      </div>
-
-      <div v-else-if="currentModel === 'ocr'">
-        <q-list>
-          <q-item>
-            <q-item-section>
-              <q-select
-                :model-value="normalizedOcrLang"
-                :options="ocrLangOptions"
-                label="识别语言"
-                filled
-                @update:model-value="$emit('update:ocr-lang', $event)"
-              />
-            </q-item-section>
-          </q-item>
-          <q-item>
-            <q-item-section>
               <q-toggle
-                :model-value="autoLayout"
-                label="自动版面分析"
-                @update:model-value="$emit('update:auto-layout', $event)"
+                v-else-if="field.type === 'switch'"
+                :model-value="Boolean(modelParameterValues[field.key])"
+                :label="field.label"
+                @update:model-value="updateParameter(field.key, $event)"
               />
-            </q-item-section>
-          </q-item>
-          <div class="text-h6">OCR 功能将在作者 B 站粉丝超过 1000 时开放</div>
-        </q-list>
-      </div>
 
-      <div v-else class="text-h6">修复功能将在作者 B 站粉丝超过 1000 时开放</div>
-    </div>
+              <div v-else-if="field.type === 'slider'" class="slider-field">
+                <div class="field-label">{{ field.label }}</div>
+                <q-slider
+                  :model-value="Number(modelParameterValues[field.key] ?? field.default ?? 0)"
+                  :min="Number(field.min ?? 0)"
+                  :max="Number(field.max ?? 100)"
+                  :step="Number(field.step ?? 1)"
+                  label
+                  label-always
+                  @update:model-value="updateParameter(field.key, $event)"
+                />
+              </div>
+
+              <q-input
+                v-else
+                :model-value="modelParameterValues[field.key]"
+                :type="field.type === 'text' ? 'text' : 'number'"
+                :label="field.label"
+                filled
+                :min="field.min"
+                :max="field.max"
+                :step="field.step"
+                :rules="getNumberRules(field)"
+                @update:model-value="updateParameter(field.key, normalizeFieldValue(field, $event))"
+              />
+
+              <q-tooltip v-if="field.description">
+                {{ field.description }}
+              </q-tooltip>
+            </div>
+          </div>
+
+          <q-btn
+            v-if="hasRecommendedParameters"
+            outline
+            no-caps
+            color="primary"
+            icon="auto_fix_high"
+            label="使用推荐参数"
+            class="full-width settings-action-button q-mt-md"
+            @click="applyRecommendedParameters"
+          />
+        </section>
+
+        <section class="settings-section">
+          <div class="section-heading">
+            <q-icon name="fact_check" />
+            <span>批量操作</span>
+          </div>
+
+          <div class="action-grid">
+            <q-toggle
+              :model-value="selectAll"
+              label="全选文件"
+              class="batch-toggle"
+              @update:model-value="$emit('update:select-all', $event)"
+            />
+            <q-btn
+              v-if="supportsAction('deleteSelected')"
+              outline
+              no-caps
+              color="negative"
+              icon="delete"
+              label="删除选中文件"
+              class="settings-action-button"
+              :disable="selectedFiles.length === 0"
+              @click="$emit('confirm-delete-selected')"
+            />
+            <q-btn
+              v-if="supportsAction('applyCurrentMaskToSelected')"
+              outline
+              no-caps
+              color="primary"
+              icon="content_copy"
+              label="将当前蒙版作用于选中文件"
+              class="settings-action-button"
+              :disable="selectedFiles.length === 0 || !hasCurrentMask"
+              @click="$emit('apply-current-mask-to-selected')"
+            />
+            <div v-if="!hasActionButtons" class="empty-copy">
+              当前模型没有额外批量操作。
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="section-heading">
+            <q-icon name="folder_open" />
+            <span>{{ backendAvailable ? "输出与设备" : "输出设置" }}</span>
+          </div>
+
+          <folder-selector
+            v-if="backendAvailable && needsFolderInput('imageFolder')"
+            :model-value="folderPath"
+            label="输入文件夹"
+            @update:model-value="$emit('update:folder-path', $event)"
+          />
+
+          <folder-selector
+            v-if="backendAvailable && needsFolderInput('maskFolder')"
+            :model-value="maskFolderPath"
+            label="蒙版文件夹"
+            class="q-mt-md"
+            @update:model-value="$emit('update:mask-folder-path', $event)"
+          />
+
+          <folder-selector
+            :model-value="savePath"
+            label="保存路径"
+            class="q-mt-md"
+            @update:model-value="$emit('update:save-path', $event)"
+          />
+
+          <q-btn
+            outline
+            no-caps
+            color="primary"
+            icon="folder_open"
+            label="打开保存路径"
+            class="full-width settings-action-button q-mt-md"
+            :disable="!canOpenSavePath"
+            @click="$emit('open-save-path')"
+          />
+
+        </section>
+      </div>
+    </q-scroll-area>
   </q-drawer>
 </template>
 
@@ -304,7 +273,12 @@ const actionScopeOptions = [
   { label: "整个文件夹", value: "folder" },
 ];
 
-const ocrLangOptions = ["中文", "英文", "日文"];
+const DEFAULT_LAMA_RUN_CAPABILITIES = Object.freeze({
+  scopes: ["selected", "folder"],
+  folderInputs: ["imageFolder", "maskFolder"],
+  batchActions: ["deleteSelected", "applyCurrentMaskToSelected"],
+  outputRequired: true,
+});
 
 const props = defineProps({
   drawerOpen: {
@@ -315,9 +289,17 @@ const props = defineProps({
     type: String,
     default: "lama",
   },
+  modelMetadata: {
+    type: Object,
+    default: () => ({}),
+  },
   modelOptions: {
     type: Array,
     default: () => [],
+  },
+  modelParameterValues: {
+    type: Object,
+    default: () => ({}),
   },
   actionScope: {
     type: Object,
@@ -343,22 +325,6 @@ const props = defineProps({
     type: String,
     default: "",
   },
-  slbrTileSize: {
-    type: Number,
-    default: 384,
-  },
-  slbrTileBatch: {
-    type: Number,
-    default: 4,
-  },
-  slbrRecommended: {
-    type: Object,
-    default: () => ({}),
-  },
-  slbrTileSizeOptions: {
-    type: Array,
-    default: () => [256, 384, 512],
-  },
   savePath: {
     type: String,
     default: "",
@@ -367,82 +333,445 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
-  ocrLang: {
-    type: String,
-    default: "中文",
-  },
-  autoLayout: {
-    type: Boolean,
-    default: true,
-  },
   backendRunning: {
     type: Boolean,
     default: false,
+  },
+  backendEngineState: {
+    type: Object,
+    default: () => ({}),
   },
 });
 
 const emit = defineEmits([
   "update:drawer-open",
   "update:current-model",
+  "open-model-management",
   "update:action-scope",
   "update:select-all",
   "update:folder-path",
   "update:mask-folder-path",
-  "update:slbr-tile-size",
-  "update:slbr-tile-batch",
-  "apply-slbr-recommended",
+  "update:model-parameter",
+  "apply-recommended-parameters",
   "update:save-path",
-  "update:ocr-lang",
-  "update:auto-layout",
   "confirm-delete-selected",
   "apply-current-mask-to-selected",
   "open-save-path",
+  "open-backend-manager",
   "cuda-status-changed",
 ]);
+
+const readEngineValue = (key, fallback = "") => {
+  const value = props.backendEngineState?.[key];
+  return value?.value ?? value ?? fallback;
+};
+
+const backendAvailable = computed(() =>
+  Boolean(props.backendRunning || readEngineValue("isRunning", false))
+);
+const backendPreparing = computed(() =>
+  !backendAvailable.value && Boolean(readEngineValue("isPreparing", false))
+);
+const backendFailed = computed(() => Boolean(readEngineValue("hasFailed", false)));
+const backendStatusTone = computed(() => {
+  if (backendPreparing.value) return "preparing";
+  if (backendFailed.value) return "failed";
+  return "stopped";
+});
+const backendStatusTitle = computed(() =>
+  backendPreparing.value ? "正在启动后端服务" : "未检测到后端服务"
+);
+const backendStatusMessage = computed(() => {
+  if (backendPreparing.value) {
+    const phaseLabel = String(readEngineValue("phaseLabel", "") || "").trim();
+    return phaseLabel
+      ? `${phaseLabel}，服务启动后会自动刷新模型设置。`
+      : "正在启动服务，请稍等，服务启动后会自动刷新模型设置。";
+  }
+
+  const failureMessage = String(readEngineValue("runDisabledTooltip", "") || "").trim();
+  if (backendFailed.value && failureMessage) {
+    return failureMessage;
+  }
+
+  return "请打开后端管理启动服务，或手动启动后端。";
+});
+
+const runCapabilities = computed(() => {
+  const capabilities = props.modelMetadata?.runCapabilities;
+  if (capabilities && Object.keys(capabilities).length > 0) {
+    return capabilities;
+  }
+  return props.currentModel === "lama" ? DEFAULT_LAMA_RUN_CAPABILITIES : {};
+});
+const supportedScopes = computed(() => runCapabilities.value.scopes || ["selected"]);
+const supportedBatchActions = computed(() => [
+  ...new Set(["deleteSelected", ...(runCapabilities.value.batchActions || [])]),
+]);
+const folderInputs = computed(() => runCapabilities.value.folderInputs || []);
+const parameters = computed(() => props.modelMetadata?.parameters || {});
+const recommendedParameters = computed(() => parameters.value.recommended || {});
+const hasCurrentMask = computed(() =>
+  Boolean(props.currentMask?.data || props.currentMask?.displayUrl)
+);
+const hasActionButtons = computed(() =>
+  supportedBatchActions.value.some((actionId) => supportsAction(actionId))
+);
+
+const parameterFields = computed(() =>
+  Object.entries(parameters.value)
+    .filter(([key, value]) => key !== "recommended" && value && typeof value === "object")
+    .map(([key, value]) => ({
+      key,
+      type: value.type || "number",
+      label: value.label || key,
+      ...value,
+    }))
+);
+
+const hasRecommendedParameters = computed(() =>
+  Object.keys(recommendedParameters.value || {}).length > 0
+);
 
 const normalizedActionScope = computed(() => {
   const matched = actionScopeOptions.find((option) => option.value === props.actionScope?.value);
   return matched || actionScopeOptions[0];
 });
 
-const normalizedSlbrTileSizeOptions = computed(() =>
-  (props.slbrTileSizeOptions || [256, 384, 512]).map((value) => ({
-    label: String(value),
-    value,
-  }))
-);
-
-const slbrTileBatchRules = [
-  (value) => {
-    const numeric = Number(value);
-    return (
-      Number.isInteger(numeric) &&
-      numeric >= 1 &&
-      numeric <= 32
-    ) || "请输入 1-32 的正整数";
-  },
-];
-
-const normalizedOcrLang = computed(() =>
-  ocrLangOptions.includes(props.ocrLang) ? props.ocrLang : "中文"
+const scopedActionOptions = computed(() =>
+  actionScopeOptions.map((option) => {
+    const supported = supportedScopes.value.includes(option.value);
+    return {
+      ...option,
+      disable: !supported,
+      disableReason: supported ? "" : "当前模型不支持该作用范围",
+    };
+  })
 );
 
 const drawerModel = computed({
   get: () => props.drawerOpen,
   set: (value) => emit("update:drawer-open", value),
 });
+
+const selectScope = (option) => {
+  if (option.disable) return;
+  emit("update:action-scope", {
+    label: option.label,
+    value: option.value,
+  });
+};
+
+const needsFolderInput = (inputId) =>
+  normalizedActionScope.value.value === "folder" && folderInputs.value.includes(inputId);
+
+const supportsAction = (actionId) => supportedBatchActions.value.includes(actionId);
+
+const updateParameter = (key, value) => {
+  emit("update:model-parameter", { key, value });
+};
+
+const applyRecommendedParameters = () => {
+  emit("apply-recommended-parameters", recommendedParameters.value);
+};
+
+const getSelectOptions = (field) =>
+  (field.options || []).map((option) =>
+    typeof option === "object"
+      ? {
+          label: option.label || String(option.value),
+          value: option.value,
+        }
+      : {
+          label: String(option),
+          value: option,
+        }
+  );
+
+const normalizeFieldValue = (field, value) => {
+  if (field.type === "text") return value;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return field.default ?? "";
+  if (field.type === "number") {
+    return Number.isInteger(Number(field.step || 1)) ? Math.round(numeric) : numeric;
+  }
+  return numeric;
+};
+
+const getNumberRules = (field) => [
+  (value) => {
+    if (!field.required && (value === "" || value == null)) return true;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return "请输入有效数字";
+    if (field.min != null && numeric < Number(field.min)) {
+      return `不能小于 ${field.min}`;
+    }
+    if (field.max != null && numeric > Number(field.max)) {
+      return `不能大于 ${field.max}`;
+    }
+    return true;
+  },
+];
 </script>
 
 <style scoped>
+.image-settings-drawer {
+  width: min(360px, 92vw);
+  overflow: hidden;
+}
+
+.drawer-scroll {
+  height: 100%;
+  width: 100%;
+  overflow-x: hidden;
+}
+
+.drawer-scroll :deep(.q-scrollarea__container),
+.drawer-scroll :deep(.q-scrollarea__content) {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.settings-content {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.settings-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 2px;
+  min-width: 0;
+}
+
+.settings-title > div {
+  min-width: 0;
+}
+
+.settings-section {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  background: rgba(255, 255, 255, 0.76);
+  overflow: hidden;
+}
+
+.backend-status-card {
+  display: grid;
+  gap: 12px;
+}
+
+.backend-status-card--preparing {
+  border-color: rgba(25, 118, 210, 0.28);
+  background: rgba(25, 118, 210, 0.08);
+}
+
+.backend-status-card--failed,
+.backend-status-card--stopped {
+  border-color: rgba(245, 124, 0, 0.24);
+  background: rgba(245, 124, 0, 0.08);
+}
+
+.backend-status-main {
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+
+.backend-status-icon {
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 38px;
+  border-radius: 10px;
+  color: var(--q-primary);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.backend-status-card--failed .backend-status-icon,
+.backend-status-card--stopped .backend-status-icon {
+  color: #f57c00;
+}
+
+.backend-status-copy {
+  min-width: 0;
+}
+
+.backend-status-title {
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.backend-status-message {
+  margin-top: 3px;
+  color: rgba(17, 24, 39, 0.62);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.backend-status-actions {
+  display: flex;
+  justify-content: center;
+}
+
+.backend-status-button {
+  min-width: 0;
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+
+.section-heading--split {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.section-heading-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.heading-cuda-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.heading-cuda-status :deep(.row) {
+  flex-wrap: nowrap;
+}
+
+.heading-cuda-status :deep(.col) {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.heading-cuda-status :deep(.q-badge) {
+  white-space: nowrap;
+}
+
+.field-label {
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: rgba(17, 24, 39, 0.62);
+}
+
+.scope-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.scope-button {
+  min-height: 38px;
+  min-width: 0;
+}
+
+.scope-button :deep(.q-btn__content) {
+  white-space: normal;
+  line-height: 1.25;
+  text-align: center;
+}
+
+.parameter-grid,
+.action-grid {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.batch-toggle {
+  min-height: 38px;
+}
+
+.parameter-field {
+  min-width: 0;
+}
+
+.parameter-field :deep(.q-field),
+.parameter-field :deep(.q-field__inner),
+.parameter-field :deep(.q-field__control),
+.settings-section :deep(.q-field),
+.settings-section :deep(.q-field__inner),
+.settings-section :deep(.q-field__control) {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.slider-field {
+  padding: 8px 4px 0;
+}
+
 .settings-action-button {
-  min-height: 46px;
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
 }
 
 .settings-action-button :deep(.q-btn__content) {
   width: 100%;
   justify-content: center;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 8px;
-  white-space: nowrap;
+  min-width: 0;
+  white-space: normal;
+  line-height: 1.25;
+  text-align: center;
+}
+
+.empty-copy {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  color: rgba(17, 24, 39, 0.58);
+  font-size: 13px;
+}
+
+:global(body.body--dark) .settings-section {
+  background: #2f2f32;
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+:global(body.body--dark) .backend-status-card--preparing {
+  border-color: rgba(100, 181, 246, 0.34);
+  background: rgba(100, 181, 246, 0.12);
+}
+
+:global(body.body--dark) .backend-status-card--failed,
+:global(body.body--dark) .backend-status-card--stopped {
+  border-color: rgba(255, 183, 77, 0.34);
+  background: rgba(255, 183, 77, 0.12);
+}
+
+:global(body.body--dark) .backend-status-icon {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+:global(body.body--dark) .field-label,
+:global(body.body--dark) .empty-copy,
+:global(body.body--dark) .backend-status-message {
+  color: rgba(255, 255, 255, 0.62);
 }
 </style>

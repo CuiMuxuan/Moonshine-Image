@@ -24,7 +24,9 @@ export const useBackendEngineStore = defineStore("backendEngine", () => {
   const runDisabled = computed(() => !isRunning.value);
   const runDisabledTooltip = computed(() => {
     if (isRunning.value) return "";
-    if (hasFailed.value) return "Moonshine AI 引擎准备失败，点击打开诊断";
+    if (hasFailed.value) {
+      return error.value || "Moonshine AI 引擎准备失败，点击打开诊断";
+    }
     return phaseLabel.value;
   });
 

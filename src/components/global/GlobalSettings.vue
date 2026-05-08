@@ -11,6 +11,7 @@
         <q-tabs v-model="activeTab" dense align="justify" active-color="primary" indicator-color="primary">
           <q-tab name="general" label="通用配置" />
           <q-tab name="backend" label="后端配置" />
+          <q-tab name="models" label="模型管理" />
           <q-tab name="files" label="文件管理" />
           <q-tab name="appearance" label="外观主题" />
           <q-tab name="advanced" label="高级配置" />
@@ -96,6 +97,16 @@
                 </q-input>
                 <q-select v-model="localConfig.general.defaultModel" label="默认模型" :options="['lama']" />
               </div>
+            </q-tab-panel>
+
+            <q-tab-panel name="models" class="q-px-none">
+              <model-management-panel
+                :backend-running="backendRunning"
+                :selected-model-id="selectedModelId"
+                @update:selected-model-id="selectedModelId = $event"
+                @open-backend-manager="$emit('open-backend-manager')"
+                @model-downloaded="handleModelDownloaded"
+              />
             </q-tab-panel>
 
             <q-tab-panel name="files" class="q-px-none">
@@ -295,6 +306,7 @@
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
 import { useQuasar } from "quasar";
+import ModelManagementPanel from "src/components/global/ModelManagementPanel.vue";
 import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, UI_BUTTON_SIZE_OPTIONS } from "src/config/ConfigManager";
 import { createDefaultShortcuts, formatShortcutKeys, getShortcutDefinition, getShortcutTokenFromKeyboardEvent, getShortcutsByGroup, normalizeShortcutKeys, SHORTCUT_GROUP_META, SHORTCUT_GROUPS, validateShortcutConfig } from "src/utils/shortcutConfig";
 import { useAppStateStore } from "src/stores/appState";
@@ -324,12 +336,18 @@ const themeColorFields = [
 const brushConfigFields = [{ key: "imageBrushDefault", label: "图片默认画笔" }, { key: "videoBrushDefault", label: "视频默认画笔" }];
 const buttonSizeOptions = UI_BUTTON_SIZE_OPTIONS.slice().reverse().map((value) => ({ label: value.toUpperCase(), value }));
 
-const props = defineProps({ modelValue: { type: Boolean, default: false } });
-const emit = defineEmits(["update:modelValue"]);
+const props = defineProps({
+  modelValue: { type: Boolean, default: false },
+  initialTab: { type: String, default: "" },
+  initialModelId: { type: String, default: "" },
+  backendRunning: { type: Boolean, default: false },
+});
+const emit = defineEmits(["update:modelValue", "open-backend-manager", "model-downloaded"]);
 
 const showDialog = computed({ get: () => props.modelValue, set: (value) => emit("update:modelValue", value) });
 const activeTab = ref("general");
 const advancedTab = ref("image");
+const selectedModelId = ref("lama");
 const saving = ref(false);
 const cleaningVideoTemp = ref(false);
 const showConfirmDialog = ref(false);
@@ -509,8 +527,28 @@ const saveSettings = async () => {
   await doSaveSettings();
 };
 const confirmAction = () => { showConfirmDialog.value = false; if (pendingAction.value) { pendingAction.value(); pendingAction.value = null; } };
+const applyInitialTarget = () => {
+  if (props.initialTab) activeTab.value = props.initialTab;
+  if (props.initialModelId) selectedModelId.value = props.initialModelId;
+};
+const handleModelDownloaded = (modelId) => {
+  emit("model-downloaded", modelId);
+};
 
-watch(() => props.modelValue, (opened) => { if (!opened) { stopShortcutRecording(); return; } localConfig.value = buildSerializableConfig(configStore.config); validatePort(localConfig.value.general.backendPort); }, { immediate: true });
+watch(() => props.modelValue, (opened) => {
+  if (!opened) {
+    stopShortcutRecording();
+    return;
+  }
+  localConfig.value = buildSerializableConfig(configStore.config);
+  validatePort(localConfig.value.general.backendPort);
+  applyInitialTarget();
+}, { immediate: true });
+watch(() => [props.initialTab, props.initialModelId], () => {
+  if (showDialog.value) {
+    applyInitialTarget();
+  }
+});
 watch(() => configStore.config, (newConfig) => { if (!showDialog.value) localConfig.value = buildSerializableConfig(newConfig); }, { deep: true });
 watch(() => localConfig.value.general.backendPort, (port) => { validatePort(port); }, { immediate: true });
 

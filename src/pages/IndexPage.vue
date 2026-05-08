@@ -26,7 +26,7 @@
             "
             ref="editorRef"
             :selected-file="currentFile.originalFile"
-            :show-masker="showMaskTools && currentModel === 'lama'"
+            :show-masker="showMaskTools && currentModelRequiresMask"
             :drawing-mode="isMaskDrawingMode"
             :tool-state="imageMaskToolState"
             :mask="currentFile.mask"
@@ -62,9 +62,9 @@ import { useConfigStore } from "src/stores/config";
 import { useAppStateStore } from "src/stores/appState";
 import { useFileManagerStore } from "src/stores/fileManager";
 import { useRuntimeUiStore } from "src/stores/runtimeUi";
+import { useModelRegistryStore } from "src/stores/modelRegistry";
 import { useConfiguredShortcuts } from "src/composables/useConfiguredShortcuts";
 import InpaintService from "src/services/ImageProcessingService";
-import ModelRegistryService from "src/services/ModelRegistryService";
 import { buildImageOutputBaseName, splitFileName } from "src/utils/fileNaming";
 import { MASK_TOOL_MODES } from "src/utils/maskTool";
 import ImageEditor from "../components/image/ImageEditor.vue";
@@ -79,6 +79,7 @@ const configStore = useConfigStore();
 const appStateStore = useAppStateStore();
 const fileManagerStore = useFileManagerStore();
 const runtimeUiStore = useRuntimeUiStore();
+const modelRegistryStore = useModelRegistryStore();
 
 const getDefaultDrawerState = () => {
   const viewportWidth =
@@ -125,19 +126,7 @@ const savePath = ref("");
 const savePathSourceMode = ref("managed");
 const folderPath = ref("");
 const maskFolderPath = ref("");
-const slbrSettings = ref({
-  tileSize: 384,
-  tileBatch: 4,
-  recommended: {
-    tile_size: 384,
-    tile_batch: 4,
-    overlap: 96,
-    pad_multiple: 16,
-  },
-  tileSizeOptions: [256, 384, 512],
-});
-const ocrLang = ref("中文");
-const autoLayout = ref(true);
+const modelParameterValues = ref({});
 const editorRef = ref(null);
 const isImageLoaded = ref(false);
 const showingOriginal = ref(false);
@@ -254,6 +243,7 @@ const backendEngine = inject("backendEngine", ref({}));
 const loadingControl = inject("loadingControl");
 const layoutFooter = inject("layoutFooter", null);
 const layoutDrawers = inject("layoutDrawers", null);
+const globalSettings = inject("globalSettings", null);
 const isPageDisabled = ref(false);
 const imagePageFooterOwner = Symbol("image-page-footer");
 const imagePageLeftDrawerOwner = Symbol("image-page-left-drawer");
@@ -262,7 +252,12 @@ const currentFile = computed(() => fileManagerStore.currentFile);
 const selectedFiles = computed(() => fileManagerStore.selectedFiles);
 const backendEngineValue = computed(() => {
   const value = backendEngine?.value || {};
+  const engineIsRunning = Boolean(value.isRunning?.value ?? value.isRunning);
   return {
+    status: String((value.status?.value ?? value.status) || ""),
+    phaseLabel: String((value.phaseLabel?.value ?? value.phaseLabel) || ""),
+    isRunning: engineIsRunning || backendRunning.value,
+    isPreparing: Boolean(value.isPreparing?.value ?? value.isPreparing),
     runDisabled: Boolean(value.runDisabled?.value ?? value.runDisabled),
     runDisabledTooltip: String((value.runDisabledTooltip?.value ?? value.runDisabledTooltip) || ""),
     hasFailed: Boolean(value.hasFailed?.value ?? value.hasFailed),
@@ -289,6 +284,18 @@ const currentMask = computed(() => {
 const hasProcessedImages = computed(() => {
   return currentFile.value?.history?.length > 1 || false;
 });
+const imageModelMetadata = computed(() =>
+  modelRegistryStore.imageModels.find((model) => model.id === currentModel.value) || {}
+);
+const currentModelRequiresMask = computed(() =>
+  imageModelMetadata.value.requiresMask !== false
+);
+const currentModelRunCapabilities = computed(() =>
+  imageModelMetadata.value.runCapabilities || {}
+);
+const currentModelScopes = computed(() =>
+  currentModelRunCapabilities.value.scopes || ["selected"]
+);
 const previewStageStyle = computed(() => ({
   "--preview-grid-cell-a": "#161616",
   "--preview-grid-cell-b": "#202020",
@@ -353,21 +360,72 @@ const toggleFileSelection = (file) => {
   fileManagerStore.toggleFileSelection(file.id);
 };
 
-const handleModelChange = (model) => {
+const handleModelChange = (model, { notify = true } = {}) => {
+  if (!model) return;
   currentModel.value = model;
-  if (model === "slbr") {
-    showMaskTools.value = false;
-    setMaskDrawingMode(false);
-  } else if (model === "lama") {
-    showMaskTools.value = true;
-    setMaskDrawingMode(runtimeUiStore.imageMaskDrawingEnabled);
-  }
+  const metadata = modelRegistryStore.imageModels.find((item) => item.id === model) || {};
+  applyModelRuntimeState(metadata);
+  if (!notify) return;
   const selectedOption = imageModelOptions.value.find((option) => option.value === model);
   $q.notify({
     type: "info",
     message: `已切换到${selectedOption?.label || model}`,
     position: "top",
   });
+};
+
+const getModelParameterSchema = (metadata = imageModelMetadata.value) => {
+  const parameters = metadata?.parameters || {};
+  return Object.fromEntries(
+    Object.entries(parameters).filter(
+      ([key, value]) => key !== "recommended" && value && typeof value === "object"
+    )
+  );
+};
+
+const ensureModelParameterDefaults = (metadata = imageModelMetadata.value) => {
+  const schema = getModelParameterSchema(metadata);
+  const nextValues = { ...(modelParameterValues.value || {}) };
+  Object.entries(schema).forEach(([key, field]) => {
+    if (nextValues[key] === undefined) {
+      nextValues[key] = field.default ?? "";
+    }
+  });
+  modelParameterValues.value = nextValues;
+};
+
+const updateModelParameter = ({ key, value }) => {
+  if (!key) return;
+  modelParameterValues.value = {
+    ...modelParameterValues.value,
+    [key]: value,
+  };
+};
+
+const applyRecommendedModelParameters = (recommended = {}) => {
+  modelParameterValues.value = {
+    ...modelParameterValues.value,
+    ...(recommended || {}),
+  };
+};
+
+const openModelManagement = (modelId = currentModel.value) => {
+  globalSettings?.open?.({
+    tab: "models",
+    modelId: modelId || currentModel.value || "lama",
+  });
+};
+
+const applyModelRuntimeState = (metadata = imageModelMetadata.value) => {
+  ensureModelParameterDefaults(metadata);
+  if (metadata.requiresMask === false) {
+    showMaskTools.value = false;
+    setMaskDrawingMode(false);
+    return;
+  }
+
+  showMaskTools.value = true;
+  setMaskDrawingMode(runtimeUiStore.imageMaskDrawingEnabled);
 };
 
 // 处理全选
@@ -781,9 +839,17 @@ const resizeMaskData = (
 
 // 运行当前模型
 const runCurrentModel = async () => {
+  if (!currentModelScopes.value.includes(actionScope.value.value)) {
+    $q.notify({
+      type: "negative",
+      message: "当前模型不支持所选作用范围",
+      position: "top",
+    });
+    return;
+  }
   if (
     !currentFile.value &&
-    !(currentModel.value === "slbr" && actionScope.value.value === "folder")
+    !(currentModelRequiresMask.value === false && actionScope.value.value === "folder")
   ) {
     return;
   }
@@ -801,12 +867,6 @@ const runCurrentModel = async () => {
     case "slbr":
       runSlbrModel();
       break;
-    case "ocr":
-      startOcr();
-      break;
-    case "repair":
-      startRepair();
-      break;
     default:
       $q.notify({
         type: "info",
@@ -815,28 +875,8 @@ const runCurrentModel = async () => {
       });
   }
 };
-// OCR处理函数
-const startOcr = () => {
-  $q.notify({
-    type: "info",
-    message: `OCR功能将在作者B站粉丝超过2000时开发`,
-    position: "top",
-  });
-};
-
-// 修复处理函数
-const startRepair = () => {
-  $q.notify({
-    type: "info",
-    message: "修复功能将在作者B站粉丝超过3000时开发",
-    position: "top",
-  });
-};
 // 运行去除模型
-const getSlbrOptions = () => ({
-  tile_size: Number(slbrSettings.value.tileSize) || 384,
-  tile_batch: Math.max(1, Math.min(32, Math.round(Number(slbrSettings.value.tileBatch) || 4))),
-});
+const getCurrentModelOptions = () => ({ ...modelParameterValues.value });
 
 const runSlbrModel = async () => {
   let filesToProcess = [];
@@ -899,7 +939,7 @@ const runSlbrModel = async () => {
       filesToProcess
     );
     requestData.model_id = "slbr";
-    requestData.options = getSlbrOptions();
+    requestData.options = getCurrentModelOptions();
 
     const response = await InpaintService.performMoonshineImageProcessing(requestData);
     const successfulResults = (response.results || []).filter((result) => result?.success);
@@ -1127,7 +1167,7 @@ const processSlbrFolderImages = async () => {
       device: cudaAvailable.value ? "cuda" : "cpu",
       image_folder: folderPath.value,
       output_folder: effectiveSavePath.value,
-      options: getSlbrOptions(),
+      options: getCurrentModelOptions(),
     };
     const response = await InpaintService.performMoonshineFolderProcessing(folderData);
     if (response.success) {
@@ -1328,14 +1368,18 @@ const checkHistoryLimit = (fileId) => {
   if (dontShowMaxHistoryWarning.value) return Promise.resolve(true);
 
   const file = fileManagerStore.files.find((f) => f.id === fileId);
-  const historyLimit = configStore.config.advanced.imageHistoryLimit;
+  const historyLimit = Math.max(
+    2,
+    Math.floor(Number(configStore.config.advanced?.imageHistoryLimit) || 10)
+  );
   const maxProcessedCount = historyLimit - 1; // 减去原图
+  const processedCount = Math.max(0, (file?.history?.length || 0) - 1);
 
-  if (file?.history?.length >= maxProcessedCount) {
+  if (processedCount >= maxProcessedCount) {
     return new Promise((resolve) => {
       $q.dialog({
         title: "历史记录上限提醒",
-        message: `该图片已有${historyLimit}个处理记录，继续处理将删除最早的非原图处理记录。`,
+        message: `该图片已有 ${processedCount} 个处理记录，继续处理将删除最早的非原图处理记录。`,
         persistent: true,
         ok: {
           label: "确定",
@@ -1552,7 +1596,9 @@ const syncLayoutFooter = () => {
       engineRunTooltip: backendEngineValue.value.runDisabledTooltip,
       engineFailed: backendEngineValue.value.hasFailed,
       showMaskTools: showMaskTools.value,
+      currentModelRequiresMask: currentModelRequiresMask.value,
       hasProcessedImages: hasProcessedImages.value,
+      actionScope: actionScope.value,
       type: "image",
     },
     listeners: {
@@ -1561,7 +1607,7 @@ const syncLayoutFooter = () => {
       },
       "rejected-files": onRejectedFiles,
       "toggle-mask-tools": () => {
-        if (currentModel.value !== "lama") {
+        if (!currentModelRequiresMask.value) {
           return;
         }
         showMaskTools.value = !showMaskTools.value;
@@ -1628,6 +1674,25 @@ const handleWorkspaceFilesDropped = async (files) => {
   await addImageFiles(files);
 };
 
+const handleModelRegistryUpdated = async () => {
+  await loadImageModelOptions();
+};
+
+const handleGlobalModelSwitch = (event) => {
+  const modelId = event?.detail?.modelId;
+  if (!modelId) return;
+  const installed = imageModelOptions.value.some((option) => option.value === modelId);
+  if (!installed) {
+    void loadImageModelOptions().then(() => {
+      if (imageModelOptions.value.some((option) => option.value === modelId)) {
+        handleModelChange(modelId);
+      }
+    });
+    return;
+  }
+  handleModelChange(modelId);
+};
+
 const handleDrawerModelChange = (model) => {
   handleModelChange(model);
 };
@@ -1637,28 +1702,9 @@ const handleDrawerSelectAllChange = (value) => {
   handleSelectAll(value);
 };
 
-const applySlbrRecommendedSettings = () => {
-  const recommended = slbrSettings.value.recommended || {};
-  slbrSettings.value.tileSize = recommended.tile_size || 384;
-  slbrSettings.value.tileBatch = recommended.tile_batch || 4;
-};
-
-const loadImageModelOptions = async () => {
-  const models = await ModelRegistryService.getImageModels();
-  const slbrModel = models.find((model) => model.id === "slbr");
-  const slbrParams = slbrModel?.parameters || {};
-  const recommended = slbrParams.recommended || {};
-  if (Array.isArray(slbrParams.tileSizeOptions) && slbrParams.tileSizeOptions.length > 0) {
-    slbrSettings.value.tileSizeOptions = slbrParams.tileSizeOptions;
-  }
-  if (recommended.tile_size || recommended.tile_batch) {
-    slbrSettings.value.recommended = {
-      ...slbrSettings.value.recommended,
-      ...recommended,
-    };
-    slbrSettings.value.tileSize = recommended.tile_size || slbrSettings.value.tileSize;
-    slbrSettings.value.tileBatch = recommended.tile_batch || slbrSettings.value.tileBatch;
-  }
+const loadImageModelOptions = async ({ preferredModel = currentModel.value } = {}) => {
+  await modelRegistryStore.loadModels();
+  const models = modelRegistryStore.installedImageModels;
   imageModelOptions.value = models.map((model) => ({
     label: model.label || model.id,
     value: model.id,
@@ -1666,15 +1712,29 @@ const loadImageModelOptions = async () => {
     installed: model.installed,
     requiresMask: model.requiresMask,
     parameters: model.parameters || {},
+    runCapabilities: model.runCapabilities || {},
   }));
 
-  if (!imageModelOptions.value.some((option) => option.value === currentModel.value)) {
-    currentModel.value = imageModelOptions.value[0]?.value || "lama";
+  const hasPreferredModel = imageModelOptions.value.some(
+    (option) => option.value === preferredModel
+  );
+  const hasCurrentModel = imageModelOptions.value.some(
+    (option) => option.value === currentModel.value
+  );
+  let nextModel = currentModel.value || "lama";
+  if (hasPreferredModel) {
+    nextModel = preferredModel;
+  } else if (!hasCurrentModel) {
+    nextModel = imageModelOptions.value[0]?.value || nextModel;
   }
-  if (currentModel.value === "slbr") {
-    showMaskTools.value = false;
-    setMaskDrawingMode(false);
+
+  if (nextModel !== currentModel.value) {
+    currentModel.value = nextModel;
   }
+
+  const metadata =
+    modelRegistryStore.imageModels.find((model) => model.id === currentModel.value) || {};
+  applyModelRuntimeState(metadata);
 };
 
 const syncLayoutDrawers = () => {
@@ -1716,28 +1776,27 @@ const syncLayoutDrawers = () => {
     props: {
       drawerOpen: rightDrawerOpen.value,
       currentModel: currentModel.value,
+      modelMetadata: imageModelMetadata.value,
       modelOptions: imageModelOptions.value,
+      modelParameterValues: modelParameterValues.value,
       actionScope: actionScope.value,
       selectAll: selectAll.value,
       selectedFiles: selectedFiles.value,
       currentMask: currentMask.value,
       folderPath: folderPath.value,
       maskFolderPath: maskFolderPath.value,
-      slbrTileSize: slbrSettings.value.tileSize,
-      slbrTileBatch: slbrSettings.value.tileBatch,
-      slbrRecommended: slbrSettings.value.recommended,
-      slbrTileSizeOptions: slbrSettings.value.tileSizeOptions,
       savePath: effectiveSavePath.value,
       canOpenSavePath: canOpenSavePath.value,
-      ocrLang: ocrLang.value,
-      autoLayout: autoLayout.value,
       backendRunning: backendRunning.value,
+      backendEngineState: backendEngineValue.value,
     },
     listeners: {
       "update:drawer-open": (value) => {
         rightDrawerOpen.value = value;
       },
       "update:current-model": handleDrawerModelChange,
+      "open-model-management": openModelManagement,
+      "open-backend-manager": backendEngineValue.value.openDiagnostics,
       "update:action-scope": (value) => {
         actionScope.value = value;
       },
@@ -1748,16 +1807,8 @@ const syncLayoutDrawers = () => {
       "update:mask-folder-path": (value) => {
         maskFolderPath.value = value;
       },
-      "update:slbr-tile-size": (value) => {
-        slbrSettings.value.tileSize = Number(value) || 384;
-      },
-      "update:slbr-tile-batch": (value) => {
-        slbrSettings.value.tileBatch = Math.max(
-          1,
-          Math.min(32, Math.round(Number(value) || 1))
-        );
-      },
-      "apply-slbr-recommended": applySlbrRecommendedSettings,
+      "update:model-parameter": updateModelParameter,
+      "apply-recommended-parameters": applyRecommendedModelParameters,
       "update:save-path": (value) => {
         savePathSourceMode.value = resolveManagedSavePathMode({
           candidatePath: value,
@@ -1770,12 +1821,6 @@ const syncLayoutDrawers = () => {
           folderName: imageFolderName.value,
           sourceMode: savePathSourceMode.value,
         });
-      },
-      "update:ocr-lang": (value) => {
-        ocrLang.value = value;
-      },
-      "update:auto-layout": (value) => {
-        autoLayout.value = value;
       },
       "confirm-delete-selected": confirmDeleteSelected,
       "apply-current-mask-to-selected": applyCurrentMaskToSelected,
@@ -1952,9 +1997,7 @@ const savePageState = async () => {
       savePathSourceMode: savePathSourceMode.value,
       folderPath: folderPath.value,
       maskFolderPath: maskFolderPath.value,
-      slbrSettings: slbrSettings.value,
-      ocrLang: ocrLang.value,
-      autoLayout: autoLayout.value,
+      modelParameterValues: modelParameterValues.value,
       showingOriginal: showingOriginal.value,
       dontShowMaxHistoryWarning: dontShowMaxHistoryWarning.value,
     };
@@ -2009,12 +2052,7 @@ const restorePageState = async () => {
         savePathSourceMode.value = savedUIState.savePathSourceMode || "managed";
         folderPath.value = savedUIState.folderPath || "";
         maskFolderPath.value = savedUIState.maskFolderPath || "";
-        slbrSettings.value = {
-          ...slbrSettings.value,
-          ...(savedUIState.slbrSettings || {}),
-        };
-        ocrLang.value = savedUIState.ocrLang || "中文";
-        autoLayout.value = savedUIState.autoLayout ?? true;
+        modelParameterValues.value = savedUIState.modelParameterValues || {};
         showingOriginal.value = savedUIState.showingOriginal ?? false;
         dontShowMaxHistoryWarning.value = savedUIState.dontShowMaxHistoryWarning ?? false;
       });
@@ -2024,7 +2062,7 @@ const restorePageState = async () => {
       if (selectAll.value) {
         fileManagerStore.selectAllFiles(true);
       }
-      if (currentModel.value === "slbr") {
+      if (imageModelMetadata.value.requiresMask === false) {
         showMaskTools.value = false;
         setMaskDrawingMode(false);
       }
@@ -2083,6 +2121,8 @@ onMounted(async () => {
 
   await syncVisibleAreaObservers();
   window.addEventListener("resize", scheduleVisibleAreaInsetsUpdate);
+  window.addEventListener("moonshine-model-registry-updated", handleModelRegistryUpdated);
+  window.addEventListener("moonshine-switch-model", handleGlobalModelSwitch);
 });
 
 // 在路由离开前保存当前页面状态
@@ -2100,6 +2140,8 @@ onUnmounted(async () => {
   layoutDrawers?.clearPageDrawer?.("left", imagePageLeftDrawerOwner);
   layoutDrawers?.clearPageDrawer?.("right", imagePageRightDrawerOwner);
   window.removeEventListener("resize", scheduleVisibleAreaInsetsUpdate);
+  window.removeEventListener("moonshine-model-registry-updated", handleModelRegistryUpdated);
+  window.removeEventListener("moonshine-switch-model", handleGlobalModelSwitch);
   cancelVisibleAreaUpdateFrame();
   cancelVisibleAreaTransitionSync();
   disconnectVisibleAreaResizeObserver();
@@ -2138,6 +2180,18 @@ watch(
   async () => {
     await syncVisibleAreaObservers();
     startVisibleAreaTransitionSync();
+  },
+  {
+    flush: "post",
+  }
+);
+
+watch(
+  () => backendEngineValue.value.isRunning || backendRunning.value,
+  async (isRunning, wasRunning) => {
+    if (isRunning && !wasRunning) {
+      await loadImageModelOptions({ preferredModel: currentModel.value });
+    }
   },
   {
     flush: "post",

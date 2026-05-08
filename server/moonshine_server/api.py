@@ -77,6 +77,11 @@ from moonshine_server.moonshine.slbr_runner import (
     read_image_bgr,
     recommend_slbr_params,
 )
+from moonshine_server.moonshine.model_registry import (
+    build_model_status,
+    download_task_manager,
+    get_model_manifest,
+)
 
 CURRENT_DIR = Path(__file__).parent.absolute().resolve()
 WEB_APP_DIR = CURRENT_DIR / "web_app"
@@ -184,6 +189,9 @@ class Api:
         self.add_api_route("/api/v1/video_batch_inpaint", self.api_video_batch_inpaint, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/models", self.api_moonshine_models, methods=["GET"])
         self.add_api_route("/api/v1/moonshine/models/refresh", self.api_moonshine_models, methods=["POST"])
+        self.add_api_route("/api/v1/moonshine/models/{model_id}/verify", self.api_verify_moonshine_model, methods=["POST"])
+        self.add_api_route("/api/v1/moonshine/models/{model_id}/download", self.api_download_moonshine_model, methods=["POST"])
+        self.add_api_route("/api/v1/moonshine/models/tasks/{task_id}", self.api_moonshine_model_task, methods=["GET"])
         self.add_api_route("/api/v1/moonshine/image/process", self.api_moonshine_image_process, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/image/process_folder", self.api_moonshine_image_process_folder, methods=["POST"])
         
@@ -268,51 +276,70 @@ class Api:
     def api_moonshine_models(self):
         """Return the dynamic Moonshine model registry used by the client."""
         self.model_manager.scan_models()
-        installed_ids = set(self.model_manager.available_models.keys())
-        slbr_runner = self._get_slbr_runner()
         cuda_info = self._get_cuda_info()
         slbr_recommended = recommend_slbr_params(cuda_info)
+        models = build_model_status(self._model_dir(), cuda_info)
 
-        models = [
-            {
-                "id": "lama",
-                "label": "Lama 去除模型",
-                "description": "通用擦除与修复模型",
-                "installed": "lama" in installed_ids,
-                "requiresMask": True,
-                "downloadable": False,
-                "sourceLinks": [],
-            },
-            {
-                "id": "slbr",
-                "label": "透明水印去除模型",
-                "description": "用于半透明可见水印去除的无蒙版模型",
-                "installed": slbr_runner.installed,
-                "requiresMask": False,
-                "downloadable": False,
-                "sourceLinks": [],
-                "parameters": {
-                    "tileSizeOptions": [256, 384, 512],
-                    "tileBatch": {
-                        "min": 1,
-                        "max": 32,
-                        "step": 1,
-                    },
-                    "overlapMode": "tile_size_quarter",
+        for model in models:
+            if model.get("id") == "slbr":
+                model["parameters"] = {
+                    **(model.get("parameters") or {}),
                     "recommended": slbr_recommended,
-                },
-            },
-        ]
+                }
 
         return JSONResponse(
             content=jsonable_encoder(
                 {
                     "currentModel": self.model_manager.name,
+                    "modelDir": str(self._model_dir()),
                     "cuda": cuda_info,
                     "models": models,
                 }
             )
         )
+
+    def api_verify_moonshine_model(self, model_id: str):
+        """Refresh and return one model's file/install status."""
+        manifest_item = get_model_manifest(model_id)
+        if manifest_item is None:
+            raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
+
+        cuda_info = self._get_cuda_info()
+        models = build_model_status(self._model_dir(), cuda_info)
+        model = next((item for item in models if item.get("id") == model_id), None)
+        if model is None:
+            raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
+
+        return JSONResponse(
+            content=jsonable_encoder(
+                {
+                    "success": True,
+                    "model": model,
+                }
+            )
+        )
+
+    def api_download_moonshine_model(self, model_id: str):
+        """Create an in-process model download task."""
+        try:
+            task = download_task_manager.create_download_task(model_id, self._model_dir())
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error))
+
+        return JSONResponse(
+            content=jsonable_encoder(
+                {
+                    "success": True,
+                    "task": task.to_dict(),
+                }
+            )
+        )
+
+    def api_moonshine_model_task(self, task_id: str):
+        task = download_task_manager.get_task(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"Download task not found: {task_id}")
+        return JSONResponse(content=jsonable_encoder(task.to_dict()))
 
     def _model_dir(self) -> Path:
         model_dir = os.getenv("XDG_CACHE_HOME") or os.getenv("TORCH_HOME")

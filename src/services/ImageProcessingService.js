@@ -27,6 +27,13 @@ const getRequestItemId = (requestData, index) => {
   return undefined;
 };
 
+const getRequestItem = (requestData, index) => {
+  if (Array.isArray(requestData?.data) && requestData.data[index]) {
+    return requestData.data[index];
+  }
+  return null;
+};
+
 // Single-file wrapper (kept for compatibility).
 const performInpainting = async (fileId) => {
   try {
@@ -129,12 +136,15 @@ const processBatchResults = async (response, requestData = {}) => {
       const resultIndex = Number.isInteger(result.index) ? result.index : i;
       const resultId = result.id || getRequestItemId(requestData, resultIndex);
       const resultPayload = result.result || result.image;
+      const requestItem = getRequestItem(requestData, resultIndex);
 
       if (result.success && resultPayload) {
         try {
           if (resultId) {
             await fileManagerStore.addProcessingResult(resultId, resultPayload);
-            fileManagerStore.updateFileMask(resultId, null);
+            if (requestItem?.mask) {
+              fileManagerStore.updateFileMask(resultId, null);
+            }
           }
 
           processedResults.push({

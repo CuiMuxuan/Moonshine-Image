@@ -10,7 +10,64 @@ body {
   overflow: hidden;
 }
 
+:root {
+  --moonshine-scrollbar-size: 10px;
+  --moonshine-scrollbar-thumb: rgba(138, 113, 212, 0.46);
+  --moonshine-scrollbar-thumb-hover: rgba(138, 113, 212, 0.72);
+  --moonshine-scrollbar-track: rgba(138, 113, 212, 0.12);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--moonshine-scrollbar-thumb) var(--moonshine-scrollbar-track);
+}
+
+*::-webkit-scrollbar {
+  width: var(--moonshine-scrollbar-size);
+  height: var(--moonshine-scrollbar-size);
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--moonshine-scrollbar-track);
+}
+
+*::-webkit-scrollbar-thumb {
+  min-height: 40px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-color: var(--moonshine-scrollbar-thumb);
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--moonshine-scrollbar-thumb-hover);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.q-scrollarea__bar {
+  border-radius: 999px;
+  background: var(--moonshine-scrollbar-track);
+  opacity: 1;
+}
+
+.q-scrollarea__thumb {
+  border-radius: 999px;
+  background: var(--moonshine-scrollbar-thumb);
+  opacity: 1;
+}
+
+.q-scrollarea__thumb:hover {
+  background: var(--moonshine-scrollbar-thumb-hover);
+}
+
 body.body--dark {
+  --moonshine-scrollbar-thumb: rgba(228, 219, 244, 0.42);
+  --moonshine-scrollbar-thumb-hover: rgba(228, 219, 244, 0.7);
+  --moonshine-scrollbar-track: rgba(255, 255, 255, 0.08);
+
   .q-btn.text-primary,
   .q-btn .text-primary {
     color: var(--q-secondary) !important;

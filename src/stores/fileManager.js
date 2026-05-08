@@ -266,9 +266,17 @@ export const useFileManagerStore = defineStore("fileManager", {
       file.history.push(historyItem);
 
       const configStore = useConfigStore();
-      const limit = configStore.config.advanced?.imageHistoryLimit || 10;
+      const limit = Math.max(
+        2,
+        Math.floor(Number(configStore.config.advanced?.imageHistoryLimit) || 10)
+      );
       if (file.history.length > limit) {
-        file.history = file.history.slice(-limit);
+        const originalHistoryItem = file.history[0];
+        const processedHistory = file.history.slice(1);
+        file.history = [
+          originalHistoryItem,
+          ...processedHistory.slice(-(limit - 1)),
+        ];
       }
     },
 
