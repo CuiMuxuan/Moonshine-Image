@@ -22,6 +22,13 @@ MODEL_CAPABILITY_KEYS = (
     "stability",
 )
 
+HF_MODEL_REPO_BASE_URL = "https://huggingface.co/CuiMuxuan/moonshine-models/resolve/main"
+MANUAL_MODEL_SOURCE_URL = "https://pan.quark.cn/s/2e51ec70c7b9"
+MANUAL_MODEL_INSTALL_HINT = (
+    "如果 Hugging Face 主源下载不可用，请从夸克网盘副源手动下载对应模型文件，"
+    "并放入当前模型目录。也可以私信作者或者加入交流群获取模型文件或百度网盘链接。"
+)
+
 
 MODEL_MANIFEST = (
     {
@@ -30,19 +37,36 @@ MODEL_MANIFEST = (
         "description": "通用擦除与图像修复模型，适合需要蒙版的物体、文字和水印移除。",
         "type": "image",
         "requiresMask": True,
-        "downloadable": False,
-        "sourceLinks": [],
-        "files": [
+        "downloadable": True,
+        "sourceLinks": [
             {
-                "path": "torch/hub/checkpoints/big-lama.pt",
-                "label": "big-lama.pt",
-                "size": None,
-                "sha256": "",
-                "legacyPaths": ["hub/checkpoints/big-lama.pt", "big-lama.pt"],
+                "label": "Hugging Face 主源",
+                "type": "huggingface",
+                "url": f"{HF_MODEL_REPO_BASE_URL}/big-lama.pt",
             }
         ],
-        "size": None,
-        "sha256": "",
+        "manualSources": [
+            {
+                "label": "夸克网盘副源",
+                "type": "quark",
+                "url": MANUAL_MODEL_SOURCE_URL,
+            }
+        ],
+        "manualHint": MANUAL_MODEL_INSTALL_HINT,
+        "files": [
+            {
+                "path": "big-lama.pt",
+                "label": "big-lama.pt",
+                "size": 205669692,
+                "sha256": "344c77bbcb158f17dd143070d1e789f38a66c04202311ae3a258ef66667a9ea9",
+                "legacyPaths": [
+                    "hub/checkpoints/big-lama.pt",
+                    "torch/hub/checkpoints/big-lama.pt",
+                ],
+            }
+        ],
+        "size": 205669692,
+        "sha256": "344c77bbcb158f17dd143070d1e789f38a66c04202311ae3a258ef66667a9ea9",
         "recommendedDevice": "cuda",
         "minimumVram": 2048,
         "runCapabilities": {
@@ -70,17 +94,32 @@ MODEL_MANIFEST = (
         "type": "image",
         "requiresMask": False,
         "downloadable": True,
-        "sourceLinks": [],
-        "files": [
+        "sourceLinks": [
             {
-                "path": "slbr/model_best.pth.tar",
-                "label": "model_best.pth.tar",
-                "size": None,
-                "sha256": "",
+                "label": "Hugging Face 主源",
+                "type": "huggingface",
+                "url": f"{HF_MODEL_REPO_BASE_URL}/slbr.pth.tar",
             }
         ],
-        "size": None,
-        "sha256": "",
+        "manualSources": [
+            {
+                "label": "夸克网盘副源",
+                "type": "quark",
+                "url": MANUAL_MODEL_SOURCE_URL,
+            }
+        ],
+        "manualHint": MANUAL_MODEL_INSTALL_HINT,
+        "files": [
+            {
+                "path": "slbr.pth.tar",
+                "label": "slbr.pth.tar",
+                "size": 85782395,
+                "sha256": "f3984bd73e8eff5bfd69ad4786788c049a934fc8619821e4d9b9605c31a5d9b0",
+                "legacyPaths": ["slbr/model_best.pth.tar"],
+            }
+        ],
+        "size": 85782395,
+        "sha256": "f3984bd73e8eff5bfd69ad4786788c049a934fc8619821e4d9b9605c31a5d9b0",
         "recommendedDevice": "cuda",
         "minimumVram": 2048,
         "runCapabilities": {

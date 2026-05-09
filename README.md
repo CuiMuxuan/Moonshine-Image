@@ -55,7 +55,12 @@ Moonshine 图像/视频处理客户端
 
     如需使用 CUDA，请按显卡与 CUDA 版本安装匹配的 PyTorch。
 
-3. 准备模型文件。默认模型目录为项目根目录下的 `models/`，模型文件不会提交到仓库。`big-lama` 可放到 `models/big-lama.pt`，后续其它模型会继续放入该目录结构。
+3. 准备模型文件。默认模型目录为项目根目录下的 `models/`，模型文件不会提交到仓库。当前模型文件直接放在模型目录根部：
+
+    - Lama：`models/big-lama.pt`
+    - SLBR：`models/slbr.pth.tar`
+
+    软件内模型管理会优先从 Hugging Face 主源 `CuiMuxuan/moonshine-models` 下载；如果主源不可用，可从夸克网盘副源 `https://pan.quark.cn/s/2e51ec70c7b9` 手动下载对应文件并放入上述目录。也可以私信作者或者加入交流群获取模型文件或百度网盘链接。
 
 4. 启动后端服务：
 

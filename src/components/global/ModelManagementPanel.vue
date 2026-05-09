@@ -119,8 +119,18 @@
                     :loading="isTaskRunning(model.id)"
                     @click="downloadModel(model)"
                   />
+                  <q-btn
+                    v-if="hasManualInstallGuide(model)"
+                    outline
+                    no-caps
+                    color="secondary"
+                    icon="folder_open"
+                    label="手动安装"
+                    class="settings-action-button"
+                    @click="openManualInstallGuide(model)"
+                  />
                   <q-chip
-                    v-else-if="model.downloadable"
+                    v-if="model.downloadable && !canDownload(model) && !hasManualInstallGuide(model)"
                     outline
                     color="grey"
                     text-color="grey-8"
@@ -143,7 +153,19 @@
                   :class="getTask(model.id)?.status === 'failed' ? 'settings-warning-banner' : 'settings-info-banner'"
                   class="q-mb-md"
                 >
-                  {{ getTaskMessage(model.id) }}
+                  <div class="task-banner-content">
+                    <span>{{ getTaskMessage(model.id) }}</span>
+                    <q-btn
+                      v-if="getTask(model.id)?.status === 'failed' && hasManualInstallGuide(model)"
+                      flat
+                      dense
+                      no-caps
+                      color="primary"
+                      icon="folder_open"
+                      label="查看手动安装"
+                      @click="openManualInstallGuide(model)"
+                    />
+                  </div>
                 </q-banner>
 
                 <div class="model-info-grid">
@@ -169,16 +191,73 @@
 
                   <div class="mini-block">
                     <div class="text-subtitle2 text-weight-medium q-mb-sm">下载源</div>
+                    <div class="text-caption text-grey-7 q-mb-xs">自动下载</div>
                     <div v-if="model.sourceLinks?.length" class="source-list">
                       <div
                         v-for="source in model.sourceLinks"
                         :key="source.url || source"
                         class="source-item"
                       >
-                        {{ source.label || source.url || source }}
+                        <div class="source-copy">
+                          <div class="source-label">{{ getSourceLabel(source) }}</div>
+                          <div class="source-url">{{ getSourceUrl(source) }}</div>
+                        </div>
+                        <q-btn
+                          v-if="getSourceUrl(source)"
+                          flat
+                          dense
+                          round
+                          icon="open_in_new"
+                          color="primary"
+                          @click="openExternalUrl(getSourceUrl(source))"
+                        >
+                          <q-tooltip>打开链接</q-tooltip>
+                        </q-btn>
                       </div>
                     </div>
-                    <div v-else class="text-body2 text-grey-7">暂无下载源</div>
+                    <div v-else class="text-body2 text-grey-7">暂无自动下载源</div>
+
+                    <template v-if="hasManualInstallGuide(model)">
+                      <q-separator class="q-my-md" />
+                      <div class="manual-source-heading">
+                        <div>
+                          <div class="text-caption text-grey-7">副源</div>
+                          <div class="text-body2">副源仅用于手动下载安装。</div>
+                        </div>
+                        <q-btn
+                          flat
+                          dense
+                          no-caps
+                          color="primary"
+                          icon="info"
+                          label="安装说明"
+                          @click="openManualInstallGuide(model)"
+                        />
+                      </div>
+                      <div v-if="model.manualSources?.length" class="source-list q-mt-sm">
+                        <div
+                          v-for="source in model.manualSources"
+                          :key="source.url || source"
+                          class="source-item"
+                        >
+                          <div class="source-copy">
+                            <div class="source-label">{{ getSourceLabel(source) }}</div>
+                            <div class="source-url">{{ getSourceUrl(source) }}</div>
+                          </div>
+                          <q-btn
+                            v-if="getSourceUrl(source)"
+                            flat
+                            dense
+                            round
+                            icon="open_in_new"
+                            color="primary"
+                            @click="openExternalUrl(getSourceUrl(source))"
+                          >
+                            <q-tooltip>打开副源</q-tooltip>
+                          </q-btn>
+                        </div>
+                      </div>
+                    </template>
                   </div>
                 </div>
 
@@ -212,6 +291,112 @@
         </template>
       </q-splitter>
     </template>
+
+    <q-dialog v-model="manualInstallDialog">
+      <q-card class="manual-install-dialog">
+        <q-card-section class="manual-install-header">
+          <div>
+            <div class="text-subtitle1 text-weight-medium">手动安装模型</div>
+            <div class="text-caption text-grey-7">
+              {{ manualInstallModel?.label || manualInstallModel?.id || "模型文件" }}
+            </div>
+          </div>
+          <q-space />
+          <q-btn v-close-popup flat dense round icon="close">
+            <q-tooltip>关闭</q-tooltip>
+          </q-btn>
+        </q-card-section>
+        <q-separator />
+
+        <q-card-section class="q-gutter-md">
+          <q-banner rounded class="settings-info-banner">
+            {{ manualInstallModel?.manualHint || defaultManualInstallHint }}
+          </q-banner>
+
+          <div class="manual-install-section">
+            <div class="text-subtitle2 text-weight-medium q-mb-sm">模型目录</div>
+            <div class="manual-path-row">
+              <code>{{ modelRegistry.modelDir || "后端默认目录" }}</code>
+              <q-btn
+                flat
+                dense
+                round
+                icon="content_copy"
+                color="primary"
+                :disable="!modelRegistry.modelDir"
+                @click="copyText(modelRegistry.modelDir)"
+              >
+                <q-tooltip>复制模型目录</q-tooltip>
+              </q-btn>
+            </div>
+          </div>
+
+          <div class="manual-install-section">
+            <div class="text-subtitle2 text-weight-medium q-mb-sm">需要放置的文件</div>
+            <q-list dense bordered separator class="model-file-list">
+              <q-item v-for="file in manualInstallModel?.files || []" :key="file.path">
+                <q-item-section>
+                  <q-item-label>{{ file.label || file.path }}</q-item-label>
+                  <q-item-label caption>{{ getExpectedFilePath(file) }}</q-item-label>
+                </q-item-section>
+                <q-item-section side>
+                  <q-btn
+                    flat
+                    dense
+                    round
+                    icon="content_copy"
+                    color="primary"
+                    @click="copyText(getExpectedFilePath(file))"
+                  >
+                    <q-tooltip>复制目标路径</q-tooltip>
+                  </q-btn>
+                </q-item-section>
+              </q-item>
+            </q-list>
+          </div>
+
+          <div v-if="manualInstallModel?.manualSources?.length" class="manual-install-section">
+            <div class="text-subtitle2 text-weight-medium q-mb-sm">手动下载副源</div>
+            <div class="source-list">
+              <div
+                v-for="source in manualInstallModel.manualSources"
+                :key="source.url || source"
+                class="source-item"
+              >
+                <div class="source-copy">
+                  <div class="source-label">{{ getSourceLabel(source) }}</div>
+                  <div class="source-url">{{ getSourceUrl(source) }}</div>
+                </div>
+                <q-btn
+                  flat
+                  dense
+                  round
+                  icon="open_in_new"
+                  color="primary"
+                  :disable="!getSourceUrl(source)"
+                  @click="openExternalUrl(getSourceUrl(source))"
+                >
+                  <q-tooltip>打开副源</q-tooltip>
+                </q-btn>
+              </div>
+            </div>
+          </div>
+        </q-card-section>
+
+        <q-card-actions align="right">
+          <q-btn v-close-popup flat no-caps label="关闭" />
+          <q-btn
+            v-if="getPrimaryManualSourceUrl(manualInstallModel)"
+            unelevated
+            no-caps
+            color="primary"
+            icon="open_in_new"
+            label="打开副源"
+            @click="openExternalUrl(getPrimaryManualSourceUrl(manualInstallModel))"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
   </div>
 </template>
 
@@ -244,6 +429,10 @@ const modelRegistry = useModelRegistryStore();
 const splitterModel = ref(28);
 const selectedModelId = ref(props.selectedModelId || "lama");
 const verifyingModelId = ref("");
+const manualInstallDialog = ref(false);
+const manualInstallModel = ref(null);
+const defaultManualInstallHint =
+  "请手动下载对应模型文件并放入当前模型目录。也可以私信作者或者加入交流群获取模型文件或百度网盘链接。";
 
 const refreshModels = async () => {
   try {
@@ -291,6 +480,67 @@ const verifyModel = async (modelId) => {
 const canDownload = (model) =>
   Boolean(model?.downloadable && model?.sourceLinks?.length);
 
+const hasManualInstallGuide = (model) =>
+  Boolean(model?.manualSources?.length || model?.manualHint || model?.files?.length);
+
+const openManualInstallGuide = (model) => {
+  manualInstallModel.value = model;
+  manualInstallDialog.value = true;
+};
+
+const getSourceUrl = (source) => {
+  if (!source) return "";
+  return typeof source === "string" ? source : source.url || "";
+};
+
+const getSourceLabel = (source) => {
+  if (!source) return "下载源";
+  if (typeof source === "string") return source;
+  return source.label || source.type || source.url || "下载源";
+};
+
+const openExternalUrl = (url) => {
+  if (!url) return;
+  if (window.electron?.openExternal) {
+    window.electron.openExternal(url);
+    return;
+  }
+  if (window.electron?.ipcRenderer?.send) {
+    window.electron.ipcRenderer.send("open-external-link", url);
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
+};
+
+const copyText = async (text) => {
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    $q.notify({
+      type: "positive",
+      message: "已复制",
+      position: "top",
+    });
+  } catch (error) {
+    $q.notify({
+      type: "negative",
+      message: error.message || "复制失败",
+      position: "top",
+    });
+  }
+};
+
+const getExpectedFilePath = (file) => {
+  const path = file?.path || "";
+  if (!modelRegistry.modelDir) return path;
+  const separator = modelRegistry.modelDir.includes("\\") ? "\\" : "/";
+  const normalizedDir = modelRegistry.modelDir.replace(/[\\/]+$/, "");
+  return `${normalizedDir}${separator}${path.replace(/[\\/]+/g, separator)}`;
+};
+
+const getPrimaryManualSourceUrl = (model) =>
+  getSourceUrl(model?.manualSources?.[0]);
+
 const downloadModel = async (model) => {
   try {
     const task = await modelRegistry.startDownload(model.id);
@@ -299,7 +549,7 @@ const downloadModel = async (model) => {
       message: "模型下载任务已开始",
       position: "top",
     });
-    watchDownloadCompletion(task.id, model.id);
+    watchDownloadCompletion(task.id, model);
   } catch (error) {
     $q.notify({
       type: "negative",
@@ -309,14 +559,16 @@ const downloadModel = async (model) => {
   }
 };
 
-const watchDownloadCompletion = (taskId, modelId) => {
+const watchDownloadCompletion = (taskId, model) => {
   const stop = watch(
     () => modelRegistry.tasks[taskId],
     (task) => {
       if (!task?.done) return;
       stop();
       if (task.status === "completed") {
-        emit("model-downloaded", modelId);
+        emit("model-downloaded", model.id);
+      } else if (task.status === "failed" && hasManualInstallGuide(model)) {
+        openManualInstallGuide(model);
       }
     },
     { deep: true }
@@ -513,24 +765,82 @@ onMounted(async () => {
   padding: 7px 0;
 }
 
+.task-banner-content,
+.manual-source-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
 .source-list {
   display: grid;
   gap: 8px;
 }
 
 .source-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   padding: 7px 10px;
   border-radius: 8px;
   background: rgba(17, 24, 39, 0.04);
 }
 
+.source-copy {
+  min-width: 0;
+}
+
+.source-label,
+.source-url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-url {
+  color: rgba(75, 85, 99, 0.86);
+  font-size: 12px;
+}
+
 .model-file-list {
   border-radius: 10px;
   overflow: hidden;
+}
+
+.manual-install-dialog {
+  width: min(620px, calc(100vw - 32px));
+}
+
+.manual-install-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.manual-install-section {
+  min-width: 0;
+}
+
+.manual-path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(17, 24, 39, 0.04);
+}
+
+.manual-path-row code {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-action-button {
@@ -566,6 +876,14 @@ onMounted(async () => {
   background: rgba(255, 255, 255, 0.06);
 }
 
+:global(body.body--dark) .manual-path-row {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+:global(body.body--dark) .source-url {
+  color: rgba(229, 231, 235, 0.72);
+}
+
 :global(body.body--dark) .settings-info-banner {
   background: rgba(122, 141, 190, 0.2);
   color: #dce4ff;
@@ -586,6 +904,12 @@ onMounted(async () => {
   .model-empty-action {
     width: 100%;
     margin-left: 58px;
+  }
+
+  .task-banner-content,
+  .manual-source-heading {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .model-management-splitter {

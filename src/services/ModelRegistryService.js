@@ -11,6 +11,8 @@ const FALLBACK_IMAGE_MODELS = Object.freeze([
     requiresMask: true,
     downloadable: false,
     sourceLinks: [],
+    manualSources: [],
+    manualHint: "",
     runCapabilities: {
       scopes: ["selected", "folder"],
       folderInputs: ["imageFolder", "maskFolder"],
@@ -32,6 +34,8 @@ const normalizeModel = (model = {}) => ({
   requiresMask: model.requiresMask !== false,
   downloadable: Boolean(model.downloadable),
   sourceLinks: Array.isArray(model.sourceLinks) ? model.sourceLinks : [],
+  manualSources: Array.isArray(model.manualSources) ? model.manualSources : [],
+  manualHint: String(model.manualHint || "").trim(),
   files: Array.isArray(model.files) ? model.files : [],
   missingFiles: Array.isArray(model.missingFiles) ? model.missingFiles : [],
   corruptFiles: Array.isArray(model.corruptFiles) ? model.corruptFiles : [],

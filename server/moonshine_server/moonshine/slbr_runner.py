@@ -239,6 +239,9 @@ class SlbrRunner:
 
     @property
     def checkpoint_path(self) -> Path:
+        preferred_path = self.model_dir / "slbr.pth.tar"
+        if preferred_path.is_file():
+            return preferred_path
         return self.model_dir / "slbr" / "model_best.pth.tar"
 
     @property
@@ -406,4 +409,3 @@ def create_parser():
     parser.add_argument("--tile_size", type=int, default=DEFAULT_TILE_SIZE)
     parser.add_argument("--tile_batch", type=int, default=DEFAULT_TILE_BATCH)
     return parser
-
