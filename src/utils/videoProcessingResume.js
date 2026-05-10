@@ -46,12 +46,23 @@ const buildMaskComparisonState = (masks = []) =>
     })),
   }));
 
+const buildRangeComparisonState = (ranges = []) =>
+  (Array.isArray(ranges) ? ranges : []).map((range) => ({
+    name: String(range?.name || ""),
+    enabled: range?.enabled !== false,
+    startTime: normalizeNumber(range?.startTime),
+    endTime: normalizeNumber(range?.endTime),
+  }));
+
 export const buildProcessingConfigSnapshot = ({
   fps = 0,
   exportFpsMode = "source",
   batchSize = 0,
   frameFormat = "jpg",
+  modelId = "lama",
+  modelOptions = {},
   masks = [],
+  processingRanges = [],
   videoWidth = 0,
   videoHeight = 0,
   videoDuration = 0,
@@ -62,16 +73,23 @@ export const buildProcessingConfigSnapshot = ({
     exportFpsMode: String(exportFpsMode || "source"),
     batchSize: Math.max(1, Math.round(Number(batchSize || 1))),
     frameFormat: String(frameFormat || "jpg").toLowerCase(),
+    modelId: String(modelId || "lama"),
+    modelOptions:
+      modelOptions && typeof modelOptions === "object" && !Array.isArray(modelOptions)
+        ? modelOptions
+        : {},
     videoWidth: Math.max(0, Math.round(Number(videoWidth || 0))),
     videoHeight: Math.max(0, Math.round(Number(videoHeight || 0))),
     videoDuration: normalizeNumber(videoDuration, 4),
     defaultModel: String(defaultModel || ""),
     masks: buildMaskComparisonState(masks),
+    processingRanges: buildRangeComparisonState(processingRanges),
   };
 
   return {
     ...comparisonPayload,
     maskCount: comparisonPayload.masks.length,
+    processingRangeCount: comparisonPayload.processingRanges.length,
     signature: hashString(JSON.stringify(comparisonPayload)),
   };
 };

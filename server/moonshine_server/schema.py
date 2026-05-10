@@ -321,12 +321,13 @@ class MoonshineImageFolderProcessRequest(BaseModel):
 class VideoBatchFrameItem(BaseModel):
     frame_index: int = Field(..., ge=0)
     image_path: str
-    mask_path: str
+    mask_path: Optional[str] = None
     output_path: str
 
 
 class VideoBatchInpaintOptions(BaseModel):
     inpaint: InpaintRequest = Field(default_factory=InpaintRequest)
+    model_options: MoonshineImageModelOptions = Field(default_factory=MoonshineImageModelOptions)
     keep_mask_grayscale: bool = Field(True)
     stop_on_error: bool = Field(True)
     batch_id: Optional[str] = Field(None)
@@ -335,6 +336,7 @@ class VideoBatchInpaintOptions(BaseModel):
 
 
 class VideoBatchInpaintRequest(BaseModel):
+    model_id: str = Field("lama", description="Video processing model id")
     frames: List[VideoBatchFrameItem] = Field(default_factory=list)
     options: VideoBatchInpaintOptions = Field(default_factory=VideoBatchInpaintOptions)
 
@@ -345,4 +347,14 @@ class VideoBatchInpaintRequest(BaseModel):
         frame_indexes = [item.frame_index for item in values.frames]
         if len(frame_indexes) != len(set(frame_indexes)):
             raise ValueError("frame_index must be unique in one batch")
+        model_id = str(values.model_id or "lama").strip().lower()
+        values.model_id = model_id or "lama"
+        if values.model_id == "lama":
+            missing_mask_indexes = [
+                item.frame_index for item in values.frames if not item.mask_path
+            ]
+            if missing_mask_indexes:
+                raise ValueError("mask_path is required when model_id is lama")
+        if values.model_id not in {"lama", "slbr"}:
+            raise ValueError(f"Unsupported video model_id: {values.model_id}")
         return values

@@ -11,7 +11,7 @@
         indicator-color="primary"
       >
         <q-tab name="info" label="视频信息" />
-        <q-tab name="masks" label="蒙版与导出" />
+        <q-tab name="masks" label="运行设置" />
       </q-tabs>
 
       <q-separator class="q-my-sm" />
@@ -53,6 +53,88 @@
         </q-tab-panel>
 
         <q-tab-panel name="masks" class="q-pa-none">
+          <div class="model-settings q-mb-sm">
+            <div class="field-label">处理模型</div>
+            <q-select
+              :model-value="currentModel"
+              :options="modelOptions"
+              emit-value
+              map-options
+              filled
+              dense
+              :disable="isProcessing"
+              @update:model-value="emit('update:currentModel', $event)"
+            />
+            <div class="model-status-row q-mt-sm">
+              <q-chip
+                dense
+                square
+                :color="modelStatusColor"
+                text-color="white"
+                class="model-status-chip"
+              >
+                {{ modelStatusLabel }}
+              </q-chip>
+              <q-btn
+                flat
+                dense
+                no-caps
+                color="primary"
+                icon="settings"
+                label="模型管理"
+                @click="emit('openModelManagement', currentModel)"
+              />
+            </div>
+          </div>
+
+          <div
+            v-if="isSlbrModel && parameterFields.length > 0"
+            class="slbr-parameters q-mb-md"
+          >
+            <div class="field-label">模型参数</div>
+            <div class="parameter-grid">
+              <q-select
+                v-for="field in selectParameterFields"
+                :key="field.key"
+                :model-value="modelParameterValues[field.key]"
+                :options="getSelectOptions(field)"
+                :label="field.label"
+                dense
+                filled
+                emit-value
+                map-options
+                :disable="isProcessing"
+                @update:model-value="emit('updateModelParameter', field.key, $event)"
+              />
+              <q-input
+                v-for="field in numberParameterFields"
+                :key="field.key"
+                :model-value="modelParameterValues[field.key]"
+                type="number"
+                :label="field.label"
+                dense
+                filled
+                :min="field.min"
+                :max="field.max"
+                :step="field.step"
+                :disable="isProcessing"
+                @update:model-value="emit('updateModelParameter', field.key, normalizeFieldValue(field, $event))"
+              />
+            </div>
+            <q-btn
+              v-if="hasRecommendedParameters"
+              outline
+              no-caps
+              dense
+              color="primary"
+              icon="auto_fix_high"
+              label="使用推荐参数"
+              class="full-width sidebar-action-button q-mt-sm"
+              :disable="isProcessing"
+              @click="emit('applyRecommendedParameters', recommendedParameters)"
+            />
+          </div>
+
           <div class="row q-col-gutter-sm q-mb-sm">
             <div class="col-12">
               <q-btn
@@ -60,15 +142,15 @@
                 no-caps
                 color="primary"
                 icon="add"
-                label="新建蒙版"
+                :label="isSlbrModel ? '增加范围' : '新建蒙版'"
                 class="full-width sidebar-action-button"
                 :disable="isProcessing"
-                @click="createMask"
+                @click="handleCreatePrimaryItem"
               />
             </div>
           </div>
 
-          <q-list bordered separator class="mask-list">
+          <q-list v-if="!isSlbrModel" bordered separator class="mask-list">
             <q-item
               v-for="mask in videoStore.masks"
               :key="mask.id"
@@ -100,6 +182,42 @@
             <q-item v-if="videoStore.masks.length === 0">
               <q-item-section class="text-grey-6">
                 还没有蒙版，先创建一个蒙版开始编辑。
+              </q-item-section>
+            </q-item>
+          </q-list>
+
+          <q-list v-else bordered separator class="mask-list">
+            <q-item
+              v-for="range in videoStore.processingRanges"
+              :key="range.id"
+              clickable
+              :active="range.id === videoStore.selectedProcessingRangeId"
+              active-class="mask-item-active"
+              @click="videoStore.selectProcessingRange(range.id)"
+            >
+              <q-item-section>
+                <q-item-label>{{ range.name }}</q-item-label>
+                <q-item-label caption>
+                  {{ formatSeconds(range.startTime) }} - {{ formatSeconds(range.endTime) }}
+                </q-item-label>
+              </q-item-section>
+
+              <q-item-section side>
+                <q-btn
+                  flat
+                  round
+                  dense
+                  icon="delete"
+                  color="negative"
+                  :disable="isProcessing"
+                  @click.stop="videoStore.removeProcessingRange(range.id)"
+                />
+              </q-item-section>
+            </q-item>
+
+            <q-item v-if="videoStore.processingRanges.length === 0">
+              <q-item-section class="text-grey-6">
+                未增加范围时会处理完整视频；也可以增加范围来减少处理时间。
               </q-item-section>
             </q-item>
           </q-list>
@@ -391,11 +509,35 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  currentModel: {
+    type: String,
+    default: "lama",
+  },
+  modelOptions: {
+    type: Array,
+    default: () => [],
+  },
+  currentModelMetadata: {
+    type: Object,
+    default: () => ({}),
+  },
+  modelParameterValues: {
+    type: Object,
+    default: () => ({}),
+  },
+  backendRunning: {
+    type: Boolean,
+    default: false,
+  },
 });
 
 const emit = defineEmits([
   "update:exportFpsMode",
   "update:previewTrialSeconds",
+  "update:currentModel",
+  "updateModelParameter",
+  "applyRecommendedParameters",
+  "openModelManagement",
   "run",
   "run-preview",
   "open-diagnostics",
@@ -446,6 +588,62 @@ const previewActionTooltip = computed(() => {
 const openButtonLabel = computed(() =>
   actionButtonMode.value === "full" ? "打开目录" : "打开"
 );
+const isSlbrModel = computed(() => props.currentModel === "slbr");
+const parameterSchema = computed(() => props.currentModelMetadata?.parameters || {});
+const parameterFields = computed(() =>
+  Object.entries(parameterSchema.value)
+    .filter(([key, field]) => key !== "recommended" && field && typeof field === "object")
+    .map(([key, field]) => ({ key, ...field }))
+);
+const selectParameterFields = computed(() =>
+  parameterFields.value.filter((field) => field.type === "select")
+);
+const numberParameterFields = computed(() =>
+  parameterFields.value.filter((field) => field.type !== "select")
+);
+const recommendedParameters = computed(() => parameterSchema.value.recommended || {});
+const hasRecommendedParameters = computed(
+  () => Object.keys(recommendedParameters.value || {}).length > 0
+);
+const modelStatusLabel = computed(() => {
+  if (!props.backendRunning) return "后端未启动";
+  if (props.currentModelMetadata?.corruptFiles?.length > 0) return "需修复";
+  if (!props.currentModelMetadata?.installed) return "未安装";
+  if (props.currentModelMetadata?.deviceCompatible === false) return "设备不适配";
+  return "已安装";
+});
+const modelStatusColor = computed(() => {
+  if (!props.backendRunning) return "grey-7";
+  if (props.currentModelMetadata?.corruptFiles?.length > 0) return "warning";
+  if (!props.currentModelMetadata?.installed) return "negative";
+  if (props.currentModelMetadata?.deviceCompatible === false) return "warning";
+  return "positive";
+});
+
+const getSelectOptions = (field) =>
+  (Array.isArray(field.options) ? field.options : []).map((option) =>
+    option && typeof option === "object"
+      ? {
+          label: option.label || option.value,
+          value: option.value,
+        }
+      : {
+          label: String(option),
+          value: option,
+        }
+  );
+
+const normalizeFieldValue = (field, value) => {
+  if (field.type === "number") {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) return field.default ?? "";
+    const min = Number(field.min);
+    const max = Number(field.max);
+    const boundedMin = Number.isFinite(min) ? Math.max(numericValue, min) : numericValue;
+    return Number.isFinite(max) ? Math.min(boundedMin, max) : boundedMin;
+  }
+  return value;
+};
 
 const disconnectActionButtonsObserver = () => {
   if (!actionButtonsObserver) return;
@@ -472,6 +670,21 @@ const createMask = () => {
     startTime: 0,
     endTime: videoStore.videoDuration,
   });
+};
+
+const createProcessingRange = () => {
+  videoStore.createProcessingRange({
+    name: `范围 ${videoStore.processingRanges.length + 1}`,
+    startTime: videoStore.currentTime,
+  });
+};
+
+const handleCreatePrimaryItem = () => {
+  if (isSlbrModel.value) {
+    createProcessingRange();
+    return;
+  }
+  createMask();
 };
 
 const handleRunWrapperClick = () => {
@@ -545,13 +758,43 @@ onUnmounted(() => {
   color: #6b7280;
 }
 
+.field-label {
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
 .value {
   color: #111827;
   text-align: right;
 }
 
+.model-settings,
+.slbr-parameters {
+  min-width: 0;
+}
+
+.model-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.model-status-chip {
+  margin-left: 0;
+}
+
+.parameter-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
 .resource-manage--dark .info-item .label,
-.resource-manage--dark .info-item .value {
+.resource-manage--dark .info-item .value,
+.resource-manage--dark .field-label {
   color: #fff;
 }
 

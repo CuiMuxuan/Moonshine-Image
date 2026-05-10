@@ -27,9 +27,18 @@
               :engine-run-tooltip="backendEngineValue.runDisabledTooltip"
               :engine-failed="backendEngineValue.hasFailed"
               :history-entries="historyEntries"
+              :current-model="currentModel"
+              :model-options="videoModelOptions"
+              :current-model-metadata="currentModelMetadata"
+              :model-parameter-values="modelParameterValues"
+              :backend-running="backendEngineValue.isRunning || backendRunningState"
               @run="runVideoProcessing"
               @run-preview="runVideoPreviewTrial"
               @update:preview-trial-seconds="previewTrialSeconds = $event"
+              @update:current-model="handleModelChange"
+              @update-model-parameter="updateModelParameter"
+              @apply-recommended-parameters="applyRecommendedModelParameters"
+              @open-model-management="openModelManagement"
               @open-diagnostics="backendEngineValue.openDiagnostics"
               @open-output="openOutputDir"
               @replace-source="replaceCurrentVideoSource"
@@ -69,6 +78,7 @@
           <q-card-section class="side-panel-body">
             <VideoMaskEditor
               :disabled="!videoStore.hasVideoFile || isProcessing"
+              :current-model="currentModel"
             />
           </q-card-section>
         </q-card>
@@ -250,10 +260,11 @@
                 class="timeline-action"
                 :class="{
                   'timeline-action-range': action.data?.kind === 'mask-range',
+                  'timeline-action-processing-range': action.data?.kind === 'processing-range',
                   'timeline-action-keyframe': action.data?.kind === 'mask-keyframe',
                 }"
               >
-                <span v-if="action.data?.kind === 'mask-range'">
+                <span v-if="['mask-range', 'processing-range'].includes(action.data?.kind)">
                   {{ action.data?.label || action.id }}
                 </span>
                 <span v-else class="keyframe-dot"></span>
@@ -283,6 +294,7 @@ import {
 
 import { useConfigStore } from "src/stores/config";
 import { useConfiguredShortcuts } from "src/composables/useConfiguredShortcuts";
+import { useModelRegistryStore } from "src/stores/modelRegistry";
 import { useVideoManagerStore } from "src/stores/videoManager";
 import { submitVideoBatchInpaint } from "src/services/VideoProcessingService";
 import { MASK_TOOL_MODES } from "src/utils/maskTool";
@@ -316,9 +328,11 @@ import VideoPreviewOverlay from "src/components/video/VideoPreviewOverlay.vue";
 const $q = useQuasar();
 const videoStore = useVideoManagerStore();
 const configStore = useConfigStore();
+const modelRegistryStore = useModelRegistryStore();
 const loadingControl = inject("loadingControl", null);
 const backendRunningState = inject("backendRunning", ref(false));
 const backendEngine = inject("backendEngine", ref({}));
+const globalSettings = inject("globalSettings", null);
 
 const previewStageWrapRef = ref(null);
 const canvasPlayerRef = ref(null);
@@ -336,6 +350,8 @@ const lastOutputPath = ref("");
 const lastOutputIsPreview = ref(false);
 const exportFpsMode = ref("source");
 const previewTrialSeconds = ref(3);
+const currentModel = ref("lama");
+const modelParameterValues = ref({});
 const sourceFps = ref(30);
 const timelineRows = ref([]);
 const timelineViewportWidth = ref(0);
@@ -394,6 +410,7 @@ const videoMountLoadingState = {
 const timelineEffects = {
   "effect-mask-range": { id: "effect-mask-range", name: "Mask Range" },
   "effect-mask-keyframe": { id: "effect-mask-keyframe", name: "Keyframe" },
+  "effect-processing-range": { id: "effect-processing-range", name: "Processing Range" },
 };
 
 const fpsOptions = computed(() => [
@@ -585,9 +602,24 @@ const handleVideoDrop = async (event) => {
   }
 };
 
+const handleModelRegistryUpdated = async () => {
+  await loadVideoModelOptions({ preferredModel: currentModel.value });
+};
+
+const handleGlobalModelSwitch = (event) => {
+  const modelId = event?.detail?.modelId;
+  if (!modelId || !["lama", "slbr"].includes(modelId)) return;
+  void loadVideoModelOptions({ preferredModel: modelId }).then(() => {
+    if (videoModelOptions.value.some((option) => option.value === modelId)) {
+      handleModelChange(modelId);
+    }
+  });
+};
+
 const backendEngineValue = computed(() => {
   const value = backendEngine?.value || {};
   return {
+    isRunning: Boolean(value.isRunning?.value ?? value.isRunning),
     runDisabled: Boolean(value.runDisabled?.value ?? value.runDisabled),
     runDisabledTooltip: String((value.runDisabledTooltip?.value ?? value.runDisabledTooltip) || ""),
     hasFailed: Boolean(value.hasFailed?.value ?? value.hasFailed),
@@ -596,18 +628,146 @@ const backendEngineValue = computed(() => {
   };
 });
 
+const currentModelMetadata = computed(() => {
+  const model = modelRegistryStore.imageModels.find((item) => item.id === currentModel.value);
+  if (model) return model;
+  if (currentModel.value === "slbr") {
+    return {
+      id: "slbr",
+      label: "透明水印去除模型 SLBR",
+      installed: false,
+      requiresMask: false,
+      parameters: {},
+      corruptFiles: [],
+    };
+  }
+  return {
+    id: "lama",
+    label: "Lama去除模型",
+    installed: true,
+    requiresMask: true,
+    parameters: {},
+    corruptFiles: [],
+  };
+});
+const currentModelRequiresMask = computed(() => currentModelMetadata.value.requiresMask !== false);
+const isSlbrModel = computed(() => currentModel.value === "slbr");
+const videoModelOptions = computed(() => {
+  const options = modelRegistryStore.imageModels
+    .filter((model) => ["lama", "slbr"].includes(model.id))
+    .map((model) => ({
+      label: model.label || model.id,
+      value: model.id,
+      installed: model.installed,
+    }));
+
+  if (!options.some((option) => option.value === "lama")) {
+    options.push({
+      label: "Lama去除模型",
+      value: "lama",
+      installed: true,
+    });
+  }
+
+  if (!options.some((option) => option.value === "slbr")) {
+    options.push({
+      label: "透明水印去除模型 SLBR",
+      value: "slbr",
+      installed: false,
+    });
+  }
+
+  return options;
+});
+const getModelParameterSchema = (metadata = currentModelMetadata.value) => {
+  const parameters = metadata?.parameters || {};
+  return Object.fromEntries(
+    Object.entries(parameters).filter(
+      ([key, value]) => key !== "recommended" && value && typeof value === "object"
+    )
+  );
+};
+const ensureModelParameterDefaults = (metadata = currentModelMetadata.value) => {
+  const schema = getModelParameterSchema(metadata);
+  const nextValues = { ...(modelParameterValues.value || {}) };
+  Object.entries(schema).forEach(([key, field]) => {
+    if (nextValues[key] === undefined) {
+      nextValues[key] = field.default ?? "";
+    }
+  });
+  modelParameterValues.value = nextValues;
+};
+const updateModelParameter = (key, value) => {
+  modelParameterValues.value = {
+    ...modelParameterValues.value,
+    [key]: value,
+  };
+};
+const applyRecommendedModelParameters = (recommended = {}) => {
+  modelParameterValues.value = {
+    ...modelParameterValues.value,
+    ...(recommended || {}),
+  };
+};
+const getCurrentModelOptionsPayload = () => {
+  const schema = getModelParameterSchema();
+  return Object.fromEntries(
+    Object.entries(schema).map(([key, field]) => [
+      key,
+      modelParameterValues.value[key] ?? field.default ?? "",
+    ])
+  );
+};
+const loadVideoModelOptions = async ({ preferredModel = currentModel.value } = {}) => {
+  await modelRegistryStore.loadModels();
+  const availableVideoModels = videoModelOptions.value;
+  const installedVideoModels = availableVideoModels.filter((option) => option.installed);
+  const selectableModels = installedVideoModels.length > 0 ? installedVideoModels : availableVideoModels;
+  const hasPreferredModel = selectableModels.some((option) => option.value === preferredModel);
+  const hasCurrentModel = selectableModels.some((option) => option.value === currentModel.value);
+  let nextModel = currentModel.value || "lama";
+  if (hasPreferredModel) {
+    nextModel = preferredModel;
+  } else if (!hasCurrentModel) {
+    nextModel = selectableModels[0]?.value || "lama";
+  }
+  currentModel.value = nextModel;
+  ensureModelParameterDefaults();
+};
+const handleModelChange = (model) => {
+  if (!model || model === currentModel.value) return;
+  currentModel.value = model;
+  ensureModelParameterDefaults();
+  const option = videoModelOptions.value.find((item) => item.value === model);
+  $q.notify({
+    type: "info",
+    message: `已切换到${option?.label || model}`,
+    position: "top",
+  });
+  syncTimelineRowsFromStore();
+};
+const openModelManagement = (modelId = currentModel.value) => {
+  globalSettings?.open?.({
+    tab: "models",
+    modelId: modelId || currentModel.value || "lama",
+  });
+};
+
 const canRun = computed(
   () =>
     videoStore.hasVideoFile &&
     videoStore.videoWidth > 0 &&
     videoStore.videoHeight > 0 &&
     videoStore.videoDuration > 0 &&
-    videoStore.masks.length > 0
+    (!currentModelRequiresMask.value || videoStore.masks.length > 0) &&
+    currentModelMetadata.value?.installed !== false &&
+    !(currentModelMetadata.value?.corruptFiles?.length > 0)
 );
 const isVideoDrawingShortcutReady = computed(
   () =>
     Boolean(
       videoStore.hasVideoFile &&
+        currentModelRequiresMask.value &&
         videoStore.selectedMaskId &&
         !isProcessing.value &&
         videoOverlayRef.value?.isReady?.()
@@ -1143,6 +1303,34 @@ const finishVideoMountLoading = (token, { forceHide = false } = {}) => {
 };
 
 const buildTimelineRows = () => {
+  if (isSlbrModel.value) {
+    return videoStore.processingRanges.map((range) => ({
+      id: `processing-range-row-${range.id}`,
+      rowHeight: 44,
+      classNames: ["timeline-row-range", "timeline-row-processing-range"],
+      selected: range.id === videoStore.selectedProcessingRangeId,
+      actions: [
+        {
+          id: `processing-range-${range.id}`,
+          start: range.startTime,
+          end: range.endTime,
+          effectId: "effect-processing-range",
+          movable: true,
+          flexible: true,
+          minStart: 0,
+          maxEnd: Math.max(videoStore.videoDuration || 0, 0),
+          selected: range.id === videoStore.selectedProcessingRangeId,
+          data: {
+            kind: "processing-range",
+            rangeId: range.id,
+            label: range.name,
+            color: "#2fb344",
+          },
+        },
+      ],
+    }));
+  }
+
   const markerDuration = keyframeMarkerDuration.value;
   return videoStore.masks.flatMap((mask) => {
     const userKeyframes = sortMaskKeyframes(mask.keyframes).filter(
@@ -1217,7 +1405,15 @@ const syncTimelineRowsFromStore = () => {
 };
 
 watch(
-  () => [videoStore.masks, videoStore.videoDuration, videoStore.selectedMaskId, videoStore.selectedKeyframeId],
+  () => [
+    currentModel.value,
+    videoStore.masks,
+    videoStore.processingRanges,
+    videoStore.videoDuration,
+    videoStore.selectedMaskId,
+    videoStore.selectedProcessingRangeId,
+    videoStore.selectedKeyframeId,
+  ],
   () => syncTimelineRowsFromStore(),
   { deep: true, immediate: true }
 );
@@ -1405,6 +1601,11 @@ const handleTimelineActionClick = (_event, params) => {
     return;
   }
 
+  if (action.data.kind === "processing-range") {
+    videoStore.selectProcessingRange(action.data.rangeId);
+    return;
+  }
+
   if (action.data.kind === "mask-keyframe") {
     videoStore.selectKeyframe(action.data.maskId, action.data.keyframeId);
   }
@@ -1497,6 +1698,25 @@ const handleTimelineActionMoveEnd = (params) => {
   }
 
   const action = params?.action;
+  if (action?.data?.kind === "processing-range") {
+    const range = videoStore.getProcessingRangeById(action.data.rangeId);
+    if (!range) {
+      syncTimelineRowsFromStore();
+      return;
+    }
+    const delta = Number(action.start || 0) - Number(range.startTime || 0);
+    const result = videoStore.moveProcessingRange(range.id, delta);
+    if (!result.ok) {
+      $q.notify({
+        type: "warning",
+        message: result.error || "处理范围移动失败。",
+        timeout: 2500,
+      });
+    }
+    syncTimelineRowsFromStore();
+    return;
+  }
+
   if (action?.data?.kind !== "mask-range") {
     syncTimelineRowsFromStore();
     return;
@@ -1527,6 +1747,22 @@ const handleTimelineActionResizeEnd = async (params) => {
   }
 
   const action = params?.action;
+  if (action?.data?.kind === "processing-range") {
+    const result = videoStore.resizeProcessingRange(action.data.rangeId, {
+      startTime: action.start,
+      endTime: action.end,
+    });
+    if (!result.ok) {
+      $q.notify({
+        type: "warning",
+        message: result.error || "处理范围调整失败。",
+        timeout: 2500,
+      });
+    }
+    syncTimelineRowsFromStore();
+    return;
+  }
+
   if (action?.data?.kind !== "mask-range") {
     syncTimelineRowsFromStore();
     return;
@@ -1898,7 +2134,10 @@ const buildCurrentProcessingConfigSnapshot = ({ fps, batchSize, frameFormat }) =
     exportFpsMode: exportFpsMode.value,
     batchSize,
     frameFormat,
+    modelId: currentModel.value,
+    modelOptions: getCurrentModelOptionsPayload(),
     masks: videoStore.masks,
+    processingRanges: videoStore.processingRanges,
     videoWidth: videoStore.videoWidth,
     videoHeight: videoStore.videoHeight,
     videoDuration: videoStore.videoDuration,
@@ -2052,13 +2291,14 @@ const promptResumeVideoTaskDecision = async ({ taskMeta, hasConfigMismatch }) =>
       .onDismiss(() => resolve(null));
   });
 
-const getCurrentVideoSourcePath = () =>
-  videoStore.currentSourcePath || videoStore.videoFile?.path || "";
+function getCurrentVideoSourcePath() {
+  return videoStore.currentSourcePath || videoStore.videoFile?.path || "";
+}
 
-const discardLatestResumableTaskForSourcePath = async ({
+async function discardLatestResumableTaskForSourcePath({
   sourcePath,
   nextSourcePath = "",
-} = {}) => {
+} = {}) {
   if (!sourcePath || !window.electron?.ipcRenderer?.invoke) {
     return;
   }
@@ -2091,7 +2331,7 @@ const discardLatestResumableTaskForSourcePath = async ({
   }
 
   await discardVideoTask(taskMeta);
-};
+}
 
 const discardVideoTasksBySourcePath = async (sourcePath) => {
   if (!sourcePath) {
@@ -2226,6 +2466,22 @@ const resetProcessingEtaState = () => {
   processingEtaState.firstResponseSeconds = null;
   processingEtaState.sessionStartedAtMs = 0;
 };
+
+const createSkippedVideoBatchResponse = (batch) => ({
+  model_id: currentModel.value,
+  processed_count: batch.batchFrameCount,
+  success_count: batch.batchFrameCount,
+  failed_count: 0,
+  batch_time: 0,
+  failure_snapshot_dir: null,
+  results: batch.batchResultPaths.map((outputPath, index) => ({
+    frame_index: batch.start + index,
+    output_path: outputPath,
+    success: true,
+    skipped: true,
+    skip_reason: "outside-processing-range",
+  })),
+});
 
 const formatEta = (seconds) => {
   const safeSeconds = Math.max(0, Math.round(Number(seconds || 0)));
@@ -3156,6 +3412,23 @@ const buildBatchDescriptor = ({
   };
 };
 
+const getEnabledProcessingRanges = () =>
+  videoStore.processingRanges
+    .filter((range) => range?.enabled !== false)
+    .map((range) => ({
+      startTime: Math.max(0, Number(range.startTime || 0)),
+      endTime: Math.min(videoStore.videoDuration, Math.max(0, Number(range.endTime || 0))),
+    }))
+    .filter((range) => range.endTime > range.startTime);
+
+const shouldProcessFrameWithSlbr = ({ frameIndex, fps, ranges }) => {
+  if (!Array.isArray(ranges) || ranges.length === 0) return true;
+  const timestamp = frameIndex / Math.max(1, Number(fps || 1));
+  return ranges.some(
+    (range) => timestamp >= range.startTime && timestamp < range.endTime
+  );
+};
+
 const prepareBatchArtifacts = async ({
   descriptor,
   paths,
@@ -3163,6 +3436,8 @@ const prepareBatchArtifacts = async ({
   frameFormat,
   extractor,
   maskRenderer,
+  modelId = "lama",
+  processingRanges = [],
   totalBatches,
   batchDurations,
   reportProgress = true,
@@ -3187,7 +3462,7 @@ const prepareBatchArtifacts = async ({
       updateBatchProcessingUi({
         batchNumber,
         totalBatches,
-        stageLabel: "正在生成帧与蒙版",
+        stageLabel: modelId === "slbr" ? "正在生成帧与判断范围" : "正在生成帧与蒙版",
         batchDurations,
         remainingBatchCount: getActiveStageRemainingBatchCount({ batchNumber, totalBatches }),
         progress:
@@ -3205,16 +3480,27 @@ const prepareBatchArtifacts = async ({
     const maskPath = window.electron.ipcRenderer.joinPath(paths.masksDir, maskName);
     const outputPath = window.electron.ipcRenderer.joinPath(paths.resultsDir, resultName);
 
+    const shouldProcessFrame =
+      modelId !== "slbr" ||
+      shouldProcessFrameWithSlbr({
+        frameIndex,
+        fps,
+        ranges: processingRanges,
+      });
     const [frameCaptureResult, maskBlob] = await Promise.all([
       extractor.capture(ts),
-      maskRenderer.render(ts),
+      modelId === "lama" ? maskRenderer.render(ts) : Promise.resolve(null),
     ]);
     const frameBlob = frameCaptureResult?.blob || frameCaptureResult;
 
-    await Promise.all([
-      saveBlobToPath(frameBlob, framePath),
-      saveBlobToPath(maskBlob, maskPath),
-    ]);
+    await saveBlobToPath(frameBlob, framePath);
+    if (modelId === "lama") {
+      await saveBlobToPath(maskBlob, maskPath);
+    }
+
+    if (modelId === "slbr" && !shouldProcessFrame) {
+      await saveBlobToPath(frameBlob.slice(0, frameBlob.size, frameBlob.type), outputPath);
+    }
 
     if (frameCaptureResult?.degraded) {
       frameDecodeFallbacks.push({
@@ -3228,13 +3514,17 @@ const prepareBatchArtifacts = async ({
       });
     }
 
-    batchItems.push({
-      frame_index: frameIndex,
-      image_path: framePath,
-      mask_path: maskPath,
-      output_path: outputPath,
-    });
-    batchArtifactPaths.push(framePath, maskPath, outputPath);
+    if (modelId !== "slbr" || shouldProcessFrame) {
+      batchItems.push({
+        frame_index: frameIndex,
+        image_path: framePath,
+        ...(modelId === "lama" ? { mask_path: maskPath } : {}),
+        output_path: outputPath,
+      });
+    }
+    batchArtifactPaths.push(
+      ...[framePath, modelId === "lama" ? maskPath : "", outputPath].filter(Boolean)
+    );
     batchResultPaths.push(outputPath);
   }
 
@@ -3259,6 +3549,8 @@ const createPreparedBatchTask = ({
   frameFormat,
   extractor,
   maskRenderer,
+  modelId,
+  processingRanges,
   batchDurations,
   reportProgress,
 }) => {
@@ -3279,6 +3571,8 @@ const createPreparedBatchTask = ({
     frameFormat,
     extractor,
     maskRenderer,
+    modelId,
+    processingRanges,
     totalBatches,
     batchDurations,
     reportProgress,
@@ -3300,6 +3594,10 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
       ? null
       : Math.max(1, Number(previewTrialSeconds || 0));
   const isPreviewTrial = normalizedPreviewTrialSeconds !== null;
+  const requestedModelId = currentModel.value || "lama";
+  const requestedModelOptions = getCurrentModelOptionsPayload();
+  const requestedProcessingRanges =
+    requestedModelId === "slbr" ? getEnabledProcessingRanges() : [];
 
   if (backendEngineValue.value.runDisabled) {
     if (backendEngineValue.value.hasFailed) {
@@ -3343,9 +3641,9 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
     const currentRequestedFps = Math.max(1, Number(exportFps.value || sourceFps.value || 30));
     const currentRequestedSnapshot = buildCurrentProcessingConfigSnapshot({
       fps: currentRequestedFps,
-      batchSize: requestedBatchSize,
-      frameFormat: requestedFrameFormat,
-    });
+        batchSize: requestedBatchSize,
+        frameFormat: requestedFrameFormat,
+      });
     if (isPreviewTrial) {
       currentRequestedSnapshot.previewTrial = true;
       currentRequestedSnapshot.previewTrialSeconds = normalizedPreviewTrialSeconds;
@@ -3499,7 +3797,7 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
 
     try {
       const maskRenderer =
-        resumeStartFrame < totalFrames
+        currentModelRequiresMask.value && resumeStartFrame < totalFrames
           ? await createCombinedMaskRenderer({
               masks: videoStore.masks,
               width: videoStore.videoWidth,
@@ -3530,6 +3828,8 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
         frameFormat,
         extractor,
         maskRenderer,
+        modelId: requestedModelId,
+        processingRanges: requestedProcessingRanges,
         batchDurations,
         reportProgress: true,
       });
@@ -3541,7 +3841,7 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
           updateBatchProcessingUi({
             batchNumber: currentTask.descriptor.batchNumber,
             totalBatches,
-            stageLabel: "正在生成帧与蒙版",
+            stageLabel: requestedModelId === "slbr" ? "正在生成帧与判断范围" : "正在生成帧与蒙版",
             batchDurations,
             pipelineBatchDurations,
             remainingBatchCount: getActiveStageRemainingBatchCount({
@@ -3573,6 +3873,8 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
           frameFormat,
           extractor,
           maskRenderer,
+          modelId: requestedModelId,
+          processingRanges: requestedProcessingRanges,
           batchDurations,
           reportProgress: false,
         });
@@ -3589,7 +3891,10 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
             updateBatchProcessingUi({
               batchNumber: currentBatch.batchNumber,
               totalBatches,
-              stageLabel: "正在提交后端批次",
+              stageLabel:
+                requestedModelId === "slbr" && currentBatch.batchItems.length === 0
+                  ? "当前批次不在处理范围内，直接复用原视频帧"
+                  : "正在提交后端批次",
               batchDurations,
               pipelineBatchDurations,
               remainingBatchCount: getActiveStageRemainingBatchCount({
@@ -3600,21 +3905,26 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
             });
             await flushProcessingUiFrame();
 
-            const data = await submitVideoBatchInpaint({
-              frames: currentBatch.batchItems,
-              options: {
-                keep_mask_grayscale: false,
-                stop_on_error: true,
-                failure_root: paths.failureRoot,
-                failure_retention: configStore.config.video?.failureRetentionCount || 3,
-                batch_id: `batch_${currentBatch.start}_${currentBatch.end}`,
-                inpaint: {
-                  prompt: "",
-                  negative_prompt: "",
-                  sd_seed: -1,
-                },
-              },
-            });
+            const data =
+              requestedModelId === "slbr" && currentBatch.batchItems.length === 0
+                ? createSkippedVideoBatchResponse(currentBatch)
+                : await submitVideoBatchInpaint({
+                    model_id: requestedModelId,
+                    frames: currentBatch.batchItems,
+                    options: {
+                      model_options: requestedModelOptions,
+                      keep_mask_grayscale: false,
+                      stop_on_error: true,
+                      failure_root: paths.failureRoot,
+                      failure_retention: configStore.config.video?.failureRetentionCount || 3,
+                      batch_id: `batch_${currentBatch.start}_${currentBatch.end}`,
+                      inpaint: {
+                        prompt: "",
+                        negative_prompt: "",
+                        sd_seed: -1,
+                      },
+                    },
+                  });
 
             if (
               !(processingEtaState.firstResponseSeconds > 0) &&
@@ -4373,10 +4683,13 @@ onMounted(async () => {
   await configStore.loadConfig();
   previewTrialSeconds.value = getConfiguredPreviewTrialSeconds();
   applyVideoBrushDefaults();
+  await loadVideoModelOptions({ preferredModel: currentModel.value });
   await nextTick();
   observePreviewStageSize();
   updateLayoutMetrics();
   window.addEventListener("resize", handleResize);
+  window.addEventListener("moonshine-model-registry-updated", handleModelRegistryUpdated);
+  window.addEventListener("moonshine-switch-model", handleGlobalModelSwitch);
 });
 
 watch(
@@ -4389,6 +4702,18 @@ watch(
   }
 );
 
+watch(
+  () => backendEngineValue.value.isRunning || backendRunningState.value,
+  async (isRunning, wasRunning) => {
+    if (isRunning && !wasRunning) {
+      await loadVideoModelOptions({ preferredModel: currentModel.value });
+    }
+  },
+  {
+    flush: "post",
+  }
+);
+
 onBeforeRouteLeave(() => {
   preserveVideoPagePlaybackState();
 });
@@ -4396,6 +4721,8 @@ onBeforeRouteLeave(() => {
 onUnmounted(() => {
   preserveVideoPagePlaybackState();
   window.removeEventListener("resize", handleResize);
+  window.removeEventListener("moonshine-model-registry-updated", handleModelRegistryUpdated);
+  window.removeEventListener("moonshine-switch-model", handleGlobalModelSwitch);
   disconnectPreviewStageResizeObserver();
   cancelScheduledLayoutUpdate();
 });
@@ -4589,6 +4916,21 @@ onUnmounted(() => {
   width: 100%;
   font-size: 12px;
   text-shadow: 0 1px 2px rgba(15, 23, 42, 0.45);
+}
+
+.timeline-action-processing-range {
+  width: 100%;
+  font-size: 12px;
+  text-shadow: 0 1px 2px rgba(15, 23, 42, 0.45);
+}
+
+.timeline-editor-host :deep(.timeline-action.effect-effect-processing-range) {
+  background: rgba(47, 179, 68, 0.86) !important;
+  border-color: rgba(30, 130, 49, 0.88) !important;
+}
+
+.timeline-editor-host :deep(.timeline-action.effect-effect-processing-range.selected) {
+  box-shadow: 0 0 0 2px rgba(47, 179, 68, 0.28) !important;
 }
 
 .timeline-action-keyframe {

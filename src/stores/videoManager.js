@@ -48,6 +48,10 @@ const cloneMask = (mask) => ({
   keyframes: (mask?.keyframes || []).map(cloneKeyframe),
 });
 
+const cloneProcessingRange = (range) => ({
+  ...range,
+});
+
 const cloneMaskTool = (tool = {}) => ({
   drawingEnabled: Boolean(tool.drawingEnabled),
   mode: normalizeMaskToolMode(tool.mode),
@@ -229,6 +233,20 @@ const reconcileMask = (mask = {}, duration = 0) => {
   return syncInheritedEndKeyframe(normalizedMask);
 };
 
+const reconcileProcessingRange = (range = {}, duration = 0) => {
+  const safeDuration = Math.max(0, Number(duration || 0));
+  const startTime = clamp(Number(range.startTime ?? 0), 0, safeDuration);
+  const endTime = clamp(Number(range.endTime ?? safeDuration), startTime, safeDuration);
+
+  return {
+    id: range.id || uuidv4(),
+    name: range.name || "处理范围",
+    enabled: range.enabled !== false,
+    startTime,
+    endTime,
+  };
+};
+
 const createResult = (ok, payload = {}) => ({
   ok,
   ...payload,
@@ -251,7 +269,9 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
   const displayWidth = ref(0);
   const displayHeight = ref(0);
   const masks = ref([]);
+  const processingRanges = ref([]);
   const selectedMaskId = ref(null);
+  const selectedProcessingRangeId = ref(null);
   const selectedKeyframeId = ref(null);
   const maskTool = ref(
     cloneMaskTool({
@@ -281,6 +301,9 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
   const selectedMaskUserKeyframes = computed(() =>
     selectedMaskOrderedKeyframes.value.filter((item) => item.type === MASK_KEYFRAME_TYPES.USER)
   );
+  const selectedProcessingRange = computed(
+    () => processingRanges.value.find((item) => item.id === selectedProcessingRangeId.value) || null
+  );
   const selectedKeyframeUniformScale = computed(() =>
     selectedKeyframe.value ? getMaskKeyframeUniformScale(selectedKeyframe.value) : 1
   );
@@ -306,6 +329,10 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
 
   const getMaskById = (maskId) => masks.value.find((item) => item.id === maskId) || null;
   const getMaskIndexById = (maskId) => masks.value.findIndex((item) => item.id === maskId);
+  const getProcessingRangeById = (rangeId) =>
+    processingRanges.value.find((item) => item.id === rangeId) || null;
+  const getProcessingRangeIndexById = (rangeId) =>
+    processingRanges.value.findIndex((item) => item.id === rangeId);
   const createMaskDrawHistoryState = (baseMaskDataUrl = "") => ({
     snapshots: [baseMaskDataUrl || ""],
     index: 0,
@@ -392,7 +419,9 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
 
   const resetEditorState = () => {
     masks.value = [];
+    processingRanges.value = [];
     selectedMaskId.value = null;
+    selectedProcessingRangeId.value = null;
     selectedKeyframeId.value = null;
     currentTime.value = 0;
     isPlaying.value = false;
@@ -447,6 +476,22 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     }
   };
 
+  const ensureProcessingRangesStayInRange = () => {
+    processingRanges.value = processingRanges.value.map((range, index) =>
+      reconcileProcessingRange(
+        {
+          ...range,
+          name: range.name || `范围 ${index + 1}`,
+        },
+        videoDuration.value
+      )
+    );
+
+    if (selectedProcessingRangeId.value && !getProcessingRangeById(selectedProcessingRangeId.value)) {
+      selectedProcessingRangeId.value = processingRanges.value[0]?.id || null;
+    }
+  };
+
   const captureEditorSnapshot = (uiState = {}) => ({
     currentTime: Number(currentTime.value || 0),
     playbackRate: Number(playbackRate.value || 1),
@@ -458,8 +503,10 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     displayWidth: Number(displayWidth.value || 0),
     displayHeight: Number(displayHeight.value || 0),
     selectedMaskId: selectedMaskId.value,
+    selectedProcessingRangeId: selectedProcessingRangeId.value,
     selectedKeyframeId: selectedKeyframeId.value,
     masks: masks.value.map(cloneMask),
+    processingRanges: processingRanges.value.map(cloneProcessingRange),
     maskTool: cloneMaskTool(maskTool.value),
     uiState: JSON.parse(JSON.stringify(uiState || {})),
   });
@@ -498,6 +545,16 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
       ensureMaskDrawHistory(mask.id, mask.baseMaskDataUrl || "");
     });
 
+    processingRanges.value = (snapshot.processingRanges || []).map((range, index) =>
+      reconcileProcessingRange(
+        {
+          ...cloneProcessingRange(range),
+          name: range.name || `范围 ${index + 1}`,
+        },
+        duration
+      )
+    );
+
     selectedMaskId.value =
       snapshot.selectedMaskId && masks.value.some((item) => item.id === snapshot.selectedMaskId)
         ? snapshot.selectedMaskId
@@ -509,6 +566,11 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
       mask?.keyframes.some((item) => item.id === snapshot.selectedKeyframeId)
         ? snapshot.selectedKeyframeId
         : null;
+    selectedProcessingRangeId.value =
+      snapshot.selectedProcessingRangeId &&
+      processingRanges.value.some((item) => item.id === snapshot.selectedProcessingRangeId)
+        ? snapshot.selectedProcessingRangeId
+        : processingRanges.value[0]?.id || null;
 
     currentTime.value = clamp(Number(snapshot.currentTime || 0), 0, duration);
     playbackRate.value = Math.max(0.1, Number(snapshot.playbackRate || 1));
@@ -666,6 +728,27 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     videoHeight.value = height;
     videoDuration.value = Math.max(0, Number(duration || 0));
     ensureMasksStayInRange();
+    ensureProcessingRangesStayInRange();
+  };
+
+  const commitProcessingRange = (rangeId, nextRangeInput) => {
+    const index = getProcessingRangeIndexById(rangeId);
+    if (index === -1) return null;
+
+    const nextRange = reconcileProcessingRange(nextRangeInput, videoDuration.value);
+    const nextRanges = [...processingRanges.value];
+    nextRanges[index] = nextRange;
+    processingRanges.value = nextRanges;
+    if (selectedProcessingRangeId.value === rangeId) {
+      selectedProcessingRangeId.value = nextRange.id;
+    }
+    return nextRange;
+  };
+
+  const selectProcessingRange = (rangeId) => {
+    const range = getProcessingRangeById(rangeId);
+    selectedProcessingRangeId.value = range?.id || null;
+    return range;
   };
 
   const selectMask = (maskId, keyframeId = undefined) => {
@@ -762,6 +845,128 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     });
     return mask;
   };
+
+  const createProcessingRange = ({
+    name,
+    startTime = currentTime.value,
+    endTime = null,
+  } = {}) => {
+    const duration = Math.max(0, videoDuration.value || 0);
+    const clampedStart = clamp(Number(startTime || 0), 0, duration);
+    const fallbackEnd = Math.min(duration, clampedStart + 3);
+    const requestedEnd = endTime === null || endTime === undefined ? fallbackEnd : endTime;
+    const clampedEnd = clamp(Number(requestedEnd), clampedStart, duration);
+    const order = processingRanges.value.length + 1;
+    const range = reconcileProcessingRange(
+      {
+        id: uuidv4(),
+        name: name || `范围 ${order}`,
+        enabled: true,
+        startTime: clampedStart,
+        endTime: clampedEnd,
+      },
+      duration
+    );
+
+    processingRanges.value = [...processingRanges.value, range];
+    selectProcessingRange(range.id);
+    return range;
+  };
+
+  const removeProcessingRange = (rangeId) => {
+    const nextRanges = processingRanges.value.filter((item) => item.id !== rangeId);
+    processingRanges.value = nextRanges;
+    if (selectedProcessingRangeId.value === rangeId) {
+      selectedProcessingRangeId.value = nextRanges[0]?.id || null;
+    }
+    return true;
+  };
+
+  const updateProcessingRange = (rangeId, patch = {}) => {
+    const currentRange = getProcessingRangeById(rangeId);
+    if (!currentRange) return null;
+    return commitProcessingRange(rangeId, {
+      ...cloneProcessingRange(currentRange),
+      ...patch,
+    });
+  };
+
+  const updateSelectedProcessingRange = (patch = {}) => {
+    if (!selectedProcessingRangeId.value) return null;
+    return updateProcessingRange(selectedProcessingRangeId.value, patch);
+  };
+
+  const resizeProcessingRange = (rangeId, { startTime, endTime }) => {
+    const range = getProcessingRangeById(rangeId);
+    if (!range) {
+      return createResult(false, {
+        code: "range-not-found",
+        error: "未找到对应的处理范围。",
+      });
+    }
+
+    const duration = Math.max(0, videoDuration.value || 0);
+    const nextStart = clamp(Number(startTime ?? range.startTime), 0, duration);
+    const nextEnd = clamp(Number(endTime ?? range.endTime), nextStart, duration);
+    const nextRange = commitProcessingRange(rangeId, {
+      ...cloneProcessingRange(range),
+      startTime: nextStart,
+      endTime: nextEnd,
+    });
+
+    return createResult(true, {
+      range: nextRange,
+    });
+  };
+
+  const moveProcessingRange = (rangeId, delta) => {
+    const range = getProcessingRangeById(rangeId);
+    if (!range) {
+      return createResult(false, {
+        code: "range-not-found",
+        error: "未找到对应的处理范围。",
+      });
+    }
+
+    const requestedDelta = Number(delta || 0);
+    const nextStart = Number(range.startTime || 0) + requestedDelta;
+    const nextEnd = Number(range.endTime || 0) + requestedDelta;
+
+    if (nextStart < -KEYFRAME_TOLERANCE) {
+      return createResult(false, {
+        code: "range-start-out-of-bounds",
+        error: "处理范围不能早于视频开始时间。",
+      });
+    }
+
+    if (nextEnd > Number(videoDuration.value || 0) + KEYFRAME_TOLERANCE) {
+      return createResult(false, {
+        code: "range-end-out-of-bounds",
+        error: "处理范围不能超出视频结束时间。",
+      });
+    }
+
+    const appliedDelta = Math.abs(requestedDelta) <= KEYFRAME_TOLERANCE ? 0 : requestedDelta;
+    if (Math.abs(appliedDelta) <= KEYFRAME_TOLERANCE) {
+      return createResult(true, {
+        range,
+        delta: 0,
+      });
+    }
+
+    const nextRange = commitProcessingRange(rangeId, {
+      ...cloneProcessingRange(range),
+      startTime: nextStart,
+      endTime: nextEnd,
+    });
+
+    return createResult(true, {
+      range: nextRange,
+      delta: appliedDelta,
+    });
+  };
+
+  const renameProcessingRange = (rangeId, name) => updateProcessingRange(rangeId, { name });
 
   const removeMask = (maskId) => {
     const nextMasks = masks.value.filter((item) => item.id !== maskId);
@@ -1334,7 +1539,9 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     displayWidth,
     displayHeight,
     masks,
+    processingRanges,
     selectedMaskId,
+    selectedProcessingRangeId,
     selectedKeyframeId,
     maskTool,
     currentSourcePath,
@@ -1346,6 +1553,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     selectedKeyframe,
     selectedMaskOrderedKeyframes,
     selectedMaskUserKeyframes,
+    selectedProcessingRange,
     selectedKeyframeUniformScale,
     selectedKeyframeIsDeformed,
     hasSelectedMask,
@@ -1377,11 +1585,16 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     clearVideoInfo,
     calculateDisplaySize,
     createMask,
+    createProcessingRange,
     removeMask,
+    removeProcessingRange,
     selectMask,
+    selectProcessingRange,
     selectKeyframe,
     updateMask,
+    updateProcessingRange,
     updateSelectedMask,
+    updateSelectedProcessingRange,
     setMaskBaseMask,
     setSelectedMaskBaseMask,
     commitMaskBaseMask,
@@ -1395,15 +1608,20 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     removeKeyframe,
     updateMaskRange,
     resizeMaskRange,
+    resizeProcessingRange,
     moveMaskRange,
+    moveProcessingRange,
     renameMask,
+    renameProcessingRange,
     updateMaskTool,
     setMaskToolDefaults,
     deferKeyframeDeformationUi,
     isKeyframeDeformationUiDeferred,
     getMaskById,
+    getProcessingRangeById,
     getMaskStateAtTime,
     ensureTransformKeyframeAtCurrentTime,
     ensureMasksStayInRange,
+    ensureProcessingRangesStayInRange,
   };
 });

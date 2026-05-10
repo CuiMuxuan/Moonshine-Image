@@ -1057,7 +1057,7 @@ class Api:
                     frame_item.image_path,
                     os.path.join(frames_dir, os.path.basename(frame_item.image_path)),
                 )
-            if os.path.exists(frame_item.mask_path):
+            if frame_item.mask_path and os.path.exists(frame_item.mask_path):
                 shutil.copy2(
                     frame_item.mask_path,
                     os.path.join(masks_dir, os.path.basename(frame_item.mask_path)),
@@ -1085,11 +1085,17 @@ class Api:
         failed_items = []
         total_frames = len(req.frames)
         batch_id = getattr(req.options, "batch_id", "") or f"video_batch_{int(start_time)}"
+        model_id = str(req.model_id or "lama").strip().lower() or "lama"
         gc_interval = 8
+        slbr_runner = None
+        slbr_options = None
+        if model_id == "slbr":
+            slbr_runner = self._get_slbr_runner()
+            slbr_options = self._normalize_moonshine_options(req.options.model_options)
 
         logger.info(
             f"[{batch_id}] start video batch: {total_frames} frame(s), "
-            f"stop_on_error={req.options.stop_on_error}"
+            f"model={model_id}, stop_on_error={req.options.stop_on_error}"
         )
 
         for index, item in enumerate(req.frames, start=1):
@@ -1099,27 +1105,67 @@ class Api:
             mask_nonzero_pixels = None
             try:
                 image, alpha_channel = self._load_image_from_path(item.image_path)
-                mask = self._load_mask_from_path(
-                    item.mask_path, req.options.keep_mask_grayscale
-                )
 
-                if image.shape[:2] != mask.shape[:2]:
-                    mask = cv2.resize(
-                        mask,
-                        (image.shape[1], image.shape[0]),
-                        interpolation=cv2.INTER_NEAREST,
+                if model_id == "slbr":
+                    image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                    processed_bgr, _ = slbr_runner.infer_bgr(
+                        image_bgr,
+                        tile_size=slbr_options["tile_size"],
+                        tile_batch=slbr_options["tile_batch"],
+                    )
+                    self._save_processed_frame(
+                        item.output_path, processed_bgr.astype(np.uint8), alpha_channel
+                    )
+                    results.append(
+                        {
+                            "frame_index": item.frame_index,
+                            "output_path": item.output_path,
+                            "success": True,
+                        }
+                    )
+                else:
+                    mask = self._load_mask_from_path(
+                        item.mask_path, req.options.keep_mask_grayscale
                     )
 
-                inpaint_req = req.options.inpaint.model_copy(deep=True)
-                inpaint_req.image = ""
-                inpaint_req.mask = ""
-                mask_nonzero_pixels = int(np.count_nonzero(mask))
+                    if image.shape[:2] != mask.shape[:2]:
+                        mask = cv2.resize(
+                            mask,
+                            (image.shape[1], image.shape[0]),
+                            interpolation=cv2.INTER_NEAREST,
+                        )
 
-                if mask_nonzero_pixels <= 0:
+                    inpaint_req = req.options.inpaint.model_copy(deep=True)
+                    inpaint_req.image = ""
+                    inpaint_req.mask = ""
+                    mask_nonzero_pixels = int(np.count_nonzero(mask))
+
+                    if mask_nonzero_pixels <= 0:
+                        self._save_processed_frame(
+                            item.output_path,
+                            cv2.cvtColor(image, cv2.COLOR_RGB2BGR),
+                            alpha_channel,
+                        )
+
+                        results.append(
+                            {
+                                "frame_index": item.frame_index,
+                                "output_path": item.output_path,
+                                "success": True,
+                                "skipped": True,
+                                "skip_reason": "empty-mask",
+                            }
+                        )
+
+                        if index == total_frames or index % 5 == 0:
+                            logger.info(
+                                f"[{batch_id}] processed {index}/{total_frames} frame(s)"
+                            )
+                        continue
+
+                    processed_bgr = self.model_manager(image, mask, inpaint_req)
                     self._save_processed_frame(
-                        item.output_path,
-                        cv2.cvtColor(image, cv2.COLOR_RGB2BGR),
-                        alpha_channel,
+                        item.output_path, processed_bgr.astype(np.uint8), alpha_channel
                     )
 
                     results.append(
@@ -1127,29 +1173,8 @@ class Api:
                             "frame_index": item.frame_index,
                             "output_path": item.output_path,
                             "success": True,
-                            "skipped": True,
-                            "skip_reason": "empty-mask",
                         }
                     )
-
-                    if index == total_frames or index % 5 == 0:
-                        logger.info(
-                            f"[{batch_id}] processed {index}/{total_frames} frame(s)"
-                        )
-                    continue
-
-                processed_bgr = self.model_manager(image, mask, inpaint_req)
-                self._save_processed_frame(
-                    item.output_path, processed_bgr.astype(np.uint8), alpha_channel
-                )
-
-                results.append(
-                    {
-                        "frame_index": item.frame_index,
-                        "output_path": item.output_path,
-                        "success": True,
-                    }
-                )
 
                 if index % gc_interval == 0:
                     torch_gc()
@@ -1193,13 +1218,15 @@ class Api:
 
         batch_time = time.time() - start_time
         logger.info(
-            f"[{batch_id}] finished video batch: success="
+            f"[{batch_id}] finished video batch: model={model_id}, success="
             f"{sum(1 for it in results if it.get('success', False))}/{total_frames}, "
-            f"failed={len(failed_items)}, elapsed={batch_time:.2f}s"
+            f"failed={len(failed_items)}, elapsed={batch_time:.2f}s, "
+            f"outputs={[item.get('output_path') for item in results if item.get('success')]}"
         )
         return JSONResponse(
             content=jsonable_encoder(
                 {
+                    "model_id": model_id,
                     "processed_count": len(results),
                     "success_count": sum(
                         1 for it in results if it.get("success", False)
