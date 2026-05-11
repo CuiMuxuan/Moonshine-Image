@@ -76,6 +76,7 @@ MODEL_MANIFEST = (
             "outputRequired": True,
         },
         "parameters": {},
+        "parameterHelp": "当前模型参数由后端自动控制，无需手动调整。",
         "capabilities": {
             "speed": 3,
             "realImageQuality": 4,
@@ -146,6 +147,11 @@ MODEL_MANIFEST = (
                 "required": True,
             },
         },
+        "parameterHelp": (
+            "图片尺寸越大使用越大的分块大小，批次数量影响占用的显存，"
+            "设备性能和分块大小直接影响处理效果和处理时间，"
+            "分块大小为256与384的效果一般好于512。"
+        ),
         "capabilities": {
             "speed": 3,
             "realImageQuality": 3,

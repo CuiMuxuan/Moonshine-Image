@@ -26,6 +26,7 @@
     >
       <span class="rect-cursor-line is-horizontal"></span>
       <span class="rect-cursor-line is-vertical"></span>
+      <span class="rect-cursor-core"></span>
     </div>
 
     <div
@@ -93,7 +94,16 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  previewVisible: {
+    type: Boolean,
+    default: true,
+  },
+  allowMaskTransform: {
+    type: Boolean,
+    default: true,
+  },
 });
+const emit = defineEmits(["draw-start", "draw-end"]);
 
 const videoStore = useVideoManagerStore();
 const overlayCanvasRef = ref(null);
@@ -203,6 +213,7 @@ const rectPreviewDisplayStyle = computed(() => {
 const overlayRootStyle = computed(() => ({
   width: `${safeDisplayWidth.value}px`,
   height: `${safeDisplayHeight.value}px`,
+  opacity: props.previewVisible ? 1 : 0,
 }));
 
 const drawingEnabled = computed(
@@ -246,7 +257,10 @@ const selectionBoxStyle = computed(() => {
     top: `${selectedDisplayBox.value.top}px`,
     width: `${selectedDisplayBox.value.width}px`,
     height: `${selectedDisplayBox.value.height}px`,
-    pointerEvents: props.disabled || videoStore.maskTool.drawingEnabled ? "none" : "auto",
+    pointerEvents:
+      props.disabled || videoStore.maskTool.drawingEnabled || !props.allowMaskTransform
+        ? "none"
+        : "auto",
   };
 });
 
@@ -333,9 +347,13 @@ const updateCursorPosition = (event) => {
   const rect = getOverlayRect();
   if (!rect) return;
 
+  const normalizedX = (event.clientX - rect.left) / Math.max(rect.width, 1);
+  const normalizedY = (event.clientY - rect.top) / Math.max(rect.height, 1);
+  const clampedX = Math.min(1, Math.max(0, normalizedX));
+  const clampedY = Math.min(1, Math.max(0, normalizedY));
   cursorPosition.value = {
-    x: event.clientX - rect.left,
-    y: event.clientY - rect.top,
+    x: clampedX * safeDisplayWidth.value,
+    y: clampedY * safeDisplayHeight.value,
   };
 };
 
@@ -418,6 +436,7 @@ const cancelPreviewDraw = () => {
   rectPreview.value = null;
   activeDrawingMaskId.value = null;
   detachDrawingWindowListeners();
+  emit("draw-end");
   renderOverlay();
 };
 
@@ -429,6 +448,7 @@ const finishPreviewDraw = (event = null) => {
     commitEditedMask();
   }
   activeDrawingMaskId.value = null;
+  emit("draw-end");
   renderOverlay();
 };
 
@@ -458,6 +478,7 @@ const startPreviewDraw = async (event) => {
   window.addEventListener("pointermove", handleWindowPointerMove, true);
   window.addEventListener("pointerup", handleWindowPointerUp, true);
   drawingWindowBound.value = true;
+  emit("draw-start");
   event.preventDefault();
 };
 
@@ -495,6 +516,7 @@ const handlePointerLeave = () => {
 const startMove = (event) => {
   if (
     props.disabled ||
+    !props.allowMaskTransform ||
     videoStore.maskTool.drawingEnabled ||
     !selectedDisplayBox.value ||
     !selectedState.value
@@ -524,6 +546,7 @@ const startMove = (event) => {
 const startScale = (event, handle) => {
   if (
     props.disabled ||
+    !props.allowMaskTransform ||
     videoStore.maskTool.drawingEnabled ||
     !selectedSourceRect.value ||
     !selectedState.value
@@ -800,8 +823,8 @@ defineExpose({
 
 .rect-cursor {
   position: absolute;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   transform: translate(-50%, -50%);
   pointer-events: none;
   z-index: 4;
@@ -811,14 +834,14 @@ defineExpose({
 .rect-cursor-line {
   position: absolute;
   background: #ffffff;
-  border-radius: 999px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
 }
 
 .rect-cursor-line.is-horizontal {
   left: 0;
   right: 0;
   top: 50%;
-  height: 2px;
+  height: 1.5px;
   transform: translateY(-50%);
 }
 
@@ -826,8 +849,20 @@ defineExpose({
   top: 0;
   bottom: 0;
   left: 50%;
-  width: 2px;
+  width: 1.5px;
   transform: translateX(-50%);
+}
+
+.rect-cursor-core {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  transform: translate(-50%, -50%);
+  border: 1.5px solid #ffffff;
+  background: transparent;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
 }
 
 .rect-preview-box {

@@ -312,6 +312,11 @@ import { createDefaultShortcuts, formatShortcutKeys, getShortcutDefinition, getS
 import { useAppStateStore } from "src/stores/appState";
 import { useConfigStore } from "src/stores/config";
 import { useFileManagerStore } from "src/stores/fileManager";
+import {
+  buildBackendPathBlockedMessage,
+  buildBackendPathSelectionBlockedMessage,
+  validateBackendPaths,
+} from "src/utils/backendPathValidation";
 
 const $q = useQuasar();
 const configStore = useConfigStore();
@@ -438,12 +443,58 @@ const selectFolder = async (title) => {
 };
 const selectDownloadPath = async () => { try { const value = await selectFolder("选择下载 / 导出目录"); if (value) localConfig.value.fileManagement.downloadPath = value; } catch (error) { $q.notify({ type: "negative", message: `选择目录失败：${error.message}` }); } };
 const selectTempPath = async () => { try { const value = await selectFolder("选择临时文件目录"); if (value) localConfig.value.fileManagement.tempPath = value; } catch (error) { $q.notify({ type: "negative", message: `选择目录失败：${error.message}` }); } };
-const selectModelPath = async () => { try { const value = await selectFolder("选择模型目录"); if (value) localConfig.value.general.modelPath = value; } catch (error) { $q.notify({ type: "negative", message: `选择模型目录失败：${error.message}` }); } };
+const selectModelPath = async () => {
+  try {
+    const value = await selectFolder("选择模型目录");
+    if (!value) return;
+    const validation = await validateBackendPaths({
+      backendProjectPath: localConfig.value.general.backendProjectPath || "",
+      modelDir: localConfig.value.general.modelDir || "",
+      modelPath: value,
+    });
+    if (!validation.valid) {
+      $q.notify({
+        type: "negative",
+        message: buildBackendPathSelectionBlockedMessage(validation, {
+          currentBackendProjectPath: localConfig.value.general.backendProjectPath || "",
+          currentModelDir: localConfig.value.general.modelDir || "",
+          currentModelPath: localConfig.value.general.modelPath || "",
+          selectedModelPath: value,
+        }),
+        position: "top",
+        timeout: 6000,
+      });
+      return;
+    }
+    localConfig.value.general.modelPath = value;
+  } catch (error) {
+    $q.notify({ type: "negative", message: `选择模型目录失败：${error.message}` });
+  }
+};
 const selectBackendProjectPath = async () => {
   if (!window.electron?.ipcRenderer?.invoke) return;
   try {
     const value = await selectFolder("选择后端项目路径");
     if (!value) return;
+    const validation = await validateBackendPaths({
+      backendProjectPath: value,
+      modelDir: localConfig.value.general.modelDir || "",
+      modelPath: localConfig.value.general.modelPath || "",
+    });
+    if (!validation.valid) {
+      $q.notify({
+        type: "negative",
+        message: buildBackendPathSelectionBlockedMessage(validation, {
+          currentBackendProjectPath: localConfig.value.general.backendProjectPath || "",
+          currentModelDir: localConfig.value.general.modelDir || "",
+          currentModelPath: localConfig.value.general.modelPath || "",
+          selectedBackendProjectPath: value,
+        }),
+        position: "top",
+        timeout: 6000,
+      });
+      return;
+    }
     const checkResult = await window.electron.ipcRenderer.invoke("check-project", value);
     if (checkResult.success) {
       localConfig.value.general.backendProjectPath = value;
@@ -492,6 +543,21 @@ const doSaveSettings = async () => {
   try {
     stopShortcutRecording();
     const serializableConfig = buildSerializableConfig(localConfig.value);
+    const backendPathValidation = await validateBackendPaths({
+      backendProjectPath: serializableConfig.general?.backendProjectPath || "",
+      modelDir: serializableConfig.general?.modelDir || "",
+      modelPath: serializableConfig.general?.modelPath || "",
+    });
+    if (!backendPathValidation.valid) {
+      $q.notify({
+        type: "negative",
+        message: buildBackendPathBlockedMessage(backendPathValidation),
+        position: "top",
+        timeout: 7000,
+      });
+      return;
+    }
+
     const previousPort = configStore.config.general.backendPort;
     const storeResult = await configStore.persistConfig(serializableConfig);
     if (!storeResult.success) throw new Error(storeResult.error || storeResult.errors?.join("；") || "保存配置失败");

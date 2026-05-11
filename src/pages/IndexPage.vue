@@ -67,6 +67,10 @@ import { useConfiguredShortcuts } from "src/composables/useConfiguredShortcuts";
 import InpaintService from "src/services/ImageProcessingService";
 import { buildImageOutputBaseName, splitFileName } from "src/utils/fileNaming";
 import { MASK_TOOL_MODES } from "src/utils/maskTool";
+import {
+  buildBackendPathBlockedMessage,
+  validateBackendPathsForConfig,
+} from "src/utils/backendPathValidation";
 import ImageEditor from "../components/image/ImageEditor.vue";
 import FileExplorer from "../components/common/FileExplorer.vue";
 import Workspace from "../components/common/Workspace.vue";
@@ -363,6 +367,7 @@ const toggleFileSelection = (file) => {
 const handleModelChange = (model, { notify = true } = {}) => {
   if (!model) return;
   currentModel.value = model;
+  appStateStore.setSharedCurrentModel?.(model);
   const metadata = modelRegistryStore.imageModels.find((item) => item.id === model) || {};
   applyModelRuntimeState(metadata);
   if (!notify) return;
@@ -857,6 +862,19 @@ const runCurrentModel = async () => {
     if (backendEngineValue.value.hasFailed) {
       backendEngineValue.value.openDiagnostics();
     }
+    return;
+  }
+
+  const backendPathValidation = await validateBackendPathsForConfig(
+    configStore.config.general || {}
+  );
+  if (!backendPathValidation.valid) {
+    $q.notify({
+      type: "negative",
+      message: buildBackendPathBlockedMessage(backendPathValidation),
+      position: "top",
+      timeout: 6500,
+    });
     return;
   }
 
@@ -1704,6 +1722,7 @@ const handleDrawerSelectAllChange = (value) => {
 
 const loadImageModelOptions = async ({ preferredModel = currentModel.value } = {}) => {
   await modelRegistryStore.loadModels();
+  const sharedModel = String(appStateStore.getSharedCurrentModel?.() || "").trim();
   const models = modelRegistryStore.installedImageModels;
   imageModelOptions.value = models.map((model) => ({
     label: model.label || model.id,
@@ -1721,16 +1740,25 @@ const loadImageModelOptions = async ({ preferredModel = currentModel.value } = {
   const hasCurrentModel = imageModelOptions.value.some(
     (option) => option.value === currentModel.value
   );
+  const hasSharedModel = imageModelOptions.value.some(
+    (option) => option.value === sharedModel
+  );
+  const hasLamaModel = imageModelOptions.value.some((option) => option.value === "lama");
   let nextModel = currentModel.value || "lama";
   if (hasPreferredModel) {
     nextModel = preferredModel;
   } else if (!hasCurrentModel) {
-    nextModel = imageModelOptions.value[0]?.value || nextModel;
+    nextModel = hasSharedModel
+      ? sharedModel
+      : hasLamaModel
+        ? "lama"
+        : imageModelOptions.value[0]?.value || nextModel;
   }
 
   if (nextModel !== currentModel.value) {
     currentModel.value = nextModel;
   }
+  appStateStore.setSharedCurrentModel?.(currentModel.value);
 
   const metadata =
     modelRegistryStore.imageModels.find((model) => model.id === currentModel.value) || {};
@@ -2018,6 +2046,10 @@ const savePageState = async () => {
 // 页面进入时的状态恢复
 const restorePageState = async () => {
   try {
+    const sharedModel = String(appStateStore.getSharedCurrentModel?.() || "").trim();
+    if (sharedModel) {
+      currentModel.value = sharedModel;
+    }
     // 恢复fileManager状态
     const savedFileManagerState = appStateStore.restoreFileManagerState("image");
     if (savedFileManagerState) {
@@ -2040,7 +2072,7 @@ const restorePageState = async () => {
       await nextTick(() => {
         leftDrawerOpen.value = savedUIState.leftDrawerOpen ?? defaultDrawerState.left;
         rightDrawerOpen.value = savedUIState.rightDrawerOpen ?? defaultDrawerState.right;
-        currentModel.value = savedUIState.currentModel || "lama";
+        currentModel.value = sharedModel || savedUIState.currentModel || "lama";
         showMaskTools.value = savedUIState.showMaskTools ?? true;
         setMaskDrawingMode(runtimeUiStore.imageMaskDrawingEnabled);
         actionScope.value =
@@ -2057,6 +2089,7 @@ const restorePageState = async () => {
         dontShowMaxHistoryWarning.value = savedUIState.dontShowMaxHistoryWarning ?? false;
       });
       await nextTick();
+      appStateStore.setSharedCurrentModel?.(currentModel.value);
       updateVisibleAreaInsets();
       // 应用恢复后的状态副作用
       if (selectAll.value) {

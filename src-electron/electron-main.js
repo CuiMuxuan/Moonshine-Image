@@ -65,7 +65,7 @@ const DEFAULT_BRAND_COLORS = Object.freeze({
 });
 const DEFAULT_IMAGE_BRUSH = Object.freeze({
   size: 20,
-  color: "#1976D2",
+  color: "#8a71d4",
   alpha: 0.75,
 });
 const DEFAULT_VIDEO_BRUSH = Object.freeze({
@@ -173,6 +173,9 @@ const BUNDLED_RUNTIME_LOCK_WAIT_MS = 300000;
 const BUNDLED_RUNTIME_LOCK_STALE_MS = 120000;
 const VIDEO_PROCESSING_REGISTRY_FILE = "moonshine_video_resume_index.json";
 const QUICK_FINGERPRINT_SAMPLE_SIZE = 64 * 1024;
+const BACKEND_PATH_CJK_BLOCK_MESSAGE =
+  "项目路径中存在中文，可能导致项目运行失败，本次静默启动停止，请在全局配置后端配置中记录当前的项目路径和模型路径，然后将其移动到不含中文的路径下，并选择该路径。";
+const CJK_PATH_PATTERN = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u;
 let packagedIntegrityStatus = null;
 
 function normalizeShortcutKeys(keys = []) {
@@ -679,6 +682,94 @@ function isBundledBackendMode(projectPath) {
     normalizeStoredBackendProjectPath(projectPath || getDefaultBackendProjectPath())
   );
   return normalizedPath === path.normalize(getPackagedBackendRuntimeProjectPath());
+}
+
+function containsCjkCharacter(value) {
+  return CJK_PATH_PATTERN.test(String(value || ""));
+}
+
+function normalizeBackendPathValidationInput(input = {}) {
+  const backendProjectPathInput =
+    input.backendProjectPath !== undefined
+      ? input.backendProjectPath
+      : globalConfig.general?.backendProjectPath || global.projectPath || "";
+  const modelDirInput =
+    input.modelDir !== undefined ? input.modelDir : globalConfig.general?.modelDir || "";
+  const modelPathInput =
+    input.modelPath !== undefined ? input.modelPath : globalConfig.general?.modelPath || "";
+
+  const backendProjectPath = normalizeStoredBackendProjectPath(backendProjectPathInput);
+  const modelDir = String(modelDirInput || "").trim();
+  const modelPath = String(modelPathInput || "").trim();
+  const bundledMode = isBundledBackendMode(backendProjectPath || getDefaultBackendProjectPath());
+  const effectiveModelDir = bundledMode
+    ? getEffectiveBundledModelDir()
+    : modelDir || modelPath || "";
+
+  return {
+    backendProjectPath,
+    modelDir,
+    modelPath,
+    bundledMode,
+    effectiveModelDir,
+  };
+}
+
+function buildBackendPathValidationResult(input = {}) {
+  const normalized = normalizeBackendPathValidationInput(input);
+  const invalidPaths = [];
+
+  if (normalized.backendProjectPath && containsCjkCharacter(normalized.backendProjectPath)) {
+    invalidPaths.push({
+      field: "backendProjectPath",
+      label: "后端项目路径",
+      path: normalized.backendProjectPath,
+    });
+  }
+
+  if (normalized.modelDir && containsCjkCharacter(normalized.modelDir)) {
+    invalidPaths.push({
+      field: "modelDir",
+      label: "模型目录路径",
+      path: normalized.modelDir,
+    });
+  }
+
+  if (normalized.modelPath && containsCjkCharacter(normalized.modelPath)) {
+    invalidPaths.push({
+      field: "modelPath",
+      label: "模型目录路径",
+      path: normalized.modelPath,
+    });
+  }
+
+  if (normalized.bundledMode && containsCjkCharacter(normalized.effectiveModelDir)) {
+    invalidPaths.push({
+      field: "effectiveModelDir",
+      label: "内置模型目录路径",
+      path: normalized.effectiveModelDir,
+    });
+  }
+
+  if (invalidPaths.length > 0) {
+    return {
+      success: true,
+      valid: false,
+      code: "BACKEND_PATH_CONTAINS_CJK",
+      message: BACKEND_PATH_CJK_BLOCK_MESSAGE,
+      invalidPaths,
+      paths: normalized,
+    };
+  }
+
+  return {
+    success: true,
+    valid: true,
+    code: "",
+    message: "",
+    invalidPaths: [],
+    paths: normalized,
+  };
 }
 
 function getIntegrityArtifactPaths() {
@@ -1791,6 +1882,21 @@ ipcMain.handle("save-app-config", async (event, newConfig) => {
       console.error("Configuration validation failed:", newConfig);
       return { success: false, error: "Invalid configuration payload" };
     }
+
+    const backendPathValidation = buildBackendPathValidationResult({
+      backendProjectPath: sanitizedConfig.general?.backendProjectPath || "",
+      modelDir: sanitizedConfig.general?.modelDir || "",
+      modelPath: sanitizedConfig.general?.modelPath || "",
+    });
+    if (!backendPathValidation.valid) {
+      return {
+        success: false,
+        error: backendPathValidation.message,
+        code: backendPathValidation.code,
+        invalidPaths: backendPathValidation.invalidPaths,
+      };
+    }
+
     const configPath = getConfigPath();
     console.log("Saving configuration to:", configPath);
     fs.writeFileSync(configPath, JSON.stringify(sanitizedConfig, null, 2));
@@ -2510,8 +2616,28 @@ ipcMain.handle("check-conda-dependencies", async () => {
   }
 });
 // IPC handler - validate project path
+ipcMain.handle("validate-backend-paths", async (event, input = {}) => {
+  return buildBackendPathValidationResult(input || {});
+});
+
+// IPC handler - validate project path
 ipcMain.handle("check-project", async (event, selectPath) => {
   try {
+    const backendPathValidation = buildBackendPathValidationResult({
+      backendProjectPath: selectPath || global.projectPath || "",
+      modelDir: globalConfig.general?.modelDir || "",
+      modelPath: globalConfig.general?.modelPath || "",
+    });
+    if (!backendPathValidation.valid) {
+      return {
+        success: false,
+        code: backendPathValidation.code,
+        error: backendPathValidation.message,
+        recoveryHint: backendPathValidation.message,
+        invalidPaths: backendPathValidation.invalidPaths,
+      };
+    }
+
     const result = await resolveValidatedProjectPath(selectPath || global.projectPath);
     if (!result.success) {
       return result;
@@ -2696,6 +2822,20 @@ ipcMain.handle("prepare-project-python", async (event, selectPath) => {
 ipcMain.handle("set-project-path", async (event, selectPath) => {
   try {
     const normalizedPath = normalizeStoredBackendProjectPath(selectPath);
+    const backendPathValidation = buildBackendPathValidationResult({
+      backendProjectPath: normalizedPath,
+      modelDir: globalConfig.general?.modelDir || "",
+      modelPath: globalConfig.general?.modelPath || "",
+    });
+    if (!backendPathValidation.valid) {
+      return {
+        success: false,
+        code: backendPathValidation.code,
+        error: backendPathValidation.message,
+        invalidPaths: backendPathValidation.invalidPaths,
+      };
+    }
+
     const integrityResult = await ensurePackagedBackendIntegrity(normalizedPath);
     if (!integrityResult.success) {
       return {
@@ -3291,6 +3431,20 @@ ipcMain.handle("start-backend-service", async (event, config) => {
 
     if (!global.projectPath) {
       return { success: false, error: "Project path is not set." };
+    }
+
+    const backendPathValidation = buildBackendPathValidationResult({
+      backendProjectPath: global.projectPath,
+      modelDir: config?.modelDir || "",
+      modelPath: globalConfig.general?.modelPath || "",
+    });
+    if (!backendPathValidation.valid) {
+      return {
+        success: false,
+        error: backendPathValidation.message,
+        code: backendPathValidation.code,
+        invalidPaths: backendPathValidation.invalidPaths,
+      };
     }
 
     const integrityResult = await ensurePackagedBackendIntegrity(global.projectPath);

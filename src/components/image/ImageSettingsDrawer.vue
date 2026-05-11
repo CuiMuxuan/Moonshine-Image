@@ -107,6 +107,21 @@
             <span>模型参数</span>
           </div>
 
+          <q-btn
+            v-if="showModelParameterHelp"
+            flat
+            round
+            dense
+            size="sm"
+            color="primary"
+            icon="help_outline"
+            class="parameter-help-button"
+          >
+            <q-tooltip class="parameter-help-tooltip">
+              {{ modelParameterHelp }}
+            </q-tooltip>
+          </q-btn>
+
           <div class="parameter-grid">
             <div
               v-for="field in parameterFields"
@@ -410,6 +425,10 @@ const supportedBatchActions = computed(() => [
 ]);
 const folderInputs = computed(() => runCapabilities.value.folderInputs || []);
 const parameters = computed(() => props.modelMetadata?.parameters || {});
+const modelParameterHelp = computed(() =>
+  String(props.modelMetadata?.parameterHelp || "").trim()
+);
+const showModelParameterHelp = computed(() => Boolean(modelParameterHelp.value));
 const recommendedParameters = computed(() => parameters.value.recommended || {});
 const hasCurrentMask = computed(() =>
   Boolean(props.currentMask?.data || props.currentMask?.displayUrl)
@@ -700,6 +719,19 @@ const getNumberRules = (field) => [
   display: grid;
   gap: 12px;
   min-width: 0;
+}
+
+.parameter-help-button {
+  display: flex;
+  margin-left: auto;
+  margin-top: -44px;
+  margin-bottom: 8px;
+}
+
+.parameter-help-tooltip {
+  max-width: 320px;
+  line-height: 1.35;
+  white-space: pre-line;
 }
 
 .batch-toggle {

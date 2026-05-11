@@ -414,13 +414,7 @@
                 <div
                   v-for="(line, index) in terminalOutput"
                   :key="index"
-                  :class="{
-                    'text-red': line.type === 'error',
-                    'text-yellow': line.type === 'warning',
-                    'text-green': line.type === 'success',
-                    'text-white': line.type === 'info',
-                  }"
-                  class="terminal-line"
+                  :class="['terminal-line', getTerminalLineClass(line)]"
                 >
                   <span class="text-grey-5">[{{ line.timestamp }}]</span>
                   {{ line.message }}
@@ -465,6 +459,11 @@ import { computed, ref, reactive, onMounted, onUnmounted, nextTick, watch } from
 import { useQuasar } from "quasar";
 import { useConfigStore } from "src/stores/config";
 import { api } from "src/boot/axios";
+import {
+  buildBackendPathBlockedMessage,
+  buildBackendPathSelectionBlockedMessage,
+  validateBackendPaths,
+} from "src/utils/backendPathValidation";
 
 // Props
 const props = defineProps({
@@ -591,6 +590,18 @@ const getProgressLineKey = (message = "") => {
   return prefix || "terminal-progress";
 };
 
+const isProgressMetaLine = (message = "") => {
+  const text = String(message || "").trim();
+  return (
+    /\u672c\u6b21\u89c6\u9891\u5904\u7406\u603b\u5171\s*\d+\s*\u6279\u6b21/u.test(text) &&
+    /\u5f53\u524d\u7b2c\s*\d+\s*\u6279/u.test(text) &&
+    /\u5f53\u524d\u6279\u6b21\u8fdb\u5ea6\u5982\u4e0b[:\uff1a]?\s*$/u.test(text)
+  );
+};
+
+const isProgressLine = (message = "") =>
+  Boolean(getProgressLineKey(message)) || isProgressMetaLine(message);
+
 const createTerminalLine = (message, type = "info", options = {}) => ({
   message,
   type,
@@ -644,6 +655,21 @@ const scrollTerminalToBottom = () => {
       terminalRef.value.scrollTop = terminalRef.value.scrollHeight;
     }
   });
+};
+
+const getTerminalLineClass = (line = {}) => {
+  switch (line.type) {
+    case "error":
+      return "terminal-line--error";
+    case "warning":
+      return "terminal-line--warning";
+    case "success":
+      return "terminal-line--success";
+    case "progress":
+      return "terminal-line--progress";
+    default:
+      return "terminal-line--info";
+  }
 };
 
 const clearTerminal = () => {
@@ -770,10 +796,11 @@ const addTerminalLog = (message, type = "info") => {
     return;
   }
 
+  const lineType = isProgressLine(cleanText) ? "progress" : type;
   const timestamp = new Date().toLocaleTimeString();
   const hasCursorControl = cleanText.includes("\r") || cleanText.includes("\n");
   if (!hasCursorControl) {
-    terminalOutput.value.push(createTerminalLine(cleanText, type, { timestamp }));
+    terminalOutput.value.push(createTerminalLine(cleanText, lineType, { timestamp }));
     if (!activeTerminalLine?.progressKey) {
       activeTerminalLine = null;
     }
@@ -784,14 +811,29 @@ const addTerminalLog = (message, type = "info") => {
 
   let buffer = "";
   let shouldOverwriteCurrentLine = false;
+  const assignLinePayload = (line, text, progressKey) => {
+    if (
+      line.message === text &&
+      line.type === lineType &&
+      line.progressKey === progressKey &&
+      line.progressActive === Boolean(progressKey)
+    ) {
+      return false;
+    }
+
+    line.message = text;
+    line.type = lineType;
+    line.timestamp = timestamp;
+    line.progressKey = progressKey;
+    line.progressActive = Boolean(progressKey);
+    return true;
+  };
 
   const writeActiveLine = (text) => {
     const progressKey = getProgressLineKey(text);
     const existingProgressLine = findActiveProgressLine(progressKey);
     if (existingProgressLine) {
-      existingProgressLine.message = text;
-      existingProgressLine.type = type;
-      existingProgressLine.timestamp = timestamp;
+      assignLinePayload(existingProgressLine, text, progressKey);
       activeTerminalLine = existingProgressLine;
       return;
     }
@@ -801,15 +843,11 @@ const addTerminalLog = (message, type = "info") => {
       terminalOutput.value.includes(activeTerminalLine) &&
       !activeTerminalLine.system
     ) {
-      activeTerminalLine.message = text;
-      activeTerminalLine.type = type;
-      activeTerminalLine.timestamp = timestamp;
-      activeTerminalLine.progressKey = progressKey;
-      activeTerminalLine.progressActive = Boolean(progressKey);
+      assignLinePayload(activeTerminalLine, text, progressKey);
       return;
     }
 
-    activeTerminalLine = createTerminalLine(text, type, {
+    activeTerminalLine = createTerminalLine(text, lineType, {
       timestamp,
       progressKey,
       progressActive: Boolean(progressKey),
@@ -818,7 +856,7 @@ const addTerminalLog = (message, type = "info") => {
   };
 
   const writeFinalLine = (text) => {
-    terminalOutput.value.push(createTerminalLine(text, type, { timestamp }));
+    terminalOutput.value.push(createTerminalLine(text, lineType, { timestamp }));
     activeTerminalLine = null;
   };
 
@@ -912,6 +950,40 @@ const syncCurrentBackendMode = async () => {
   }
 };
 
+const ensureBackendPathsValid = async ({
+  backendProjectPath = backendConfig.projectPath || projectPath.value || "",
+  modelDir = backendConfig.modelDir || "",
+  modelPath = backendConfig.modelPath || "",
+  notify = true,
+  log = true,
+  blockedMessageBuilder = null,
+} = {}) => {
+  const validation = await validateBackendPaths({
+    backendProjectPath,
+    modelDir,
+    modelPath,
+  });
+  if (validation.valid) {
+    return true;
+  }
+
+  const blockedMessage =
+    (typeof blockedMessageBuilder === "function" && blockedMessageBuilder(validation)) ||
+    buildBackendPathBlockedMessage(validation);
+  if (log) {
+    addTerminalLog(blockedMessage, "warning");
+  }
+  if (notify) {
+    $q.notify({
+      type: "negative",
+      message: blockedMessage,
+      position: "top",
+      timeout: 6500,
+    });
+  }
+  return false;
+};
+
 const applyPreparedEnvironment = (prepareResult = {}) => {
   syncBackendMode(prepareResult.backendMode || backendMode.value);
   environmentStatus.project = true;
@@ -983,6 +1055,13 @@ const appendProjectPathGuidance = (result) => {
 
 // 检查环境
 const checkEnvironment = async () => {
+  const pathsValid = await ensureBackendPathsValid({});
+  if (!pathsValid) {
+    environmentStatus.error = true;
+    currentStep.value = 1;
+    return;
+  }
+
   checking.value = true;
   environmentStatus.error = false;
   addTerminalLog("开始检测后端环境...", "info");
@@ -1139,6 +1218,22 @@ const selectProjectPath = async () => {
 
     if (!result.canceled && result.filePaths.length > 0) {
       const selectedPath = result.filePaths[0];
+      const pathsValid = await ensureBackendPathsValid({
+        backendProjectPath: selectedPath,
+        modelDir: backendConfig.modelDir || "",
+        modelPath: backendConfig.modelPath || "",
+        blockedMessageBuilder: (validation) =>
+          buildBackendPathSelectionBlockedMessage(validation, {
+            currentBackendProjectPath:
+              backendConfig.projectPath || projectPath.value || configStore.config.general?.backendProjectPath || "",
+            currentModelDir: backendConfig.modelDir || configStore.config.general?.modelDir || "",
+            currentModelPath: backendConfig.modelPath || configStore.config.general?.modelPath || "",
+            selectedBackendProjectPath: selectedPath,
+          }),
+      });
+      if (!pathsValid) {
+        return;
+      }
 
       // 先检查选择的路径是否有效
       const checkResult = await window.electron.ipcRenderer.invoke(
@@ -1186,6 +1281,23 @@ const selectModelDir = async () => {
 
     if (!result.canceled && result.filePaths.length > 0) {
       const selectedPath = result.filePaths[0];
+      const pathsValid = await ensureBackendPathsValid({
+        backendProjectPath: backendConfig.projectPath || projectPath.value || "",
+        modelDir: selectedPath,
+        modelPath: backendConfig.modelPath || "",
+        blockedMessageBuilder: (validation) =>
+          buildBackendPathSelectionBlockedMessage(validation, {
+            currentBackendProjectPath:
+              backendConfig.projectPath || projectPath.value || configStore.config.general?.backendProjectPath || "",
+            currentModelDir: backendConfig.modelDir || configStore.config.general?.modelDir || "",
+            currentModelPath: backendConfig.modelPath || configStore.config.general?.modelPath || "",
+            selectedModelDir: selectedPath,
+          }),
+      });
+      if (!pathsValid) {
+        return;
+      }
+
       backendConfig.modelDir = selectedPath;
 
       // 保存到配置文件
@@ -1289,6 +1401,17 @@ const setupEnvironment = async () => {
 
 // 启动服务
 const startService = async () => {
+  const pathsValid = await ensureBackendPathsValid({
+    backendProjectPath: backendConfig.projectPath || projectPath.value || "",
+    modelDir: backendConfig.modelDir || "",
+    modelPath: backendConfig.modelPath || "",
+  });
+  if (!pathsValid) {
+    serviceStatus.value = "stopped";
+    serviceStatusText.value = "已停止";
+    return;
+  }
+
   serviceLoading.value = true;
   serviceStatus.value = "starting";
   serviceStatusText.value = "启动中...";
@@ -1544,6 +1667,21 @@ onUnmounted(() => {
 .terminal-line {
   margin-bottom: 2px;
   word-wrap: break-word;
+}
+.terminal-line--info {
+  color: #ffffff;
+}
+.terminal-line--error {
+  color: #ff6b6b;
+}
+.terminal-line--warning {
+  color: #ffd166;
+}
+.terminal-line--success {
+  color: #4ade80;
+}
+.terminal-line--progress {
+  color: var(--q-accent);
 }
 
 .terminal-output::-webkit-scrollbar {

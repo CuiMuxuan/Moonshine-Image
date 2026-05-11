@@ -4,11 +4,21 @@ import { useConfigStore } from "./config";
 
 export const useAppStateStore = defineStore("appState", () => {
   const configStore = useConfigStore();
+  const SHARED_MODEL_IDS = ["lama", "slbr"];
+  const normalizeSharedCurrentModel = (value) => {
+    const normalized = String(value || "")
+      .trim()
+      .toLowerCase();
+    return SHARED_MODEL_IDS.includes(normalized) ? normalized : "lama";
+  };
 
   // 应用状态 - 重构为适应fileManager
   const appState = ref({
     activePage: "image",
     isInitialized: true,
+    sharedUi: {
+      currentModel: "lama",
+    },
     imageState: {
       // fileManager状态
       fileManager: {
@@ -172,6 +182,10 @@ export const useAppStateStore = defineStore("appState", () => {
     } else if (page === "video") {
       appState.value.videoState.ui = { ...appState.value.videoState.ui, ...uiState };
     }
+
+    if (uiState?.currentModel) {
+      setSharedCurrentModel(uiState.currentModel);
+    }
   };
 
   // 恢复UI状态
@@ -221,6 +235,15 @@ export const useAppStateStore = defineStore("appState", () => {
 
         if (result.success && result.data) {
           appState.value = { ...appState.value, ...result.data };
+          const fallbackPersistedModel =
+            appState.value.sharedUi?.currentModel ||
+            appState.value.imageState?.ui?.currentModel ||
+            appState.value.videoState?.ui?.currentModel ||
+            "lama";
+          appState.value.sharedUi = {
+            ...(appState.value.sharedUi || {}),
+            currentModel: normalizeSharedCurrentModel(fallbackPersistedModel),
+          };
           appState.value.imageState.ui = stripRuntimeOnlyImageUiState(
             appState.value.imageState?.ui
           );
@@ -288,11 +311,24 @@ export const useAppStateStore = defineStore("appState", () => {
     appState.value.isInitialized = value;
   };
 
+  const setSharedCurrentModel = (modelId) => {
+    appState.value.sharedUi = {
+      ...(appState.value.sharedUi || {}),
+      currentModel: normalizeSharedCurrentModel(modelId),
+    };
+  };
+
+  const getSharedCurrentModel = () =>
+    normalizeSharedCurrentModel(appState.value.sharedUi?.currentModel);
+
   // 重新开始
   const restart = async () => {
     appState.value = {
       activePage: "image",
       isInitialized: true,
+      sharedUi: {
+        currentModel: "lama",
+      },
       imageState: {
         fileManager: {
           files: [],
@@ -343,6 +379,8 @@ export const useAppStateStore = defineStore("appState", () => {
     switchPage,
     initializeStore,
     setInitialized,
+    setSharedCurrentModel,
+    getSharedCurrentModel,
     restart,
     saveFileManagerState,
     restoreFileManagerState,

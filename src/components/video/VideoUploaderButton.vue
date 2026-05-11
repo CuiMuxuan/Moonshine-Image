@@ -31,6 +31,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useVideoManagerStore } from "src/stores/videoManager";
 import { useConfigStore } from "src/stores/config";
 
+const emit = defineEmits(["uploaded", "cleared"]);
 const videoStore = useVideoManagerStore();
 const configStore = useConfigStore();
 const model = ref(null);
@@ -71,11 +72,16 @@ const handleFileChange = async (file) => {
     sourcePath: file.path || "",
     sourceName: file.name || "",
   });
+  emit("uploaded", {
+    sourcePath: file.path || "",
+    sourceName: file.name || "",
+  });
 };
 
 const removeFile = () => {
   model.value = null;
   videoStore.clearVideoFile();
+  emit("cleared");
 };
 
 const formatFileSize = (bytes) => {

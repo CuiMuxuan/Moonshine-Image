@@ -20,6 +20,7 @@ const FALLBACK_IMAGE_MODELS = Object.freeze([
       outputRequired: true,
     },
     parameters: {},
+    parameterHelp: "当前模型参数由后端自动控制，无需手动调整。",
     capabilities: {},
   },
 ]);
@@ -49,6 +50,7 @@ const normalizeModel = (model = {}) => ({
       ? model.runCapabilities
       : {},
   parameters: model.parameters && typeof model.parameters === "object" ? model.parameters : {},
+  parameterHelp: String(model.parameterHelp || "").trim(),
   capabilities: model.capabilities && typeof model.capabilities === "object"
     ? model.capabilities
     : {},

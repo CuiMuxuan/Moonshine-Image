@@ -1,9 +1,10 @@
 <template>
   <div class="canvas-player fit row flex-center">
     <div
+      ref="canvasStageRef"
       v-if="videoStore.hasVideoFile"
       class="canvas-stage"
-      :style="playerSize"
+      :style="canvasStageStyle"
     >
       <div ref="canvasWrapper" class="canvas-wrapper"></div>
       <div class="canvas-overlay-layer">
@@ -37,8 +38,23 @@ import { resolvePublicAssetPath } from "src/utils/publicAsset";
 
 const videoStore = useVideoManagerStore();
 const $q = useQuasar();
+const props = defineProps({
+  viewportScale: {
+    type: Number,
+    default: 1,
+  },
+  viewportOffsetX: {
+    type: Number,
+    default: 0,
+  },
+  viewportOffsetY: {
+    type: Number,
+    default: 0,
+  },
+});
 
 const canvasWrapper = ref(null);
+const canvasStageRef = ref(null);
 let avCvs = null;
 let visibleSprite = null;
 let videoSprite = null;
@@ -88,6 +104,13 @@ const playerSize = computed(() => {
     height: "100%",
   };
 });
+const canvasStageStyle = computed(() => ({
+  ...playerSize.value,
+  transform: `translate(${Number(props.viewportOffsetX || 0)}px, ${Number(
+    props.viewportOffsetY || 0
+  )}px) scale(${Math.max(Number(props.viewportScale || 1), 0.1)})`,
+  transformOrigin: "0 0",
+}));
 
 const emptyStateClass = computed(() =>
   $q.dark.isActive ? "empty-state--dark" : "empty-state--light"
@@ -489,6 +512,8 @@ defineExpose({
   seekTo,
   rebuildPlayer,
   waitForReady,
+  getStageRect: () => canvasStageRef.value?.getBoundingClientRect() || null,
+  getStageElement: () => canvasStageRef.value || null,
 });
 
 onUnmounted(() => {

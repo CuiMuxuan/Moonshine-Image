@@ -1,6 +1,11 @@
 <template>
   <div v-if="isSlbrModel" class="mask-editor">
-    <q-banner dense rounded class="slbr-range-hint">
+    <q-banner
+      dense
+      rounded
+      class="slbr-range-hint"
+      :class="$q.dark.isActive ? 'text-secondary' : 'text-grey-9'"
+    >
       当前模型无需蒙版，但可以通过改变时间轴轨道范围的方式来设定视频处理的范围，以减少视频处理的时间。
     </q-banner>
 
@@ -72,7 +77,7 @@
       </div>
     </q-expansion-item>
 
-    <div v-else class="empty-state">
+    <div v-else class="empty-state empty-state--slbr">
       未增加范围时会处理完整视频。点击左侧“增加范围”后，可在这里精确编辑开始和结束时间。
     </div>
   </div>
@@ -320,7 +325,7 @@
 
 <script setup>
 import { useQuasar } from "quasar";
-import { computed, reactive } from "vue";
+import { computed, reactive, watch } from "vue";
 
 import MaskBrushControls from "src/components/common/MaskBrushControls.vue";
 import { normalizeButtonSize } from "src/config/ConfigManager";
@@ -349,7 +354,12 @@ const props = defineProps({
     type: String,
     default: "lama",
   },
+  sectionState: {
+    type: Object,
+    default: () => ({}),
+  },
 });
+const emit = defineEmits(["update:sectionState"]);
 
 const $q = useQuasar();
 const configStore = useConfigStore();
@@ -359,12 +369,48 @@ const controlButtonSize = computed(() =>
 );
 const isSlbrModel = computed(() => props.currentModel === "slbr");
 
-const sections = reactive({
+const DEFAULT_SECTION_STATE = Object.freeze({
   brush: true,
   range: false,
   keyframes: true,
   processingRange: true,
 });
+const normalizeSectionState = (value = {}) => ({
+  brush: value.brush !== undefined ? Boolean(value.brush) : DEFAULT_SECTION_STATE.brush,
+  range: value.range !== undefined ? Boolean(value.range) : DEFAULT_SECTION_STATE.range,
+  keyframes:
+    value.keyframes !== undefined ? Boolean(value.keyframes) : DEFAULT_SECTION_STATE.keyframes,
+  processingRange:
+    value.processingRange !== undefined
+      ? Boolean(value.processingRange)
+      : DEFAULT_SECTION_STATE.processingRange,
+});
+
+const sections = reactive(normalizeSectionState(props.sectionState));
+let syncingSectionsFromProps = false;
+
+watch(
+  () => props.sectionState,
+  (value) => {
+    const normalized = normalizeSectionState(value || {});
+    syncingSectionsFromProps = true;
+    sections.brush = normalized.brush;
+    sections.range = normalized.range;
+    sections.keyframes = normalized.keyframes;
+    sections.processingRange = normalized.processingRange;
+    syncingSectionsFromProps = false;
+  },
+  { deep: true, immediate: true }
+);
+
+watch(
+  sections,
+  (value) => {
+    if (syncingSectionsFromProps) return;
+    emit("update:sectionState", normalizeSectionState(value));
+  },
+  { deep: true }
+);
 
 const orderedKeyframes = computed(() => videoStore.selectedMaskOrderedKeyframes);
 
@@ -711,6 +757,11 @@ const setProcessingRangeEndFromCurrentTime = () => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-height: 100%;
+}
+
+.mask-editor--empty {
+  justify-content: center;
 }
 
 .editor-section {
@@ -731,12 +782,10 @@ const setProcessingRangeEndFromCurrentTime = () => {
 
 .slbr-range-hint {
   background: rgba(25, 118, 210, 0.08);
-  color: #1f2937;
 }
 
 :global(body.body--dark) .slbr-range-hint {
   background: rgba(144, 202, 249, 0.12);
-  color: #f5f7fb;
 }
 
 .keyframe-toolbar {
@@ -766,11 +815,22 @@ const setProcessingRangeEndFromCurrentTime = () => {
 
 .empty-state {
   min-height: 220px;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #6b7280;
+  color: var(--q-info);
   text-align: center;
   padding: 20px;
+  line-height: 1.5;
+}
+
+.empty-state--slbr {
+  color: var(--q-info);
+}
+
+:global(body.body--dark) .empty-state,
+:global(body.body--dark) .empty-state--slbr {
+  color: rgba(157, 220, 255, 0.96);
 }
 </style>

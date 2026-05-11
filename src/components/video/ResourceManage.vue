@@ -1,6 +1,6 @@
 <template>
   <div class="resource-manage" :class="{ 'resource-manage--dark': $q.dark.isActive }">
-    <VideoUploaderButton />
+    <VideoUploaderButton @uploaded="handleVideoUploaded" @cleared="handleVideoCleared" />
 
     <div v-if="videoStore.hasVideoFile" class="q-mt-md">
       <q-tabs
@@ -11,7 +11,7 @@
         indicator-color="primary"
       >
         <q-tab name="info" label="视频信息" />
-        <q-tab name="masks" label="运行设置" />
+        <q-tab name="runtime" label="运行设置" />
       </q-tabs>
 
       <q-separator class="q-my-sm" />
@@ -52,7 +52,7 @@
           </div>
         </q-tab-panel>
 
-        <q-tab-panel name="masks" class="q-pa-none">
+        <q-tab-panel name="runtime" class="q-pa-none">
           <div class="model-settings q-mb-sm">
             <div class="field-label">处理模型</div>
             <q-select
@@ -92,6 +92,20 @@
             class="slbr-parameters q-mb-md"
           >
             <div class="field-label">模型参数</div>
+            <q-btn
+              v-if="showModelParameterHelp"
+              flat
+              round
+              dense
+              size="sm"
+              color="primary"
+              icon="help_outline"
+              class="parameter-help-button"
+            >
+              <q-tooltip class="parameter-help-tooltip">
+                {{ modelParameterHelp }}
+              </q-tooltip>
+            </q-btn>
             <div class="parameter-grid">
               <q-select
                 v-for="field in selectParameterFields"
@@ -485,6 +499,10 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  activeTab: {
+    type: String,
+    default: "info",
+  },
   canReplaceSource: {
     type: Boolean,
     default: false,
@@ -534,6 +552,7 @@ const props = defineProps({
 const emit = defineEmits([
   "update:exportFpsMode",
   "update:previewTrialSeconds",
+  "update:activeTab",
   "update:currentModel",
   "updateModelParameter",
   "applyRecommendedParameters",
@@ -544,11 +563,19 @@ const emit = defineEmits([
   "open-output",
   "replace-source",
   "restore-history",
+  "video-uploaded",
+  "video-cleared",
 ]);
 
 const $q = useQuasar();
 const videoStore = useVideoManagerStore();
-const tab = ref("info");
+const normalizeTabName = (value) => {
+  if (value === "masks") return "runtime";
+  if (value === "runtime" || value === "info") return value;
+  return "info";
+};
+
+const tab = ref(normalizeTabName(props.activeTab));
 const showHistoryDialog = ref(false);
 const actionButtonsRef = ref(null);
 const actionButtonMode = ref("full");
@@ -605,6 +632,10 @@ const recommendedParameters = computed(() => parameterSchema.value.recommended |
 const hasRecommendedParameters = computed(
   () => Object.keys(recommendedParameters.value || {}).length > 0
 );
+const modelParameterHelp = computed(() =>
+  String(props.currentModelMetadata?.parameterHelp || "").trim()
+);
+const showModelParameterHelp = computed(() => Boolean(modelParameterHelp.value));
 const modelStatusLabel = computed(() => {
   if (!props.backendRunning) return "后端未启动";
   if (props.currentModelMetadata?.corruptFiles?.length > 0) return "需修复";
@@ -703,6 +734,23 @@ const restoreHistory = (entryId) => {
   emit("restore-history", entryId);
 };
 
+const setTab = (value) => {
+  const normalized = normalizeTabName(value);
+  if (tab.value !== normalized) {
+    tab.value = normalized;
+  }
+};
+
+const handleVideoUploaded = (payload) => {
+  setTab("runtime");
+  emit("video-uploaded", payload || {});
+};
+
+const handleVideoCleared = () => {
+  setTab("info");
+  emit("video-cleared");
+};
+
 watch(
   actionButtonsRef,
   async (element) => {
@@ -729,6 +777,26 @@ watch(
     updateActionButtonMode();
   }
 );
+
+watch(
+  () => props.activeTab,
+  (value) => {
+    const normalized = normalizeTabName(value);
+    if (tab.value !== normalized) {
+      tab.value = normalized;
+    }
+  },
+  { immediate: true }
+);
+
+watch(tab, (value) => {
+  const normalized = normalizeTabName(value);
+  if (normalized !== value) {
+    tab.value = normalized;
+    return;
+  }
+  emit("update:activeTab", normalized);
+});
 
 onUnmounted(() => {
   disconnectActionButtonsObserver();
@@ -775,6 +843,10 @@ onUnmounted(() => {
   min-width: 0;
 }
 
+.slbr-parameters {
+  position: relative;
+}
+
 .model-status-row {
   display: flex;
   align-items: center;
@@ -790,6 +862,19 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: 1fr;
   gap: 8px;
+}
+
+.parameter-help-button {
+  position: absolute;
+  top: -2px;
+  right: 0;
+  z-index: 1;
+}
+
+.parameter-help-tooltip {
+  max-width: 320px;
+  line-height: 1.35;
+  white-space: pre-line;
 }
 
 .resource-manage--dark .info-item .label,

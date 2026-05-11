@@ -22,7 +22,7 @@ const DEFAULT_BRAND_COLORS = Object.freeze({
 
 const DEFAULT_IMAGE_BRUSH = Object.freeze({
   size: 20,
-  color: "#1976D2",
+  color: "#8a71d4",
   alpha: 0.75,
 });
 

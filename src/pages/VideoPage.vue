@@ -6,6 +6,7 @@
         <q-card class="left-panel">
           <q-card-section class="side-panel-body">
             <ResourceManage
+              v-model:active-tab="resourceManageTab"
               v-model:export-fps-mode="exportFpsMode"
               :fps-options="fpsOptions"
               :preview-size-text="previewSizeText"
@@ -52,24 +53,187 @@
             <div
               ref="previewStageWrapRef"
               class="preview-stage-wrap"
+              :class="{
+                'preview-stage-wrap--fullscreen': isPreviewFullscreen,
+                'preview-stage-wrap--fullscreen-exit-visible':
+                  isPreviewFullscreen && showFullscreenExitButton,
+              }"
               @dragenter.prevent="handleVideoDragEnter"
               @dragover.prevent="handleVideoDragOver"
               @dragleave.prevent="handleVideoDragLeave"
               @drop.prevent="handleVideoDrop"
+              @mousemove="handleFullscreenHoverMove"
+              @mouseleave="handleFullscreenHoverLeave"
             >
-              <CanvasPlayer ref="canvasPlayerRef" class="player-canvas">
-                <template #overlay>
-                  <VideoPreviewOverlay
-                    ref="videoOverlayRef"
-                    v-if="videoStore.hasVideoFile && videoStore.displayWidth && videoStore.displayHeight"
-                    :display-width="videoStore.displayWidth"
-                    :display-height="videoStore.displayHeight"
-                    :source-width="videoStore.videoWidth"
-                    :source-height="videoStore.videoHeight"
-                    :disabled="isProcessing"
-                  />
-                </template>
-              </CanvasPlayer>
+              <div
+                ref="fullscreenViewportHostRef"
+                class="fullscreen-viewport-host"
+                @wheel="handleFullscreenViewportWheel"
+                @pointerdown="handleFullscreenViewportPointerDown"
+              >
+                <CanvasPlayer
+                  ref="canvasPlayerRef"
+                  class="player-canvas"
+                  :viewport-scale="activeFullscreenViewportScale"
+                  :viewport-offset-x="activeFullscreenViewportOffsetX"
+                  :viewport-offset-y="activeFullscreenViewportOffsetY"
+                >
+                  <template #overlay>
+                    <VideoPreviewOverlay
+                      ref="videoOverlayRef"
+                      v-if="videoStore.hasVideoFile && videoStore.displayWidth && videoStore.displayHeight"
+                      :display-width="videoStore.displayWidth"
+                      :display-height="videoStore.displayHeight"
+                      :source-width="videoStore.videoWidth"
+                      :source-height="videoStore.videoHeight"
+                      :disabled="isProcessing"
+                      :preview-visible="fullscreenMaskPreviewVisible"
+                      :allow-mask-transform="!isFullscreenLamaViewportMode"
+                      @draw-start="handleFullscreenDrawStart"
+                      @draw-end="handleFullscreenDrawEnd"
+                    />
+                  </template>
+                </CanvasPlayer>
+              </div>
+
+              <MaskFloatingToolbar
+                v-if="isFullscreenLamaViewportMode"
+                ref="fullscreenDrawingToolbarRef"
+                :show="showFullscreenDrawingToolbar"
+                :position="fullscreenDrawingToolbarPosition"
+                :drawing-enabled="videoStore.maskTool.drawingEnabled"
+                :mode="videoStore.maskTool.mode"
+                :brush-size="videoStore.maskTool.brushSize"
+                :brush-color="videoStore.maskTool.brushColor"
+                :brush-alpha="videoStore.maskTool.brushAlpha"
+                :can-undo="videoStore.canUndoSelectedMaskDraw"
+                :can-clear="Boolean(videoStore.selectedMaskId)"
+                :disabled="!videoStore.selectedMaskId || isProcessing"
+                drag-label="绘制工具拖动区域"
+                @drag-start="startFullscreenDrawingToolbarDrag"
+                @toggle-drawing="
+                  videoStore.updateMaskTool({
+                    drawingEnabled: !videoStore.maskTool.drawingEnabled,
+                  })
+                "
+                @update:mode="videoStore.updateMaskTool({ mode: $event })"
+                @update:brush-size="videoStore.updateMaskTool({ brushSize: $event })"
+                @update:brush-color="videoStore.updateMaskTool({ brushColor: $event })"
+                @update:brush-alpha="videoStore.updateMaskTool({ brushAlpha: $event })"
+                @undo="videoStore.undoSelectedMaskDraw()"
+                @clear="clearSelectedMaskForFullscreenToolbar"
+                @reset-view="resetFullscreenViewport"
+                @hold-mask-visibility="setFullscreenMaskPreviewVisible"
+              />
+
+              <div
+                v-if="isPreviewFullscreen"
+                class="fullscreen-exit-overlay"
+                @mouseenter="showFullscreenExitOverlay"
+                @mouseleave="handleFullscreenHoverLeave"
+              >
+                <q-btn
+                  unelevated
+                  no-caps
+                  color="primary"
+                  icon="fullscreen_exit"
+                  label="退出全屏"
+                  class="fullscreen-exit-button"
+                  @click="togglePreviewFullscreen"
+                />
+              </div>
+
+              <div
+                v-if="isPreviewFullscreen"
+                class="fullscreen-bottom-controls"
+                :class="{ 'is-visible': showFullscreenBottomControls }"
+                @mouseenter="showFullscreenBottomOverlay"
+                @mouseleave="scheduleHideFullscreenBottomOverlay()"
+              >
+                <div class="fullscreen-bottom-controls-row">
+                  <div class="fullscreen-progress-control">
+                    <q-slider
+                      v-model="currentProgress"
+                      class="timeline-progress-slider"
+                      :min="0"
+                      :max="Math.max(videoStore.videoDuration, 0.001)"
+                      :step="0.001"
+                      :disable="fullscreenControlsDisabled"
+                      @update:model-value="handleProgressChange"
+                      @pan="handleProgressDrag"
+                      color="primary"
+                      track-size="6px"
+                      track-color="grey-4"
+                      thumb-color="primary"
+                    />
+                    <span class="timeline-time-display timeline-time-display--dark">
+                      {{ timelineTimeText }}
+                    </span>
+                  </div>
+
+                  <q-btn
+                    round
+                    dense
+                    flat
+                    color="primary"
+                    :icon="videoStore.isPlaying ? 'pause' : 'play_arrow'"
+                    :disable="fullscreenControlsDisabled"
+                    @click="handlePlayPause"
+                  >
+                    <q-tooltip>{{ videoStore.isPlaying ? "Pause" : "Play" }}</q-tooltip>
+                  </q-btn>
+
+                  <q-btn-dropdown
+                    dense
+                    no-caps
+                    color="primary"
+                    outline
+                    class="timeline-playback-dropdown"
+                    :label="`${videoStore.playbackRate}x`"
+                    :disable="fullscreenControlsDisabled"
+                  >
+                    <q-list>
+                      <q-item
+                        v-for="rate in playbackRates"
+                        :key="`fullscreen-rate-${rate}`"
+                        clickable
+                        v-close-popup
+                        @click="handlePlaybackRateChange(rate)"
+                        :class="{ 'bg-primary text-white': rate === videoStore.playbackRate }"
+                      >
+                        <q-item-section>
+                          <q-item-label>{{ rate }}x</q-item-label>
+                        </q-item-section>
+                      </q-item>
+                    </q-list>
+                  </q-btn-dropdown>
+
+                  <q-btn
+                    round
+                    dense
+                    flat
+                    :color="videoStore.isMuted ? 'negative' : 'primary'"
+                    :icon="videoStore.isMuted ? 'volume_off' : 'volume_up'"
+                    :disable="fullscreenControlsDisabled"
+                    @click="handleToggleMute"
+                  >
+                    <q-tooltip>{{ videoStore.isMuted ? "Unmute" : "Mute" }}</q-tooltip>
+                  </q-btn>
+
+                  <q-btn
+                    v-if="isPreviewFullscreen"
+                    round
+                    dense
+                    flat
+                    color="primary"
+                    :icon="fullscreenToolbarToggleIcon"
+                    :disable="fullscreenDrawingToolbarToggleDisabled"
+                    @click="handleFullscreenDrawingToolbarToggle"
+                  >
+                    <q-tooltip>{{ fullscreenToolbarToggleTooltipText }}</q-tooltip>
+                  </q-btn>
+                </div>
+              </div>
             </div>
           </q-card-section>
         </q-card>
@@ -79,6 +243,8 @@
             <VideoMaskEditor
               :disabled="!videoStore.hasVideoFile || isProcessing"
               :current-model="currentModel"
+              :section-state="videoEditorSections"
+              @update:section-state="videoEditorSections = $event"
             />
           </q-card-section>
         </q-card>
@@ -193,6 +359,18 @@
                 round
                 dense
                 flat
+                color="primary"
+                :icon="isPreviewFullscreen ? 'fullscreen_exit' : 'fullscreen'"
+                :disable="timelineControlsDisabled"
+                @click="togglePreviewFullscreen"
+              >
+                <q-tooltip>{{ isPreviewFullscreen ? "Exit Fullscreen" : "Fullscreen" }}</q-tooltip>
+              </q-btn>
+
+              <q-btn
+                round
+                dense
+                flat
                 :color="videoStore.isMuted ? 'negative' : 'primary'"
                 :icon="videoStore.isMuted ? 'volume_off' : 'volume_up'"
                 :disable="timelineControlsDisabled"
@@ -293,6 +471,7 @@ import {
 } from "@webav/av-cliper";
 
 import { useConfigStore } from "src/stores/config";
+import { useAppStateStore } from "src/stores/appState";
 import { useConfiguredShortcuts } from "src/composables/useConfiguredShortcuts";
 import { useModelRegistryStore } from "src/stores/modelRegistry";
 import { useVideoManagerStore } from "src/stores/videoManager";
@@ -319,15 +498,21 @@ import {
   VIDEO_TASK_DIRECTORY_PREFIX,
   VIDEO_TASK_META_FILE_NAME,
 } from "src/utils/videoProcessingResume";
+import {
+  buildBackendPathBlockedMessage,
+  validateBackendPathsForConfig,
+} from "src/utils/backendPathValidation";
 
 import CanvasPlayer from "src/components/video/CanvasPlayer.vue";
 import ResourceManage from "src/components/video/ResourceManage.vue";
 import VideoMaskEditor from "src/components/video/VideoMaskEditor.vue";
 import VideoPreviewOverlay from "src/components/video/VideoPreviewOverlay.vue";
+import MaskFloatingToolbar from "src/components/common/MaskFloatingToolbar.vue";
 
 const $q = useQuasar();
 const videoStore = useVideoManagerStore();
 const configStore = useConfigStore();
+const appStateStore = useAppStateStore();
 const modelRegistryStore = useModelRegistryStore();
 const loadingControl = inject("loadingControl", null);
 const backendRunningState = inject("backendRunning", ref(false));
@@ -335,6 +520,8 @@ const backendEngine = inject("backendEngine", ref({}));
 const globalSettings = inject("globalSettings", null);
 
 const previewStageWrapRef = ref(null);
+const fullscreenViewportHostRef = ref(null);
+const fullscreenDrawingToolbarRef = ref(null);
 const canvasPlayerRef = ref(null);
 const timelineRef = ref(null);
 const timelineViewportRef = ref(null);
@@ -352,12 +539,33 @@ const exportFpsMode = ref("source");
 const previewTrialSeconds = ref(3);
 const currentModel = ref("lama");
 const modelParameterValues = ref({});
+const resourceManageTab = ref("info");
+const videoEditorSections = ref({
+  brush: true,
+  range: false,
+  keyframes: true,
+  processingRange: true,
+});
 const sourceFps = ref(30);
 const timelineRows = ref([]);
 const timelineViewportWidth = ref(0);
 const timelineScrollLeft = ref(0);
 const timelineZoomPercent = ref(0);
 const videoDropDepth = ref(0);
+const isPreviewFullscreen = ref(false);
+const showFullscreenExitButton = ref(false);
+const showFullscreenBottomControls = ref(false);
+const showFullscreenDrawingToolbar = ref(false);
+const fullscreenMaskPreviewVisible = ref(true);
+const fullscreenViewportState = ref({
+  scale: 1,
+  offsetX: 0,
+  offsetY: 0,
+});
+const fullscreenDrawingToolbarPosition = ref({
+  x: 24,
+  y: 24,
+});
 
 let syncingTimelineFromStore = false;
 let processingEtaTickerId = null;
@@ -367,6 +575,14 @@ let previewStageResizeObserver = null;
 let pendingLayoutFrameId = 0;
 let cachedVideoProcessingRegistryPath = "";
 let suppressSourceCleanupWatcher = false;
+let previewFullscreenExitTimerId = 0;
+let previewFullscreenBottomControlsTimerId = 0;
+let fullscreenZoomSessionTimerId = 0;
+let canPersistVideoUiState = false;
+let fullscreenDrawingToolbarDragContext = null;
+let fullscreenViewportPanContext = null;
+const fullscreenPlaybackPauseSessions = new Map();
+let fullscreenPlaybackResumeRequested = false;
 const playbackRates = [0.5, 1, 1.5, 2, 3];
 const timelineScaleWidth = 160;
 const timelineStartLeft = 20;
@@ -499,6 +715,47 @@ const timelineOptions = computed(() => ({
 
 const timelineControlsDisabled = computed(
   () => !videoStore.hasVideoFile || isProcessing.value
+);
+const isLamaModel = computed(() => currentModel.value === "lama");
+const isFullscreenLamaViewportMode = computed(
+  () =>
+    Boolean(
+      isPreviewFullscreen.value &&
+        isLamaModel.value &&
+        videoStore.hasVideoFile &&
+        !isProcessing.value
+    )
+);
+const activeFullscreenViewportScale = computed(() =>
+  isFullscreenLamaViewportMode.value
+    ? Math.max(0.1, Number(fullscreenViewportState.value.scale || 1))
+    : 1
+);
+const activeFullscreenViewportOffsetX = computed(() =>
+  isFullscreenLamaViewportMode.value
+    ? Number(fullscreenViewportState.value.offsetX || 0)
+    : 0
+);
+const activeFullscreenViewportOffsetY = computed(() =>
+  isFullscreenLamaViewportMode.value
+    ? Number(fullscreenViewportState.value.offsetY || 0)
+    : 0
+);
+const fullscreenToolbarToggleIcon = computed(() =>
+  showFullscreenDrawingToolbar.value ? "visibility_off" : "visibility"
+);
+const fullscreenControlsDisabled = computed(
+  () => !videoStore.hasVideoFile || isProcessing.value
+);
+const fullscreenToolbarToggleTooltip = computed(() => {
+  if (!currentModelRequiresMask.value) {
+    return "当前模型无需绘制蒙版";
+  }
+  return showFullscreenDrawingToolbar.value ? "隐藏绘制工具栏" : "显示绘制工具栏";
+});
+const fullscreenToolbarToggleTooltipText = computed(() => fullscreenToolbarToggleTooltip.value);
+const fullscreenDrawingToolbarToggleDisabled = computed(
+  () => fullscreenControlsDisabled.value || !currentModelRequiresMask.value
 );
 
 const maxZoomVisibleDuration = computed(() => {
@@ -638,6 +895,8 @@ const currentModelMetadata = computed(() => {
       installed: false,
       requiresMask: false,
       parameters: {},
+      parameterHelp:
+        "图片尺寸越大使用越大的分块大小，批次数量影响占用的显存，设备性能和分块大小直接影响处理效果和处理时间，分块大小为256与384的效果一般好于512。",
       corruptFiles: [],
     };
   }
@@ -647,6 +906,7 @@ const currentModelMetadata = computed(() => {
     installed: true,
     requiresMask: true,
     parameters: {},
+    parameterHelp: "当前模型参数由后端自动控制，无需手动调整。",
     corruptFiles: [],
   };
 });
@@ -721,22 +981,30 @@ const getCurrentModelOptionsPayload = () => {
 const loadVideoModelOptions = async ({ preferredModel = currentModel.value } = {}) => {
   await modelRegistryStore.loadModels();
   const availableVideoModels = videoModelOptions.value;
-  const installedVideoModels = availableVideoModels.filter((option) => option.installed);
-  const selectableModels = installedVideoModels.length > 0 ? installedVideoModels : availableVideoModels;
+  const selectableModels = availableVideoModels;
+  const sharedModel = String(appStateStore.getSharedCurrentModel?.() || "").trim();
   const hasPreferredModel = selectableModels.some((option) => option.value === preferredModel);
   const hasCurrentModel = selectableModels.some((option) => option.value === currentModel.value);
+  const hasSharedModel = selectableModels.some((option) => option.value === sharedModel);
+  const hasLamaModel = selectableModels.some((option) => option.value === "lama");
   let nextModel = currentModel.value || "lama";
   if (hasPreferredModel) {
     nextModel = preferredModel;
   } else if (!hasCurrentModel) {
-    nextModel = selectableModels[0]?.value || "lama";
+    nextModel = hasSharedModel
+      ? sharedModel
+      : hasLamaModel
+        ? "lama"
+        : selectableModels[0]?.value || "lama";
   }
   currentModel.value = nextModel;
+  appStateStore.setSharedCurrentModel?.(nextModel);
   ensureModelParameterDefaults();
 };
 const handleModelChange = (model) => {
   if (!model || model === currentModel.value) return;
   currentModel.value = model;
+  appStateStore.setSharedCurrentModel?.(model);
   ensureModelParameterDefaults();
   const option = videoModelOptions.value.find((item) => item.value === model);
   $q.notify({
@@ -808,7 +1076,9 @@ const handleVideoShortcutPress = (actionId) => {
       }
       break;
     case "drawingResetView":
-      if (isVideoDrawingShortcutReady.value) {
+      if (isFullscreenLamaViewportMode.value) {
+        resetFullscreenViewport();
+      } else if (isVideoDrawingShortcutReady.value) {
         videoStore.resetSelectedMaskTransformAtCurrentTime();
       }
       break;
@@ -1087,16 +1357,79 @@ const formatTimelineDuration = (input) => {
   return secondText;
 };
 
+const normalizeVideoResourceTab = (value) => {
+  if (value === "masks") return "runtime";
+  if (value === "runtime" || value === "info") return value;
+  return "info";
+};
+
+const normalizeVideoEditorSections = (value = {}) => ({
+  brush: value.brush !== undefined ? Boolean(value.brush) : true,
+  range: value.range !== undefined ? Boolean(value.range) : false,
+  keyframes: value.keyframes !== undefined ? Boolean(value.keyframes) : true,
+  processingRange:
+    value.processingRange !== undefined ? Boolean(value.processingRange) : true,
+});
+
 const captureVideoUiState = () => ({
   exportFpsMode: exportFpsMode.value,
   timelineZoomPercent: timelineZoomPercent.value,
   timelineScrollLeft: timelineScrollLeft.value,
+  previewTrialSeconds: previewTrialSeconds.value,
+  currentModel: currentModel.value,
+  modelParameterValues: JSON.parse(JSON.stringify(modelParameterValues.value || {})),
+  resourceManageTab: normalizeVideoResourceTab(resourceManageTab.value),
+  videoEditorSections: normalizeVideoEditorSections(videoEditorSections.value),
+  playbackRate: Number(videoStore.playbackRate || 1),
+  isMuted: Boolean(videoStore.isMuted),
 });
 
 const restoreVideoUiState = async (uiState = {}) => {
+  const sharedModel = String(appStateStore.getSharedCurrentModel?.() || "").trim();
+  const restoredModel = String(sharedModel || uiState.currentModel || "").trim();
+  if (restoredModel) {
+    currentModel.value = restoredModel;
+    appStateStore.setSharedCurrentModel?.(restoredModel);
+  }
+
+  if (uiState.modelParameterValues && typeof uiState.modelParameterValues === "object") {
+    modelParameterValues.value = {
+      ...uiState.modelParameterValues,
+    };
+  }
+
+  resourceManageTab.value = normalizeVideoResourceTab(
+    uiState.resourceManageTab || uiState.activeTab || uiState.leftTab || "info"
+  );
+  videoEditorSections.value = normalizeVideoEditorSections(
+    uiState.videoEditorSections || uiState.editorSections || {}
+  );
+
   exportFpsMode.value = uiState.exportFpsMode || "source";
-  timelineZoomPercent.value = Math.max(0, Math.min(100, Number(uiState.timelineZoomPercent || 0)));
+  timelineZoomPercent.value = Math.max(
+    0,
+    Math.min(100, Number(uiState.timelineZoomPercent || 0))
+  );
   timelineScrollLeft.value = Math.max(0, Number(uiState.timelineScrollLeft || 0));
+
+  const restoredPreviewTrialSeconds = Number(uiState.previewTrialSeconds);
+  if (VIDEO_PREVIEW_TRIAL_DURATIONS.includes(restoredPreviewTrialSeconds)) {
+    previewTrialSeconds.value = restoredPreviewTrialSeconds;
+  }
+
+  const restoredPlaybackRate = Number(uiState.playbackRate);
+  if (Number.isFinite(restoredPlaybackRate) && restoredPlaybackRate > 0) {
+    videoStore.setPlaybackRate(restoredPlaybackRate);
+  }
+  if (typeof uiState.isMuted === "boolean") {
+    videoStore.setIsMuted(uiState.isMuted);
+  }
+
+  ensureModelParameterDefaults();
+  currentProgress.value = Math.max(
+    0,
+    Math.min(Number(videoStore.currentTime || 0), Math.max(Number(videoStore.videoDuration || 0), 0))
+  );
 
   await nextTick();
   if (timelineRef.value?.setTime) {
@@ -1107,6 +1440,10 @@ const restoreVideoUiState = async (uiState = {}) => {
   } else {
     syncTimelineViewport({ center: videoStore.currentTime > 0.0005 });
   }
+};
+
+const persistVideoUiStateToAppState = () => {
+  appStateStore.saveUIState("video", captureVideoUiState());
 };
 
 const getConfiguredVideoHistoryLimit = () =>
@@ -1497,7 +1834,7 @@ watch(
 );
 
 watch(
-  () => getCurrentVideoSourcePath(),
+  () => videoStore.currentSourcePath || videoStore.videoFile?.path || "",
   async (newSourcePath, previousSourcePath) => {
     if (
       suppressSourceCleanupWatcher ||
@@ -1536,7 +1873,8 @@ watch(
       currentProgress.value = newTime;
     }
     syncTimelineViewport({ ensureVisible: true });
-  }
+  },
+  { immediate: true }
 );
 
 watch(
@@ -1545,6 +1883,39 @@ watch(
     if (!videoStore.hasVideoFile) return;
     await nextTick();
     syncTimelineViewport({ center: videoStore.currentTime > 0.0005 });
+  }
+);
+
+watch(
+  () => ({
+    exportFpsMode: exportFpsMode.value,
+    timelineZoomPercent: timelineZoomPercent.value,
+    timelineScrollLeft: timelineScrollLeft.value,
+    previewTrialSeconds: previewTrialSeconds.value,
+    currentModel: currentModel.value,
+    modelParameterValues: modelParameterValues.value,
+    resourceManageTab: normalizeVideoResourceTab(resourceManageTab.value),
+    videoEditorSections: normalizeVideoEditorSections(videoEditorSections.value),
+    playbackRate: videoStore.playbackRate,
+    isMuted: videoStore.isMuted,
+  }),
+  () => {
+    if (!canPersistVideoUiState) return;
+    persistVideoUiStateToAppState();
+  },
+  { deep: true }
+);
+
+watch(
+  () => isFullscreenLamaViewportMode.value,
+  (enabled) => {
+    if (enabled) return;
+    clearFullscreenZoomSessionTimer();
+    clearFullscreenPlaybackPauseSessions();
+    finishFullscreenViewportPan();
+    showFullscreenDrawingToolbar.value = false;
+    fullscreenMaskPreviewVisible.value = true;
+    resetFullscreenViewport();
   }
 );
 
@@ -1564,6 +1935,450 @@ const handlePlaybackRateChange = (rate) => {
   }
 };
 
+const createTransparentMaskDataUrl = (width, height) => {
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.floor(Number(width || 1)));
+  canvas.height = Math.max(1, Math.floor(Number(height || 1)));
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/png");
+};
+
+const clearSelectedMaskForFullscreenToolbar = () => {
+  if (!videoStore.selectedMaskId || !videoStore.videoWidth || !videoStore.videoHeight) {
+    return;
+  }
+  const transparentMask = createTransparentMaskDataUrl(
+    videoStore.videoWidth,
+    videoStore.videoHeight
+  );
+  videoStore.commitSelectedMaskBaseMask(transparentMask);
+};
+
+const normalizeFullscreenViewportScale = (value) =>
+  Math.max(0.5, Math.min(5, Number(value || 1)));
+
+const resetFullscreenViewport = () => {
+  fullscreenViewportState.value = {
+    scale: 1,
+    offsetX: 0,
+    offsetY: 0,
+  };
+};
+
+const getPreviewStageRect = () =>
+  unwrapElement(previewStageWrapRef.value)?.getBoundingClientRect() || null;
+
+const getFullscreenDrawingToolbarElement = () =>
+  fullscreenDrawingToolbarRef.value?.getRootElement?.() ||
+  unwrapElement(fullscreenDrawingToolbarRef.value);
+
+const getFullscreenDrawingToolbarRect = () =>
+  getFullscreenDrawingToolbarElement()?.getBoundingClientRect() || null;
+
+const setFullscreenMaskPreviewVisible = (visible = true) => {
+  fullscreenMaskPreviewVisible.value = Boolean(visible);
+};
+
+const clampFullscreenDrawingToolbarPosition = ({ x, y } = {}) => {
+  const stageRect = getPreviewStageRect();
+  const toolbarRect = getFullscreenDrawingToolbarRect();
+  if (!stageRect) {
+    return {
+      x: Math.max(12, Number(x || 0)),
+      y: Math.max(12, Number(y || 0)),
+    };
+  }
+
+  const toolbarWidth = Math.max(220, toolbarRect?.width || 220);
+  const toolbarHeight = Math.max(88, toolbarRect?.height || 88);
+  const minX = 12;
+  const minY = 12;
+  const maxX = Math.max(minX, stageRect.width - toolbarWidth - 12);
+  const maxY = Math.max(minY, stageRect.height - toolbarHeight - 12);
+
+  return {
+    x: Math.min(maxX, Math.max(minX, Number(x || 0))),
+    y: Math.min(maxY, Math.max(minY, Number(y || 0))),
+  };
+};
+
+const placeFullscreenDrawingToolbarToDefault = async () => {
+  fullscreenDrawingToolbarPosition.value = {
+    x: 24,
+    y: 24,
+  };
+  await nextTick();
+  const stageRect = getPreviewStageRect();
+  const toolbarRect = getFullscreenDrawingToolbarRect();
+  const toolbarWidth = Math.max(220, toolbarRect?.width || 220);
+  const toolbarHeight = Math.max(88, toolbarRect?.height || 88);
+  const stageWidth = stageRect?.width || 0;
+  const stageHeight = stageRect?.height || 0;
+  const centeredX = Math.max(12, (stageWidth - toolbarWidth) / 2);
+  const bottomY = Math.max(12, stageHeight - toolbarHeight - 18);
+
+  fullscreenDrawingToolbarPosition.value = {
+    x: centeredX,
+    y: bottomY,
+  };
+  fullscreenDrawingToolbarPosition.value = clampFullscreenDrawingToolbarPosition(
+    fullscreenDrawingToolbarPosition.value
+  );
+};
+
+const clearFullscreenPlaybackPauseSessions = () => {
+  fullscreenPlaybackPauseSessions.clear();
+  fullscreenPlaybackResumeRequested = false;
+};
+
+const beginFullscreenPlaybackPauseSession = (key) => {
+  if (!isFullscreenLamaViewportMode.value || fullscreenPlaybackPauseSessions.has(key)) {
+    return;
+  }
+
+  const shouldResume = Boolean(videoStore.isPlaying);
+  fullscreenPlaybackPauseSessions.set(key, shouldResume);
+  if (shouldResume) {
+    fullscreenPlaybackResumeRequested = true;
+    canvasPlayerRef.value?.pause?.();
+  }
+};
+
+const endFullscreenPlaybackPauseSession = (key) => {
+  if (!fullscreenPlaybackPauseSessions.has(key)) {
+    return;
+  }
+
+  fullscreenPlaybackPauseSessions.delete(key);
+  if (fullscreenPlaybackPauseSessions.size > 0) {
+    return;
+  }
+
+  if (fullscreenPlaybackResumeRequested) {
+    canvasPlayerRef.value?.play?.();
+  }
+  fullscreenPlaybackResumeRequested = false;
+};
+
+const clearPreviewFullscreenExitTimer = () => {
+  if (!previewFullscreenExitTimerId) return;
+  window.clearTimeout(previewFullscreenExitTimerId);
+  previewFullscreenExitTimerId = 0;
+};
+
+const clearFullscreenBottomControlsHideTimer = () => {
+  if (!previewFullscreenBottomControlsTimerId) return;
+  window.clearTimeout(previewFullscreenBottomControlsTimerId);
+  previewFullscreenBottomControlsTimerId = 0;
+};
+
+const clearFullscreenZoomSessionTimer = () => {
+  if (!fullscreenZoomSessionTimerId) return;
+  window.clearTimeout(fullscreenZoomSessionTimerId);
+  fullscreenZoomSessionTimerId = 0;
+};
+
+const showFullscreenExitOverlay = () => {
+  if (!isPreviewFullscreen.value) return;
+  clearPreviewFullscreenExitTimer();
+  showFullscreenExitButton.value = true;
+};
+
+const scheduleHideFullscreenExitOverlay = (delayMs = 220) => {
+  if (!isPreviewFullscreen.value) return;
+  clearPreviewFullscreenExitTimer();
+  previewFullscreenExitTimerId = window.setTimeout(() => {
+    showFullscreenExitButton.value = false;
+    previewFullscreenExitTimerId = 0;
+  }, Math.max(0, Number(delayMs || 0)));
+};
+
+const showFullscreenBottomOverlay = () => {
+  if (!isPreviewFullscreen.value) return;
+  clearFullscreenBottomControlsHideTimer();
+  showFullscreenBottomControls.value = true;
+};
+
+const scheduleHideFullscreenBottomOverlay = (delayMs = 1400) => {
+  if (!isPreviewFullscreen.value) return;
+  clearFullscreenBottomControlsHideTimer();
+  previewFullscreenBottomControlsTimerId = window.setTimeout(() => {
+    showFullscreenBottomControls.value = false;
+    previewFullscreenBottomControlsTimerId = 0;
+  }, Math.max(0, Number(delayMs || 0)));
+};
+
+const isPointerInPreviewCanvasArea = (event) => {
+  if (!event) return false;
+  const stageRect = canvasPlayerRef.value?.getStageRect?.();
+  if (!stageRect) return false;
+  return (
+    event.clientX >= stageRect.left &&
+    event.clientX <= stageRect.right &&
+    event.clientY >= stageRect.top &&
+    event.clientY <= stageRect.bottom
+  );
+};
+
+const applyFullscreenViewportPan = (nextOffsetX, nextOffsetY) => {
+  fullscreenViewportState.value = {
+    ...fullscreenViewportState.value,
+    offsetX: Number(nextOffsetX || 0),
+    offsetY: Number(nextOffsetY || 0),
+  };
+};
+
+const handleFullscreenDrawStart = () => {
+  if (!isFullscreenLamaViewportMode.value) return;
+  beginFullscreenPlaybackPauseSession("draw");
+};
+
+const handleFullscreenDrawEnd = () => {
+  endFullscreenPlaybackPauseSession("draw");
+};
+
+const finishFullscreenViewportPan = (shouldTogglePlayPause = false) => {
+  if (!fullscreenViewportPanContext) return;
+  window.removeEventListener("pointermove", handleFullscreenViewportPointerMove, true);
+  window.removeEventListener("pointerup", handleFullscreenViewportPointerUp, true);
+
+  const hasMoved = Boolean(fullscreenViewportPanContext.moved);
+  fullscreenViewportPanContext = null;
+  if (hasMoved) {
+    endFullscreenPlaybackPauseSession("pan");
+    return;
+  }
+  if (shouldTogglePlayPause) {
+    handlePlayPause();
+  }
+};
+
+const handleFullscreenViewportPointerMove = (event) => {
+  if (!fullscreenViewportPanContext) return;
+  if (event.pointerId !== fullscreenViewportPanContext.pointerId) return;
+
+  const dx = Number(event.clientX || 0) - fullscreenViewportPanContext.startClientX;
+  const dy = Number(event.clientY || 0) - fullscreenViewportPanContext.startClientY;
+  const moved = Math.hypot(dx, dy) >= 3;
+
+  if (moved && !fullscreenViewportPanContext.moved) {
+    fullscreenViewportPanContext.moved = true;
+    beginFullscreenPlaybackPauseSession("pan");
+  }
+
+  if (!fullscreenViewportPanContext.moved) {
+    return;
+  }
+
+  applyFullscreenViewportPan(
+    fullscreenViewportPanContext.startOffsetX + dx,
+    fullscreenViewportPanContext.startOffsetY + dy
+  );
+  event.preventDefault();
+};
+
+const handleFullscreenViewportPointerUp = (event) => {
+  if (!fullscreenViewportPanContext) return;
+  if (event.pointerId !== fullscreenViewportPanContext.pointerId) return;
+  finishFullscreenViewportPan(true);
+};
+
+const handleFullscreenViewportPointerDown = (event) => {
+  if (!isFullscreenLamaViewportMode.value || !isPointerInPreviewCanvasArea(event)) return;
+  if (videoStore.maskTool.drawingEnabled || event.button !== 0) return;
+
+  fullscreenViewportPanContext = {
+    pointerId: event.pointerId,
+    startClientX: Number(event.clientX || 0),
+    startClientY: Number(event.clientY || 0),
+    startOffsetX: Number(fullscreenViewportState.value.offsetX || 0),
+    startOffsetY: Number(fullscreenViewportState.value.offsetY || 0),
+    moved: false,
+  };
+  window.addEventListener("pointermove", handleFullscreenViewportPointerMove, true);
+  window.addEventListener("pointerup", handleFullscreenViewportPointerUp, true);
+};
+
+const handleFullscreenViewportWheel = (event) => {
+  if (!isFullscreenLamaViewportMode.value || !isPointerInPreviewCanvasArea(event)) return;
+  event.preventDefault();
+
+  const stageRect = canvasPlayerRef.value?.getStageRect?.();
+  if (!stageRect) return;
+  const currentScale = normalizeFullscreenViewportScale(fullscreenViewportState.value.scale);
+  const nextScale = normalizeFullscreenViewportScale(
+    event.deltaY < 0 ? currentScale * 1.08 : currentScale * 0.92
+  );
+  if (Math.abs(nextScale - currentScale) < 0.0005) return;
+
+  beginFullscreenPlaybackPauseSession("zoom");
+  clearFullscreenZoomSessionTimer();
+  fullscreenZoomSessionTimerId = window.setTimeout(() => {
+    fullscreenZoomSessionTimerId = 0;
+    endFullscreenPlaybackPauseSession("zoom");
+  }, 260);
+
+  const cursorOffsetX = Number(event.clientX || 0) - stageRect.left;
+  const cursorOffsetY = Number(event.clientY || 0) - stageRect.top;
+  const ratio = nextScale / currentScale;
+  const offsetX =
+    Number(fullscreenViewportState.value.offsetX || 0) - cursorOffsetX * (ratio - 1);
+  const offsetY =
+    Number(fullscreenViewportState.value.offsetY || 0) - cursorOffsetY * (ratio - 1);
+
+  fullscreenViewportState.value = {
+    scale: nextScale,
+    offsetX,
+    offsetY,
+  };
+};
+
+const startFullscreenDrawingToolbarDrag = (event) => {
+  if (!isFullscreenLamaViewportMode.value) return;
+  if (typeof event?.pointerId !== "number") return;
+  fullscreenDrawingToolbarDragContext = {
+    pointerId: event.pointerId,
+    startClientX: Number(event.clientX || 0),
+    startClientY: Number(event.clientY || 0),
+    startX: Number(fullscreenDrawingToolbarPosition.value.x || 0),
+    startY: Number(fullscreenDrawingToolbarPosition.value.y || 0),
+  };
+  window.addEventListener("pointermove", handleFullscreenDrawingToolbarDragMove, true);
+  window.addEventListener("pointerup", stopFullscreenDrawingToolbarDrag, true);
+};
+
+const handleFullscreenDrawingToolbarDragMove = (event) => {
+  if (!fullscreenDrawingToolbarDragContext) return;
+  if (event.pointerId !== fullscreenDrawingToolbarDragContext.pointerId) return;
+  const dx = Number(event.clientX || 0) - fullscreenDrawingToolbarDragContext.startClientX;
+  const dy = Number(event.clientY || 0) - fullscreenDrawingToolbarDragContext.startClientY;
+  fullscreenDrawingToolbarPosition.value = clampFullscreenDrawingToolbarPosition({
+    x: fullscreenDrawingToolbarDragContext.startX + dx,
+    y: fullscreenDrawingToolbarDragContext.startY + dy,
+  });
+};
+
+const stopFullscreenDrawingToolbarDrag = (event) => {
+  if (!fullscreenDrawingToolbarDragContext) return;
+  if (event.pointerId !== fullscreenDrawingToolbarDragContext.pointerId) return;
+  fullscreenDrawingToolbarDragContext = null;
+  window.removeEventListener("pointermove", handleFullscreenDrawingToolbarDragMove, true);
+  window.removeEventListener("pointerup", stopFullscreenDrawingToolbarDrag, true);
+};
+
+const toggleFullscreenDrawingToolbar = () => {
+  if (!isPreviewFullscreen.value || fullscreenDrawingToolbarToggleDisabled.value) return;
+  if (!isFullscreenLamaViewportMode.value) return;
+  showFullscreenDrawingToolbar.value = !showFullscreenDrawingToolbar.value;
+};
+
+const handleFullscreenDrawingToolbarToggle = () => {
+  toggleFullscreenDrawingToolbar();
+};
+
+const handleFullscreenHoverMove = (event) => {
+  if (!isPreviewFullscreen.value) return;
+  const target = unwrapElement(previewStageWrapRef.value);
+  if (!(target instanceof HTMLElement) || !event) return;
+
+  const rect = target.getBoundingClientRect();
+  const localX = Number(event.clientX || 0) - rect.left;
+  const localY = Number(event.clientY || 0) - rect.top;
+
+  const topZoneWidth = Math.max(180, Math.min(260, rect.width * 0.42));
+  const topZoneHeight = Math.max(56, Math.min(96, rect.height * 0.24));
+  const topZoneLeft = (rect.width - topZoneWidth) / 2;
+  const topZoneRight = topZoneLeft + topZoneWidth;
+  const insideTopCenterZone =
+    localX >= topZoneLeft &&
+    localX <= topZoneRight &&
+    localY >= 0 &&
+    localY <= topZoneHeight;
+
+  if (insideTopCenterZone) {
+    showFullscreenExitOverlay();
+  } else if (showFullscreenExitButton.value) {
+    scheduleHideFullscreenExitOverlay(160);
+  }
+
+  const bottomZoneHeight = Math.max(70, Math.min(110, rect.height * 0.22));
+  const insideBottomZone = localY >= rect.height - bottomZoneHeight && localY <= rect.height;
+  if (insideBottomZone) {
+    showFullscreenBottomOverlay();
+  } else if (showFullscreenBottomControls.value) {
+    scheduleHideFullscreenBottomOverlay(1400);
+  }
+};
+
+const handleFullscreenHoverLeave = () => {
+  scheduleHideFullscreenExitOverlay(120);
+  scheduleHideFullscreenBottomOverlay(1400);
+};
+
+const isPreviewFullscreenActive = () =>
+  document.fullscreenElement === unwrapElement(previewStageWrapRef.value);
+
+const togglePreviewFullscreen = async () => {
+  const target = unwrapElement(previewStageWrapRef.value);
+  if (!(target instanceof HTMLElement) || !document.fullscreenEnabled) {
+    return;
+  }
+
+  try {
+    if (isPreviewFullscreenActive()) {
+      await document.exitFullscreen();
+    } else {
+      await target.requestFullscreen();
+      showFullscreenExitButton.value = false;
+      showFullscreenBottomControls.value = false;
+    }
+  } catch (error) {
+    console.warn("Failed to toggle preview fullscreen:", error);
+  }
+};
+
+const exitPreviewFullscreenIfNeeded = async () => {
+  if (!isPreviewFullscreenActive()) {
+    return;
+  }
+
+  try {
+    await document.exitFullscreen();
+  } catch {
+    // Ignore fullscreen exit failures during navigation/unmount.
+  }
+};
+
+const handleDocumentFullscreenChange = async () => {
+  const active = isPreviewFullscreenActive();
+  isPreviewFullscreen.value = active;
+  if (!active) {
+    clearPreviewFullscreenExitTimer();
+    clearFullscreenBottomControlsHideTimer();
+    clearFullscreenZoomSessionTimer();
+    showFullscreenExitButton.value = false;
+    showFullscreenBottomControls.value = false;
+    showFullscreenDrawingToolbar.value = false;
+    fullscreenMaskPreviewVisible.value = true;
+    clearFullscreenPlaybackPauseSessions();
+    stopFullscreenDrawingToolbarDrag({
+      pointerId: fullscreenDrawingToolbarDragContext?.pointerId,
+    });
+    finishFullscreenViewportPan();
+    resetFullscreenViewport();
+  } else {
+    resetFullscreenViewport();
+    fullscreenMaskPreviewVisible.value = true;
+    if (isLamaModel.value) {
+      showFullscreenDrawingToolbar.value = Boolean(videoStore.maskTool.drawingEnabled);
+      await placeFullscreenDrawingToolbarToDefault();
+    } else {
+      showFullscreenDrawingToolbar.value = false;
+    }
+  }
+  scheduleLayoutMetricsUpdate();
+};
 const handleProgressDrag = (details) => {
   if (details.isFirst) {
     isDragging.value = true;
@@ -2290,10 +3105,6 @@ const promptResumeVideoTaskDecision = async ({ taskMeta, hasConfigMismatch }) =>
       .onCancel(() => resolve("restart"))
       .onDismiss(() => resolve(null));
   });
-
-function getCurrentVideoSourcePath() {
-  return videoStore.currentSourcePath || videoStore.videoFile?.path || "";
-}
 
 async function discardLatestResumableTaskForSourcePath({
   sourcePath,
@@ -3605,6 +4416,20 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
     }
     return;
   }
+
+  const backendPathValidation = await validateBackendPathsForConfig(
+    configStore.config.general || {}
+  );
+  if (!backendPathValidation.valid) {
+    $q.notify({
+      type: "negative",
+      message: buildBackendPathBlockedMessage(backendPathValidation),
+      position: "top",
+      timeout: 6500,
+    });
+    return;
+  }
+
   if (!canRun.value || isProcessing.value) return;
 
   isProcessing.value = true;
@@ -3918,6 +4743,8 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
                       failure_root: paths.failureRoot,
                       failure_retention: configStore.config.video?.failureRetentionCount || 3,
                       batch_id: `batch_${currentBatch.start}_${currentBatch.end}`,
+                      batch_number: currentBatch.batchNumber,
+                      total_batches: totalBatches,
                       inpaint: {
                         prompt: "",
                         negative_prompt: "",
@@ -4683,11 +5510,15 @@ onMounted(async () => {
   await configStore.loadConfig();
   previewTrialSeconds.value = getConfiguredPreviewTrialSeconds();
   applyVideoBrushDefaults();
+  await restoreVideoUiState(appStateStore.restoreUIState("video") || {});
   await loadVideoModelOptions({ preferredModel: currentModel.value });
+  canPersistVideoUiState = true;
+  persistVideoUiStateToAppState();
   await nextTick();
   observePreviewStageSize();
   updateLayoutMetrics();
   window.addEventListener("resize", handleResize);
+  document.addEventListener("fullscreenchange", handleDocumentFullscreenChange);
   window.addEventListener("moonshine-model-registry-updated", handleModelRegistryUpdated);
   window.addEventListener("moonshine-switch-model", handleGlobalModelSwitch);
 });
@@ -4715,14 +5546,29 @@ watch(
 );
 
 onBeforeRouteLeave(() => {
+  if (canPersistVideoUiState) {
+    persistVideoUiStateToAppState();
+  }
   preserveVideoPagePlaybackState();
+  void exitPreviewFullscreenIfNeeded();
 });
 
 onUnmounted(() => {
+  canPersistVideoUiState = false;
   preserveVideoPagePlaybackState();
+  void exitPreviewFullscreenIfNeeded();
   window.removeEventListener("resize", handleResize);
+  document.removeEventListener("fullscreenchange", handleDocumentFullscreenChange);
   window.removeEventListener("moonshine-model-registry-updated", handleModelRegistryUpdated);
   window.removeEventListener("moonshine-switch-model", handleGlobalModelSwitch);
+  clearPreviewFullscreenExitTimer();
+  clearFullscreenBottomControlsHideTimer();
+  clearFullscreenZoomSessionTimer();
+  clearFullscreenPlaybackPauseSessions();
+  finishFullscreenViewportPan();
+  stopFullscreenDrawingToolbarDrag({
+    pointerId: fullscreenDrawingToolbarDragContext?.pointerId,
+  });
   disconnectPreviewStageResizeObserver();
   cancelScheduledLayoutUpdate();
 });
@@ -4797,9 +5643,94 @@ onUnmounted(() => {
   min-height: 0;
 }
 
+.fullscreen-viewport-host {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preview-stage-wrap:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .player-canvas {
   flex: 1;
   min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.preview-stage-wrap:fullscreen .player-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.fullscreen-exit-overlay {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(260px, 42vw);
+  padding: 10px 0 0;
+  display: flex;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: auto;
+  transition: opacity 0.16s ease;
+  z-index: 9;
+}
+
+.preview-stage-wrap--fullscreen-exit-visible .fullscreen-exit-overlay {
+  opacity: 1;
+}
+
+.fullscreen-exit-button {
+  min-height: 38px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.36);
+}
+
+.fullscreen-bottom-controls {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 9;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(20px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.fullscreen-bottom-controls.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.fullscreen-bottom-controls-row {
+  min-height: 54px;
+  border-radius: 14px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(6px);
+}
+
+.fullscreen-progress-control {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 220px;
+  gap: 10px;
 }
 
 .timeline-panel {

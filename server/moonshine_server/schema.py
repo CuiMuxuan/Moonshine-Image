@@ -331,6 +331,8 @@ class VideoBatchInpaintOptions(BaseModel):
     keep_mask_grayscale: bool = Field(True)
     stop_on_error: bool = Field(True)
     batch_id: Optional[str] = Field(None)
+    batch_number: Optional[int] = Field(None, ge=1)
+    total_batches: Optional[int] = Field(None, ge=1)
     failure_root: Optional[str] = Field(None)
     failure_retention: int = Field(3, ge=1, le=50)
 

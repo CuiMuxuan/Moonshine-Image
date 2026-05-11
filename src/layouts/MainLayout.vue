@@ -94,7 +94,7 @@
     @open-backend-manager="showBackendManager = true"
     @model-downloaded="handleModelDownloaded"
   />
-  <startup-overlay v-model="showStartupOverlay" />
+  <startup-overlay v-model="showStartupOverlay" @finished="handleStartupOverlayFinished" />
 </template>
 
 <script setup>
@@ -112,6 +112,10 @@ import { classifyMoonshineError } from "src/services/ErrorClassifier";
 import { useAppStateStore } from "src/stores/appState";
 import { useBackendEngineStore } from "src/stores/backendEngine";
 import { useConfigStore } from "src/stores/config";
+import {
+  BACKEND_PATH_CJK_BLOCK_MESSAGE,
+  validateBackendPathsForConfig,
+} from "src/utils/backendPathValidation";
 import { resolvePublicAssetPath } from "src/utils/publicAsset";
 
 const $q = useQuasar();
@@ -129,6 +133,7 @@ const settingsTarget = ref({
 });
 const backendRunning = ref(false);
 const showStartupOverlay = ref(false);
+const pendingBackendPathDialog = ref(null);
 
 const loadingState = ref({
   showing: false,
@@ -424,6 +429,47 @@ const checkBackendStatus = async ({ notifyOnFailure = true } = {}) => {
   }
 };
 
+const showBackendPathBlockedDialog = (validationResult = null) => {
+  const invalidPathLines = Array.isArray(validationResult?.invalidPaths)
+    ? validationResult.invalidPaths
+        .map((item) => `${item?.label || item?.field || "路径"}：${item?.path || ""}`)
+        .filter(Boolean)
+    : [];
+  const message = invalidPathLines.length > 0
+    ? `${BACKEND_PATH_CJK_BLOCK_MESSAGE}\n${invalidPathLines.join("\n")}`
+    : BACKEND_PATH_CJK_BLOCK_MESSAGE;
+
+  $q.dialog({
+    title: "路径配置异常",
+    message,
+    ok: {
+      label: "知道了",
+      color: "primary",
+      unelevated: true,
+    },
+    persistent: true,
+  });
+};
+
+const flushPendingBackendPathDialog = () => {
+  if (!pendingBackendPathDialog.value) {
+    return;
+  }
+
+  const payload = pendingBackendPathDialog.value;
+  pendingBackendPathDialog.value = null;
+  showBackendPathBlockedDialog(payload);
+};
+
+const queueBackendPathBlockedDialog = (validationResult = null) => {
+  if (showStartupOverlay.value) {
+    pendingBackendPathDialog.value = validationResult || {};
+    return;
+  }
+
+  showBackendPathBlockedDialog(validationResult);
+};
+
 const getElectronInvoke = () => window.electron?.ipcRenderer?.invoke;
 
 const getSkippedAutoStartMessage = () =>
@@ -444,6 +490,18 @@ const prepareBackendEngine = async () => {
   backendEngineStore.setPreparing("preparing");
 
   try {
+    const backendPathValidation = await validateBackendPathsForConfig(
+      configStore.config.general || {}
+    );
+    if (!backendPathValidation.valid) {
+      backendRunning.value = false;
+      backendEngineStore.setFailed(
+        backendPathValidation.message || BACKEND_PATH_CJK_BLOCK_MESSAGE
+      );
+      queueBackendPathBlockedDialog(backendPathValidation);
+      return;
+    }
+
     const processStatus = await invoke("check-backend-status");
     if (processStatus?.success && processStatus.running) {
       backendEngineStore.setPhase("verifying");
@@ -511,6 +569,10 @@ const prepareBackendEngine = async () => {
   }
 };
 
+const handleStartupOverlayFinished = () => {
+  flushPendingBackendPathDialog();
+};
+
 const handleRouteChange = (value) => {
   router.push(`/${value}`);
 };
@@ -572,6 +634,12 @@ watch(
 watch(showBackendManager, (newVal) => {
   if (!newVal) {
     setTimeout(() => checkBackendStatus({ notifyOnFailure: false }), 1000);
+  }
+});
+
+watch(showStartupOverlay, (visible) => {
+  if (!visible) {
+    flushPendingBackendPathDialog();
   }
 });
 

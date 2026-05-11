@@ -660,7 +660,12 @@ class Api:
         start_time = time.time()
 
         for index, item in enumerate(
-            tqdm(req.data, total=len(req.data), desc=f"{req.model_id} processing")
+            tqdm(
+                req.data,
+                total=len(req.data),
+                desc=f"{req.model_id} processing",
+                mininterval=1,
+            )
         ):
             item_id = item.id or f"item_{index}"
             try:
@@ -746,7 +751,7 @@ class Api:
         start_time = time.time()
 
         for i, item in enumerate(
-            tqdm(req.data, total=len(req.data), desc="Batch processing")
+            tqdm(req.data, total=len(req.data), desc="Batch processing", mininterval=1)
         ):
             item_id = item.id or f"item_{i}"
             try:
@@ -1086,6 +1091,11 @@ class Api:
         total_frames = len(req.frames)
         batch_id = getattr(req.options, "batch_id", "") or f"video_batch_{int(start_time)}"
         model_id = str(req.model_id or "lama").strip().lower() or "lama"
+        batch_number = max(1, int(getattr(req.options, "batch_number", 1) or 1))
+        total_batches = max(
+            batch_number,
+            int(getattr(req.options, "total_batches", batch_number) or batch_number),
+        )
         gc_interval = 8
         slbr_runner = None
         slbr_options = None
@@ -1095,10 +1105,17 @@ class Api:
 
         logger.info(
             f"[{batch_id}] start video batch: {total_frames} frame(s), "
-            f"model={model_id}, stop_on_error={req.options.stop_on_error}"
+            f"model={model_id}, batch={batch_number}/{total_batches}, "
+            f"stop_on_error={req.options.stop_on_error}"
+        )
+        logger.info(
+            f"本次视频处理总共{total_batches}批次，当前第{batch_number}批，当前批次进度如下："
         )
 
-        for index, item in enumerate(req.frames, start=1):
+        for index, item in enumerate(
+            tqdm(req.frames, total=total_frames, mininterval=1, leave=False),
+            start=1,
+        ):
             image = None
             mask = None
             alpha_channel = None
@@ -1156,11 +1173,6 @@ class Api:
                                 "skip_reason": "empty-mask",
                             }
                         )
-
-                        if index == total_frames or index % 5 == 0:
-                            logger.info(
-                                f"[{batch_id}] processed {index}/{total_frames} frame(s)"
-                            )
                         continue
 
                     processed_bgr = self.model_manager(image, mask, inpaint_req)
@@ -1178,11 +1190,6 @@ class Api:
 
                 if index % gc_interval == 0:
                     torch_gc()
-
-                if index == total_frames or index % 5 == 0:
-                    logger.info(
-                        f"[{batch_id}] processed {index}/{total_frames} frame(s)"
-                    )
             except Exception as error:
                 failed = {
                     "frame_index": item.frame_index,
@@ -1218,8 +1225,9 @@ class Api:
 
         batch_time = time.time() - start_time
         logger.info(
-            f"[{batch_id}] finished video batch: model={model_id}, success="
-            f"{sum(1 for it in results if it.get('success', False))}/{total_frames}, "
+            f"[{batch_id}] finished video batch: model={model_id}, "
+            f"batch={batch_number}/{total_batches}, total_frames={total_frames}, "
+            f"success={sum(1 for it in results if it.get('success', False))}, "
             f"failed={len(failed_items)}, elapsed={batch_time:.2f}s, "
             f"outputs={[item.get('output_path') for item in results if item.get('success')]}"
         )
