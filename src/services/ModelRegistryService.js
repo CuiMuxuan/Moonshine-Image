@@ -21,7 +21,16 @@ const FALLBACK_IMAGE_MODELS = Object.freeze([
     },
     parameters: {},
     parameterHelp: "当前模型参数由后端自动控制，无需手动调整。",
-    capabilities: {},
+    capabilities: {
+      speed: 6.0,
+      realImageQuality: 8.0,
+      cartoonImageQuality: 6.0,
+      simpleSceneQuality: 8.0,
+      complexSceneQuality: 6.0,
+      textWatermarkAbility: 6.0,
+      lowVramFriendly: 6.0,
+      stability: 8.0,
+    },
   },
 ]);
 

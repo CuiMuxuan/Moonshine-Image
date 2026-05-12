@@ -1,6 +1,8 @@
 import { api } from 'src/boot/axios';
 import { useFileManagerStore } from 'src/stores/fileManager'
+import { useConfigStore } from 'src/stores/config'
 import { classifyMoonshineError } from 'src/services/ErrorClassifier';
+import { buildImageOutputRequestOptions } from 'src/utils/imageOutputOptions';
 
 // Extract raw base64 from a data URL.
 const getBase64FromDataURL = (dataUrl) => {
@@ -46,6 +48,7 @@ const performInpainting = async (fileId) => {
 
     let imageBase64;
     const latestImage = file.history[file.history.length - 1];
+    const configStore = useConfigStore();
 
     if (latestImage.type === 'base64') {
       imageBase64 = `data:image/png;base64,${latestImage.data}`;
@@ -61,7 +64,8 @@ const performInpainting = async (fileId) => {
       }],
       image_type: 'base64',
       mask_type: 'base64',
-      response_type: 'base64'
+      response_type: 'base64',
+      ...buildImageOutputRequestOptions(configStore.config)
     };
 
     const response = await performBatchInpainting(requestData);
@@ -141,7 +145,11 @@ const processBatchResults = async (response, requestData = {}) => {
       if (result.success && resultPayload) {
         try {
           if (resultId) {
-            await fileManagerStore.addProcessingResult(resultId, resultPayload);
+            await fileManagerStore.addProcessingResult(resultId, resultPayload, {
+              format: result.format,
+              mimeType: result.mime_type,
+              extension: result.extension,
+            });
             if (requestItem?.mask) {
               fileManagerStore.updateFileMask(resultId, null);
             }
@@ -151,7 +159,10 @@ const processBatchResults = async (response, requestData = {}) => {
             id: resultId,
             success: true,
             index: resultIndex,
-            result: resultPayload
+            result: resultPayload,
+            format: result.format,
+            mime_type: result.mime_type,
+            extension: result.extension
           });
         } catch (error) {
           console.error(`处理文件 ${resultId} 的结果时出错:`, error);

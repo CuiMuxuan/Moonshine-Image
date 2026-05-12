@@ -1,5 +1,5 @@
 <template>
-  <q-page class="flex image-page">
+  <q-page class="flex image-page" data-testid="image-page">
     <!-- 页面禁用覆盖层 -->
     <div
       v-if="isPageDisabled"
@@ -66,6 +66,7 @@ import { useModelRegistryStore } from "src/stores/modelRegistry";
 import { useConfiguredShortcuts } from "src/composables/useConfiguredShortcuts";
 import InpaintService from "src/services/ImageProcessingService";
 import { buildImageOutputBaseName, splitFileName } from "src/utils/fileNaming";
+import { buildImageOutputRequestOptions } from "src/utils/imageOutputOptions";
 import { MASK_TOOL_MODES } from "src/utils/maskTool";
 import {
   buildBackendPathBlockedMessage,
@@ -585,8 +586,11 @@ const handleImageShortcutHoldEnd = (actionId, session) => {
 };
 
 const buildProcessedImageOutputName = (file) => {
+  const latestImage = Array.isArray(file?.history)
+    ? file.history[file.history.length - 1]
+    : null;
   const { extension } = splitFileName(file?.name || "");
-  const outputExtension = extension || ".png";
+  const outputExtension = latestImage?.extension || extension || ".png";
   const namingMode = configStore.config.advanced?.imageOutputNamingMode || "original";
   const fixedPrefix = configStore.config.advanced?.imageOutputFixedPrefix || "moonshine";
   const baseName = buildImageOutputBaseName({
@@ -597,6 +601,8 @@ const buildProcessedImageOutputName = (file) => {
 
   return `${baseName}${outputExtension}`;
 };
+
+const getImageOutputRequestOptions = () => buildImageOutputRequestOptions(configStore.config);
 
 const getFileNameFromPath = (filePath, fallback = "") =>
   String(filePath || fallback)
@@ -1141,6 +1147,7 @@ const processFolderImages = async () => {
       image_folder: folderPath.value,
       mask_folder: maskFolderPath.value,
       output_folder: effectiveSavePath.value,
+      ...getImageOutputRequestOptions(),
     };
     // 调用文件夹处理API
     const response = await InpaintService.performFolderInpainting(folderData);
@@ -1186,6 +1193,7 @@ const processSlbrFolderImages = async () => {
       image_folder: folderPath.value,
       output_folder: effectiveSavePath.value,
       options: getCurrentModelOptions(),
+      ...getImageOutputRequestOptions(),
     };
     const response = await InpaintService.performMoonshineFolderProcessing(folderData);
     if (response.success) {
@@ -1352,6 +1360,33 @@ const undoProcessing = () => {
       message: "已撤销最近的处理",
       position: "top",
     });
+  }
+};
+
+const registerImageE2ETestBridge = () => {
+  if (typeof window === "undefined" || window.__MOONSHINE_E2E__ !== true) return;
+  window.__MOONSHINE_IMAGE_TEST__ = {
+    addFile: async (file) => fileManagerStore.addFile(file),
+    setMask: (fileId, maskData) => fileManagerStore.updateFileMask(fileId, maskData),
+    clearMask: (fileId) => fileManagerStore.updateFileMask(fileId, null),
+    addProcessingResult: (fileId, resultData, metadata = {}) =>
+      fileManagerStore.addProcessingResult(fileId, resultData, metadata),
+    undoProcessing: (fileId = fileManagerStore.currentFileId) =>
+      fileManagerStore.undoProcessing(fileId),
+    getSnapshot: () => ({
+      fileCount: fileManagerStore.files.length,
+      currentFileId: fileManagerStore.currentFileId,
+      currentFileName: fileManagerStore.currentFile?.name || "",
+      currentHistoryLength: fileManagerStore.currentFile?.history?.length || 0,
+      currentHasMask: Boolean(fileManagerStore.currentFile?.mask),
+      selectedFileIds: [...fileManagerStore.selectedFileIds],
+    }),
+  };
+};
+
+const unregisterImageE2ETestBridge = () => {
+  if (typeof window !== "undefined" && window.__MOONSHINE_IMAGE_TEST__) {
+    delete window.__MOONSHINE_IMAGE_TEST__;
   }
 };
 // 显示原图
@@ -2156,6 +2191,7 @@ onMounted(async () => {
   window.addEventListener("resize", scheduleVisibleAreaInsetsUpdate);
   window.addEventListener("moonshine-model-registry-updated", handleModelRegistryUpdated);
   window.addEventListener("moonshine-switch-model", handleGlobalModelSwitch);
+  registerImageE2ETestBridge();
 });
 
 // 在路由离开前保存当前页面状态
@@ -2169,6 +2205,7 @@ onBeforeRouteLeave(async (to, from, next) => {
 });
 // 在组件卸载时清理资源
 onUnmounted(async () => {
+  unregisterImageE2ETestBridge();
   layoutFooter?.clearPageFooter?.(imagePageFooterOwner);
   layoutDrawers?.clearPageDrawer?.("left", imagePageLeftDrawerOwner);
   layoutDrawers?.clearPageDrawer?.("right", imagePageRightDrawerOwner);

@@ -11,6 +11,13 @@
   "scripts": {
     "lint": "eslint -c ./eslint.config.js \"./src*/**/*.{js,cjs,mjs,vue}\"",
     "test": "echo \"No test specified\" && exit 0",
+    "test:regression:p0": "node scripts/p0-regression-gate.mjs",
+    "test:regression:p0:assertions": "node scripts/p0-regression-assertions.mjs",
+    "test:regression:p1:image": "node scripts/p1-image-regression-assertions.mjs",
+    "test:regression:p1": "npm run test:regression:p1:image",
+    "test:regression:e2e:smoke": "node scripts/e2e-smoke-image-settings.mjs",
+    "test:regression:e2e:workflow": "node scripts/e2e-comprehensive-workflow.mjs",
+    "test:regression:p0:full": "npm run test:regression:p0 && npm run test:regression:e2e:smoke && npm run test:regression:e2e:workflow",
     "dev": "quasar dev",
     "build": "quasar build",
     "build:runtime:win": "node scripts/build-runtime-win.mjs",
@@ -44,12 +51,12 @@
     "eslint": "^9.14.0",
     "eslint-plugin-vue": "^9.30.0",
     "globals": "^15.12.0",
+    "playwright-core": "^1.59.1",
     "postcss": "^8.4.14",
     "vite-plugin-checker": "^0.8.0"
   },
   "engines": {
     "node": "^28 || ^26 || ^24 || ^22 || ^20 || ^18",
-    "npm": ">= 6.13.4",
-    "yarn": ">= 1.21.1"
+    "npm": ">= 6.13.4"
   }
 }

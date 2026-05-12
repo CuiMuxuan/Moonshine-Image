@@ -1,6 +1,9 @@
 <template>
-  <q-dialog v-model="showDialog" persistent class="settings-dialog">
-    <q-card :class="['settings-card', { 'settings-card--dark': $q.dark.isActive }]">
+  <q-dialog v-model="showDialog" persistent class="settings-dialog" data-testid="global-settings-dialog">
+    <q-card
+      :class="['settings-card', { 'settings-card--dark': $q.dark.isActive }]"
+      data-testid="global-settings-card"
+    >
       <q-card-section class="settings-header row items-center q-pb-none">
         <div class="text-h6">全局设置</div>
         <q-space />
@@ -9,12 +12,32 @@
 
       <q-card-section class="settings-tabs-section q-pt-sm">
         <q-tabs v-model="activeTab" dense align="justify" active-color="primary" indicator-color="primary">
-          <q-tab name="general" label="通用配置" />
-          <q-tab name="backend" label="后端配置" />
-          <q-tab name="models" label="模型管理" />
-          <q-tab name="files" label="文件管理" />
-          <q-tab name="appearance" label="外观主题" />
-          <q-tab name="advanced" label="高级配置" />
+          <q-tab
+            name="general"
+            label="通用配置"
+            data-testid="global-settings-tab-general"
+          />
+          <q-tab
+            name="backend"
+            label="后端配置"
+            data-testid="global-settings-tab-backend"
+          />
+          <q-tab
+            name="models"
+            label="模型管理"
+            data-testid="global-settings-tab-models"
+          />
+          <q-tab name="files" label="文件管理" data-testid="global-settings-tab-files" />
+          <q-tab
+            name="appearance"
+            label="外观主题"
+            data-testid="global-settings-tab-appearance"
+          />
+          <q-tab
+            name="advanced"
+            label="高级配置"
+            data-testid="global-settings-tab-advanced"
+          />
         </q-tabs>
         <q-separator class="q-mt-sm" />
       </q-card-section>
@@ -85,9 +108,13 @@
               </div>
             </q-tab-panel>
 
-            <q-tab-panel name="backend" class="q-px-none">
+            <q-tab-panel
+              name="backend"
+              class="q-px-none"
+              data-testid="global-settings-backend-panel"
+            >
               <div class="section q-gutter-md">
-                <q-input v-model.number="localConfig.general.backendPort" label="后端端口" type="number" :min="1024" :max="65535" :error="portError" :error-message="portErrorMessage" @update:model-value="validatePort" />
+                <q-input v-model.number="localConfig.general.backendPort" label="后端端口" type="number" :min="1024" :max="65535" :error="portError" :error-message="portErrorMessage" data-testid="global-settings-backend-port" @update:model-value="validatePort" />
                 <q-select v-model="localConfig.general.launchMode" label="启动方式" emit-value map-options :options="launchModeOptions" />
                 <q-input v-model="localConfig.general.backendProjectPath" label="后端项目路径" readonly>
                   <template #append><q-btn round dense flat icon="folder" @click="selectBackendProjectPath" /></template>
@@ -217,6 +244,36 @@
                       </div>
 
                       <div class="mini-block">
+                        <div class="text-subtitle2 text-weight-medium q-mb-sm">图片输出格式与质量</div>
+                        <div class="grid">
+                          <q-select
+                            v-model="localConfig.advanced.imageOutputFormat"
+                            label="输出格式"
+                            :options="imageOutputFormatOptions"
+                            emit-value
+                            map-options
+                            outlined
+                            dense
+                          >
+                            <template #hint>{{ getImageOutputFormatHint() }}</template>
+                          </q-select>
+                          <q-input
+                            v-model.number="localConfig.advanced.imageOutputQuality"
+                            label="JPG / WebP 输出质量"
+                            type="number"
+                            :min="1"
+                            :max="100"
+                            :step="1"
+                            outlined
+                            dense
+                          />
+                        </div>
+                        <div class="text-caption text-grey-7 q-mt-sm">
+                          PNG 为无损编码，质量参数仅用于 JPG / WebP。强制 JPG 输出透明图时会使用白色背景合成。
+                        </div>
+                      </div>
+
+                      <div class="mini-block">
                         <div class="text-subtitle2 text-weight-medium q-mb-sm">图片输出命名方式</div>
                         <q-btn-toggle v-model="localConfig.advanced.imageOutputNamingMode" spread unelevated toggle-color="primary" :color="$q.dark.isActive ? 'grey-9' : 'grey-3'" :text-color="$q.dark.isActive ? 'grey-2' : 'dark'" :options="imageNamingOptions" />
                         <q-input v-if="localConfig.advanced.imageOutputNamingMode === 'prefixUuid'" v-model.trim="localConfig.advanced.imageOutputFixedPrefix" outlined label="固定前缀" class="q-mt-md" />
@@ -280,6 +337,7 @@
           icon="save"
           label="保存"
           class="settings-action-button"
+          data-testid="global-settings-save-button"
           :loading="saving"
           :disable="hasErrors"
           @click="saveSettings"
@@ -326,6 +384,13 @@ const globalLoadingState = inject("globalLoadingState", ref({ showing: false }))
 
 const launchModeOptions = [{ label: "CUDA 加速", value: "cuda" }, { label: "CPU 模式", value: "cpu" }];
 const imageProcessingOptions = [{ label: "文件路径（推荐）", value: "path", description: "更适合本地 Electron 批处理，前端内存压力更低。" }, { label: "Base64", value: "base64", description: "兼容性更直接，但大量图片时更占内存。" }];
+const imageOutputFormatOptions = [
+  { label: "自动（尽量保持原格式）", value: "auto", description: "根据原图格式与透明通道选择合适输出格式。" },
+  { label: "保持原格式", value: "original", description: "尽量沿用原图扩展名与编码类型。" },
+  { label: "PNG", value: "png", description: "无损输出，适合透明图，但文件通常更大。" },
+  { label: "JPG", value: "jpg", description: "体积较小，透明图会使用白色背景合成。" },
+  { label: "WebP", value: "webp", description: "压缩率较高，并支持透明通道。" },
+];
 const imageNamingOptions = [{ label: "原文件名", value: "original" }, { label: "固定前缀 + UUID", value: "prefixUuid" }];
 const frameFormatOptions = [{ label: "JPG", value: "jpg" }, { label: "PNG", value: "png" }, { label: "WebP", value: "webp" }];
 const previewTrialOptions = [{ label: "3 秒", value: 3 }, { label: "10 秒", value: 10 }];
@@ -370,7 +435,10 @@ const canChangeImageProcessingMethod = computed(() => fileManagerStore.files.len
 const mergedConfig = computed(() => ConfigManager.mergeWithDefault(localConfig.value));
 const shortcutErrors = computed(() => validateShortcutConfig(localConfig.value.shortcuts));
 const validationErrors = computed(() => {
-  const errors = configStore.validateConfig(mergedConfig.value);
+  const errors = [
+    ...configStore.validateConfig(ConfigManager.mergeForStrictValidation(localConfig.value)),
+    ...configStore.validateConfig(mergedConfig.value),
+  ];
   return [...(portError.value && portErrorMessage.value ? [portErrorMessage.value] : []), ...errors];
 });
 const hasErrors = computed(() => validationErrors.value.length > 0);
@@ -388,6 +456,7 @@ const validatePort = (port) => {
   }
 };
 const getImageProcessingHint = () => imageProcessingOptions.find((item) => item.value === (localConfig.value.advanced?.imageProcessingMethod || "path"))?.description || "";
+const getImageOutputFormatHint = () => imageOutputFormatOptions.find((item) => item.value === (localConfig.value.advanced?.imageOutputFormat || "auto"))?.description || "";
 const getBrushConfig = (key) => localConfig.value.advanced?.[key] || DEFAULT_IMAGE_BRUSH;
 const getShortcutDisplayValue = (actionId) => formatShortcutKeys(recordingShortcutId.value === actionId && recordingKeys.value.length ? recordingKeys.value : localConfig.value.shortcuts?.[actionId] || []);
 const stopShortcutRecording = () => { recordingShortcutId.value = ""; recordingKeys.value = []; };

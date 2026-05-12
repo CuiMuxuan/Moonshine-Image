@@ -152,6 +152,11 @@ const destroyCanvas = () => {
   }
 };
 
+const isE2EMockVideoFile = (file) =>
+  typeof window !== "undefined" &&
+  window.__MOONSHINE_E2E__ === true &&
+  Boolean(file?.__moonshineE2EMockVideo);
+
 const startReadyCycle = (version) => {
   pendingCanvasSetup = null;
   playerReadyState = createReadyState(version);
@@ -204,6 +209,10 @@ const waitForReady = async (timeoutMs = 8000) => {
 
   if (state.error) {
     throw state.error;
+  }
+
+  if (isE2EMockVideoFile(videoStore.videoFile)) {
+    return;
   }
 
   if (!state.ready || !avCvs || !visibleSprite || !videoSprite) {
@@ -326,6 +335,19 @@ const loadVideoIntoPlayer = async (file, version, restoreTime = 0) => {
   destroyCanvas();
   destroyVideoClip();
 
+  if (isE2EMockVideoFile(file)) {
+    const mockWidth = Math.max(1, Number(file.__moonshineE2EVideoWidth || 320));
+    const mockHeight = Math.max(1, Number(file.__moonshineE2EVideoHeight || 180));
+    const mockDuration = Math.max(0.001, Number(file.__moonshineE2EVideoDuration || 5));
+    videoStore.setVideoInfo(mockWidth, mockHeight, mockDuration);
+    if (videoStore.playerWidth > 0 && videoStore.playerHeight > 0) {
+      videoStore.calculateDisplaySize(videoStore.playerWidth, videoStore.playerHeight);
+    }
+    videoStore.setCurrentTime(Math.max(0, Math.min(mockDuration, restoreTime || 0)));
+    finishReadyCycle(version);
+    return;
+  }
+
   try {
     const clip = await createVideoClip(file, version);
     if (!clip || version !== loadVersion) return;
@@ -358,6 +380,10 @@ const rebuildPlayer = async ({ keepTime = true, keepPlaying = false } = {}) => {
 };
 
 const play = () => {
+  if (isE2EMockVideoFile(videoStore.videoFile)) {
+    videoStore.setIsPlaying(true);
+    return;
+  }
   if (!avCvs || !videoStore.hasVideoFile || !visibleSprite) return;
   try {
     avCvs.play({
@@ -371,6 +397,10 @@ const play = () => {
 };
 
 const pause = () => {
+  if (isE2EMockVideoFile(videoStore.videoFile)) {
+    videoStore.setIsPlaying(false);
+    return;
+  }
   if (avCvs) {
     avCvs.pause();
   }
@@ -382,6 +412,10 @@ const stop = () => {
 };
 
 const togglePlayPause = () => {
+  if (isE2EMockVideoFile(videoStore.videoFile)) {
+    videoStore.setIsPlaying(!videoStore.isPlaying);
+    return;
+  }
   if (!avCvs || !videoStore.hasVideoFile || !visibleSprite) return;
   if (videoStore.isPlaying) {
     pause();
@@ -391,6 +425,12 @@ const togglePlayPause = () => {
 };
 
 const previewFrame = async (timeInSeconds) => {
+  if (isE2EMockVideoFile(videoStore.videoFile)) {
+    const safeTime = Math.max(0, Math.min(videoStore.videoDuration, timeInSeconds));
+    videoStore.setCurrentTime(safeTime);
+    return;
+  }
+
   if (avCvs && videoStore.hasVideoFile && visibleSprite) {
     const safeTime = Math.max(0, Math.min(videoStore.videoDuration, timeInSeconds));
     const activeCanvas = avCvs;

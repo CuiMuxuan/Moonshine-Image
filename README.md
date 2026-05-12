@@ -96,31 +96,21 @@ git clone https://github.com/CuiMuxuan/Moonshine-Image.git
 ```
 2. 安装依赖：
 ```bash
-yarn
-# or
 npm install
 ```
 3. 启动开发模式（建议使用electron模式，本地文件的修改和终端的调用需要以electron模式进行）：
 ```bash
-quasar dev
-# or
 npm run dev
 # 或启动 Electron 版本
-quasar dev -m electron
-# or
 npm run dev -- -m electron
 ```
 4. 构建
 ```bash
 # 打包 Web 版本
-quasar build
-# or
 npm run build
 ```
 ```bash
 # 打包 Windows 桌面应用
-quasar build -m electron -T win32
-# or
 npm run build -- -m electron
 ```
 ## 使用指南

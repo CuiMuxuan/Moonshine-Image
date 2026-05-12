@@ -78,20 +78,20 @@ MODEL_MANIFEST = (
         "parameters": {},
         "parameterHelp": "当前模型参数由后端自动控制，无需手动调整。",
         "capabilities": {
-            "speed": 3,
-            "realImageQuality": 4,
-            "cartoonImageQuality": 3,
-            "simpleSceneQuality": 4,
-            "complexSceneQuality": 3,
-            "textWatermarkAbility": 3,
-            "lowVramFriendly": 3,
-            "stability": 4,
+            "speed": 7.0,
+            "realImageQuality": 8.0,
+            "cartoonImageQuality": 7.0,
+            "simpleSceneQuality": 9.0,
+            "complexSceneQuality": 7.0,
+            "textWatermarkAbility": 6.0,
+            "lowVramFriendly": 6.0,
+            "stability": 8.0,
         },
     },
     {
         "id": "slbr",
         "label": "透明水印去除模型",
-        "description": "用于半透明可见水印去除的无蒙版模型，适合批量清理图片水印。",
+        "description": "用于半透明可见水印去除的特化模型，适合批量清理图片半透明可见水印，不适合清除不透明水印。",
         "type": "image",
         "requiresMask": False,
         "downloadable": True,
@@ -153,14 +153,14 @@ MODEL_MANIFEST = (
             "分块大小为256与384的效果一般好于512。"
         ),
         "capabilities": {
-            "speed": 3,
-            "realImageQuality": 3,
-            "cartoonImageQuality": 2,
-            "simpleSceneQuality": 4,
-            "complexSceneQuality": 2,
-            "textWatermarkAbility": 5,
-            "lowVramFriendly": 3,
-            "stability": 3,
+            "speed": 6.0,
+            "realImageQuality": 7.0,
+            "cartoonImageQuality": 7.0,
+            "simpleSceneQuality": 6.0,
+            "complexSceneQuality": 8.0,
+            "textWatermarkAbility": 10.0,
+            "lowVramFriendly": 6.0,
+            "stability": 6.0,
         },
     },
 )
@@ -175,10 +175,10 @@ def _normalize_capabilities(capabilities: Optional[dict]) -> dict:
     result = {}
     for key in MODEL_CAPABILITY_KEYS:
         try:
-            value = int(source.get(key, 0))
+            value = float(source.get(key, 0))
         except (TypeError, ValueError):
-            value = 0
-        result[key] = max(0, min(5, value))
+            value = 0.0
+        result[key] = round(max(0.0, min(10.0, value)), 1)
     return result
 
 

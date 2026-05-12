@@ -17,7 +17,12 @@ from rich.progress import (
     TaskProgressColumn,
 )
 
-from moonshine_server.helper import pil_to_bytes
+from moonshine_server.helper import concat_alpha_channel
+from moonshine_server.image_output import (
+    encode_pil_image,
+    image_format_from_path,
+    resolve_image_output_spec,
+)
 from moonshine_server.model.utils import torch_gc
 from moonshine_server.model_manager import ModelManager
 from moonshine_server.schema import InpaintRequest
@@ -30,7 +35,7 @@ def glob_images(path: Path) -> Dict[str, Path]:
     elif path.is_dir():
         res = {}
         for it in path.glob("*.*"):
-            if it.suffix.lower() in [".png", ".jpg", ".jpeg"]:
+            if it.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp"]:
                 res[it.stem] = it
         return res
 
@@ -43,6 +48,8 @@ def batch_inpaint(
     output: Path,
     config: Optional[Path] = None,
     concat: bool = False,
+    output_format: str = "auto",
+    output_quality: int = 95,
 ):
     if image.is_dir() and output.is_file():
         logger.error(
@@ -102,9 +109,13 @@ def batch_inpaint(
             else:
                 mask_p = mask_paths.get(stem, first_mask)
 
-            infos = Image.open(image_p).info
-
-            img = np.array(Image.open(image_p).convert("RGB"))
+            source_image = Image.open(image_p)
+            infos = source_image.info
+            source_format = image_format_from_path(image_p) or str(source_image.format or "")
+            alpha_channel = None
+            if source_image.mode == "RGBA":
+                alpha_channel = np.array(source_image.getchannel("A"))
+            img = np.array(source_image.convert("RGB"))
             
             # 读取蒙版，保留透明通道
             mask_pil = Image.open(mask_p)
@@ -138,9 +149,22 @@ def batch_inpaint(
             if concat:
                 mask_img = cv2.cvtColor(mask_img, cv2.COLOR_GRAY2RGB)
                 inpaint_result = cv2.hconcat([img, mask_img, inpaint_result])
+                alpha_channel = None
 
-            img_bytes = pil_to_bytes(Image.fromarray(inpaint_result), "png", 100, infos)
-            save_p = output / f"{stem}.png"
+            serializable_result = concat_alpha_channel(inpaint_result, alpha_channel)
+            output_spec = resolve_image_output_spec(
+                requested_format=output_format,
+                source_format=source_format,
+                has_alpha=alpha_channel is not None,
+                quality=output_quality,
+            )
+            img_bytes = encode_pil_image(
+                Image.fromarray(serializable_result),
+                output_spec["format"],
+                output_spec["quality"],
+                infos,
+            )
+            save_p = output / f"{stem}{output_spec['extension']}"
             with open(save_p, "wb") as fw:
                 fw.write(img_bytes)
             processed_count += 1

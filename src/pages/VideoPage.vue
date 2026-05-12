@@ -1,5 +1,5 @@
 ﻿<template>
-  <q-page class="video-page">
+  <q-page class="video-page" data-testid="video-page">
     <div v-if="isProcessing" class="processing-page-mask"></div>
     <div class="video-layout">
       <div class="top-row" :class="{ 'has-timeline': videoStore.hasVideoFile }">
@@ -5506,6 +5506,179 @@ const preserveVideoPagePlaybackState = () => {
   }
 };
 
+const createVideoE2ESnapshot = () => {
+  const selectedMask = videoStore.selectedMask || null;
+  return {
+    hasVideoFile: videoStore.hasVideoFile,
+    videoFileName: videoStore.videoFile?.name || "",
+    videoWidth: videoStore.videoWidth,
+    videoHeight: videoStore.videoHeight,
+    videoDuration: videoStore.videoDuration,
+    maskCount: videoStore.masks.length,
+    selectedMaskId: videoStore.selectedMaskId,
+    selectedMaskName: selectedMask?.name || "",
+    selectedMaskBaseMask: selectedMask?.baseMaskDataUrl || "",
+    canUndoMaskDraw: videoStore.canUndoSelectedMaskDraw,
+    historyLength: videoStore.videoHistory.length,
+    timelineRowCount: timelineRows.value.length,
+    currentSourceName: videoStore.currentSourceName || "",
+    currentSourceIsReplacement: videoStore.currentSourceIsReplacement,
+  };
+};
+
+const registerVideoE2ETestBridge = () => {
+  if (typeof window === "undefined" || window.__MOONSHINE_E2E__ !== true) return;
+
+  window.__MOONSHINE_VIDEO_TEST__ = {
+    loadVideoFile: async (
+      file,
+      { width = 320, height = 180, duration = 5, fps = 30 } = {}
+    ) => {
+      suppressSourceCleanupWatcher = true;
+      file.__moonshineE2EMockVideo = true;
+      file.__moonshineE2EVideoWidth = width;
+      file.__moonshineE2EVideoHeight = height;
+      file.__moonshineE2EVideoDuration = duration;
+
+      try {
+        await videoStore.setVideoFile(file, {
+          resetEditor: true,
+          resetHistory: true,
+          isReplacementSource: false,
+          sourcePath: file.path || `e2e://${file.name || "sample.mp4"}`,
+          sourceName: file.name || "sample.mp4",
+        });
+        videoStore.setVideoInfo(width, height, duration);
+        videoStore.setSourceFrameRate(fps);
+        videoStore.calculateDisplaySize(width, height);
+        await nextTick();
+        syncTimelineRowsFromStore();
+        return createVideoE2ESnapshot();
+      } finally {
+        await nextTick();
+        suppressSourceCleanupWatcher = false;
+      }
+    },
+    createMask: (options = {}) => {
+      const mask = videoStore.createMask({
+        name: options.name || "E2E 蒙版",
+        startTime: options.startTime ?? 0,
+        endTime: options.endTime ?? videoStore.videoDuration,
+      });
+      syncTimelineRowsFromStore();
+      return {
+        maskId: mask?.id || "",
+        snapshot: createVideoE2ESnapshot(),
+      };
+    },
+    commitSelectedMaskBaseMask: (baseMaskDataUrl) => {
+      const mask = videoStore.commitSelectedMaskBaseMask(baseMaskDataUrl);
+      return {
+        maskId: mask?.id || "",
+        snapshot: createVideoE2ESnapshot(),
+      };
+    },
+    undoSelectedMaskDraw: () => {
+      const mask = videoStore.undoSelectedMaskDraw();
+      return {
+        maskId: mask?.id || "",
+        snapshot: createVideoE2ESnapshot(),
+      };
+    },
+    removeSelectedMask: () => {
+      const maskId = videoStore.selectedMaskId;
+      if (maskId) {
+        videoStore.removeMask(maskId);
+      }
+      syncTimelineRowsFromStore();
+      return createVideoE2ESnapshot();
+    },
+    pushProcessingHistory: (label = "E2E 模型处理前") => {
+      const entry = videoStore.buildHistoryEntry({
+        label,
+        uiState: captureVideoUiState(),
+      });
+      videoStore.pushHistoryEntry(entry, getConfiguredVideoHistoryLimit());
+      return {
+        entryId: entry?.id || "",
+        snapshot: createVideoE2ESnapshot(),
+      };
+    },
+    replaceWithProcessedMock: async (
+      fileName = "processed-e2e.mp4",
+      { width = videoStore.videoWidth, height = videoStore.videoHeight, duration = videoStore.videoDuration } = {}
+    ) => {
+      suppressSourceCleanupWatcher = true;
+      const file = new File(["moonshine-e2e-processed"], fileName, {
+        type: "video/mp4",
+        lastModified: Date.now(),
+      });
+      file.__moonshineE2EMockVideo = true;
+      file.__moonshineE2EVideoWidth = width;
+      file.__moonshineE2EVideoHeight = height;
+      file.__moonshineE2EVideoDuration = duration;
+
+      try {
+        await videoStore.setVideoFile(file, {
+          resetEditor: true,
+          resetHistory: false,
+          isReplacementSource: true,
+          sourcePath: `e2e://${fileName}`,
+          sourceName: fileName,
+        });
+        videoStore.setVideoInfo(width, height, duration);
+        videoStore.calculateDisplaySize(width, height);
+        await nextTick();
+        syncTimelineRowsFromStore();
+        return createVideoE2ESnapshot();
+      } finally {
+        await nextTick();
+        suppressSourceCleanupWatcher = false;
+      }
+    },
+    undoLatestProcessing: async () => {
+      const entry = videoStore.videoHistory.at(-1);
+      if (!entry) {
+        return {
+          restored: false,
+          snapshot: createVideoE2ESnapshot(),
+        };
+      }
+
+      suppressSourceCleanupWatcher = true;
+      try {
+        await videoStore.setVideoFile(entry.videoFile, {
+          resetEditor: true,
+          resetHistory: false,
+          isReplacementSource: Boolean(entry.isReplacement),
+          sourcePath: entry.filePath || entry.videoFile?.path || "",
+          sourceName: entry.fileName || entry.videoFile?.name || "",
+        });
+        const restored = videoStore.restoreEditorSnapshot(entry.snapshot, {
+          preserveVideoInfo: false,
+        });
+        videoStore.removeHistoryFrom(entry.id);
+        await restoreVideoUiState(restored.uiState || {});
+        await nextTick();
+        syncTimelineRowsFromStore();
+        return {
+          restored: true,
+          snapshot: createVideoE2ESnapshot(),
+        };
+      } finally {
+        suppressSourceCleanupWatcher = false;
+      }
+    },
+    getSnapshot: createVideoE2ESnapshot,
+  };
+};
+
+const unregisterVideoE2ETestBridge = () => {
+  if (typeof window !== "undefined" && window.__MOONSHINE_VIDEO_TEST__) {
+    delete window.__MOONSHINE_VIDEO_TEST__;
+  }
+};
+
 onMounted(async () => {
   await configStore.loadConfig();
   previewTrialSeconds.value = getConfiguredPreviewTrialSeconds();
@@ -5521,6 +5694,7 @@ onMounted(async () => {
   document.addEventListener("fullscreenchange", handleDocumentFullscreenChange);
   window.addEventListener("moonshine-model-registry-updated", handleModelRegistryUpdated);
   window.addEventListener("moonshine-switch-model", handleGlobalModelSwitch);
+  registerVideoE2ETestBridge();
 });
 
 watch(
@@ -5554,6 +5728,7 @@ onBeforeRouteLeave(() => {
 });
 
 onUnmounted(() => {
+  unregisterVideoE2ETestBridge();
   canPersistVideoUiState = false;
   preserveVideoPagePlaybackState();
   void exitPreviewFullscreenIfNeeded();

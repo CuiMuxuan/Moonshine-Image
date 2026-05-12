@@ -66,10 +66,15 @@
                 已加载文件（{{ fileManagerStore.files.length }}）
               </div>
               <q-separator class="q-mb-xs" />
-              <q-scroll-area :style="scrollAreaStyle" class="file-list-container">
-                <q-list dense class="q-pa-none">
+              <q-virtual-scroll
+                :items="fileManagerStore.files"
+                :virtual-scroll-item-size="54"
+                :style="scrollAreaStyle"
+                class="file-list-container q-pa-none"
+                type="list"
+                v-slot="{ item: file }"
+              >
                   <q-item
-                    v-for="file in fileManagerStore.files"
                     :key="file.id"
                     class="file-item q-pa-xs"
                     clickable
@@ -95,8 +100,7 @@
                       <q-btn flat round dense size="sm" icon="close" color="negative" @click.stop="removeFile(file.id)" />
                     </q-item-section>
                   </q-item>
-                </q-list>
-              </q-scroll-area>
+              </q-virtual-scroll>
             </q-card-section>
           </q-card>
         </teleport>
@@ -267,6 +271,31 @@ const getFileIcon = (file) => {
   }[type] || "insert_drive_file";
 };
 
+const normalizePathKey = (filePath = "") =>
+  String(filePath || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+
+const waitForUiYield = () =>
+  new Promise((resolve) => {
+    window.setTimeout(resolve, 0);
+  });
+
+const normalizeStatsDescriptor = (entry = {}, fallbackPath = "") => {
+  const stats = entry.data || {};
+  const filePath = stats.path || entry.normalizedPath || entry.path || fallbackPath;
+  return {
+    name: stats.name || filePath.split(/[\\/]/).pop() || "unknown",
+    size: Number(stats.size || 0),
+    type: stats.type || "",
+    lastModified: Number(stats.lastModified || Date.now()),
+    path: filePath,
+    normalizedPath: stats.normalizedPath || entry.normalizedPath || filePath,
+  };
+};
+
 const buildPathDescriptor = async (filePath) => {
   const result = await window.electron.ipcRenderer.invoke("get-file-stats", filePath);
   if (!result?.success) {
@@ -281,6 +310,24 @@ const buildPathDescriptor = async (filePath) => {
     lastModified: Number(stats.lastModified || Date.now()),
     path: filePath,
   };
+};
+
+const buildPathDescriptors = async (filePaths) => {
+  if (window.electron?.ipcRenderer?.invoke) {
+    const result = await window.electron.ipcRenderer.invoke("get-files-stats", filePaths);
+    if (result?.success && Array.isArray(result.data)) {
+      return result.data
+        .map((entry, index) => ({ entry, index }))
+        .filter(({ entry }) => entry?.success)
+        .map(({ entry, index }) => normalizeStatsDescriptor(entry, filePaths[index]));
+    }
+  }
+
+  const descriptors = [];
+  for (const filePath of filePaths) {
+    descriptors.push(await buildPathDescriptor(filePath));
+  }
+  return descriptors;
 };
 
 const startProgress = () => {
@@ -304,7 +351,7 @@ const selectFiles = async () => {
       });
 
       if (!result.canceled && result.filePaths.length > 0) {
-        await loadFilesFromPaths(result.filePaths);
+        await loadFilesFromPathsOptimized(result.filePaths);
       }
     } catch (error) {
       $q.notify({
@@ -380,52 +427,79 @@ const processBrowserFiles = async (files) => {
   }
 };
 
-const loadFilesFromPaths = async (filePaths) => {
+const loadFilesFromPathsOptimized = async (filePaths) => {
   startProgress();
   let processedCount = 0;
+  let skippedCount = 0;
 
   try {
-    for (let index = 0; index < filePaths.length; index += 1) {
-      if (!canCancelUpload.value) break;
+    const existingPathKeys = new Set(
+      fileManagerStore.files
+        .map((file) => normalizePathKey(file.originalFile?.path || file.image?.data || ""))
+        .filter(Boolean)
+    );
+    const selectedPathKeys = new Set();
+    const uniquePaths = [];
 
-      const filePath = filePaths[index];
-      uploadStatus.value = {
-        currentFile: filePath.split(/[\\/]/).pop() || `文件 ${index + 1}`,
-        progress: processedCount / filePaths.length,
-        details: `正在载入文件 ${index + 1} / ${filePaths.length}`,
-      };
-
-      const alreadyLoaded = fileManagerStore.files.some(
-        (file) => file.originalFile?.path === filePath
-      );
-      if (alreadyLoaded) {
+    for (const filePath of filePaths) {
+      const pathKey = normalizePathKey(filePath);
+      if (!pathKey || existingPathKeys.has(pathKey) || selectedPathKeys.has(pathKey)) {
+        skippedCount += 1;
         continue;
       }
+      selectedPathKeys.add(pathKey);
+      uniquePaths.push(filePath);
+    }
 
-      const descriptor = await buildPathDescriptor(filePath);
-      const fileData = await fileManagerStore.addFile(descriptor, (progress) => {
-        uploadStatus.value = {
-          currentFile: descriptor.name,
-          progress: (processedCount + (progress || 0)) / filePaths.length,
-          details: `正在建立文件索引 ${index + 1} / ${filePaths.length}`,
-        };
-      });
+    if (uniquePaths.length === 0) {
+      uploadStatus.value = {
+        currentFile: "没有新增文件",
+        progress: 1,
+        details: skippedCount > 0 ? `已跳过 ${skippedCount} 个重复文件` : "没有可载入的文件",
+      };
+      return;
+    }
 
-      processedCount += 1;
-      emit("file-added", fileData);
+    uploadStatus.value = {
+      currentFile: "正在读取文件信息",
+      progress: 0,
+      details: `正在批量读取 ${uniquePaths.length} 个文件的元数据`,
+    };
+
+    const descriptors = await buildPathDescriptors(uniquePaths);
+    const total = descriptors.length;
+    const chunkSize = Math.max(1, Math.floor(total / 100));
+
+    for (let index = 0; index < total; index += chunkSize) {
+      if (!canCancelUpload.value) break;
+
+      const chunk = descriptors.slice(index, index + chunkSize);
+      const createdFiles = fileManagerStore.addPathFiles(chunk);
+      processedCount += createdFiles.length;
+      createdFiles.forEach((fileData) => emit("file-added", fileData));
+
+      const completed = Math.min(index + chunk.length, total);
+      uploadStatus.value = {
+        currentFile: chunk[chunk.length - 1]?.name || `文件 ${completed}`,
+        progress: completed / Math.max(1, total),
+        details: `正在建立文件索引 ${completed} / ${total}`,
+      };
+      await waitForUiYield();
     }
 
     syncModelValue();
 
     if (processedCount > 0) {
       uploadStatus.value = {
-        currentFile: "加载完成",
+        currentFile: canCancelUpload.value ? "加载完成" : "已取消加载",
         progress: 1,
-        details: `成功加载 ${processedCount} 个文件`,
+        details: `成功加载 ${processedCount} 个文件${skippedCount ? `，跳过 ${skippedCount} 个重复文件` : ""}`,
       };
       $q.notify({
-        type: "positive",
-        message: `成功加载 ${processedCount} 个文件`,
+        type: canCancelUpload.value ? "positive" : "info",
+        message: canCancelUpload.value
+          ? `成功加载 ${processedCount} 个文件`
+          : `已取消加载，保留 ${processedCount} 个已加载文件`,
         position: "top",
       });
     }

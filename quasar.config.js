@@ -87,25 +87,27 @@ export default defineConfig((ctx) => {
           },
         };
       },
-      vitePlugins: [
-        [
-          "vite-plugin-checker",
-          {
-            eslint: {
-              lintCommand:
-                'eslint -c ./eslint.config.js "./src*/**/*.{js,mjs,cjs,vue}"',
-              useFlatConfig: true,
-            },
-          },
-          { server: false },
-        ],
-      ],
+      vitePlugins: ctx.dev
+        ? [
+            [
+              "vite-plugin-checker",
+              {
+                eslint: {
+                  lintCommand:
+                    'eslint -c ./eslint.config.js "./src*/**/*.{js,mjs,cjs,vue}"',
+                  useFlatConfig: true,
+                },
+              },
+              { server: false },
+            ],
+          ]
+        : [],
     },
 
     // Full list of options: https://v2.quasar.dev/quasar-cli-vite/quasar-config-file#devserver
     devServer: {
       // https: true,
-      open: true, // opens browser window automatically
+      open: process.env.MOONSHINE_E2E !== "1", // opens browser window automatically
     },
 
     // https://v2.quasar.dev/quasar-cli-vite/quasar-config-file#framework
@@ -239,6 +241,9 @@ export default defineConfig((ctx) => {
         out: "dist/electron/packaged",
         overwrite: true,
         asar: true,
+        download: {
+          cacheRoot: ".electron-cache",
+        },
 
         // Application metadata
         appVersion: "1.0.0",
@@ -252,13 +257,6 @@ export default defineConfig((ctx) => {
           OriginalFilename: "Moonshine-Image.exe",
           ProductName: "Moonshine-Image",
           InternalName: "Moonshine-Image",
-        },
-
-        // Electron download mirror
-        download: {
-          mirrorOptions: {
-            mirror: "https://npmmirror.com/mirrors/electron/",
-          },
         },
 
         // Ignore source-only files from the packaged app root

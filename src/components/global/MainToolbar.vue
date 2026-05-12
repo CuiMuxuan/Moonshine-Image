@@ -14,6 +14,7 @@
         :color="currentRoute === 'image' ? 'white' : 'primary'"
         :text-color="currentRoute === 'image' ? 'primary' : 'white'"
         class="nav-btn q-mr-xs"
+        data-testid="nav-image-button"
         :disable="navigationDisabled"
         @click="handleRouteChange('image')"
       >
@@ -27,6 +28,7 @@
         :color="currentRoute === 'video' ? 'white' : 'primary'"
         :text-color="currentRoute === 'video' ? 'primary' : 'white'"
         class="nav-btn"
+        data-testid="nav-video-button"
         :disable="navigationDisabled"
         @click="handleRouteChange('video')"
       >

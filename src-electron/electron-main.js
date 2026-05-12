@@ -15,7 +15,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import crypto from "node:crypto";
 import fs from "fs";
 import https from "https";
-import { spawn, spawnSync, exec } from "child_process";
+import { spawn, spawnSync, exec, execFile } from "child_process";
 import { TextDecoder, promisify } from "util";
 import {
   INTEGRITY_MANIFEST_FILE,
@@ -32,6 +32,7 @@ import {
   PACKAGED_RUNTIME_TARGET_DIR,
 } from "./integrity/public-key.js";
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const APP_DISPLAY_NAME = "Moonshine-Image";
 const LEGACY_APP_NAME = "moonshine-client";
 
@@ -102,6 +103,8 @@ const SHORTCUT_KEY_COUNTS = Object.freeze({
   imageSelectAll: 2,
 });
 const IMAGE_OUTPUT_NAMING_MODES = Object.freeze(["original", "prefixUuid"]);
+const IMAGE_OUTPUT_FORMAT_OPTIONS = Object.freeze(["auto", "original", "png", "jpg", "webp"]);
+const DEFAULT_IMAGE_OUTPUT_QUALITY = 95;
 const CONFIG_SCHEMA_VERSION = 2;
 // Default configuration
 const DEFAULT_CONFIG = {
@@ -126,6 +129,8 @@ const DEFAULT_CONFIG = {
     imageWarningSize: 50, // MB
     stateSaveLimit: 100, // MB
     imageProcessingMethod: "path",
+    imageOutputFormat: "auto",
+    imageOutputQuality: DEFAULT_IMAGE_OUTPUT_QUALITY,
     imageOutputNamingMode: "original",
     imageOutputFixedPrefix: "moonshine",
     imageBrushDefault: { ...DEFAULT_IMAGE_BRUSH },
@@ -286,6 +291,29 @@ function normalizeInteger(value, fallback, min, max = Number.MAX_SAFE_INTEGER) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return fallback;
   return clampNumber(Math.round(numeric), min, max);
+}
+
+function mergeConfigForStrictValidation(config = {}) {
+  const merged = mergeConfigWithDefaults(config);
+  if (isPlainObject(config?.advanced)) {
+    merged.advanced = {
+      ...merged.advanced,
+      ...config.advanced,
+    };
+  }
+  if (isPlainObject(config?.video)) {
+    merged.video = {
+      ...merged.video,
+      ...config.video,
+    };
+  }
+  if (isPlainObject(config?.general)) {
+    merged.general = {
+      ...merged.general,
+      ...config.general,
+    };
+  }
+  return merged;
 }
 
 function normalizeBoolean(value, fallback = true) {
@@ -539,10 +567,6 @@ function getBundledPythonPath() {
     : path.join(getBundledRuntimeEnvPath(), "bin", "python");
 }
 
-function quoteArg(arg) {
-  return `"${String(arg).replace(/"/g, '\\"')}"`;
-}
-
 function getUtf8ProcessEnv(overrides = {}) {
   return {
     ...process.env,
@@ -586,6 +610,61 @@ function decodeProcessOutput(data) {
   }
 
   return buffer.toString("utf8");
+}
+
+function quoteShellArg(arg) {
+  const value = String(arg);
+  if (/^[A-Za-z0-9_./:=@%+-]+$/.test(value)) {
+    return value;
+  }
+  return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+function buildShellCommand(command, args = []) {
+  return [command, ...args].map(quoteShellArg).join(" ");
+}
+
+function getWindowsShellInvocation(command, args = []) {
+  return {
+    command: process.env.ComSpec || "cmd.exe",
+    args: ["/d", "/s", "/c", wrapUtf8ShellCommand(buildShellCommand(command, args))],
+  };
+}
+
+async function execFileCommand(command, args = [], options = {}) {
+  const { env, ...execOptions } = options;
+  const result = await execFileAsync(command, args, {
+    windowsHide: true,
+    ...execOptions,
+    encoding: "buffer",
+    env: getUtf8ProcessEnv(env),
+  });
+
+  return {
+    ...result,
+    stdout: decodeProcessOutput(result.stdout),
+    stderr: decodeProcessOutput(result.stderr),
+  };
+}
+
+async function execCondaCommand(args = [], options = {}) {
+  if (os.platform() === "win32") {
+    const invocation = getWindowsShellInvocation("conda", args);
+    return execFileCommand(invocation.command, invocation.args, options);
+  }
+  return execFileCommand("conda", args, options);
+}
+
+function spawnCondaCommand(args = [], options = {}) {
+  const invocation =
+    os.platform() === "win32"
+      ? getWindowsShellInvocation("conda", args)
+      : { command: "conda", args };
+  return spawn(invocation.command, invocation.args, {
+    cwd: options.cwd,
+    stdio: options.stdio || "pipe",
+    env: getUtf8ProcessEnv(options.env),
+  });
 }
 
 async function execCommand(command, options = {}) {
@@ -1235,7 +1314,7 @@ async function ensureBundledRuntimeReady(sendLog) {
   });
 
   const bundledPython = getBundledPythonPath();
-  const versionResult = await getPythonVersionFromCommand(quoteArg(bundledPython), {
+  const versionResult = await getPythonVersionFromCommand(bundledPython, [], {
     cwd: getPackagedBackendRuntimeProjectPath(),
     env: getBundledRuntimeCommandEnv(),
   });
@@ -1306,9 +1385,13 @@ function getProjectVenvInfo(projectPath) {
   };
 }
 
-async function getPythonVersionFromCommand(pythonCommand, options = {}) {
+function formatCommandLabel(command, args = []) {
+  return [command, ...args].join(" ");
+}
+
+async function getPythonVersionFromCommand(pythonCommand, args = [], options = {}) {
   try {
-    const { stdout, stderr } = await execCommand(`${pythonCommand} --version`, {
+    const { stdout, stderr } = await execFileCommand(pythonCommand, [...args, "--version"], {
       timeout: 15000,
       ...options,
     });
@@ -1332,15 +1415,28 @@ async function getPythonVersionFromCommand(pythonCommand, options = {}) {
 async function detectSystemPython() {
   const commandCandidates =
     os.platform() === "win32"
-      ? ["python", "py -3", "py", "python3"]
-      : ["python3", "python"];
+      ? [
+          { command: "python", args: [] },
+          { command: "py", args: ["-3"] },
+          { command: "py", args: [] },
+          { command: "python3", args: [] },
+        ]
+      : [
+          { command: "python3", args: [] },
+          { command: "python", args: [] },
+        ];
 
-  for (const cmd of commandCandidates) {
-    const versionResult = await getPythonVersionFromCommand(cmd);
+  for (const candidate of commandCandidates) {
+    const versionResult = await getPythonVersionFromCommand(
+      candidate.command,
+      candidate.args
+    );
     if (versionResult.success) {
       return {
         success: true,
-        command: cmd,
+        command: candidate.command,
+        args: candidate.args,
+        label: formatCommandLabel(candidate.command, candidate.args),
         version: versionResult.version,
       };
     }
@@ -1359,13 +1455,13 @@ async function detectSystemPython() {
       if (!fs.existsSync(pythonPath)) {
         continue;
       }
-      const versionResult = await getPythonVersionFromCommand(
-        quoteArg(pythonPath)
-      );
+      const versionResult = await getPythonVersionFromCommand(pythonPath);
       if (versionResult.success) {
         return {
           success: true,
-          command: quoteArg(pythonPath),
+          command: pythonPath,
+          args: [],
+          label: pythonPath,
           version: versionResult.version,
           path: pythonPath,
         };
@@ -1381,7 +1477,7 @@ async function detectSystemPython() {
 
 async function detectConda() {
   try {
-    const { stdout, stderr } = await execCommand("conda --version", {
+    const { stdout, stderr } = await execCondaCommand(["--version"], {
       timeout: 15000,
     });
     const message = `${stdout || ""}\n${stderr || ""}`.trim();
@@ -1394,9 +1490,10 @@ async function detectConda() {
   }
 }
 
-async function createProjectVenvWithPython(projectPath, pythonCommand, sendLog) {
-  sendLog?.(`Creating project virtual environment with ${pythonCommand}...`, "info");
-  await execCommand(`${pythonCommand} -m venv .venv`, {
+async function createProjectVenvWithPython(projectPath, pythonCommand, pythonArgs = [], sendLog) {
+  const label = formatCommandLabel(pythonCommand, pythonArgs);
+  sendLog?.(`Creating project virtual environment with ${label}...`, "info");
+  await execFileCommand(pythonCommand, [...pythonArgs, "-m", "venv", ".venv"], {
     cwd: projectPath,
     timeout: 180000,
   });
@@ -1416,14 +1513,14 @@ async function bootstrapProjectVenvWithConda(projectPath, sendLog) {
       `Creating temporary conda environment (${tempEnvName}) with Python ${TARGET_PYTHON_VERSION}...`,
       "info"
     );
-    await execCommand(
-      `conda create -n ${tempEnvName} python=${TARGET_PYTHON_VERSION} -y`,
+    await execCondaCommand(
+      ["create", "-n", tempEnvName, `python=${TARGET_PYTHON_VERSION}`, "-y"],
       { timeout: 600000 }
     );
     createdTempEnv = true;
 
     sendLog?.("Creating .venv inside the backend project via conda Python...", "info");
-    await execCommand(`conda run -n ${tempEnvName} python -m venv .venv`, {
+    await execCondaCommand(["run", "-n", tempEnvName, "python", "-m", "venv", ".venv"], {
       cwd: projectPath,
       timeout: 600000,
     });
@@ -1437,7 +1534,7 @@ async function bootstrapProjectVenvWithConda(projectPath, sendLog) {
     if (createdTempEnv) {
       try {
         sendLog?.(`Removing temporary conda environment (${tempEnvName})...`, "info");
-        await execCommand(`conda env remove -n ${tempEnvName} -y`, {
+        await execCondaCommand(["env", "remove", "-n", tempEnvName, "-y"], {
           timeout: 180000,
         });
       } catch (cleanupError) {
@@ -1564,7 +1661,7 @@ async function getUsableProjectVenvInfo(projectPath) {
     return venvInfo;
   }
 
-  const versionResult = await getPythonVersionFromCommand(quoteArg(venvInfo.pythonPath), {
+  const versionResult = await getPythonVersionFromCommand(venvInfo.pythonPath, [], {
     cwd: projectPath,
   });
   if (!versionResult.success) {
@@ -1627,6 +1724,17 @@ function sanitizeAppConfig(config = {}) {
   merged.ui.showStartupAnimation = normalizeBoolean(merged.ui?.showStartupAnimation, true);
   merged.advanced.imageProcessingMethod =
     merged.advanced?.imageProcessingMethod === "base64" ? "base64" : "path";
+  merged.advanced.imageOutputFormat = IMAGE_OUTPUT_FORMAT_OPTIONS.includes(
+    String(merged.advanced?.imageOutputFormat || "").toLowerCase()
+  )
+    ? String(merged.advanced.imageOutputFormat).toLowerCase()
+    : "auto";
+  merged.advanced.imageOutputQuality = normalizeInteger(
+    merged.advanced?.imageOutputQuality,
+    DEFAULT_IMAGE_OUTPUT_QUALITY,
+    1,
+    100
+  );
   merged.advanced.imageOutputNamingMode = IMAGE_OUTPUT_NAMING_MODES.includes(
     merged.advanced?.imageOutputNamingMode
   )
@@ -1709,6 +1817,23 @@ function validateConfig(config) {
     if (
       config.advanced?.imageProcessingMethod &&
       !["base64", "path"].includes(config.advanced.imageProcessingMethod)
+    ) {
+      return false;
+    }
+
+    if (
+      config.advanced?.imageOutputFormat &&
+      !IMAGE_OUTPUT_FORMAT_OPTIONS.includes(config.advanced.imageOutputFormat)
+    ) {
+      return false;
+    }
+
+    if (
+      typeof config.advanced?.imageOutputQuality !== "number" ||
+      Number.isNaN(config.advanced.imageOutputQuality) ||
+      !Number.isInteger(config.advanced.imageOutputQuality) ||
+      config.advanced.imageOutputQuality < 1 ||
+      config.advanced.imageOutputQuality > 100
     ) {
       return false;
     }
@@ -1875,6 +2000,10 @@ ipcMain.handle("save-app-config", async (event, newConfig) => {
   try {
     if (!newConfig || typeof newConfig !== "object") {
       console.error("Invalid configuration payload:", newConfig);
+      return { success: false, error: "Invalid configuration payload" };
+    }
+    if (!validateConfig(mergeConfigForStrictValidation(newConfig))) {
+      console.error("Configuration validation failed before sanitization:", newConfig);
       return { success: false, error: "Invalid configuration payload" };
     }
     const sanitizedConfig = sanitizeAppConfig(newConfig);
@@ -2341,13 +2470,11 @@ ipcMain.handle("check-python", async (event) => {
       for (const cmd of pythonCommands) {
         try {
           sendLog(`Trying command: ${cmd} --version`, "info");
-          const { stdout } = await execAsync(`${cmd} --version`, {
+          const { stdout, stderr } = await execFileCommand(cmd, ["--version"], {
             env: systemEnv,
-            shell: true,
-            encoding: "buffer",
             timeout: 10000,
           });
-          const decodedStdout = decodeProcessOutput(stdout);
+          const decodedStdout = `${stdout || ""}${stderr || ""}`.trim();
           if (decodedStdout) {
             sendLog(
               `Command ${cmd} --version succeeded: ${decodedStdout.trim()}`,
@@ -2385,13 +2512,11 @@ ipcMain.handle("check-python", async (event) => {
           sendLog(`Checking path: ${pythonPath}`, "info");
           if (fs.existsSync(pythonPath)) {
             sendLog(`Found Python executable: ${pythonPath}`, "success");
-            const { stdout } = await execAsync(`"${pythonPath}" --version`, {
+            const { stdout, stderr } = await execFileCommand(pythonPath, ["--version"], {
               env: systemEnv,
-              shell: true,
-              encoding: "buffer",
               timeout: 10000,
             });
-            const decodedStdout = decodeProcessOutput(stdout);
+            const decodedStdout = `${stdout || ""}${stderr || ""}`.trim();
             if (decodedStdout) {
               sendLog(`Python version check succeeded: ${decodedStdout.trim()}`, "success");
               return {
@@ -2417,13 +2542,11 @@ ipcMain.handle("check-python", async (event) => {
       sendLog("Checking Python environment on Unix-like platforms...", "info");
       try {
         sendLog("Trying command: python --version", "info");
-        const { stdout: pythonStdout } = await execAsync("python --version", {
+        const { stdout: pythonStdout, stderr: pythonStderr } = await execFileCommand("python", ["--version"], {
           env: systemEnv,
-          shell: true,
-          encoding: "buffer",
           timeout: 10000,
         });
-        const decodedPythonStdout = decodeProcessOutput(pythonStdout);
+        const decodedPythonStdout = `${pythonStdout || ""}${pythonStderr || ""}`.trim();
         if (decodedPythonStdout) {
           sendLog(`python command succeeded: ${decodedPythonStdout.trim()}`, "success");
           return {
@@ -2436,16 +2559,15 @@ ipcMain.handle("check-python", async (event) => {
         sendLog(`python command failed: ${pythonError.message}`, "warning");
         try {
           sendLog("Trying command: python3 --version", "info");
-          const { stdout: python3Stdout } = await execAsync(
-            "python3 --version",
+          const { stdout: python3Stdout, stderr: python3Stderr } = await execFileCommand(
+            "python3",
+            ["--version"],
             {
               env: systemEnv,
-              shell: true,
-              encoding: "buffer",
               timeout: 10000,
             }
           );
-          const decodedPython3Stdout = decodeProcessOutput(python3Stdout);
+          const decodedPython3Stdout = `${python3Stdout || ""}${python3Stderr || ""}`.trim();
           if (decodedPython3Stdout) {
             sendLog(`python3 command succeeded: ${decodedPython3Stdout.trim()}`, "success");
             return {
@@ -2464,35 +2586,29 @@ ipcMain.handle("check-python", async (event) => {
     // Fall back to conda detection
     sendLog("Checking conda environment...", "info");
     try {
-      const { stdout: condaStdout } = await execAsync("conda -V", {
+      const { stdout: condaStdout, stderr: condaStderr } = await execCondaCommand(["-V"], {
         env: systemEnv,
-        shell: true,
-        encoding: "buffer",
         timeout: 10000,
       });
-      const decodedCondaStdout = decodeProcessOutput(condaStdout);
+      const decodedCondaStdout = `${condaStdout || ""}${condaStderr || ""}`.trim();
       if (decodedCondaStdout) {
         sendLog(`Found conda: ${decodedCondaStdout.trim()}`, "success");
         try {
           // Check whether the moonshine-image environment exists
           sendLog("Checking moonshine-image conda environment...", "info");
-          const { stdout: envCheckStdout } = await execAsync("conda env list", {
+          const { stdout: envCheckStdout, stderr: envCheckStderr } = await execCondaCommand(["env", "list"], {
             env: systemEnv,
-            shell: true,
-            encoding: "buffer",
             timeout: 10000,
           });
-          const decodedEnvCheckStdout = decodeProcessOutput(envCheckStdout);
+          const decodedEnvCheckStdout = `${envCheckStdout || ""}${envCheckStderr || ""}`.trim();
 
           if (!decodedEnvCheckStdout.includes("moonshine-image")) {
             // Create the moonshine-image environment if needed
             sendLog("Creating moonshine-image conda environment...", "info");
-            await execAsync(
-              "conda create -n moonshine-image python=3.11.5 -y",
+            await execCondaCommand(
+              ["create", "-n", "moonshine-image", "python=3.11.5", "-y"],
               {
                 env: systemEnv,
-                shell: true,
-                encoding: "buffer",
                 timeout: 300000,
               }
             );
@@ -2501,20 +2617,15 @@ ipcMain.handle("check-python", async (event) => {
             sendLog("moonshine-image environment already exists", "success");
           }
 
-          // Activate the environment and verify Python version
-          sendLog("Activating moonshine-image and checking Python version...", "info");
-          const activateCmd =
-            os.platform() === "win32"
-              ? "conda activate moonshine-image && python --version"
-              : "source activate moonshine-image && python --version";
-
-          const { stdout: envPythonStdout } = await execAsync(activateCmd, {
-            env: systemEnv,
-            shell: true,
-            encoding: "buffer",
-            timeout: 30000,
-          });
-          const decodedEnvPythonStdout = decodeProcessOutput(envPythonStdout);
+          sendLog("Checking moonshine-image Python version...", "info");
+          const { stdout: envPythonStdout, stderr: envPythonStderr } = await execCondaCommand(
+            ["run", "-n", "moonshine-image", "python", "--version"],
+            {
+              env: systemEnv,
+              timeout: 30000,
+            }
+          );
+          const decodedEnvPythonStdout = `${envPythonStdout || ""}${envPythonStderr || ""}`.trim();
 
           sendLog(
             `Conda environment Python version: ${decodedEnvPythonStdout.trim()}`,
@@ -2573,9 +2684,8 @@ ipcMain.handle("check-conda-venv", async () => {
     const systemEnv = { ...process.env };
 
     // Check whether the moonshine-image environment exists
-    const { stdout } = await execAsync("conda env list", {
+    const { stdout } = await execCondaCommand(["env", "list"], {
       env: systemEnv,
-      shell: true,
       timeout: 10000,
     });
 
@@ -2598,14 +2708,8 @@ ipcMain.handle("check-conda-dependencies", async () => {
     // Snapshot current system environment variables
     const systemEnv = { ...process.env };
 
-    const activateCmd =
-      os.platform() === "win32"
-        ? "conda activate moonshine-image && conda list"
-        : "source activate moonshine-image && conda list";
-
-    const { stdout } = await execAsync(activateCmd, {
+    const { stdout } = await execCondaCommand(["list", "-n", "moonshine-image"], {
       env: systemEnv,
-      shell: true,
       timeout: 30000,
     });
 
@@ -2735,10 +2839,11 @@ ipcMain.handle("prepare-project-python", async (event, selectPath) => {
       const venvInfo = await createProjectVenvWithPython(
         workingPath,
         systemPython.command,
+        systemPython.args || [],
         sendLog
       );
       const versionResult = await getPythonVersionFromCommand(
-        quoteArg(venvInfo.pythonPath)
+        venvInfo.pythonPath
       );
       return {
         success: true,
@@ -2756,7 +2861,7 @@ ipcMain.handle("prepare-project-python", async (event, selectPath) => {
     if (condaResult.success) {
       const venvInfo = await bootstrapProjectVenvWithConda(workingPath, sendLog);
       const versionResult = await getPythonVersionFromCommand(
-        quoteArg(venvInfo.pythonPath)
+        venvInfo.pythonPath
       );
       return {
         success: true,
@@ -2784,10 +2889,11 @@ ipcMain.handle("prepare-project-python", async (event, selectPath) => {
         const venvInfo = await createProjectVenvWithPython(
           workingPath,
           detectedAfterInstall.command,
+          detectedAfterInstall.args || [],
           sendLog
         );
         const versionResult = await getPythonVersionFromCommand(
-          quoteArg(venvInfo.pythonPath)
+          venvInfo.pythonPath
         );
         return {
           success: true,
@@ -2919,14 +3025,14 @@ ipcMain.handle("check-dependencies", async () => {
       }
 
       try {
-        await execCommand(
-          `${quoteArg(bundledResult.pythonPath)} -c "import fastapi,uvicorn,numpy,PIL,torch,transformers"`,
-          {
-            cwd: bundledResult.path,
-            timeout: 30000,
-            env: getBundledRuntimeCommandEnv(),
-          }
-        );
+        await execFileCommand(bundledResult.pythonPath, [
+          "-c",
+          "import fastapi,uvicorn,numpy,PIL,torch,transformers",
+        ], {
+          cwd: bundledResult.path,
+          timeout: 30000,
+          env: getBundledRuntimeCommandEnv(),
+        });
         return { success: true };
       } catch (error) {
         return { success: false, error: error.message };
@@ -2944,13 +3050,13 @@ ipcMain.handle("check-dependencies", async () => {
     }
 
     try {
-      await execCommand(
-        `${quoteArg(venvInfo.pythonPath)} -c "import fastapi,uvicorn,numpy,PIL"`,
-        {
-          cwd: global.projectPath,
-          timeout: 30000,
-        }
-      );
+      await execFileCommand(venvInfo.pythonPath, [
+        "-c",
+        "import fastapi,uvicorn,numpy,PIL",
+      ], {
+        cwd: global.projectPath,
+        timeout: 30000,
+      });
       return { success: true };
     } catch (error) {
       return { success: false, error: error.message };
@@ -3010,12 +3116,13 @@ async function installPython3115(sendLog) {
 
     sendLog?.("Python installer downloaded. Starting installation...", "info");
     if (platform === "win32") {
-      await execCommand(
-        `${quoteArg(filePath)} /quiet InstallAllUsers=1 PrependPath=1 Include_test=0`,
+      await execFileCommand(
+        filePath,
+        ["/quiet", "InstallAllUsers=1", "PrependPath=1", "Include_test=0"],
         { timeout: 600000 }
       );
     } else if (platform === "darwin") {
-      await execCommand(`sudo installer -pkg ${quoteArg(filePath)} -target /`, {
+      await execFileCommand("sudo", ["installer", "-pkg", filePath, "-target", "/"], {
         timeout: 600000,
       });
     } else {
@@ -3117,7 +3224,12 @@ ipcMain.handle("create-venv", async (event, projectPath) => {
       };
     }
 
-    await createProjectVenvWithPython(workingPath, systemPython.command, sendLog);
+    await createProjectVenvWithPython(
+      workingPath,
+      systemPython.command,
+      systemPython.args || [],
+      sendLog
+    );
     return { success: true };
   } catch (error) {
     return {
@@ -3137,17 +3249,15 @@ ipcMain.handle("create-conda-venv", async (event) => {
     const systemEnv = { ...process.env };
     sendLog("Creating conda virtual environment...", "info");
 
-    const { stdout: envListStdout } = await execAsync("conda env list", {
+    const { stdout: envListStdout } = await execCondaCommand(["env", "list"], {
       env: systemEnv,
-      shell: true,
       timeout: 10000,
     });
 
     if (!envListStdout.includes("moonshine-image")) {
       sendLog("Creating moonshine-image conda environment...", "info");
-      await execAsync("conda create -n moonshine-image python=3.11.5 -y", {
+      await execCondaCommand(["create", "-n", "moonshine-image", "python=3.11.5", "-y"], {
         env: systemEnv,
-        shell: true,
         timeout: 300000,
       });
       sendLog("moonshine-image environment created successfully", "success");
@@ -3282,17 +3392,22 @@ ipcMain.handle("install-conda-dependencies", async (event) => {
     const systemEnv = getUtf8ProcessEnv();
     sendLog("Starting conda dependency installation...", "info");
 
-    // Activate the environment and install dependencies
-    const activateAndInstallCmd =
-      os.platform() === "win32"
-        ? wrapUtf8ShellCommand(`conda activate moonshine-image && pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`)
-        : `source activate moonshine-image && pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`;
-
-    const installProcess = spawn("cmd", ["/c", activateAndInstallCmd], {
+    const installProcess = spawnCondaCommand([
+      "run",
+      "-n",
+      "moonshine-image",
+      "python",
+      "-m",
+      "pip",
+      "install",
+      "-r",
+      "requirements.txt",
+      "-i",
+      "https://pypi.tuna.tsinghua.edu.cn/simple",
+    ], {
       cwd: global.projectPath,
       stdio: "pipe",
       env: systemEnv,
-      shell: true,
     });
 
     // Stream install output in real time
@@ -3694,26 +3809,58 @@ ipcMain.handle("show-item-in-folder", async (event, { filePath }) => {
   }
 });
 
+const buildFileStatsPayload = (filePath) => {
+  if (!fs.existsSync(filePath)) {
+    return { success: false, error: `File does not exist: ${filePath}`, path: filePath };
+  }
+
+  const normalizedPath = path.normalize(filePath);
+  const stats = fs.statSync(normalizedPath);
+  return {
+    success: true,
+    path: normalizedPath,
+    normalizedPath,
+    data: {
+      size: stats.size,
+      name: path.basename(normalizedPath),
+      lastModified: stats.mtime.getTime(),
+      type: getMimeType(normalizedPath),
+      path: normalizedPath,
+      normalizedPath,
+    },
+  };
+};
+
 // IPC handler - get file stats
 ipcMain.handle("get-file-stats", async (event, filePath) => {
   try {
-    if (!fs.existsSync(filePath)) {
-      return { success: false, error: `File does not exist: ${filePath}` };
-    }
-
-    const stats = fs.statSync(filePath);
-    return {
-      success: true,
-      data: {
-        size: stats.size,
-        name: path.basename(filePath),
-        lastModified: stats.mtime.getTime(),
-        type: getMimeType(filePath),
-      },
-    };
+    return buildFileStatsPayload(filePath);
   } catch (error) {
     console.error("Failed to get file stats:", error);
     return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("get-files-stats", async (event, filePaths = []) => {
+  try {
+    const paths = Array.isArray(filePaths) ? filePaths : [];
+    return {
+      success: true,
+      data: paths.map((filePath) => {
+        try {
+          return buildFileStatsPayload(filePath);
+        } catch (error) {
+          return {
+            success: false,
+            path: filePath,
+            error: error.message,
+          };
+        }
+      }),
+    };
+  } catch (error) {
+    console.error("Failed to get batch file stats:", error);
+    return { success: false, error: error.message, data: [] };
   }
 });
 

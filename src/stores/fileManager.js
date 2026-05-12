@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { v4 as uuidv4 } from "uuid";
 
 import { useConfigStore } from "./config";
+import { buildImageOutputRequestOptions } from "src/utils/imageOutputOptions";
 
 const DEFAULT_PROCESSING_CONFIG = Object.freeze({
   imageType: "path",
@@ -27,6 +28,67 @@ const resolveMimeTypeFromName = (fileName = "") => {
   if (normalized.endsWith(".gif")) return "image/gif";
   if (normalized.endsWith(".bmp")) return "image/bmp";
   return "image/jpeg";
+};
+
+const normalizeImageFormat = (value = "") => {
+  const normalized = String(value || "").trim().toLowerCase().replace(/^\./, "");
+  if (normalized === "jpeg") return "jpg";
+  return ["png", "jpg", "webp", "gif", "bmp"].includes(normalized) ? normalized : "";
+};
+
+const getExtensionFromName = (fileName = "") => {
+  const match = String(fileName || "").toLowerCase().match(/\.([a-z0-9]+)$/);
+  const format = normalizeImageFormat(match?.[1] || "");
+  return format ? `.${format}` : "";
+};
+
+const getImageFormatFromMimeType = (mimeType = "") => {
+  const normalized = String(mimeType || "").toLowerCase();
+  if (normalized === "image/jpeg") return "jpg";
+  if (normalized === "image/png") return "png";
+  if (normalized === "image/webp") return "webp";
+  if (normalized === "image/gif") return "gif";
+  if (normalized === "image/bmp") return "bmp";
+  return "";
+};
+
+const getExtensionFromMimeType = (mimeType = "") => {
+  const format = getImageFormatFromMimeType(mimeType);
+  return format ? `.${format}` : "";
+};
+
+const getImageMetadataFromFile = (file = {}) => {
+  const mimeType = file?.type || resolveMimeTypeFromName(file?.name);
+  const extension = getExtensionFromName(file?.name) || getExtensionFromMimeType(mimeType);
+  const format = normalizeImageFormat(extension) || getImageFormatFromMimeType(mimeType);
+  return {
+    format,
+    mimeType,
+    extension: extension || (format ? `.${format}` : ""),
+  };
+};
+
+const normalizeRuntimeFileInfo = (file = {}) => ({
+  name: file?.name || "",
+  type: file?.type || resolveMimeTypeFromName(file?.name),
+  size: Number(file?.size || 0),
+  lastModified: Number(file?.lastModified || Date.now()),
+  path: file?.path || "",
+  normalizedPath: file?.normalizedPath || file?.path || "",
+});
+
+const getImageMetadataFromResult = (resultData, metadata = {}) => {
+  const dataUrlMime = typeof resultData === "string"
+    ? resultData.match(/^data:([^;]+);base64,/)?.[1] || ""
+    : "";
+  const mimeType = metadata.mimeType || metadata.mime_type || dataUrlMime || "";
+  const extension = metadata.extension || getExtensionFromMimeType(mimeType);
+  const format = normalizeImageFormat(metadata.format || extension) || getImageFormatFromMimeType(mimeType);
+  return {
+    format,
+    mimeType: mimeType || (format === "jpg" ? "image/jpeg" : format ? `image/${format}` : ""),
+    extension: extension || (format ? `.${format}` : ".png"),
+  };
 };
 
 const definePathProperty = (file, filePath) => {
@@ -60,6 +122,45 @@ const createRendererFile = (data = {}, fallback = {}) => {
   });
 
   return definePathProperty(file, filePath);
+};
+
+const normalizePathKey = (filePath = "") =>
+  String(filePath || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+
+const createPathFileData = (descriptor = {}) => {
+  const fileId = uuidv4();
+  const filePath = descriptor.path || descriptor.normalizedPath || "";
+  const normalizedFile = {
+    name: descriptor.name || filePath.split(/[\\/]/).pop() || "image",
+    type: descriptor.type || resolveMimeTypeFromName(descriptor.name || filePath),
+    size: Number(descriptor.size || 0),
+    lastModified: Number(descriptor.lastModified || Date.now()),
+    path: filePath,
+    normalizedPath: descriptor.normalizedPath || filePath,
+  };
+  const metadata = getImageMetadataFromFile(normalizedFile);
+  const imageData = {
+    type: "path",
+    data: filePath,
+    displayUrl: getRendererDisplayUrl(filePath),
+    ...metadata,
+  };
+
+  return {
+    id: fileId,
+    name: normalizedFile.name,
+    type: normalizedFile.type,
+    size: normalizedFile.size,
+    originalFile: normalizedFile,
+    image: imageData,
+    mask: null,
+    history: [imageData],
+    createdAt: new Date().toISOString(),
+  };
 };
 
 const buildMissingFileMessage = (fileName = "当前文件") =>
@@ -162,30 +263,30 @@ export const useFileManagerStore = defineStore("fileManager", {
 
       let imageData;
       if (preferredMethod === "path" && window.electron && file?.path) {
+        const metadata = getImageMetadataFromFile(file);
         imageData = {
           type: "path",
           data: file.path,
           displayUrl: getRendererDisplayUrl(file.path),
+          ...metadata,
         };
         progressCallback?.(1);
       } else {
         const base64 = await this.fileToBase64(file, progressCallback);
+        const metadata = getImageMetadataFromFile(file);
         imageData = {
           type: "base64",
           data: base64.split(",")[1],
           displayUrl: base64,
+          ...metadata,
         };
       }
 
-      const normalizedFile = {
-        ...file,
-        type: file?.type || resolveMimeTypeFromName(file?.name),
-        size: Number(file?.size || 0),
-      };
+      const normalizedFile = normalizeRuntimeFileInfo(file);
 
       const fileData = {
         id: fileId,
-        name: normalizedFile.name,
+        name: normalizedFile.name || "image",
         type: normalizedFile.type,
         size: normalizedFile.size,
         originalFile: normalizedFile,
@@ -201,6 +302,36 @@ export const useFileManagerStore = defineStore("fileManager", {
       }
 
       return fileData;
+    },
+
+    addPathFiles(descriptors = []) {
+      const existingPathKeys = new Set(
+        this.files
+          .map((file) => normalizePathKey(file.originalFile?.path || file.image?.data || ""))
+          .filter(Boolean)
+      );
+      const createdFiles = [];
+
+      for (const descriptor of descriptors) {
+        const filePath = descriptor?.path || descriptor?.normalizedPath || "";
+        const pathKey = normalizePathKey(filePath);
+        if (!pathKey || existingPathKeys.has(pathKey)) {
+          continue;
+        }
+        existingPathKeys.add(pathKey);
+        createdFiles.push(createPathFileData(descriptor));
+      }
+
+      if (createdFiles.length === 0) {
+        return [];
+      }
+
+      const hadFiles = this.files.length > 0;
+      this.files.push(...createdFiles);
+      if (!hadFiles) {
+        this.currentFileId = createdFiles[0].id;
+      }
+      return createdFiles;
     },
 
     setCurrentFile(fileId) {
@@ -235,11 +366,12 @@ export const useFileManagerStore = defineStore("fileManager", {
       };
     },
 
-    async addProcessingResult(fileId, resultData) {
+    async addProcessingResult(fileId, resultData, metadata = {}) {
       const file = this.files.find((item) => item.id === fileId);
       if (!file) return;
 
       let historyItem;
+      const resultMetadata = getImageMetadataFromResult(resultData, metadata);
       if (
         this.processingConfig.responseType === "path" &&
         typeof resultData === "string" &&
@@ -249,16 +381,18 @@ export const useFileManagerStore = defineStore("fileManager", {
           type: "path",
           data: resultData,
           displayUrl: getRendererDisplayUrl(resultData),
+          ...resultMetadata,
           timestamp: new Date().toISOString(),
         };
       } else {
         const dataUrl = resultData.startsWith("data:")
           ? resultData
-          : `data:image/png;base64,${resultData}`;
+          : `${resultMetadata.mimeType ? `data:${resultMetadata.mimeType}` : "data:image/png"};base64,${resultData}`;
         historyItem = {
           type: "base64",
           data: dataUrl.split(",")[1],
           displayUrl: dataUrl,
+          ...getImageMetadataFromResult(dataUrl, resultMetadata),
           timestamp: new Date().toISOString(),
         };
       }
@@ -608,6 +742,7 @@ export const useFileManagerStore = defineStore("fileManager", {
         mask_type: "base64",
         response_type: responseType,
         temp_path: responseType === "path" ? tempPath : "",
+        ...buildImageOutputRequestOptions(configStore.config),
       };
     },
 
@@ -665,6 +800,7 @@ export const useFileManagerStore = defineStore("fileManager", {
         image_type: imageType,
         response_type: responseType,
         temp_path: responseType === "path" ? tempPath : "",
+        ...buildImageOutputRequestOptions(configStore.config),
       };
     },
 

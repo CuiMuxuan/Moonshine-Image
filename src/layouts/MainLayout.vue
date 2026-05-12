@@ -14,6 +14,7 @@
             dense
             icon="terminal"
             class="q-mr-sm"
+            data-testid="open-backend-manager-button"
             @click="showBackendManager = true"
           >
             <q-tooltip>后端管理</q-tooltip>
@@ -27,6 +28,7 @@
             dense
             icon="settings"
             class="q-mr-sm"
+            data-testid="open-global-settings-button"
             @click="showSettings = true"
           >
             <q-tooltip>全局设置</q-tooltip>
@@ -133,6 +135,9 @@ const settingsTarget = ref({
 });
 const backendRunning = ref(false);
 const showStartupOverlay = ref(false);
+const runtimeE2EFlag =
+  typeof window !== "undefined" && window.__MOONSHINE_E2E__ === true;
+const isE2EMode = import.meta.env.VITE_MOONSHINE_E2E === "1" || runtimeE2EFlag;
 const pendingBackendPathDialog = ref(null);
 
 const loadingState = ref({
@@ -615,7 +620,8 @@ const toggleThemeMode = async () => {
 
 onMounted(async () => {
   await configStore.loadConfig();
-  showStartupOverlay.value = configStore.config.ui?.showStartupAnimation !== false;
+  showStartupOverlay.value =
+    !isE2EMode && configStore.config.ui?.showStartupAnimation !== false;
   applyUiPreferences();
   api.updateConfig(configStore.config);
   await appStateStore.loadState();

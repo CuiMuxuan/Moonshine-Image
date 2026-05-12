@@ -13,7 +13,14 @@ import cv2
 import numpy as np
 import torch
 from loguru import logger
+from PIL import Image
 
+from moonshine_server.helper import concat_alpha_channel
+from moonshine_server.image_output import (
+    encode_pil_image,
+    image_format_from_path,
+    resolve_image_output_spec,
+)
 
 VALID_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 DEFAULT_TILE_SIZE = 384
@@ -216,10 +223,11 @@ def gather_images(source: Path, output_dir: Path) -> list[Path]:
     return sorted(images)
 
 
-def output_path_for(source: Path, image_path: Path, output_dir: Path) -> Path:
+def output_path_for(source: Path, image_path: Path, output_dir: Path, extension: str = ".png") -> Path:
     source = Path(source).resolve()
     image_path = Path(image_path).resolve()
     output_dir = Path(output_dir).resolve()
+    output_extension = extension if str(extension or "").startswith(".") else f".{extension}"
     if source.is_dir():
         relative = image_path.relative_to(source)
         parent = output_dir / relative.parent
@@ -227,7 +235,29 @@ def output_path_for(source: Path, image_path: Path, output_dir: Path) -> Path:
     else:
         parent = output_dir
         stem = image_path.stem
-    return parent / f"{stem}_clean.png"
+    return parent / f"{stem}_clean{output_extension}"
+
+
+def read_image_alpha(path: Path):
+    with Image.open(path) as image:
+        source_format = image_format_from_path(path) or str(image.format or "")
+        infos = dict(image.info)
+        if image.mode == "RGBA":
+            return np.array(image.getchannel("A")), source_format, infos
+        return None, source_format, infos
+
+
+def write_output_image(path: Path, image_bgr: np.ndarray, alpha_channel, output_spec: dict, infos: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image_rgb = cv2.cvtColor(image_bgr.astype(np.uint8), cv2.COLOR_BGR2RGB)
+    serializable_result = concat_alpha_channel(image_rgb, alpha_channel)
+    encoded = encode_pil_image(
+        Image.fromarray(serializable_result),
+        output_spec["format"],
+        output_spec["quality"],
+        infos,
+    )
+    path.write_bytes(encoded)
 
 
 class SlbrRunner:
@@ -366,6 +396,8 @@ class SlbrRunner:
         output_folder: str | Path,
         tile_size: int = DEFAULT_TILE_SIZE,
         tile_batch: int = DEFAULT_TILE_BATCH,
+        output_format: str = "auto",
+        output_quality: int = 95,
     ) -> list[dict]:
         image_folder = Path(image_folder)
         output_folder = Path(output_folder)
@@ -374,13 +406,25 @@ class SlbrRunner:
         for index, image_path in enumerate(images):
             try:
                 image_bgr = read_image_bgr(image_path)
+                alpha_channel, source_format, infos = read_image_alpha(image_path)
                 clean_bgr, _ = self.infer_bgr(
                     image_bgr,
                     tile_size=tile_size,
                     tile_batch=tile_batch,
                 )
-                clean_path = output_path_for(image_folder, image_path, output_folder)
-                write_image(clean_path, clean_bgr)
+                output_spec = resolve_image_output_spec(
+                    requested_format=output_format,
+                    source_format=source_format,
+                    has_alpha=alpha_channel is not None,
+                    quality=output_quality,
+                )
+                clean_path = output_path_for(
+                    image_folder,
+                    image_path,
+                    output_folder,
+                    output_spec["extension"],
+                )
+                write_output_image(clean_path, clean_bgr, alpha_channel, output_spec, infos)
                 results.append(
                     {
                         "id": str(index),
@@ -388,6 +432,9 @@ class SlbrRunner:
                         "image_path": str(image_path),
                         "output_path": str(clean_path),
                         "success": True,
+                        "format": output_spec["format"],
+                        "mime_type": output_spec["mime_type"],
+                        "extension": output_spec["extension"],
                     }
                 )
             except Exception as error:

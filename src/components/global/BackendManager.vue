@@ -410,11 +410,13 @@
                   <q-tooltip>清空终端</q-tooltip>
                 </q-btn>
               </div>
-              <div ref="terminalRef" class="terminal-output">
+              <div ref="terminalRef" class="terminal-output" data-testid="backend-terminal-output">
                 <div
                   v-for="(line, index) in terminalOutput"
                   :key="index"
                   :class="['terminal-line', getTerminalLineClass(line)]"
+                  data-testid="backend-terminal-line"
+                  :data-refresh-id="line.refreshId"
                 >
                   <span class="text-grey-5">[{{ line.timestamp }}]</span>
                   {{ line.message }}
@@ -564,7 +566,9 @@ const terminalOutput = ref([]);
 const terminalInput = ref("");
 const terminalRef = ref(null);
 const MAX_TERMINAL_LINES = 2000;
-const TERMINAL_PROGRESS_SYNC_MS = 500;
+const TERMINAL_PROGRESS_SYNC_MIN_MS = 500;
+const TERMINAL_PROGRESS_SYNC_MAX_MS = 1000;
+const TERMINAL_PROGRESS_HEARTBEAT_MS = 1000;
 const TERMINAL_TRUNCATION_MESSAGE = `较早的终端输出已折叠，仅保留最近 ${MAX_TERMINAL_LINES} 行。`;
 const ansiPattern =
   // eslint-disable-next-line no-control-regex
@@ -573,6 +577,9 @@ let activeTerminalLine = null;
 let pendingTerminalLogs = [];
 let terminalFlushTimerId = 0;
 let lastTerminalFlushAt = 0;
+let terminalLineRefreshId = 0;
+let terminalProgressHeartbeatTimerId = 0;
+let activeVideoBatchProgressContext = null;
 
 const sanitizeTerminalText = (message) =>
   String(message ?? "")
@@ -588,6 +595,260 @@ const getProgressLineKey = (message = "") => {
 
   const prefix = text.split("|", 1)[0].replace(/\s*\d+%\s*$/, "").trim();
   return prefix || "terminal-progress";
+};
+
+const formatBackendModelLabel = (modelId = "") => {
+  const normalized = String(modelId || "").trim().toLowerCase();
+  if (normalized === "batch processing") return "批量图片";
+  if (normalized === "slbr" || normalized === "slbr processing") return "SLBR";
+  if (normalized === "lama" || normalized === "lama processing") return "Lama";
+  return normalized ? normalized.toUpperCase() : "模型";
+};
+
+const parseDurationTokenToSeconds = (value = "") => {
+  const parts = String(value || "")
+    .trim()
+    .split(":")
+    .map((part) => Number(part));
+  if (parts.some((part) => !Number.isFinite(part))) {
+    return null;
+  }
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+  if (parts.length === 2) {
+    return parts[0] * 60 + parts[1];
+  }
+  return parts[0] ?? null;
+};
+
+const formatDurationForTerminal = (seconds = 0) => {
+  const safeSeconds = Math.max(0, Math.floor(Number(seconds || 0)));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const restSeconds = safeSeconds % 60;
+  const pad = (value) => String(value).padStart(2, "0");
+  if (hours > 0) {
+    return `${hours}:${pad(minutes)}:${pad(restSeconds)}`;
+  }
+  return `${pad(minutes)}:${pad(restSeconds)}`;
+};
+
+const parseTqdmProgressLine = (message = "") => {
+  const text = String(message || "").trim();
+  const match = text.match(
+    /^(?:([^:\r\n]+):\s*)?(\d+)%\|.*\|\s*(\d+)\/(\d+)\s*\[([^<,\]]+)(?:<([^,\]]+))?(?:,\s*([^\]]+))?\]/
+  );
+  if (!match) {
+    return null;
+  }
+
+  const [, label, percent, current, total, elapsed, remaining, rate] = match;
+  return {
+    label: String(label || "").trim(),
+    percent: Number(percent),
+    current: Number(current),
+    total: Number(total),
+    baseElapsedSeconds: parseDurationTokenToSeconds(elapsed),
+    baseRemainingSeconds: parseDurationTokenToSeconds(remaining),
+    rateText: String(rate || "").trim(),
+    receivedAtMs: Date.now(),
+  };
+};
+
+const isCompleteProgressInfo = (progressInfo = {}) =>
+  Number(progressInfo.percent) >= 100 ||
+  (Number.isFinite(progressInfo.current) &&
+    Number.isFinite(progressInfo.total) &&
+    Number(progressInfo.total) > 0 &&
+    Number(progressInfo.current) >= Number(progressInfo.total));
+
+const buildLiveProgressMessage = (progressInfo = {}, now = Date.now()) => {
+  const elapsedDeltaSeconds = Math.max(
+    0,
+    (Number(now || Date.now()) - Number(progressInfo.receivedAtMs || now)) / 1000
+  );
+  const elapsedSeconds = Number.isFinite(progressInfo.baseElapsedSeconds)
+    ? progressInfo.baseElapsedSeconds + elapsedDeltaSeconds
+    : null;
+  const remainingSeconds = Number.isFinite(progressInfo.baseRemainingSeconds)
+    ? Math.max(0, progressInfo.baseRemainingSeconds - elapsedDeltaSeconds)
+    : null;
+  const label = formatBackendModelLabel(progressInfo.label);
+  const progressText =
+    Number.isFinite(progressInfo.current) && Number.isFinite(progressInfo.total)
+      ? `${progressInfo.current}/${progressInfo.total}`
+      : "";
+  const percentText = Number.isFinite(progressInfo.percent) ? `${progressInfo.percent}%` : "";
+  const timing = [];
+  if (elapsedSeconds !== null) {
+    timing.push(`已用 ${formatDurationForTerminal(elapsedSeconds)}`);
+  }
+  if (remainingSeconds !== null) {
+    timing.push(`预计剩余 ${formatDurationForTerminal(remainingSeconds)}`);
+  }
+  const rateText = progressInfo.rateText
+    ? `，平均 ${progressInfo.rateText.replace("/it", "/项")}`
+    : "";
+  const progressSuffix = [progressText, percentText].filter(Boolean).join("，");
+
+  const actionText = progressInfo.completed || isCompleteProgressInfo(progressInfo)
+    ? "处理完成"
+    : "正在处理";
+
+  return `${label} ${actionText}${progressSuffix ? `：${progressSuffix}` : ""}${
+    timing.length ? `，${timing.join("，")}` : ""
+  }${rateText}。`;
+};
+
+const getLiveProgressElapsedSeconds = (progressInfo = {}, now = Date.now()) =>
+  Number.isFinite(progressInfo.baseElapsedSeconds)
+    ? progressInfo.baseElapsedSeconds +
+      Math.max(0, (Number(now) - Number(progressInfo.receivedAtMs || now)) / 1000)
+    : null;
+
+const getLiveProgressRemainingSeconds = (progressInfo = {}, now = Date.now()) =>
+  Number.isFinite(progressInfo.baseRemainingSeconds)
+    ? Math.max(
+        0,
+        progressInfo.baseRemainingSeconds -
+          Math.max(0, (Number(now) - Number(progressInfo.receivedAtMs || now)) / 1000)
+      )
+    : null;
+
+const isSameProgressStep = (left = {}, right = {}) =>
+  left &&
+  right &&
+  left.label === right.label &&
+  left.percent === right.percent &&
+  left.current === right.current &&
+  left.total === right.total;
+
+const mergeLiveProgressInfo = (currentInfo, incomingInfo, now = Date.now()) => {
+  if (!currentInfo || !incomingInfo || !isSameProgressStep(currentInfo, incomingInfo)) {
+    return incomingInfo;
+  }
+
+  const currentElapsed = getLiveProgressElapsedSeconds(currentInfo, now);
+  const incomingElapsed = Number.isFinite(incomingInfo.baseElapsedSeconds)
+    ? incomingInfo.baseElapsedSeconds
+    : null;
+
+  if (currentElapsed === null || incomingElapsed === null || currentElapsed <= incomingElapsed) {
+    return incomingInfo;
+  }
+
+  const currentRemaining = getLiveProgressRemainingSeconds(currentInfo, now);
+  return {
+    ...incomingInfo,
+    baseElapsedSeconds: currentElapsed,
+    baseRemainingSeconds:
+      currentRemaining === null ? incomingInfo.baseRemainingSeconds : currentRemaining,
+    receivedAtMs: now,
+  };
+};
+
+const stripBackendLogEnvelope = (message = "") =>
+  String(message || "")
+    .trim()
+    .replace(/^\[\d{2}:\d{2}:\d{2}\]\s*/, "")
+    .replace(
+      /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+\|\s+\w+\s+\|\s+[\s\S]*?\s+-\s+/,
+      ""
+    );
+
+const normalizeBackendLogPayload = (message = "") =>
+  stripBackendLogEnvelope(message).replace(/\s*\r?\n\s*/g, " ").trim();
+
+const parseVideoBatchStartLog = (message = "") => {
+  const match = normalizeBackendLogPayload(message).match(
+    /^\[(batch_[^\]]+)\]\s+start\s+video\s+batch:\s*(\d+)\s*frame\(s\),\s*model=([^,\s]+),\s*batch=(\d+)\/(\d+)/i
+  );
+  if (!match) {
+    return null;
+  }
+  return {
+    kind: "video-start",
+    batchId: match[1],
+    totalFrames: Number(match[2]),
+    modelId: String(match[3] || "").trim(),
+    batchNumber: Number(match[4]),
+    totalBatches: Number(match[5]),
+  };
+};
+
+const parseVideoBatchFinishLog = (message = "") => {
+  const match = normalizeBackendLogPayload(message).match(
+    /^\[(batch_[^\]]+)\]\s+finished\s+video\s+batch:\s*model=([^,\s]+),\s*batch=(\d+)\/(\d+),\s*total_frames=(\d+),\s*success=(\d+),\s*failed=(\d+),\s*elapsed=([\d.]+)s/i
+  );
+  if (!match) {
+    return null;
+  }
+  return {
+    kind: "video-finish",
+    batchId: match[1],
+    modelId: String(match[2] || "").trim(),
+    batchNumber: Number(match[3]),
+    totalBatches: Number(match[4]),
+    totalFrames: Number(match[5]),
+    successCount: Number(match[6]),
+    failedCount: Number(match[7]),
+    elapsedSeconds: Number(match[8]),
+  };
+};
+
+const parseImageBatchFinishLog = (message = "") => {
+  const match = normalizeBackendLogPayload(message).match(
+    /^Batch processing completed in\s*([\d.]+)s\s*for\s*(\d+)\s*images/i
+  );
+  if (!match) {
+    return null;
+  }
+  return {
+    kind: "image-finish",
+    modelId: "batch processing",
+    totalFrames: Number(match[2]),
+    successCount: Number(match[2]),
+    failedCount: 0,
+    elapsedSeconds: Number(match[1]),
+  };
+};
+
+const getBackendTerminalLogInfo = (message = "") =>
+  parseVideoBatchStartLog(message) ||
+  parseVideoBatchFinishLog(message) ||
+  parseImageBatchFinishLog(message);
+
+const normalizeBackendTerminalText = (message = "") => {
+  const payload = normalizeBackendLogPayload(message);
+  const progressInfo = parseTqdmProgressLine(payload);
+  if (progressInfo) {
+    return buildLiveProgressMessage(progressInfo);
+  }
+
+  const startLog = parseVideoBatchStartLog(message);
+  if (startLog) {
+    return `开始处理视频批次 ${startLog.batchNumber}/${startLog.totalBatches}：共 ${startLog.totalFrames} 帧，模型 ${formatBackendModelLabel(startLog.modelId)}。`;
+  }
+
+  const finishLog = parseVideoBatchFinishLog(message);
+  if (finishLog) {
+    return `视频批次 ${finishLog.batchNumber}/${finishLog.totalBatches} 处理完成：共 ${finishLog.totalFrames} 帧，成功 ${finishLog.successCount} 帧，失败 ${finishLog.failedCount} 帧，用时 ${finishLog.elapsedSeconds} 秒。`;
+  }
+
+  const imageFinishLog = parseImageBatchFinishLog(message);
+  if (imageFinishLog) {
+    return `批量图片处理完成：共 ${imageFinishLog.totalFrames} 张，用时 ${imageFinishLog.elapsedSeconds} 秒。`;
+  }
+
+  const metaMatch = payload.match(
+    /^\u672c\u6b21\u89c6\u9891\u5904\u7406\u603b\u5171\s*(\d+)\s*\u6279\u6b21\uff0c?\u5f53\u524d\u7b2c\s*(\d+)\s*\u6279/u
+  );
+  if (metaMatch) {
+    return `视频处理进度：当前第 ${metaMatch[2]}/${metaMatch[1]} 批。`;
+  }
+
+  return payload.replace(/,\s*outputs=\[[\s\S]*\]\s*$/u, "。");
 };
 
 const isProgressMetaLine = (message = "") => {
@@ -609,7 +870,12 @@ const createTerminalLine = (message, type = "info", options = {}) => ({
   system: Boolean(options.system),
   progressKey: options.progressKey || "",
   progressActive: Boolean(options.progressActive),
+  progressInfo: options.progressInfo || null,
+  refreshId: ++terminalLineRefreshId,
 });
+
+const getProgressLineKeyFromInfo = (progressInfo = {}) =>
+  progressInfo ? `progress:${progressInfo.label || "backend"}` : "";
 
 const findActiveProgressLine = (progressKey) => {
   if (!progressKey) {
@@ -649,6 +915,96 @@ const trimTerminalOutput = () => {
   }
 };
 
+const getActiveProgressLines = () =>
+  terminalOutput.value.filter((line) => line?.progressActive && line.progressInfo);
+
+const clearTerminalProgressHeartbeat = () => {
+  if (terminalProgressHeartbeatTimerId) {
+    window.clearInterval(terminalProgressHeartbeatTimerId);
+    terminalProgressHeartbeatTimerId = 0;
+  }
+};
+
+const refreshLiveProgressLines = () => {
+  const lines = getActiveProgressLines();
+  if (lines.length === 0) {
+    clearTerminalProgressHeartbeat();
+    return;
+  }
+
+  const now = Date.now();
+  const timestamp = new Date().toLocaleTimeString();
+  lines.forEach((line) => {
+    line.message = buildLiveProgressMessage(line.progressInfo, now);
+    line.timestamp = timestamp;
+    line.refreshId = ++terminalLineRefreshId;
+  });
+};
+
+const ensureTerminalProgressHeartbeat = () => {
+  if (terminalProgressHeartbeatTimerId || getActiveProgressLines().length === 0) {
+    return;
+  }
+  terminalProgressHeartbeatTimerId = window.setInterval(
+    refreshLiveProgressLines,
+    TERMINAL_PROGRESS_HEARTBEAT_MS
+  );
+};
+
+const syncTerminalProgressHeartbeat = () => {
+  if (getActiveProgressLines().length > 0) {
+    ensureTerminalProgressHeartbeat();
+  } else {
+    clearTerminalProgressHeartbeat();
+  }
+};
+
+const deactivateTerminalProgressLines = () => {
+  getActiveProgressLines().forEach((line) => {
+    line.progressActive = false;
+    line.progressInfo = null;
+    line.refreshId = ++terminalLineRefreshId;
+  });
+};
+
+const completeActiveProgressLine = (completionInfo = {}) => {
+  const activeLines = getActiveProgressLines();
+  if (activeLines.length === 0) {
+    return false;
+  }
+
+  const line = activeLines[activeLines.length - 1];
+  const previousInfo = line.progressInfo || {};
+  const now = Date.now();
+  const total = Number(completionInfo.totalFrames || previousInfo.total || 0);
+  const elapsedSeconds =
+    Number.isFinite(completionInfo.elapsedSeconds) && Number(completionInfo.elapsedSeconds) > 0
+      ? Number(completionInfo.elapsedSeconds)
+      : getLiveProgressElapsedSeconds(previousInfo, now);
+  const completedInfo = {
+    ...previousInfo,
+    label: previousInfo.label || completionInfo.modelId || "backend",
+    percent: 100,
+    current: total || previousInfo.current || previousInfo.total || 0,
+    total: total || previousInfo.total || previousInfo.current || 0,
+    baseElapsedSeconds: Number.isFinite(elapsedSeconds) ? elapsedSeconds : previousInfo.baseElapsedSeconds,
+    baseRemainingSeconds: 0,
+    rateText: previousInfo.rateText || "",
+    receivedAtMs: now,
+    completed: true,
+  };
+
+  line.message = buildLiveProgressMessage(completedInfo, now);
+  line.timestamp = new Date().toLocaleTimeString();
+  line.type = "progress-complete";
+  line.progressActive = false;
+  line.progressInfo = null;
+  line.progressKey = line.progressKey || getProgressLineKeyFromInfo(completedInfo);
+  line.refreshId = ++terminalLineRefreshId;
+  syncTerminalProgressHeartbeat();
+  return true;
+};
+
 const scrollTerminalToBottom = () => {
   nextTick(() => {
     if (terminalRef.value) {
@@ -667,6 +1023,8 @@ const getTerminalLineClass = (line = {}) => {
       return "terminal-line--success";
     case "progress":
       return "terminal-line--progress";
+    case "progress-complete":
+      return "terminal-line--progress-complete";
     default:
       return "terminal-line--info";
   }
@@ -675,7 +1033,10 @@ const getTerminalLineClass = (line = {}) => {
 const clearTerminal = () => {
   terminalOutput.value = [];
   activeTerminalLine = null;
+  activeVideoBatchProgressContext = null;
   pendingTerminalLogs = [];
+  lastTerminalFlushAt = Date.now();
+  clearTerminalProgressHeartbeat();
   if (terminalFlushTimerId) {
     window.clearTimeout(terminalFlushTimerId);
     terminalFlushTimerId = 0;
@@ -695,11 +1056,45 @@ const flushPendingTerminalLogs = () => {
   logs.forEach((item) => addTerminalLog(item.message, item.type));
 };
 
-const queueTerminalLog = (message, type = "info") => {
-  pendingTerminalLogs.push({ message, type });
+const getQueuedTerminalLogType = (item = {}) => {
+  const rawText = sanitizeTerminalText(item.message);
+  let progressInfo = parseTqdmProgressLine(stripBackendLogEnvelope(rawText));
+  const message = normalizeBackendTerminalText(rawText);
+  return progressInfo || isProgressLine(message) || item.type === "progress"
+    ? "progress"
+    : item.type || "info";
+};
 
-  const elapsed = Date.now() - lastTerminalFlushAt;
-  const delay = Math.max(0, TERMINAL_PROGRESS_SYNC_MS - elapsed);
+const scheduleTerminalLogFlush = () => {
+  if (pendingTerminalLogs.length === 0) {
+    return;
+  }
+
+  const now = Date.now();
+  const hasPendingProgress = pendingTerminalLogs.some(
+    (item) => getQueuedTerminalLogType(item) === "progress"
+  );
+
+  if (!hasPendingProgress) {
+    flushPendingTerminalLogs();
+    return;
+  }
+
+  const elapsedSinceFlush = Math.max(0, now - lastTerminalFlushAt);
+  const oldestQueuedAt = pendingTerminalLogs.reduce(
+    (oldest, item) => Math.min(oldest, Number(item.queuedAt || now)),
+    now
+  );
+  const oldestAge = Math.max(0, now - oldestQueuedAt);
+
+  const minDelay = Math.max(
+    0,
+    TERMINAL_PROGRESS_SYNC_MIN_MS - elapsedSinceFlush,
+    TERMINAL_PROGRESS_SYNC_MIN_MS - oldestAge
+  );
+  const maxDelay = Math.max(0, TERMINAL_PROGRESS_SYNC_MAX_MS - oldestAge);
+  const delay = Math.min(minDelay, maxDelay);
+
   if (delay === 0) {
     if (terminalFlushTimerId) {
       window.clearTimeout(terminalFlushTimerId);
@@ -712,6 +1107,11 @@ const queueTerminalLog = (message, type = "info") => {
   if (!terminalFlushTimerId) {
     terminalFlushTimerId = window.setTimeout(flushPendingTerminalLogs, delay);
   }
+};
+
+const queueTerminalLog = (message, type = "info") => {
+  pendingTerminalLogs.push({ message, type, queuedAt: Date.now() });
+  scheduleTerminalLogFlush();
 };
 // IPC 监听器处理后端输出
 const handleBackendOutput = (event, data) => {
@@ -791,27 +1191,54 @@ watch(showDialog, (newVal) => {
 
 // 添加终端日志
 const addTerminalLog = (message, type = "info") => {
-  const cleanText = sanitizeTerminalText(message);
+  const rawText = sanitizeTerminalText(message);
+  const cleanText = normalizeBackendTerminalText(rawText);
   if (!cleanText) {
     return;
   }
 
-  const lineType = isProgressLine(cleanText) ? "progress" : type;
+  const logInfo = getBackendTerminalLogInfo(rawText);
+  const isCompletionLog = logInfo?.kind === "video-finish" || logInfo?.kind === "image-finish";
+  if (logInfo?.kind === "video-start") {
+    activeVideoBatchProgressContext = logInfo;
+  }
+
+  let progressInfo = parseTqdmProgressLine(stripBackendLogEnvelope(rawText));
+  if (progressInfo && !progressInfo.label && activeVideoBatchProgressContext?.modelId) {
+    progressInfo = {
+      ...progressInfo,
+      label: activeVideoBatchProgressContext.modelId,
+    };
+  }
+  const lineType =
+    progressInfo || isProgressLine(cleanText) || type === "progress"
+      ? "progress"
+      : isCompletionLog
+        ? "progress-complete"
+        : type;
   const timestamp = new Date().toLocaleTimeString();
   const hasCursorControl = cleanText.includes("\r") || cleanText.includes("\n");
-  if (!hasCursorControl) {
-    terminalOutput.value.push(createTerminalLine(cleanText, lineType, { timestamp }));
-    if (!activeTerminalLine?.progressKey) {
-      activeTerminalLine = null;
-    }
-    trimTerminalOutput();
-    scrollTerminalToBottom();
-    return;
-  }
+  const getTerminalProgressKey = (text) =>
+    getProgressLineKey(text) ||
+    getProgressLineKeyFromInfo(progressInfo);
 
   let buffer = "";
   let shouldOverwriteCurrentLine = false;
   const assignLinePayload = (line, text, progressKey) => {
+    const isSameProgressRefresh =
+      line.message === text &&
+      line.type === lineType &&
+      line.progressKey === progressKey &&
+      line.progressActive === Boolean(progressKey) &&
+      lineType === "progress";
+    if (isSameProgressRefresh) {
+      line.timestamp = timestamp;
+      line.progressInfo = progressInfo;
+      line.refreshId = ++terminalLineRefreshId;
+      syncTerminalProgressHeartbeat();
+      return true;
+    }
+
     if (
       line.message === text &&
       line.type === lineType &&
@@ -826,14 +1253,22 @@ const addTerminalLog = (message, type = "info") => {
     line.timestamp = timestamp;
     line.progressKey = progressKey;
     line.progressActive = Boolean(progressKey);
+    line.progressInfo = progressInfo;
+    line.refreshId = ++terminalLineRefreshId;
+    syncTerminalProgressHeartbeat();
     return true;
   };
 
   const writeActiveLine = (text) => {
-    const progressKey = getProgressLineKey(text);
+    const progressKey = getTerminalProgressKey(text);
     const existingProgressLine = findActiveProgressLine(progressKey);
     if (existingProgressLine) {
-      assignLinePayload(existingProgressLine, text, progressKey);
+      progressInfo = mergeLiveProgressInfo(existingProgressLine.progressInfo, progressInfo);
+      assignLinePayload(
+        existingProgressLine,
+        progressInfo ? buildLiveProgressMessage(progressInfo) : text,
+        progressKey
+      );
       activeTerminalLine = existingProgressLine;
       return;
     }
@@ -843,7 +1278,12 @@ const addTerminalLog = (message, type = "info") => {
       terminalOutput.value.includes(activeTerminalLine) &&
       !activeTerminalLine.system
     ) {
-      assignLinePayload(activeTerminalLine, text, progressKey);
+      progressInfo = mergeLiveProgressInfo(activeTerminalLine.progressInfo, progressInfo);
+      assignLinePayload(
+        activeTerminalLine,
+        progressInfo ? buildLiveProgressMessage(progressInfo) : text,
+        progressKey
+      );
       return;
     }
 
@@ -851,13 +1291,23 @@ const addTerminalLog = (message, type = "info") => {
       timestamp,
       progressKey,
       progressActive: Boolean(progressKey),
+      progressInfo,
     });
     terminalOutput.value.push(activeTerminalLine);
+    syncTerminalProgressHeartbeat();
   };
 
   const writeFinalLine = (text) => {
+    if (isCompletionLog) {
+      completeActiveProgressLine(logInfo);
+      activeVideoBatchProgressContext =
+        logInfo.kind === "video-finish" ? null : activeVideoBatchProgressContext;
+    } else if (lineType === "error" || lineType === "warning") {
+      deactivateTerminalProgressLines();
+    }
     terminalOutput.value.push(createTerminalLine(text, lineType, { timestamp }));
     activeTerminalLine = null;
+    syncTerminalProgressHeartbeat();
   };
 
   const flushBuffer = ({ active = false, finalize = false } = {}) => {
@@ -865,8 +1315,10 @@ const addTerminalLog = (message, type = "info") => {
       if (finalize) {
         if (activeTerminalLine) {
           activeTerminalLine.progressActive = false;
+          activeTerminalLine.progressInfo = null;
         }
         activeTerminalLine = null;
+        syncTerminalProgressHeartbeat();
       }
       return;
     }
@@ -882,11 +1334,24 @@ const addTerminalLog = (message, type = "info") => {
     if (finalize) {
       if (activeTerminalLine) {
         activeTerminalLine.progressActive = false;
+        activeTerminalLine.progressInfo = null;
       }
       activeTerminalLine = null;
+      syncTerminalProgressHeartbeat();
     }
     trimTerminalOutput();
   };
+
+  if (!hasCursorControl) {
+    if (lineType === "progress") {
+      writeActiveLine(cleanText);
+    } else {
+      writeFinalLine(cleanText);
+    }
+    trimTerminalOutput();
+    scrollTerminalToBottom();
+    return;
+  }
 
   for (const char of cleanText.split("\r\n").join("\n")) {
     if (char === "\r") {
@@ -1542,15 +2007,46 @@ onMounted(() => {
       addTerminalLog(`安装包已下载至: ${path}`, 'info');
     });
   }
+  if (typeof window !== "undefined" && window.__MOONSHINE_E2E__ === true) {
+    window.__MOONSHINE_BACKEND_MANAGER_TEST__ = {
+      addTerminalLog,
+      queueTerminalLog,
+      flushPendingTerminalLogs,
+      getTerminalMessages: () => terminalOutput.value.map((line) => line.message),
+      getTerminalLines: () =>
+        terminalOutput.value.map((line) => ({
+          message: line.message,
+          type: line.type,
+          progressKey: line.progressKey,
+          progressActive: line.progressActive,
+          hasProgressInfo: Boolean(line.progressInfo),
+          refreshId: line.refreshId,
+          timestamp: line.timestamp,
+          className: getTerminalLineClass(line),
+        })),
+      getPendingTerminalCount: () => pendingTerminalLogs.length,
+      getFlushIntervalMs: () => TERMINAL_PROGRESS_SYNC_MAX_MS,
+      getFlushIntervalRangeMs: () => ({
+        min: TERMINAL_PROGRESS_SYNC_MIN_MS,
+        max: TERMINAL_PROGRESS_SYNC_MAX_MS,
+      }),
+      getProgressHeartbeatMs: () => TERMINAL_PROGRESS_HEARTBEAT_MS,
+      clearTerminal,
+    };
+  }
 });
 onUnmounted(() => {
   if (window.electron && window.electron.ipcRenderer) {
     window.electron.ipcRenderer.removeListener('backend-output', handleBackendOutput);
   }
+  if (typeof window !== "undefined" && window.__MOONSHINE_BACKEND_MANAGER_TEST__) {
+    delete window.__MOONSHINE_BACKEND_MANAGER_TEST__;
+  }
   if (terminalFlushTimerId) {
     window.clearTimeout(terminalFlushTimerId);
     terminalFlushTimerId = 0;
   }
+  clearTerminalProgressHeartbeat();
 });
 </script>
 
@@ -1681,6 +2177,9 @@ onUnmounted(() => {
   color: #4ade80;
 }
 .terminal-line--progress {
+  color: var(--q-accent);
+}
+.terminal-line--progress-complete {
   color: var(--q-accent);
 }
 

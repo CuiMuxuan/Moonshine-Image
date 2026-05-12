@@ -44,6 +44,13 @@ from moonshine_server.helper import (
     gen_frontend_mask,
     adjust_mask,
 )
+from moonshine_server.image_output import (
+    build_image_data_url,
+    encode_pil_image,
+    image_format_from_path,
+    normalize_image_format,
+    resolve_image_output_spec,
+)
 from moonshine_server.model.utils import torch_gc
 from moonshine_server.model_manager import ModelManager
 from moonshine_server.plugins import build_plugins, RealESRGANUpscaler, InteractiveSeg
@@ -609,15 +616,65 @@ class Api:
             return value.split(";")[1].split(",")[1]
         return value
 
+    @staticmethod
+    def _detect_base64_image_format(value: str) -> str:
+        encoded = Api._normalize_base64_payload(value)
+        try:
+            with Image.open(io.BytesIO(base64.b64decode(encoded))) as image:
+                return normalize_image_format(image.format)
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _build_result_meta(spec: dict) -> dict:
+        return {
+            "format": spec["format"],
+            "mime_type": spec["mime_type"],
+            "extension": spec["extension"],
+        }
+
+    @staticmethod
+    def _encode_result_array(
+        result_array: np.ndarray,
+        spec: dict,
+        infos: Optional[dict] = None,
+    ) -> bytes:
+        return encode_pil_image(
+            Image.fromarray(result_array),
+            output_format=spec["format"],
+            quality=spec["quality"],
+            infos=infos,
+        )
+
+    @staticmethod
+    def _build_result_payload(result_bytes: bytes, spec: dict) -> str:
+        return build_image_data_url(result_bytes, spec["mime_type"])
+
+    @staticmethod
+    def _resolve_result_spec(
+        output_format: str,
+        output_quality: int,
+        source_format: str,
+        alpha_channel,
+    ) -> dict:
+        return resolve_image_output_spec(
+            requested_format=output_format,
+            source_format=source_format,
+            has_alpha=alpha_channel is not None,
+            quality=output_quality,
+        )
+
     def _decode_item_image(self, image_value: str, image_type: str):
         if image_type == "base64":
-            return decode_base64_to_image(image_value)
+            image, alpha_channel, infos = decode_base64_to_image(image_value)
+            return image, alpha_channel, infos, self._detect_base64_image_format(image_value)
 
         if not os.path.exists(image_value):
             raise FileNotFoundError(f"Image file not found: {image_value}")
         with open(image_value, "rb") as image_file:
             image_b64 = base64.b64encode(image_file.read()).decode("utf-8")
-        return decode_base64_to_image(image_b64)
+        image, alpha_channel, infos = decode_base64_to_image(image_b64)
+        return image, alpha_channel, infos, image_format_from_path(image_value)
 
     def _decode_item_mask(self, mask_value: str, mask_type: str):
         if mask_type == "base64":
@@ -640,8 +697,14 @@ class Api:
         return mask
 
     @staticmethod
-    def _save_result_image(result_bytes: bytes, item_id: str, temp_path: Optional[str]):
-        output_name = f"result_{item_id}.png"
+    def _save_result_image(
+        result_bytes: bytes,
+        item_id: str,
+        temp_path: Optional[str],
+        extension: str = ".png",
+    ):
+        output_extension = extension if str(extension or "").startswith(".") else f".{extension}"
+        output_name = f"result_{item_id}{output_extension}"
         if temp_path:
             os.makedirs(temp_path, exist_ok=True)
             output_path = os.path.join(temp_path, output_name)
@@ -669,36 +732,38 @@ class Api:
         ):
             item_id = item.id or f"item_{index}"
             try:
-                if req.image_type == "base64":
-                    result_bytes = runner.infer_base64(
-                        item.image,
-                        tile_size=options["tile_size"],
-                        tile_batch=options["tile_batch"],
-                    )
-                else:
-                    image_path = Path(item.image)
-                    if not image_path.exists():
-                        raise FileNotFoundError(f"Image file not found: {image_path}")
-                    image_bgr = read_image_bgr(image_path)
-                    clean_bgr, _ = runner.infer_bgr(
-                        image_bgr,
-                        tile_size=options["tile_size"],
-                        tile_batch=options["tile_batch"],
-                    )
-                    ok, encoded = cv2.imencode(".png", clean_bgr)
-                    if not ok:
-                        raise ValueError("Failed to encode Moonshine image result")
-                    result_bytes = encoded.tobytes()
+                image_rgb, alpha_channel, infos, source_format = self._decode_item_image(
+                    item.image, req.image_type
+                )
+                image_bgr = cv2.cvtColor(image_rgb.astype(np.uint8), cv2.COLOR_RGB2BGR)
+                clean_bgr, _ = runner.infer_bgr(
+                    image_bgr,
+                    tile_size=options["tile_size"],
+                    tile_batch=options["tile_batch"],
+                )
+                clean_rgb = cv2.cvtColor(clean_bgr.astype(np.uint8), cv2.COLOR_BGR2RGB)
+                serializable_result = concat_alpha_channel(clean_rgb, alpha_channel)
+                output_spec = self._resolve_result_spec(
+                    req.output_format,
+                    req.output_quality,
+                    source_format,
+                    alpha_channel,
+                )
+                result_bytes = self._encode_result_array(
+                    serializable_result,
+                    output_spec,
+                    infos,
+                )
 
                 if req.response_type == "path":
                     result_data = self._save_result_image(
-                        result_bytes, item_id, req.temp_path
+                        result_bytes,
+                        item_id,
+                        req.temp_path,
+                        output_spec["extension"],
                     )
                 else:
-                    result_data = (
-                        "data:image/png;base64,"
-                        f"{base64.b64encode(result_bytes).decode('utf-8')}"
-                    )
+                    result_data = self._build_result_payload(result_bytes, output_spec)
 
                 results.append(
                     {
@@ -707,6 +772,7 @@ class Api:
                         "result": result_data,
                         "image": result_data,
                         "success": True,
+                        **self._build_result_meta(output_spec),
                     }
                 )
                 torch_gc()
@@ -755,7 +821,7 @@ class Api:
         ):
             item_id = item.id or f"item_{i}"
             try:
-                image, alpha_channel, infos, *_ = self._decode_item_image(
+                image, alpha_channel, infos, source_format = self._decode_item_image(
                     item.image, req.image_type
                 )
                 mask = self._decode_item_mask(item.mask, req.mask_type)
@@ -791,23 +857,27 @@ class Api:
                 rgb_np_img = cv2.cvtColor(rgb_np_img.astype(np.uint8), cv2.COLOR_BGR2RGB)
                 rgb_res = concat_alpha_channel(rgb_np_img, alpha_channel)
 
-                ext = "png"
-                res_img_bytes = pil_to_bytes(
-                    Image.fromarray(rgb_res),
-                    ext=ext,
-                    quality=self.config.quality,
-                    infos=infos,
+                output_spec = self._resolve_result_spec(
+                    req.output_format,
+                    req.output_quality,
+                    source_format,
+                    alpha_channel,
+                )
+                res_img_bytes = self._encode_result_array(
+                    rgb_res,
+                    output_spec,
+                    infos,
                 )
 
                 if req.response_type == "path":
                     result_data = self._save_result_image(
-                        res_img_bytes, item_id, req.temp_path
+                        res_img_bytes,
+                        item_id,
+                        req.temp_path,
+                        output_spec["extension"],
                     )
                 else:
-                    result_data = (
-                        f"data:image/{ext};base64,"
-                        f"{base64.b64encode(res_img_bytes).decode('utf-8')}"
-                    )
+                    result_data = self._build_result_payload(res_img_bytes, output_spec)
 
                 results.append(
                     {
@@ -817,6 +887,7 @@ class Api:
                         # Backward compatibility for older frontend response parsing.
                         "image": result_data,
                         "success": True,
+                        **self._build_result_meta(output_spec),
                     }
                 )
                 torch_gc()
@@ -872,7 +943,9 @@ class Api:
                 device=device,
                 image=image_path,
                 mask=mask_path,
-                output=output_path
+                output=output_path,
+                output_format=req.output_format,
+                output_quality=req.output_quality,
             )
             
             total_time = time.time() - start_time
@@ -915,6 +988,8 @@ class Api:
                 output_path,
                 tile_size=options["tile_size"],
                 tile_batch=options["tile_batch"],
+                output_format=req.output_format,
+                output_quality=req.output_quality,
             )
             total_time = time.time() - start_time
 
@@ -1105,8 +1180,7 @@ class Api:
 
         logger.info(
             f"[{batch_id}] start video batch: {total_frames} frame(s), "
-            f"model={model_id}, batch={batch_number}/{total_batches}, "
-            f"stop_on_error={req.options.stop_on_error}"
+            f"model={model_id}, batch={batch_number}/{total_batches}"
         )
         logger.info(
             f"本次视频处理总共{total_batches}批次，当前第{batch_number}批，当前批次进度如下："
@@ -1228,8 +1302,7 @@ class Api:
             f"[{batch_id}] finished video batch: model={model_id}, "
             f"batch={batch_number}/{total_batches}, total_frames={total_frames}, "
             f"success={sum(1 for it in results if it.get('success', False))}, "
-            f"failed={len(failed_items)}, elapsed={batch_time:.2f}s, "
-            f"outputs={[item.get('output_path') for item in results if item.get('success')]}"
+            f"failed={len(failed_items)}, elapsed={batch_time:.2f}s"
         )
         return JSONResponse(
             content=jsonable_encoder(

@@ -9,6 +9,8 @@ const DEFAULT_UI_BUTTON_SIZE = "sm";
 const CONFIG_SCHEMA_VERSION = 2;
 const UI_BUTTON_SIZE_OPTIONS = Object.freeze(["xs", "sm", "md"]);
 const IMAGE_OUTPUT_NAMING_MODES = Object.freeze(["original", "prefixUuid"]);
+const IMAGE_OUTPUT_FORMAT_OPTIONS = Object.freeze(["auto", "original", "png", "jpg", "webp"]);
+const DEFAULT_IMAGE_OUTPUT_QUALITY = 95;
 
 const DEFAULT_BRAND_COLORS = Object.freeze({
   primary: "#8a71d4",
@@ -85,6 +87,8 @@ export {
   DEFAULT_THEME_MODE,
   DEFAULT_UI_BUTTON_SIZE,
   DEFAULT_VIDEO_BRUSH,
+  DEFAULT_IMAGE_OUTPUT_QUALITY,
+  IMAGE_OUTPUT_FORMAT_OPTIONS,
   IMAGE_OUTPUT_NAMING_MODES,
   normalizeBrandColors,
   normalizeBrushConfig,
@@ -121,6 +125,8 @@ export class ConfigManager {
       enableDebugMode: false,
       logLevel: "info",
       imageProcessingMethod: "path",
+      imageOutputFormat: "auto",
+      imageOutputQuality: DEFAULT_IMAGE_OUTPUT_QUALITY,
       imageOutputNamingMode: "original",
       imageOutputFixedPrefix: "moonshine",
       imageBrushDefault: { ...DEFAULT_IMAGE_BRUSH },
@@ -211,6 +217,23 @@ export class ConfigManager {
       !["base64", "path"].includes(config.advanced.imageProcessingMethod)
     ) {
       errors.push("图片处理方式必须是 base64 或 path。");
+    }
+
+    if (
+      config.advanced?.imageOutputFormat &&
+      !IMAGE_OUTPUT_FORMAT_OPTIONS.includes(config.advanced.imageOutputFormat)
+    ) {
+      errors.push("图片输出格式无效。");
+    }
+
+    if (
+      typeof config.advanced?.imageOutputQuality !== "number" ||
+      Number.isNaN(config.advanced.imageOutputQuality) ||
+      !Number.isInteger(config.advanced.imageOutputQuality) ||
+      config.advanced.imageOutputQuality < 1 ||
+      config.advanced.imageOutputQuality > 100
+    ) {
+      errors.push("图片输出质量必须是 1-100 范围内的整数。");
     }
 
     if (
@@ -358,6 +381,17 @@ export class ConfigManager {
       ...merged.advanced,
       imageProcessingMethod:
         merged.advanced?.imageProcessingMethod === "base64" ? "base64" : "path",
+      imageOutputFormat: IMAGE_OUTPUT_FORMAT_OPTIONS.includes(
+        String(merged.advanced?.imageOutputFormat || "").toLowerCase()
+      )
+        ? String(merged.advanced.imageOutputFormat).toLowerCase()
+        : "auto",
+      imageOutputQuality: normalizeInteger(
+        merged.advanced?.imageOutputQuality,
+        DEFAULT_IMAGE_OUTPUT_QUALITY,
+        1,
+        100
+      ),
       imageOutputNamingMode: IMAGE_OUTPUT_NAMING_MODES.includes(
         merged.advanced?.imageOutputNamingMode
       )
@@ -394,6 +428,29 @@ export class ConfigManager {
 
     merged.shortcuts = normalizeShortcutConfig(merged.shortcuts);
 
+    return merged;
+  }
+
+  static mergeForStrictValidation(userConfig) {
+    const merged = this.mergeWithDefault(userConfig || {});
+    if (this.isPlainObject(userConfig?.advanced)) {
+      merged.advanced = {
+        ...merged.advanced,
+        ...userConfig.advanced,
+      };
+    }
+    if (this.isPlainObject(userConfig?.video)) {
+      merged.video = {
+        ...merged.video,
+        ...userConfig.video,
+      };
+    }
+    if (this.isPlainObject(userConfig?.general)) {
+      merged.general = {
+        ...merged.general,
+        ...userConfig.general,
+      };
+    }
     return merged;
   }
 

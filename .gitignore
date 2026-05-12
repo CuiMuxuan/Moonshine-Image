@@ -42,3 +42,11 @@ yarn-error.log*
 
 # local .env files
 .env.local*
+
+# local planning docs
+moonshine-product-iteration-plan.md
+docs/p0-stability-regression-checklist.md
+docs/*regression-checklist*.md
+docs/*iteration-plan*.md
+.npm-cache/
+.electron-cache/

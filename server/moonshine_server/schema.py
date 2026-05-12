@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, List, Literal, Optional
 
 from loguru import logger
-from pydantic import BaseModel, Field, computed_field, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 
 class ModelType(str, Enum):
@@ -175,6 +175,14 @@ class RunPluginRequest(BaseModel):
 
 
 MediaTab = Literal["input", "output", "mask"]
+ImageOutputFormat = Literal["auto", "original", "png", "jpg", "jpeg", "webp"]
+
+
+def normalize_image_output_format_value(value: Any) -> Any:
+    if value is None:
+        return value
+    normalized = str(value).strip().lower()
+    return "jpg" if normalized == "jpeg" else normalized
 
 
 class MediasResponse(BaseModel):
@@ -236,8 +244,14 @@ class BatchInpaintRequest(BaseModel):
     mask_type: Literal["base64", "path"] = Field("base64")
     temp_path: Optional[str] = Field(None)
     response_type: Literal["base64", "path"] = Field("base64")
+    output_format: ImageOutputFormat = Field("auto")
+    output_quality: int = Field(95, ge=1, le=100)
     images: Optional[List[str]] = Field(default=None, exclude=True)
     masks: Optional[List[str]] = Field(default=None, exclude=True)
+
+    _normalize_output_format_value = field_validator(
+        "output_format", mode="before"
+    )(normalize_image_output_format_value)
 
     @model_validator(mode="before")
     @classmethod
@@ -271,6 +285,8 @@ class BatchInpaintRequest(BaseModel):
         item_ids = [item.id for item in values.data]
         if len(item_ids) != len(set(item_ids)):
             raise ValueError("All item IDs must be unique")
+        if values.output_format == "jpeg":
+            values.output_format = "jpg"
         return values
 
 
@@ -280,6 +296,18 @@ class BatchInpaintByFolderRequest(BaseModel):
     mask_folder: str
     output_folder: str
     concat: bool = False
+    output_format: ImageOutputFormat = Field("auto")
+    output_quality: int = Field(95, ge=1, le=100)
+
+    _normalize_output_format_value = field_validator(
+        "output_format", mode="before"
+    )(normalize_image_output_format_value)
+
+    @model_validator(mode="after")
+    def normalize_output_format(cls, values: "BatchInpaintByFolderRequest"):
+        if values.output_format == "jpeg":
+            values.output_format = "jpg"
+        return values
 
 
 class MoonshineImageModelOptions(BaseModel):
@@ -298,7 +326,13 @@ class MoonshineImageProcessRequest(BaseModel):
     image_type: Literal["base64", "path"] = Field("base64")
     temp_path: Optional[str] = Field(None)
     response_type: Literal["base64", "path"] = Field("base64")
+    output_format: ImageOutputFormat = Field("auto")
+    output_quality: int = Field(95, ge=1, le=100)
     options: MoonshineImageModelOptions = Field(default_factory=MoonshineImageModelOptions)
+
+    _normalize_output_format_value = field_validator(
+        "output_format", mode="before"
+    )(normalize_image_output_format_value)
 
     @model_validator(mode="after")
     def validate_fields(cls, values: "MoonshineImageProcessRequest"):
@@ -307,6 +341,8 @@ class MoonshineImageProcessRequest(BaseModel):
         item_ids = [item.id for item in values.data]
         if len(item_ids) != len(set(item_ids)):
             raise ValueError("All item IDs must be unique")
+        if values.output_format == "jpeg":
+            values.output_format = "jpg"
         return values
 
 
@@ -315,7 +351,19 @@ class MoonshineImageFolderProcessRequest(BaseModel):
     device: str = Field("cpu", description="Torch device string")
     image_folder: str
     output_folder: str
+    output_format: ImageOutputFormat = Field("auto")
+    output_quality: int = Field(95, ge=1, le=100)
     options: MoonshineImageModelOptions = Field(default_factory=MoonshineImageModelOptions)
+
+    _normalize_output_format_value = field_validator(
+        "output_format", mode="before"
+    )(normalize_image_output_format_value)
+
+    @model_validator(mode="after")
+    def normalize_output_format(cls, values: "MoonshineImageFolderProcessRequest"):
+        if values.output_format == "jpeg":
+            values.output_format = "jpg"
+        return values
 
 
 class VideoBatchFrameItem(BaseModel):

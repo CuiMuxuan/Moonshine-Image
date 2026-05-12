@@ -22,6 +22,13 @@ export const useConfigStore = defineStore("config", () => {
   };
 
   const saveConfig = async (newConfig) => {
+    const rawErrors = ConfigManager.validateConfig(
+      ConfigManager.mergeForStrictValidation(newConfig)
+    );
+    if (rawErrors.length > 0) {
+      return { success: false, errors: rawErrors };
+    }
+
     const mergedConfig = ConfigManager.mergeWithDefault(newConfig);
     const errors = ConfigManager.validateConfig(mergedConfig);
     if (errors.length > 0) {
@@ -45,6 +52,13 @@ export const useConfigStore = defineStore("config", () => {
   };
 
   const persistConfig = async (newConfig) => {
+    const rawErrors = ConfigManager.validateConfig(
+      ConfigManager.mergeForStrictValidation(newConfig)
+    );
+    if (rawErrors.length > 0) {
+      return { success: false, errors: rawErrors };
+    }
+
     const mergedConfig = ConfigManager.mergeWithDefault(newConfig);
 
     if (window.electron?.ipcRenderer?.invoke) {

@@ -1,7 +1,13 @@
 <template>
-  <q-list bordered class="file-list" :class="listClass">
+  <q-virtual-scroll
+    :items="filteredFiles"
+    :virtual-scroll-item-size="72"
+    type="list"
+    class="file-list"
+    :class="listClass"
+    v-slot="{ item: file }"
+  >
     <q-item
-      v-for="file in filteredFiles"
       :key="file.id"
       clickable
       :active="selectedFile?.id === file.id"
@@ -46,7 +52,7 @@
         />
       </q-item-section>
     </q-item>
-  </q-list>
+  </q-virtual-scroll>
 </template>
 
 <script setup>
@@ -127,6 +133,7 @@ const getFileDisplayUrl = (file) => {
 
 <style scoped>
 .file-list {
+  height: 100%;
   min-height: 100%;
   border: 0;
   box-sizing: border-box;
