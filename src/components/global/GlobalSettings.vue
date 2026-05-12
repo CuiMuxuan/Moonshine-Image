@@ -148,6 +148,96 @@
                   <q-input v-model="localConfig.fileManagement.imageFolderName" label="图片输出文件夹名" />
                   <q-input v-model="localConfig.fileManagement.videoFolderName" label="视频输出文件夹名" />
                 </div>
+
+                <div class="mini-block">
+                  <div class="cleanup-row">
+                    <div class="cleanup-copy">
+                      <div class="text-subtitle2 text-weight-medium q-mb-sm">临时文件清理</div>
+                      <div class="text-caption text-grey-7">
+                        清理配置临时目录下的图片和视频中间文件，最近失败现场可按需保留。
+                      </div>
+                    </div>
+                    <q-btn
+                      color="primary"
+                      outline
+                      no-caps
+                      icon="cleaning_services"
+                      label="立即清理"
+                      class="settings-action-button cleanup-button"
+                      data-testid="global-settings-cleanup-temp-files-button"
+                      :loading="cleaningTempFiles"
+                      :disable="isTempCleanupDisabled"
+                      @click="cleanupAppTempFilesNow"
+                    />
+                  </div>
+
+                  <div class="settings-toggle-grid q-mt-md">
+                    <div class="startup-preference startup-preference--compact">
+                      <div class="startup-preference-label">允许自动清理</div>
+                      <q-toggle
+                        v-model="localConfig.fileManagement.tempCleanup.enabled"
+                        color="primary"
+                        data-testid="global-settings-temp-cleanup-enabled"
+                      />
+                    </div>
+                    <div class="startup-preference startup-preference--compact">
+                      <div class="startup-preference-label">应用启动时执行</div>
+                      <q-toggle
+                        v-model="localConfig.fileManagement.tempCleanup.onStartup"
+                        color="primary"
+                        data-testid="global-settings-temp-cleanup-on-startup"
+                      />
+                    </div>
+                    <div class="startup-preference startup-preference--compact">
+                      <div class="startup-preference-label">清理图片临时文件</div>
+                      <q-toggle
+                        v-model="localConfig.fileManagement.tempCleanup.includeImages"
+                        color="primary"
+                        data-testid="global-settings-temp-cleanup-include-images"
+                      />
+                    </div>
+                    <div class="startup-preference startup-preference--compact">
+                      <div class="startup-preference-label">清理视频临时文件</div>
+                      <q-toggle
+                        v-model="localConfig.fileManagement.tempCleanup.includeVideos"
+                        color="primary"
+                        data-testid="global-settings-temp-cleanup-include-videos"
+                      />
+                    </div>
+                    <div class="startup-preference startup-preference--compact">
+                      <div class="startup-preference-label">保留最近失败现场</div>
+                      <q-toggle
+                        v-model="localConfig.fileManagement.tempCleanup.keepRecentFailures"
+                        color="primary"
+                        data-testid="global-settings-temp-cleanup-keep-recent-failures"
+                      />
+                    </div>
+                    <q-input
+                      v-model.number="localConfig.fileManagement.tempCleanup.maxAgeDays"
+                      label="保留天数"
+                      type="number"
+                      :min="1"
+                      :max="365"
+                      :step="1"
+                      suffix="天"
+                      outlined
+                      dense
+                      data-testid="global-settings-temp-cleanup-max-age-days"
+                    />
+                    <q-input
+                      v-model.number="localConfig.video.failureRetentionCount"
+                      label="视频失败现场保留数量"
+                      type="number"
+                      :min="1"
+                      :max="50"
+                      :step="1"
+                      suffix="个"
+                      outlined
+                      dense
+                      data-testid="global-settings-video-failure-retention-count"
+                    />
+                  </div>
+                </div>
               </div>
             </q-tab-panel>
 
@@ -288,32 +378,10 @@
                       <q-select v-model="localConfig.video.frameExtractionFormat" label="拆帧存储格式" emit-value map-options :options="frameFormatOptions" />
                       <q-input v-model.number="localConfig.video.historyLimit" label="视频历史记录上限" type="number" :min="1" :max="50" />
                       <q-input v-model.number="localConfig.video.batchRetryCount" label="批次重试次数" type="number" :min="1" :max="10" />
-                      <q-input v-model.number="localConfig.video.failureRetentionCount" label="失败现场保留数量" type="number" :min="1" :max="50" />
                       <q-input v-model.number="localConfig.video.proxyMaxSide" label="代理预览最大边长" type="number" :min="256" :max="4096" />
                       <q-select v-model="localConfig.video.previewTrialSeconds" label="样片试跑时长" emit-value map-options :options="previewTrialOptions" />
                     </div>
 
-                    <div class="mini-block q-mt-md">
-                      <div class="cleanup-row">
-                        <div class="cleanup-copy">
-                          <div class="text-subtitle2 text-weight-medium q-mb-sm">视频临时文件</div>
-                          <div class="text-caption text-grey-7">
-                            只清理更旧的、已不再作为最近失败任务的临时目录。处理进行中时此操作会被禁用。
-                          </div>
-                        </div>
-                        <q-btn
-                          color="primary"
-                          outline
-                          no-caps
-                          icon="cleaning_services"
-                          label="清理临时文件"
-                          class="settings-action-button cleanup-button"
-                          :loading="cleaningVideoTemp"
-                          :disable="isVideoTempCleanupDisabled"
-                          @click="cleanupVideoTempDirectories"
-                        />
-                      </div>
-                    </div>
                   </q-tab-panel>
                 </q-tab-panels>
               </div>
@@ -365,7 +433,7 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
 import { useQuasar } from "quasar";
 import ModelManagementPanel from "src/components/global/ModelManagementPanel.vue";
-import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, UI_BUTTON_SIZE_OPTIONS } from "src/config/ConfigManager";
+import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_TEMP_CLEANUP, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, UI_BUTTON_SIZE_OPTIONS } from "src/config/ConfigManager";
 import { createDefaultShortcuts, formatShortcutKeys, getShortcutDefinition, getShortcutTokenFromKeyboardEvent, getShortcutsByGroup, normalizeShortcutKeys, SHORTCUT_GROUP_META, SHORTCUT_GROUPS, validateShortcutConfig } from "src/utils/shortcutConfig";
 import { useAppStateStore } from "src/stores/appState";
 import { useConfigStore } from "src/stores/config";
@@ -419,7 +487,7 @@ const activeTab = ref("general");
 const advancedTab = ref("image");
 const selectedModelId = ref("lama");
 const saving = ref(false);
-const cleaningVideoTemp = ref(false);
+const cleaningTempFiles = ref(false);
 const showConfirmDialog = ref(false);
 const confirmMessage = ref("");
 const pendingAction = ref(null);
@@ -442,8 +510,8 @@ const validationErrors = computed(() => {
   return [...(portError.value && portErrorMessage.value ? [portErrorMessage.value] : []), ...errors];
 });
 const hasErrors = computed(() => validationErrors.value.length > 0);
-const isVideoTempCleanupDisabled = computed(
-  () => saving.value || cleaningVideoTemp.value || Boolean(globalLoadingState.value?.showing)
+const isTempCleanupDisabled = computed(
+  () => saving.value || cleaningTempFiles.value || Boolean(globalLoadingState.value?.showing)
 );
 
 const validatePort = (port) => {
@@ -463,6 +531,15 @@ const stopShortcutRecording = () => { recordingShortcutId.value = ""; recordingK
 const resetThemeColors = () => { localConfig.value.ui.brandColors = { ...DEFAULT_BRAND_COLORS }; };
 const resetButtonSize = () => { localConfig.value.ui.buttonSize = DEFAULT_UI_BUTTON_SIZE; };
 const resetBrushDefaults = () => { localConfig.value.advanced.imageBrushDefault = { ...DEFAULT_IMAGE_BRUSH }; localConfig.value.advanced.videoBrushDefault = { ...DEFAULT_VIDEO_BRUSH }; };
+const ensureTempCleanupConfig = () => {
+  if (!localConfig.value.fileManagement) {
+    localConfig.value.fileManagement = {};
+  }
+  localConfig.value.fileManagement.tempCleanup = {
+    ...DEFAULT_TEMP_CLEANUP,
+    ...(localConfig.value.fileManagement.tempCleanup || {}),
+  };
+};
 const restoreShortcutDefault = (actionId) => { const definition = getShortcutDefinition(actionId); if (!definition) return; localConfig.value.shortcuts = { ...localConfig.value.shortcuts, [actionId]: [...definition.defaultKeys] }; if (recordingShortcutId.value === actionId) stopShortcutRecording(); };
 const restoreAllShortcutDefaults = () => { localConfig.value.shortcuts = createDefaultShortcuts(); stopShortcutRecording(); };
 const applyShortcutValue = (actionId, keys) => {
@@ -575,36 +652,45 @@ const selectBackendProjectPath = async () => {
     $q.notify({ type: "negative", message: `选择后端项目路径失败：${error.message}`, position: "top" });
   }
 };
-const cleanupVideoTempDirectories = async () => {
-  if (!window.electron?.ipcRenderer?.invoke || isVideoTempCleanupDisabled.value) return;
+const cleanupAppTempFilesNow = async () => {
+  if (!window.electron?.ipcRenderer?.invoke || isTempCleanupDisabled.value) return;
 
-  cleaningVideoTemp.value = true;
+  cleaningTempFiles.value = true;
   try {
-    const result = await window.electron.ipcRenderer.invoke("cleanup-video-processing-temp");
+    const cleanupOptions = ConfigManager.mergeWithDefault(
+      localConfig.value
+    ).fileManagement.tempCleanup;
+    const result = await window.electron.ipcRenderer.invoke(
+      "cleanup-app-temp-files",
+      JSON.parse(JSON.stringify(cleanupOptions))
+    );
     if (!result?.success) {
-      throw new Error(result?.error || "清理旧的临时目录失败");
+      throw new Error(result?.error || "清理临时文件失败");
     }
 
+    const removedFileCount = Number(result?.data?.removedFileCount || 0);
     const removedTaskCount = Number(result?.data?.removedTaskCount || 0);
     const removedDirectoryCount = Number(result?.data?.removedDirectoryCount || 0);
+    const removedTempSourceCount = Number(result?.data?.removedTempSourceCount || 0);
+    const removedTotal = removedFileCount + removedTaskCount + removedDirectoryCount + removedTempSourceCount;
     $q.notify({
       type: "positive",
       message:
-        removedTaskCount > 0 || removedDirectoryCount > 0
-          ? `已清理 ${removedTaskCount} 个旧任务，删除 ${removedDirectoryCount} 个临时目录。`
-          : "没有可清理的旧视频临时目录。",
+        removedTotal > 0
+          ? `已清理 ${removedFileCount} 个文件、${removedDirectoryCount} 个目录、${removedTaskCount} 个视频任务。`
+          : "没有符合条件的临时文件。",
       position: "top",
       timeout: 3000,
     });
   } catch (error) {
     $q.notify({
       type: "negative",
-      message: `清理视频临时目录失败：${error.message}`,
+      message: `清理临时文件失败：${error.message}`,
       position: "top",
       timeout: 3500,
     });
   } finally {
-    cleaningVideoTemp.value = false;
+    cleaningTempFiles.value = false;
   }
 };
 const doSaveSettings = async () => {
@@ -676,6 +762,7 @@ watch(() => props.modelValue, (opened) => {
     return;
   }
   localConfig.value = buildSerializableConfig(configStore.config);
+  ensureTempCleanupConfig();
   validatePort(localConfig.value.general.backendPort);
   applyInitialTarget();
 }, { immediate: true });
@@ -684,7 +771,12 @@ watch(() => [props.initialTab, props.initialModelId], () => {
     applyInitialTarget();
   }
 });
-watch(() => configStore.config, (newConfig) => { if (!showDialog.value) localConfig.value = buildSerializableConfig(newConfig); }, { deep: true });
+watch(() => configStore.config, (newConfig) => {
+  if (!showDialog.value) {
+    localConfig.value = buildSerializableConfig(newConfig);
+    ensureTempCleanupConfig();
+  }
+}, { deep: true });
 watch(() => localConfig.value.general.backendPort, (port) => { validatePort(port); }, { immediate: true });
 
 onMounted(() => {
@@ -750,7 +842,9 @@ onUnmounted(() => {
 .color-row :deep(.q-field) { flex: 1 1 auto; }
 .brush-dot { display: inline-block; border-radius: 999px; border: 1px solid rgba(255,255,255,.72); box-shadow: 0 0 0 1px rgba(17,24,39,.08); }
 .startup-preferences-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.settings-toggle-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; align-items: center; }
 .startup-preference { display: flex; align-items: center; justify-content: space-between; min-height: 56px; padding: 12px 16px; border: 1px solid rgba(17, 24, 39, 0.08); border-radius: 16px; background: rgba(255, 255, 255, 0.72); }
+.startup-preference--compact { min-height: 44px; padding: 8px 12px; }
 .startup-preference-label { font-size: 15px; font-weight: 500; }
 .settings-info-banner {
   background: #e8efff;

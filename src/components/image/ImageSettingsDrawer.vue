@@ -4,7 +4,7 @@
     overlay
     side="right"
     bordered
-    class="image-settings-drawer"
+    :class="['image-settings-drawer', { 'image-settings-drawer--dark': $q.dark.isActive }]"
   >
     <q-scroll-area class="drawer-scroll">
       <div class="settings-content q-pa-md">
@@ -278,6 +278,7 @@
 
 <script setup>
 import { computed } from "vue";
+import { useQuasar } from "quasar";
 
 import CudaStatus from "src/components/common/CudaStatus.vue";
 import FolderSelector from "src/components/common/FolderSelector.vue";
@@ -375,6 +376,8 @@ const emit = defineEmits([
   "open-backend-manager",
   "cuda-status-changed",
 ]);
+
+const $q = useQuasar();
 
 const readEngineValue = (key, fallback = "") => {
   const value = props.backendEngineState?.[key];
@@ -781,29 +784,123 @@ const getNumberRules = (field) => [
   font-size: 13px;
 }
 
-:global(body.body--dark) .settings-section {
-  background: #2f2f32;
+:global(body.body--dark) .image-settings-drawer,
+.image-settings-drawer--dark {
+  background: #242426;
+  border-left-color: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+:global(body.body--dark) .image-settings-drawer :deep(.text-grey-7),
+.image-settings-drawer--dark :deep(.text-grey-7) {
+  color: rgba(255, 255, 255, 0.62) !important;
+}
+
+:global(body.body--dark) .settings-section,
+.image-settings-drawer--dark .settings-section {
+  background: #363638;
   border-color: rgba(255, 255, 255, 0.12);
 }
 
-:global(body.body--dark) .backend-status-card--preparing {
+:global(body.body--dark) .backend-status-card--preparing,
+.image-settings-drawer--dark .backend-status-card--preparing {
   border-color: rgba(100, 181, 246, 0.34);
   background: rgba(100, 181, 246, 0.12);
 }
 
 :global(body.body--dark) .backend-status-card--failed,
-:global(body.body--dark) .backend-status-card--stopped {
+:global(body.body--dark) .backend-status-card--stopped,
+.image-settings-drawer--dark .backend-status-card--failed,
+.image-settings-drawer--dark .backend-status-card--stopped {
   border-color: rgba(255, 183, 77, 0.34);
   background: rgba(255, 183, 77, 0.12);
 }
 
-:global(body.body--dark) .backend-status-icon {
+:global(body.body--dark) .backend-status-icon,
+.image-settings-drawer--dark .backend-status-icon {
   background: rgba(255, 255, 255, 0.08);
 }
 
 :global(body.body--dark) .field-label,
 :global(body.body--dark) .empty-copy,
-:global(body.body--dark) .backend-status-message {
+:global(body.body--dark) .backend-status-message,
+.image-settings-drawer--dark .field-label,
+.image-settings-drawer--dark .empty-copy,
+.image-settings-drawer--dark .backend-status-message {
   color: rgba(255, 255, 255, 0.62);
+}
+
+:global(body.body--dark) .section-heading,
+:global(body.body--dark) .backend-status-title,
+.image-settings-drawer--dark .section-heading,
+.image-settings-drawer--dark .backend-status-title {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+:global(body.body--dark) .settings-section :deep(.q-field--filled .q-field__control),
+:global(body.body--dark) .settings-section :deep(.q-field--outlined .q-field__control),
+.image-settings-drawer--dark .settings-section :deep(.q-field--filled .q-field__control),
+.image-settings-drawer--dark .settings-section :deep(.q-field--outlined .q-field__control) {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.88);
+}
+
+:global(body.body--dark) .settings-section :deep(.q-field--filled .q-field__control::before),
+:global(body.body--dark) .settings-section :deep(.q-field--outlined .q-field__control::before),
+.image-settings-drawer--dark .settings-section :deep(.q-field--filled .q-field__control::before),
+.image-settings-drawer--dark .settings-section :deep(.q-field--outlined .q-field__control::before) {
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+:global(body.body--dark) .settings-section :deep(.q-field__native),
+:global(body.body--dark) .settings-section :deep(.q-field__label),
+:global(body.body--dark) .settings-section :deep(.q-field__append),
+:global(body.body--dark) .settings-section :deep(.q-field__marginal),
+.image-settings-drawer--dark .settings-section :deep(.q-field__native),
+.image-settings-drawer--dark .settings-section :deep(.q-field__label),
+.image-settings-drawer--dark .settings-section :deep(.q-field__append),
+.image-settings-drawer--dark .settings-section :deep(.q-field__marginal) {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+:global(body.body--dark) .settings-section :deep(.q-field--focused .q-field__label),
+:global(body.body--dark) .settings-section :deep(.q-field--focused .q-field__marginal),
+.image-settings-drawer--dark .settings-section :deep(.q-field--focused .q-field__label),
+.image-settings-drawer--dark .settings-section :deep(.q-field--focused .q-field__marginal) {
+  color: var(--q-primary);
+}
+
+:global(body.body--dark) .scope-button :deep(.q-btn__content),
+:global(body.body--dark) .settings-action-button :deep(.q-btn__content),
+.image-settings-drawer--dark .scope-button :deep(.q-btn__content),
+.image-settings-drawer--dark .settings-action-button :deep(.q-btn__content) {
+  color: inherit;
+}
+
+:global(body.body--dark) .scope-button :deep(.q-btn__content),
+.image-settings-drawer--dark .scope-button :deep(.q-btn__content) {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+:global(body.body--dark) .scope-button.text-primary :deep(.q-btn__content),
+.image-settings-drawer--dark .scope-button.text-primary :deep(.q-btn__content) {
+  color: var(--q-primary);
+}
+
+:global(body.body--dark) .settings-section :deep(.q-btn--outline:before),
+.image-settings-drawer--dark .settings-section :deep(.q-btn--outline:before) {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+:global(body.body--dark) .settings-section :deep(.q-btn.disabled),
+:global(body.body--dark) .settings-section :deep(.q-btn[disabled]),
+.image-settings-drawer--dark .settings-section :deep(.q-btn.disabled),
+.image-settings-drawer--dark .settings-section :deep(.q-btn[disabled]) {
+  color: rgba(255, 255, 255, 0.38) !important;
+}
+
+:global(body.body--dark) .settings-section :deep(.q-toggle__label),
+.image-settings-drawer--dark .settings-section :deep(.q-toggle__label) {
+  color: rgba(255, 255, 255, 0.86);
 }
 </style>

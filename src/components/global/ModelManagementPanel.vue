@@ -1,5 +1,8 @@
 <template>
-  <div class="model-management-panel">
+  <div
+    class="model-management-panel"
+    :class="{ 'model-management-panel--dark': $q.dark.isActive }"
+  >
     <div v-if="!backendRunning" class="model-empty-state">
       <q-icon name="power_settings_new" size="42px" color="warning" />
       <div>
@@ -867,30 +870,101 @@ onMounted(async () => {
 }
 
 :global(body.body--dark) .model-empty-state,
-:global(body.body--dark) .mini-block {
+:global(body.body--dark) .mini-block,
+.model-management-panel--dark .model-empty-state,
+.model-management-panel--dark .mini-block,
+:global(.settings-card--dark) .model-management-panel .model-empty-state,
+:global(.settings-card--dark) .model-management-panel .mini-block {
   background: #2f2f32;
   border-color: rgba(255, 255, 255, 0.12);
 }
 
-:global(body.body--dark) .source-item {
-  background: rgba(255, 255, 255, 0.06);
+:global(body.body--dark) .mini-block,
+.model-management-panel--dark .mini-block,
+:global(.settings-card--dark) .model-management-panel .mini-block {
+  background: #363638;
 }
 
-:global(body.body--dark) .manual-path-row {
-  background: rgba(255, 255, 255, 0.06);
+:global(body.body--dark) .model-management-panel :deep(.text-grey-7),
+.model-management-panel--dark :deep(.text-grey-7),
+:global(.settings-card--dark) .model-management-panel :deep(.text-grey-7) {
+  color: rgba(255, 255, 255, 0.62) !important;
 }
 
-:global(body.body--dark) .source-url {
+:global(body.body--dark) .model-info-line span,
+.model-management-panel--dark .model-info-line span,
+:global(.settings-card--dark) .model-management-panel .model-info-line span {
+  color: rgba(255, 255, 255, 0.68);
+}
+
+:global(body.body--dark) .model-info-line strong,
+:global(body.body--dark) .source-label,
+.model-management-panel--dark .model-info-line strong,
+.model-management-panel--dark .source-label,
+:global(.settings-card--dark) .model-management-panel .model-info-line strong,
+:global(.settings-card--dark) .model-management-panel .source-label {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+:global(body.body--dark) .source-item,
+:global(body.body--dark) .manual-path-row,
+.model-management-panel--dark .source-item,
+.model-management-panel--dark .manual-path-row,
+:global(.settings-card--dark) .model-management-panel .source-item,
+:global(.settings-card--dark) .model-management-panel .manual-path-row {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+:global(body.body--dark) .source-url,
+.model-management-panel--dark .source-url,
+:global(.settings-card--dark) .model-management-panel .source-url {
   color: rgba(229, 231, 235, 0.72);
 }
 
-:global(body.body--dark) .settings-info-banner {
+:global(body.body--dark) .model-file-list,
+.model-management-panel--dark .model-file-list,
+:global(.settings-card--dark) .model-management-panel .model-file-list {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+:global(body.body--dark) .model-file-list :deep(.q-item),
+.model-management-panel--dark .model-file-list :deep(.q-item),
+:global(.settings-card--dark) .model-management-panel .model-file-list :deep(.q-item) {
+  background: rgba(255, 255, 255, 0.035);
+  color: rgba(255, 255, 255, 0.88);
+}
+
+:global(body.body--dark) .model-file-list :deep(.q-item__label--caption),
+.model-management-panel--dark .model-file-list :deep(.q-item__label--caption),
+:global(.settings-card--dark) .model-management-panel .model-file-list :deep(.q-item__label--caption) {
+  color: rgba(255, 255, 255, 0.58);
+}
+
+:global(body.body--dark) .model-tabs :deep(.q-tab),
+.model-management-panel--dark .model-tabs :deep(.q-tab),
+:global(.settings-card--dark) .model-management-panel .model-tabs :deep(.q-tab) {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+:global(body.body--dark) .model-tabs :deep(.q-tab--active),
+.model-management-panel--dark .model-tabs :deep(.q-tab--active),
+:global(.settings-card--dark) .model-management-panel .model-tabs :deep(.q-tab--active) {
+  background: rgba(138, 113, 212, 0.14);
+  color: var(--q-primary);
+}
+
+:global(body.body--dark) .settings-info-banner,
+.model-management-panel--dark .settings-info-banner,
+:global(.settings-card--dark) .model-management-panel .settings-info-banner {
   background: rgba(122, 141, 190, 0.2);
   color: #dce4ff;
   border-color: rgba(122, 141, 190, 0.34);
 }
 
-:global(body.body--dark) .settings-warning-banner {
+:global(body.body--dark) .settings-warning-banner,
+.model-management-panel--dark .settings-warning-banner,
+:global(.settings-card--dark) .model-management-panel .settings-warning-banner {
   background: rgba(230, 172, 0, 0.18);
   color: #ffe1a0;
   border-color: rgba(230, 172, 0, 0.34);

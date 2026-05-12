@@ -5,7 +5,15 @@
         <q-icon name="settings" size="md" class="q-mr-sm" />
         <div class="text-h6">{{ backendManagerTitle }}</div>
         <q-space />
-        <q-btn icon="close" flat round dense v-close-popup color="white" />
+        <q-btn
+          icon="close"
+          flat
+          round
+          dense
+          v-close-popup
+          color="white"
+          data-testid="backend-manager-close-button"
+        />
       </q-card-section>
 
       <q-card-section class="q-pa-none backend-content">

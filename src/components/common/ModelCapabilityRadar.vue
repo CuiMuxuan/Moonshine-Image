@@ -175,7 +175,7 @@ const ariaLabel = computed(() => `${props.modelLabel}能力雷达图`);
 .radar-label {
   fill: currentColor;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 400;
   paint-order: stroke;
   stroke: var(--q-card, #fff);
   stroke-width: 3px;
@@ -224,8 +224,19 @@ const ariaLabel = computed(() => `${props.modelLabel}能力雷达图`);
   background: rgba(255, 255, 255, 0.06);
 }
 
-:global(body.body--dark) .radar-label {
-  stroke: var(--q-dark-page, #121212);
+:global(body.body--dark) .radar-label,
+:global(.settings-card--dark) .radar-label,
+:global(.model-management-panel--dark) .radar-label {
+  color: rgba(229, 231, 235, 0.72);
+  fill: rgba(229, 231, 235, 0.72) !important;
+  font-size: 12px;
+  font-weight: 400;
+  font-family: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  paint-order: fill !important;
+  stroke: transparent !important;
+  stroke-width: 0 !important;
+  stroke-opacity: 0 !important;
+  text-shadow: none;
 }
 
 @media (max-width: 760px) {

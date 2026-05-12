@@ -1,38 +1,26 @@
 import {
-  createDefaultShortcuts,
   normalizeShortcutConfig,
   validateShortcutConfig,
 } from "src/utils/shortcutConfig";
-
-const DEFAULT_THEME_MODE = "light";
-const DEFAULT_UI_BUTTON_SIZE = "sm";
-const CONFIG_SCHEMA_VERSION = 2;
-const UI_BUTTON_SIZE_OPTIONS = Object.freeze(["xs", "sm", "md"]);
-const IMAGE_OUTPUT_NAMING_MODES = Object.freeze(["original", "prefixUuid"]);
-const IMAGE_OUTPUT_FORMAT_OPTIONS = Object.freeze(["auto", "original", "png", "jpg", "webp"]);
-const DEFAULT_IMAGE_OUTPUT_QUALITY = 95;
-
-const DEFAULT_BRAND_COLORS = Object.freeze({
-  primary: "#8a71d4",
-  secondary: "#c1bee6",
-  accent: "#e6cfad",
-  positive: "#189e7a",
-  negative: "#cc455d",
-  info: "#7a8dbe",
-  warning: "#e6ac00",
-});
-
-const DEFAULT_IMAGE_BRUSH = Object.freeze({
-  size: 20,
-  color: "#8a71d4",
-  alpha: 0.75,
-});
-
-const DEFAULT_VIDEO_BRUSH = Object.freeze({
-  size: 24,
-  color: DEFAULT_IMAGE_BRUSH.color,
-  alpha: 0.75,
-});
+import {
+  alignConfigWithDefaultSchema,
+  CONFIG_SCHEMA_VERSION,
+  createDefaultAppConfig,
+  DEFAULT_APP_CONFIG,
+  DEFAULT_BRAND_COLORS,
+  DEFAULT_IMAGE_BRUSH,
+  DEFAULT_IMAGE_OUTPUT_QUALITY,
+  DEFAULT_TEMP_CLEANUP,
+  DEFAULT_THEME_MODE,
+  DEFAULT_UI_BUTTON_SIZE,
+  DEFAULT_VIDEO_BRUSH,
+  IMAGE_OUTPUT_FORMAT_OPTIONS,
+  IMAGE_OUTPUT_NAMING_MODES,
+  isPlainObject,
+  isTypeCompatible,
+  migrateLegacyConfigShape,
+  UI_BUTTON_SIZE_OPTIONS,
+} from "src/shared/appConfigSchema";
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const isValidHexColor = (value) =>
@@ -78,8 +66,6 @@ const normalizeInteger = (value, fallback, min, max = Number.MAX_SAFE_INTEGER) =
   return clamp(Math.round(numeric), min, max);
 };
 
-const cloneConfig = (value) => JSON.parse(JSON.stringify(value));
-
 export {
   DEFAULT_BRAND_COLORS,
   CONFIG_SCHEMA_VERSION,
@@ -87,6 +73,7 @@ export {
   DEFAULT_THEME_MODE,
   DEFAULT_UI_BUTTON_SIZE,
   DEFAULT_VIDEO_BRUSH,
+  DEFAULT_TEMP_CLEANUP,
   DEFAULT_IMAGE_OUTPUT_QUALITY,
   IMAGE_OUTPUT_FORMAT_OPTIONS,
   IMAGE_OUTPUT_NAMING_MODES,
@@ -98,70 +85,7 @@ export {
 };
 
 export class ConfigManager {
-  static defaultConfig = {
-    schemaVersion: CONFIG_SCHEMA_VERSION,
-    general: {
-      backendPort: 8080,
-      launchMode: "cuda",
-      modelPath: "",
-      modelDir: "",
-      backendProjectPath: "",
-      defaultModel: "lama",
-      autoStart: true,
-      language: "zh-CN",
-    },
-    fileManagement: {
-      downloadPath: "",
-      tempPath: "",
-      imageFolderName: "images",
-      videoFolderName: "videos",
-      autoCleanTemp: true,
-    },
-    advanced: {
-      imageHistoryLimit: 10,
-      imageWarningSize: 50,
-      stateSaveLimit: 100,
-      maxConcurrentTasks: 3,
-      enableDebugMode: false,
-      logLevel: "info",
-      imageProcessingMethod: "path",
-      imageOutputFormat: "auto",
-      imageOutputQuality: DEFAULT_IMAGE_OUTPUT_QUALITY,
-      imageOutputNamingMode: "original",
-      imageOutputFixedPrefix: "moonshine",
-      imageBrushDefault: { ...DEFAULT_IMAGE_BRUSH },
-      videoBrushDefault: { ...DEFAULT_VIDEO_BRUSH },
-    },
-    ui: {
-      theme: DEFAULT_THEME_MODE,
-      buttonSize: DEFAULT_UI_BUTTON_SIZE,
-      brandColors: { ...DEFAULT_BRAND_COLORS },
-      showStartupAnimation: true,
-      showWelcomeDialog: true,
-      confirmBeforeExit: true,
-      autoSaveInterval: 30000,
-    },
-    shortcuts: createDefaultShortcuts(),
-    video: {
-      frameExtractionFormat: "jpg",
-      batchFrameCount: 120,
-      historyLimit: 5,
-      defaultFrameRate: 30,
-      maxKeyframes: 100,
-      autoNextFrameInterval: 0.1,
-      tempFramesPath: "",
-      supportedFormats: ["mp4", "mov", "avi", "mkv", "wmv"],
-      maxConcurrentFrameProcessing: 4,
-      enableFrameSkipping: true,
-      memoryOptimization: true,
-      autoSaveInterval: 30,
-      maxDraftRetention: 7,
-      batchRetryCount: 3,
-      failureRetentionCount: 3,
-      proxyMaxSide: 1280,
-      previewTrialSeconds: 3,
-    },
-  };
+  static defaultConfig = DEFAULT_APP_CONFIG;
 
   static validateConfig(config) {
     const errors = [];
@@ -261,6 +185,37 @@ export class ConfigManager {
       }
     });
 
+    const tempCleanup = config.fileManagement?.tempCleanup || {};
+    const tempCleanupKeys = Object.keys(tempCleanup);
+    if (
+      tempCleanupKeys.length !== Object.keys(DEFAULT_TEMP_CLEANUP).length ||
+      tempCleanupKeys.some(
+        (key) => !Object.prototype.hasOwnProperty.call(DEFAULT_TEMP_CLEANUP, key)
+      )
+    ) {
+      errors.push("临时文件清理配置包含无效字段。");
+    }
+    [
+      { key: "enabled", name: "启用临时文件自动清理" },
+      { key: "onStartup", name: "启动时清理临时文件" },
+      { key: "includeImages", name: "清理图片临时文件" },
+      { key: "includeVideos", name: "清理视频临时文件" },
+      { key: "keepRecentFailures", name: "保留最近失败现场" },
+    ].forEach(({ key, name }) => {
+      if (typeof tempCleanup[key] !== "boolean") {
+        errors.push(`${name}必须是布尔值。`);
+      }
+    });
+    if (
+      typeof tempCleanup.maxAgeDays !== "number" ||
+      Number.isNaN(tempCleanup.maxAgeDays) ||
+      !Number.isInteger(tempCleanup.maxAgeDays) ||
+      tempCleanup.maxAgeDays < 1 ||
+      tempCleanup.maxAgeDays > 365
+    ) {
+      errors.push("临时文件保留天数必须是 1-365 范围内的整数。");
+    }
+
     [
       { value: config.advanced?.imageBrushDefault, name: "图片默认画笔" },
       { value: config.advanced?.videoBrushDefault, name: "视频默认画笔" },
@@ -342,14 +297,13 @@ export class ConfigManager {
       !userConfig.general &&
       typeof userConfig.apiPort === "number"
     ) {
-      userConfig = {
-        general: {
-          backendPort: userConfig.apiPort,
-        },
-      };
+      userConfig = migrateLegacyConfigShape(userConfig);
     }
 
-    const merged = this.alignWithDefaultSchema(this.defaultConfig, userConfig || {});
+    const merged = this.alignWithDefaultSchema(
+      createDefaultAppConfig(),
+      migrateLegacyConfigShape(userConfig || {})
+    );
     merged.schemaVersion = CONFIG_SCHEMA_VERSION;
 
     if (merged?.video && Object.prototype.hasOwnProperty.call(merged.video, "outputPath")) {
@@ -375,6 +329,38 @@ export class ConfigManager {
       buttonSize: normalizeButtonSize(merged.ui?.buttonSize),
       brandColors: normalizeBrandColors(merged.ui?.brandColors),
       showStartupAnimation: normalizeBoolean(merged.ui?.showStartupAnimation, true),
+    };
+
+    merged.fileManagement = {
+      ...merged.fileManagement,
+      tempCleanup: {
+        enabled: normalizeBoolean(
+          merged.fileManagement?.tempCleanup?.enabled,
+          DEFAULT_TEMP_CLEANUP.enabled
+        ),
+        onStartup: normalizeBoolean(
+          merged.fileManagement?.tempCleanup?.onStartup,
+          DEFAULT_TEMP_CLEANUP.onStartup
+        ),
+        maxAgeDays: normalizeInteger(
+          merged.fileManagement?.tempCleanup?.maxAgeDays,
+          DEFAULT_TEMP_CLEANUP.maxAgeDays,
+          1,
+          365
+        ),
+        includeImages: normalizeBoolean(
+          merged.fileManagement?.tempCleanup?.includeImages,
+          DEFAULT_TEMP_CLEANUP.includeImages
+        ),
+        includeVideos: normalizeBoolean(
+          merged.fileManagement?.tempCleanup?.includeVideos,
+          DEFAULT_TEMP_CLEANUP.includeVideos
+        ),
+        keepRecentFailures: normalizeBoolean(
+          merged.fileManagement?.tempCleanup?.keepRecentFailures,
+          DEFAULT_TEMP_CLEANUP.keepRecentFailures
+        ),
+      },
     };
 
     merged.advanced = {
@@ -451,6 +437,12 @@ export class ConfigManager {
         ...userConfig.general,
       };
     }
+    if (this.isPlainObject(userConfig?.fileManagement)) {
+      merged.fileManagement = {
+        ...merged.fileManagement,
+        ...userConfig.fileManagement,
+      };
+    }
     return merged;
   }
 
@@ -469,39 +461,14 @@ export class ConfigManager {
   }
 
   static isPlainObject(value) {
-    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+    return isPlainObject(value);
   }
 
   static isTypeCompatible(defaultValue, candidateValue) {
-    if (candidateValue === undefined) return false;
-    if (Array.isArray(defaultValue)) return Array.isArray(candidateValue);
-    if (this.isPlainObject(defaultValue)) return this.isPlainObject(candidateValue);
-    if (typeof defaultValue === "number") {
-      return typeof candidateValue === "number" && !Number.isNaN(candidateValue);
-    }
-    return typeof candidateValue === typeof defaultValue;
+    return isTypeCompatible(defaultValue, candidateValue);
   }
 
   static alignWithDefaultSchema(defaultValue, candidateValue) {
-    const defaultClone = cloneConfig(defaultValue);
-
-    if (Array.isArray(defaultValue)) {
-      return Array.isArray(candidateValue) ? cloneConfig(candidateValue) : defaultClone;
-    }
-
-    if (this.isPlainObject(defaultValue)) {
-      if (!this.isPlainObject(candidateValue)) {
-        return defaultClone;
-      }
-
-      return Object.keys(defaultValue).reduce((result, key) => {
-        result[key] = this.alignWithDefaultSchema(defaultValue[key], candidateValue[key]);
-        return result;
-      }, {});
-    }
-
-    return this.isTypeCompatible(defaultValue, candidateValue)
-      ? cloneConfig(candidateValue)
-      : defaultClone;
+    return alignConfigWithDefaultSchema(defaultValue, candidateValue);
   }
 }

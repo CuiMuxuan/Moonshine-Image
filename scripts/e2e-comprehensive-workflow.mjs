@@ -210,6 +210,7 @@ const tinyPngBytes = Uint8Array.from([
 
 function createMockConfig() {
   return {
+    schemaVersion: 3,
     general: {
       backendPort: 8091,
       launchMode: "cpu",
@@ -226,6 +227,25 @@ function createMockConfig() {
       imageOutputQuality: 95,
       imageOutputNamingMode: "original",
       imageOutputFixedPrefix: "moonshine",
+      imageHistoryLimit: 10,
+      imageWarningSize: 50,
+      stateSaveLimit: 100,
+      imageBrushDefault: { size: 20, color: "#8a71d4", alpha: 0.75 },
+      videoBrushDefault: { size: 24, color: "#8a71d4", alpha: 0.75 },
+    },
+    fileManagement: {
+      downloadPath: "",
+      tempPath: "",
+      imageFolderName: "images",
+      videoFolderName: "videos",
+      tempCleanup: {
+        enabled: false,
+        onStartup: false,
+        maxAgeDays: 7,
+        includeImages: true,
+        includeVideos: true,
+        keepRecentFailures: true,
+      },
     },
     video: {
       frameExtractionFormat: "jpg",
@@ -240,7 +260,35 @@ function createMockConfig() {
       supportedFormats: ["mp4", "mov", "avi", "mkv", "wmv", "webm"],
     },
     ui: {
+      theme: "light",
+      buttonSize: "sm",
+      brandColors: {
+        primary: "#8a71d4",
+        secondary: "#c1bee6",
+        accent: "#e6cfad",
+        positive: "#189e7a",
+        negative: "#cc455d",
+        info: "#7a8dbe",
+        warning: "#e6ac00",
+      },
       showStartupAnimation: false,
+      showWelcomeDialog: true,
+      confirmBeforeExit: true,
+      autoSaveInterval: 30000,
+    },
+    shortcuts: {
+      drawingUndo: ["Ctrl", "Z"],
+      drawingResetView: ["Ctrl", "X"],
+      drawingToggle: ["Ctrl", "Space"],
+      drawingBrush: ["1"],
+      drawingRect: ["2"],
+      drawingErase: ["3"],
+      drawingHoldBrush: ["1", "Q"],
+      drawingHoldRect: ["2", "Q"],
+      drawingHoldErase: ["3", "E"],
+      imageUndoProcessing: ["Ctrl", "Alt", "Z"],
+      imageCompareOriginal: ["Ctrl", "Alt", "X"],
+      imageSelectAll: ["Ctrl", "A"],
     },
   };
 }
@@ -321,8 +369,25 @@ async function installElectronMock(context) {
         case "ensure-directory":
         case "cleanup-temp-file":
         case "cleanup-temp-files":
+          return { success: true };
         case "cleanup-video-processing-temp":
           return { success: true };
+        case "cleanup-app-temp-files":
+          savedConfig.fileManagement.tempCleanup = {
+            ...savedConfig.fileManagement.tempCleanup,
+            ...(payload || {}),
+          };
+          return {
+            success: true,
+            data: {
+              removedFileCount: 1,
+              removedDirectoryCount: 1,
+              removedTaskCount: 1,
+              removedTempSourceCount: 0,
+              removedBytes: 1024,
+              skippedCount: 0,
+            },
+          };
         case "compute-video-file-fingerprint":
           return { success: true, fingerprint: `e2e:${payload || "video"}` };
         case "get-video-processing-registry-path":
@@ -444,6 +509,67 @@ async function testImageWorkflow(page) {
     "Image upload should preserve mixed-case file names."
   );
   assert(snapshotAfterUpload.currentHistoryLength === 1, "Image upload should create original history.");
+
+  await page.waitForFunction(
+    () => window.__MOONSHINE_IMAGE_TEST__?.getSnapshot().availableModels.includes("slbr"),
+    null,
+    { timeout: 20000 }
+  );
+
+  const maskToolsOpenRoundTrip = await page.evaluate(() => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    bridge.setCurrentModel("lama");
+    bridge.setMaskToolsVisible(true);
+    const beforeSwitch = bridge.getSnapshot();
+    const onSlbr = bridge.setCurrentModel("slbr");
+    const backToLama = bridge.setCurrentModel("lama");
+    return { beforeSwitch, onSlbr, backToLama };
+  });
+  assert(
+    maskToolsOpenRoundTrip.beforeSwitch.showMaskTools === true &&
+      maskToolsOpenRoundTrip.beforeSwitch.maskToolsPreferredVisible === true,
+    "Image mask toolbar should be open before the first model switch."
+  );
+  assert(
+    maskToolsOpenRoundTrip.onSlbr.currentModelRequiresMask === false &&
+      maskToolsOpenRoundTrip.onSlbr.showMaskTools === false &&
+      maskToolsOpenRoundTrip.onSlbr.maskToolsPreferredVisible === true &&
+      maskToolsOpenRoundTrip.onSlbr.imageDrawingEnabled === false &&
+      maskToolsOpenRoundTrip.onSlbr.imageDrawingPreference === true,
+    "Switching to SLBR should hide mask tools without overwriting the open preference."
+  );
+  assert(
+    maskToolsOpenRoundTrip.backToLama.currentModelRequiresMask === true &&
+      maskToolsOpenRoundTrip.backToLama.showMaskTools === true &&
+      maskToolsOpenRoundTrip.backToLama.imageDrawingEnabled === true,
+    "Switching back to Lama should restore the previously open mask toolbar."
+  );
+
+  const maskToolsClosedRoundTrip = await page.evaluate(() => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    bridge.setCurrentModel("lama");
+    bridge.setMaskToolsVisible(false);
+    const beforeSwitch = bridge.getSnapshot();
+    const onSlbr = bridge.setCurrentModel("slbr");
+    const backToLama = bridge.setCurrentModel("lama");
+    return { beforeSwitch, onSlbr, backToLama };
+  });
+  assert(
+    maskToolsClosedRoundTrip.beforeSwitch.showMaskTools === false &&
+      maskToolsClosedRoundTrip.beforeSwitch.maskToolsPreferredVisible === false,
+    "Image mask toolbar should be closed before the second model switch."
+  );
+  assert(
+    maskToolsClosedRoundTrip.onSlbr.currentModelRequiresMask === false &&
+      maskToolsClosedRoundTrip.onSlbr.showMaskTools === false &&
+      maskToolsClosedRoundTrip.onSlbr.maskToolsPreferredVisible === false,
+    "Switching to SLBR should hide mask tools while preserving the closed preference."
+  );
+  assert(
+    maskToolsClosedRoundTrip.backToLama.currentModelRequiresMask === true &&
+      maskToolsClosedRoundTrip.backToLama.showMaskTools === false,
+    "Switching back to Lama should restore the previously closed mask toolbar."
+  );
 
   const maskUrl = await createDataUrl(page, { fillStyle: "rgba(0,0,0,1)" });
   const resultUrl = await createDataUrl(page, { fillStyle: "rgba(0,128,255,0.85)" });
@@ -857,6 +983,81 @@ async function testBackendTerminalRefresh(page) {
     ),
     "Image batch finished log should be converted into an accent completion summary."
   );
+
+  await page.click('[data-testid="backend-manager-close-button"]');
+  await page.waitForSelector('[data-testid="backend-terminal-output"]', {
+    state: "hidden",
+    timeout: 20000,
+  });
+}
+
+async function testGlobalSettingsTempCleanup(page) {
+  console.log("Testing global settings temp cleanup controls...");
+  await page.goto(imageUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+  await page.waitForSelector('[data-testid="image-page"]', { timeout: 60000 });
+
+  await page.click('[data-testid="open-global-settings-button"]');
+  await page.waitForSelector('[data-testid="global-settings-card"]', {
+    state: "visible",
+    timeout: 20000,
+  });
+  await page.click('[data-testid="global-settings-tab-files"]');
+  await page.waitForSelector('[data-testid="global-settings-temp-cleanup-max-age-days"]', {
+    state: "visible",
+    timeout: 20000,
+  });
+
+  const maxAgeInput = page.getByLabel("保留天数");
+  await maxAgeInput.click({ clickCount: 3 });
+  await maxAgeInput.fill("14");
+  const failureRetentionInput = page.getByLabel("视频失败现场保留数量");
+  await failureRetentionInput.click({ clickCount: 3 });
+  await failureRetentionInput.fill("4");
+  await page.click('[data-testid="global-settings-temp-cleanup-enabled"]');
+  await page.click('[data-testid="global-settings-temp-cleanup-on-startup"]');
+  await page.click('[data-testid="global-settings-cleanup-temp-files-button"]');
+  await page.waitForSelector(".q-notification", { state: "visible", timeout: 10000 });
+
+  const cleanupResult = await page.evaluate(async () => {
+    const config = await window.electron.ipcRenderer.invoke("get-app-config");
+    return {
+      tempCleanup: config.fileManagement?.tempCleanup || {},
+      notificationText: Array.from(document.querySelectorAll(".q-notification"))
+        .map((item) => item.textContent || "")
+        .join("\n"),
+    };
+  });
+
+  assert(
+    cleanupResult.tempCleanup.enabled === true,
+    "Manual cleanup should pass enabled=true into the cleanup IPC mock."
+  );
+  assert(
+    cleanupResult.tempCleanup.onStartup === true,
+    "Manual cleanup should pass onStartup=true into the cleanup IPC mock."
+  );
+  assert(
+    cleanupResult.tempCleanup.maxAgeDays === 14,
+    "Manual cleanup should pass the configured max age into the cleanup IPC mock."
+  );
+  assert(
+    cleanupResult.notificationText.includes("已清理"),
+    "Manual cleanup should show a success notification."
+  );
+
+  await page.click('[data-testid="global-settings-save-button"]');
+  await page.waitForSelector('[data-testid="global-settings-card"]', {
+    state: "hidden",
+    timeout: 20000,
+  });
+
+  const persistedConfig = await page.evaluate(async () =>
+    window.electron.ipcRenderer.invoke("get-app-config")
+  );
+  assert(
+    persistedConfig.video?.failureRetentionCount === 4,
+    "Video failure scene retention should be configurable from file management."
+  );
 }
 
 async function runWorkflowTest() {
@@ -900,6 +1101,7 @@ async function runWorkflowTest() {
     await testImageWorkflow(page);
     await testVideoWorkflow(page);
     await testBackendTerminalRefresh(page);
+    await testGlobalSettingsTempCleanup(page);
 
     assert(
       consoleProblems.length === 0,

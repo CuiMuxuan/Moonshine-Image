@@ -28,8 +28,8 @@ function runAssertions() {
 
   logSection("Output Config");
   assertPattern({
-    file: "src/config/ConfigManager.js",
-    description: "Frontend config defaults include image output format and quality",
+    file: "src/shared/appConfigSchema.js",
+    description: "Shared config defaults include image output format and quality",
     pattern: /imageOutputFormat:\s*"auto"[\s\S]*imageOutputQuality:\s*DEFAULT_IMAGE_OUTPUT_QUALITY/,
   });
   assertPattern({
@@ -51,6 +51,36 @@ function runAssertions() {
     file: "src-electron/electron-main.js",
     description: "Electron save-app-config validates raw payload before sanitizing",
     pattern: /validateConfig\(mergeConfigForStrictValidation\(newConfig\)\)[\s\S]*const sanitizedConfig = sanitizeAppConfig\(newConfig\)/,
+  });
+  assertPattern({
+    file: "src/shared/appConfigSchema.js",
+    description: "Shared config schema includes versioned temp cleanup defaults",
+    pattern: /CONFIG_SCHEMA_VERSION[\s\S]*DEFAULT_TEMP_CLEANUP[\s\S]*tempCleanup:\s*\{ \.\.\.DEFAULT_TEMP_CLEANUP \}/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Electron startup cleanup uses the global temp cleanup policy",
+    pattern: /function runStartupTempCleanup\(\)[\s\S]*cleanupOptions\.enabled[\s\S]*cleanupOptions\.onStartup[\s\S]*cleanupAppTempFiles\(cleanupOptions\)/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Temp cleanup keeps recent video processing tasks within the retention window",
+    pattern: /isVideoProcessingTaskNewerThanCutoff[\s\S]*cleanupVideoProcessingTempWithPolicy\(cleanupOptions = \{\}, cutoffMs[\s\S]*cleanupVideoProcessingTempEntries\(\{ preserveTaskIds, cutoffMs \}\)/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Legacy video temp cleanup keeps compatibility by not pruning missing resume records",
+    pattern: /cleanup-video-processing-temp[\s\S]*cleanupVideoProcessingTempEntries\(\{[\s\S]*preserveTaskIds,[\s\S]*pruneMissingTasks: false/,
+  });
+  assertPattern({
+    file: "src/components/global/GlobalSettings.vue",
+    description: "File management exposes configurable temp cleanup controls",
+    pattern: /临时文件清理[\s\S]*允许自动清理[\s\S]*v-model="localConfig\.fileManagement\.tempCleanup\.enabled"[\s\S]*应用启动时执行[\s\S]*v-model="localConfig\.fileManagement\.tempCleanup\.onStartup"[\s\S]*v-model\.number="localConfig\.fileManagement\.tempCleanup\.maxAgeDays"[\s\S]*cleanup-app-temp-files/,
+  });
+  assertPattern({
+    file: "src/components/global/GlobalSettings.vue",
+    description: "Video failure scene retention setting is shown in file management",
+    pattern: /data-testid="global-settings-tab-files"[\s\S]*v-model\.number="localConfig\.video\.failureRetentionCount"[\s\S]*data-testid="global-settings-video-failure-retention-count"[\s\S]*<q-tab-panel name="appearance"/,
   });
 
   logSection("Backend Protocol");

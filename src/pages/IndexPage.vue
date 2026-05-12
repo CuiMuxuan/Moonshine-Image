@@ -121,6 +121,7 @@ const imageModelOptions = ref([
   },
 ]);
 const showMaskTools = ref(true);
+const maskToolsPreferredVisible = ref(true);
 const isMaskDrawingMode = ref(runtimeUiStore.imageMaskDrawingEnabled);
 const imageMaskToolState = computed(() => runtimeUiStore.imageMaskToolState);
 const actionScope = ref({ label: "仅选中文件", value: "selected" });
@@ -367,6 +368,7 @@ const toggleFileSelection = (file) => {
 
 const handleModelChange = (model, { notify = true } = {}) => {
   if (!model) return;
+  rememberMaskToolsPreference();
   currentModel.value = model;
   appStateStore.setSharedCurrentModel?.(model);
   const metadata = modelRegistryStore.imageModels.find((item) => item.id === model) || {};
@@ -422,16 +424,36 @@ const openModelManagement = (modelId = currentModel.value) => {
   });
 };
 
+const modelSupportsMaskTools = (metadata = imageModelMetadata.value) =>
+  metadata.requiresMask !== false;
+
+const rememberMaskToolsPreference = () => {
+  if (currentModelRequiresMask.value) {
+    maskToolsPreferredVisible.value = Boolean(showMaskTools.value);
+  }
+};
+
+const setMaskToolsVisible = (
+  value,
+  { persist = currentModelRequiresMask.value } = {}
+) => {
+  const nextValue = Boolean(value);
+  if (persist) {
+    maskToolsPreferredVisible.value = nextValue;
+  }
+  showMaskTools.value = currentModelRequiresMask.value ? nextValue : false;
+};
+
 const applyModelRuntimeState = (metadata = imageModelMetadata.value) => {
   ensureModelParameterDefaults(metadata);
-  if (metadata.requiresMask === false) {
+  if (!modelSupportsMaskTools(metadata)) {
     showMaskTools.value = false;
-    setMaskDrawingMode(false);
+    setMaskDrawingMode(false, { persist: false });
     return;
   }
 
-  showMaskTools.value = true;
-  setMaskDrawingMode(runtimeUiStore.imageMaskDrawingEnabled);
+  showMaskTools.value = maskToolsPreferredVisible.value;
+  setMaskDrawingMode(runtimeUiStore.imageMaskDrawingEnabled, { persist: false });
 };
 
 // 处理全选
@@ -451,10 +473,12 @@ const handleMaskUpdate = (maskData) => {
   }
 };
 
-const setMaskDrawingMode = (value) => {
+const setMaskDrawingMode = (value, { persist = true } = {}) => {
   const nextValue = Boolean(value);
   isMaskDrawingMode.value = nextValue;
-  runtimeUiStore.setImageMaskDrawingEnabled(nextValue);
+  if (persist) {
+    runtimeUiStore.setImageMaskDrawingEnabled(nextValue);
+  }
 };
 
 const updateImageMaskToolState = (value = {}) => {
@@ -629,13 +653,19 @@ useConfiguredShortcuts({
 });
 
 const captureMaskUiState = () => ({
-  showMaskTools: showMaskTools.value,
-  drawingMode: isMaskDrawingMode.value,
+  showMaskTools: maskToolsPreferredVisible.value,
+  drawingMode: runtimeUiStore.imageMaskDrawingEnabled,
 });
 
 const restoreMaskUiState = (maskUiState = {}) => {
-  showMaskTools.value = maskUiState.showMaskTools ?? showMaskTools.value;
-  setMaskDrawingMode(maskUiState.drawingMode ?? isMaskDrawingMode.value);
+  setMaskToolsVisible(maskUiState.showMaskTools ?? maskToolsPreferredVisible.value, {
+    persist: true,
+  });
+  if (currentModelRequiresMask.value) {
+    setMaskDrawingMode(maskUiState.drawingMode ?? runtimeUiStore.imageMaskDrawingEnabled);
+    return;
+  }
+  setMaskDrawingMode(false, { persist: false });
 };
 
 const finalizeSuccessfulMaskRun = async (
@@ -1369,11 +1399,26 @@ const registerImageE2ETestBridge = () => {
     addFile: async (file) => fileManagerStore.addFile(file),
     setMask: (fileId, maskData) => fileManagerStore.updateFileMask(fileId, maskData),
     clearMask: (fileId) => fileManagerStore.updateFileMask(fileId, null),
+    setCurrentModel: (modelId) => {
+      handleModelChange(modelId, { notify: false });
+      return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
+    },
+    setMaskToolsVisible: (value) => {
+      setMaskToolsVisible(value, { persist: true });
+      return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
+    },
     addProcessingResult: (fileId, resultData, metadata = {}) =>
       fileManagerStore.addProcessingResult(fileId, resultData, metadata),
     undoProcessing: (fileId = fileManagerStore.currentFileId) =>
       fileManagerStore.undoProcessing(fileId),
     getSnapshot: () => ({
+      currentModel: currentModel.value,
+      availableModels: imageModelOptions.value.map((option) => option.value),
+      showMaskTools: showMaskTools.value,
+      maskToolsPreferredVisible: maskToolsPreferredVisible.value,
+      currentModelRequiresMask: currentModelRequiresMask.value,
+      imageDrawingEnabled: isMaskDrawingMode.value,
+      imageDrawingPreference: runtimeUiStore.imageMaskDrawingEnabled,
       fileCount: fileManagerStore.files.length,
       currentFileId: fileManagerStore.currentFileId,
       currentFileName: fileManagerStore.currentFile?.name || "",
@@ -1663,7 +1708,7 @@ const syncLayoutFooter = () => {
         if (!currentModelRequiresMask.value) {
           return;
         }
-        showMaskTools.value = !showMaskTools.value;
+        setMaskToolsVisible(!showMaskTools.value, { persist: true });
       },
       "show-original": showOriginalImage,
       "show-processed": showProcessedImage,
@@ -2053,7 +2098,7 @@ const savePageState = async () => {
       leftDrawerOpen: leftDrawerOpen.value,
       rightDrawerOpen: rightDrawerOpen.value,
       currentModel: currentModel.value,
-      showMaskTools: showMaskTools.value,
+      showMaskTools: maskToolsPreferredVisible.value,
       actionScope: actionScope.value,
       selectAll: selectAll.value,
       savePath: effectiveSavePath.value,
@@ -2108,8 +2153,11 @@ const restorePageState = async () => {
         leftDrawerOpen.value = savedUIState.leftDrawerOpen ?? defaultDrawerState.left;
         rightDrawerOpen.value = savedUIState.rightDrawerOpen ?? defaultDrawerState.right;
         currentModel.value = sharedModel || savedUIState.currentModel || "lama";
-        showMaskTools.value = savedUIState.showMaskTools ?? true;
-        setMaskDrawingMode(runtimeUiStore.imageMaskDrawingEnabled);
+        maskToolsPreferredVisible.value = savedUIState.showMaskTools ?? true;
+        showMaskTools.value = currentModelRequiresMask.value
+          ? maskToolsPreferredVisible.value
+          : false;
+        setMaskDrawingMode(runtimeUiStore.imageMaskDrawingEnabled, { persist: false });
         actionScope.value =
           savedUIState.actionScope?.value === "folder"
             ? { label: "整个文件夹", value: "folder" }
@@ -2131,8 +2179,7 @@ const restorePageState = async () => {
         fileManagerStore.selectAllFiles(true);
       }
       if (imageModelMetadata.value.requiresMask === false) {
-        showMaskTools.value = false;
-        setMaskDrawingMode(false);
+        applyModelRuntimeState(imageModelMetadata.value);
       }
     }
   } catch (error) {

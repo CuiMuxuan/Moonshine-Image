@@ -170,6 +170,21 @@ function runAssertions() {
     pattern: /getSharedCurrentModel[\s\S]*setSharedCurrentModel/,
   });
   assertPattern({
+    file: "src/pages/IndexPage.vue",
+    description: "Image page preserves mask toolbar preference across non-mask model switches",
+    pattern: /const maskToolsPreferredVisible = ref\(true\);[\s\S]*const rememberMaskToolsPreference = \(\) => \{[\s\S]*maskToolsPreferredVisible\.value = Boolean\(showMaskTools\.value\);[\s\S]*showMaskTools\.value = maskToolsPreferredVisible\.value;/,
+  });
+  assertPattern({
+    file: "src/pages/IndexPage.vue",
+    description: "Image page hides unsupported mask tools without overwriting drawing preference",
+    pattern: /if \(!modelSupportsMaskTools\(metadata\)\) \{[\s\S]*showMaskTools\.value = false;[\s\S]*setMaskDrawingMode\(false, \{ persist: false \}\);/,
+  });
+  assertPattern({
+    file: "src/pages/IndexPage.vue",
+    description: "Image page captures preferred drawing mode instead of temporary disabled state",
+    pattern: /const captureMaskUiState = \(\) => \(\{[\s\S]*showMaskTools: maskToolsPreferredVisible\.value,[\s\S]*drawingMode: runtimeUiStore\.imageMaskDrawingEnabled,/,
+  });
+  assertPattern({
     file: "src/services/ImageProcessingService.js",
     description: "Moonshine image request validator enforces model_id",
     pattern: /if \(!requestData\.model_id\) \{\s*throw new Error\('.*model_id.*'\);\s*\}/,
@@ -258,19 +273,39 @@ function runAssertions() {
   logSection("Config & Shared State Contracts");
 
   assertPattern({
-    file: "src/config/ConfigManager.js",
-    description: "Config defaults keep backendProjectPath + modelDir + modelPath",
+    file: "src/shared/appConfigSchema.js",
+    description: "Shared config schema defaults keep backendProjectPath + modelDir + modelPath",
     pattern: /general:\s*\{[\s\S]*modelPath:\s*""[\s\S]*modelDir:\s*""[\s\S]*backendProjectPath:\s*""/,
   });
   assertPattern({
-    file: "src/config/ConfigManager.js",
+    file: "src/shared/appConfigSchema.js",
     description: "Config default brush color stays at #8a71d4",
-    pattern: /const DEFAULT_IMAGE_BRUSH = Object\.freeze\(\{[\s\S]*color:\s*"#8a71d4",/,
+    pattern: /export const DEFAULT_IMAGE_BRUSH = Object\.freeze\(\{[\s\S]*color:\s*"#8a71d4",/,
+  });
+  assertPattern({
+    file: "src/shared/appConfigSchema.js",
+    description: "Video default brush color inherits image brush color",
+    pattern: /export const DEFAULT_VIDEO_BRUSH = Object\.freeze\(\{[\s\S]*color:\s*DEFAULT_IMAGE_BRUSH\.color,/,
+  });
+  assertPattern({
+    file: "src/shared/appConfigSchema.js",
+    description: "Shared config schema owns versioned migration and removes unknown legacy fields",
+    pattern: /export const CONFIG_SCHEMA_VERSION[\s\S]*alignConfigWithDefaultSchema[\s\S]*migrateLegacyConfigShape[\s\S]*needsConfigMigration/,
   });
   assertPattern({
     file: "src/config/ConfigManager.js",
-    description: "Video default brush color inherits image brush color",
-    pattern: /const DEFAULT_VIDEO_BRUSH = Object\.freeze\(\{[\s\S]*color:\s*DEFAULT_IMAGE_BRUSH\.color,/,
+    description: "Frontend config manager uses shared default config instead of a local default tree",
+    pattern: /from "src\/shared\/appConfigSchema"[\s\S]*static defaultConfig = DEFAULT_APP_CONFIG;/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Electron config uses shared schema and migrates older config files on load",
+    pattern: /from "\.\.\/src\/shared\/appConfigSchema\.js"[\s\S]*needsConfigMigration\(configData\)[\s\S]*fs\.writeFileSync\(configPath, JSON\.stringify\(sanitizedConfig, null, 2\)\)/,
+  });
+  assertPattern({
+    file: "src/shared/appConfigSchema.js",
+    description: "Removed advanced config fields are absent from the shared schema",
+    pattern: /^((?!maxConcurrentTasks|enableDebugMode|logLevel).)*$/s,
   });
   assertPattern({
     file: "src/config/ConfigManager.js",
@@ -405,6 +440,11 @@ function runAssertions() {
     pattern: /data-testid="global-settings-tab-backend"[\s\S]*data-testid="global-settings-backend-port"[\s\S]*data-testid="global-settings-save-button"/,
   });
   assertPattern({
+    file: "src/components/global/GlobalSettings.vue",
+    description: "Global settings exposes temp cleanup controls and video failure retention in file management",
+    pattern: /data-testid="global-settings-tab-files"[\s\S]*data-testid="global-settings-cleanup-temp-files-button"[\s\S]*data-testid="global-settings-temp-cleanup-enabled"[\s\S]*data-testid="global-settings-temp-cleanup-max-age-days"[\s\S]*data-testid="global-settings-video-failure-retention-count"/,
+  });
+  assertPattern({
     file: "src/components/common/ModelCapabilityRadar.vue",
     description: "Model capability radar renders 10-point decimal capability values",
     pattern: /formatCapabilityValue\(getCapabilityValue\(axis\.key\)\)[\s\S]*\/10[\s\S]*const CAPABILITY_MAX = 10;/,
@@ -423,6 +463,11 @@ function runAssertions() {
     file: "src/components/global/BackendManager.vue",
     description: "Backend manager terminal progress refresh stays within 500-1000 ms",
     pattern: /const TERMINAL_PROGRESS_SYNC_MIN_MS = 500;[\s\S]*const TERMINAL_PROGRESS_SYNC_MAX_MS = 1000;/,
+  });
+  assertPattern({
+    file: "src/components/global/BackendManager.vue",
+    description: "Backend manager exposes close button for E2E modal isolation",
+    pattern: /data-testid="backend-manager-close-button"/,
   });
   assertPattern({
     file: "src/components/global/BackendManager.vue",
@@ -482,7 +527,7 @@ function runAssertions() {
   assertPattern({
     file: "scripts/e2e-comprehensive-workflow.mjs",
     description: "Comprehensive E2E workflow covers image, video, mask and backend terminal flows",
-    pattern: /testImageWorkflow[\s\S]*testVideoWorkflow[\s\S]*testBackendTerminalRefresh/,
+    pattern: /testImageWorkflow[\s\S]*testVideoWorkflow[\s\S]*testBackendTerminalRefresh[\s\S]*testGlobalSettingsTempCleanup/,
   });
 
   console.log("\nAll P0 regression assertions passed.");

@@ -31,6 +31,24 @@ import {
   PACKAGED_RUNTIME_RESOURCE_DIR,
   PACKAGED_RUNTIME_TARGET_DIR,
 } from "./integrity/public-key.js";
+import {
+  alignConfigWithDefaultSchema,
+  cloneConfig,
+  CONFIG_SCHEMA_VERSION,
+  createDefaultAppConfig,
+  DEFAULT_APP_CONFIG,
+  DEFAULT_IMAGE_OUTPUT_QUALITY,
+  DEFAULT_TEMP_CLEANUP,
+  IMAGE_OUTPUT_FORMAT_OPTIONS,
+  IMAGE_OUTPUT_NAMING_MODES,
+  isPlainObject,
+  migrateLegacyConfigShape,
+  needsConfigMigration,
+} from "../src/shared/appConfigSchema.js";
+import {
+  normalizeShortcutConfig,
+  validateShortcutConfig as validateShortcutConfigShape,
+} from "../src/utils/shortcutConfig.js";
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const APP_DISPLAY_NAME = "Moonshine-Image";
@@ -55,119 +73,8 @@ protocol.registerSchemesAsPrivileged([
     },
   },
 ]);
-const DEFAULT_BRAND_COLORS = Object.freeze({
-  primary: "#8a71d4",
-  secondary: "#c1bee6",
-  accent: "#e6cfad",
-  positive: "#189e7a",
-  negative: "#cc455d",
-  info: "#7a8dbe",
-  warning: "#e6ac00",
-});
-const DEFAULT_IMAGE_BRUSH = Object.freeze({
-  size: 20,
-  color: "#8a71d4",
-  alpha: 0.75,
-});
-const DEFAULT_VIDEO_BRUSH = Object.freeze({
-  size: 24,
-  color: DEFAULT_IMAGE_BRUSH.color,
-  alpha: 0.75,
-});
-const SHORTCUT_DEFAULTS = Object.freeze({
-  drawingUndo: ["Ctrl", "Z"],
-  drawingResetView: ["Ctrl", "X"],
-  drawingToggle: ["Ctrl", "Space"],
-  drawingBrush: ["1"],
-  drawingRect: ["2"],
-  drawingErase: ["3"],
-  drawingHoldBrush: ["1", "Q"],
-  drawingHoldRect: ["2", "Q"],
-  drawingHoldErase: ["3", "E"],
-  imageUndoProcessing: ["Ctrl", "Alt", "Z"],
-  imageCompareOriginal: ["Ctrl", "Alt", "X"],
-  imageSelectAll: ["Ctrl", "A"],
-});
-const SHORTCUT_KEY_COUNTS = Object.freeze({
-  drawingUndo: 2,
-  drawingResetView: 2,
-  drawingToggle: 2,
-  drawingBrush: 1,
-  drawingRect: 1,
-  drawingErase: 1,
-  drawingHoldBrush: 2,
-  drawingHoldRect: 2,
-  drawingHoldErase: 2,
-  imageUndoProcessing: 3,
-  imageCompareOriginal: 3,
-  imageSelectAll: 2,
-});
-const IMAGE_OUTPUT_NAMING_MODES = Object.freeze(["original", "prefixUuid"]);
-const IMAGE_OUTPUT_FORMAT_OPTIONS = Object.freeze(["auto", "original", "png", "jpg", "webp"]);
-const DEFAULT_IMAGE_OUTPUT_QUALITY = 95;
-const CONFIG_SCHEMA_VERSION = 2;
-// Default configuration
-const DEFAULT_CONFIG = {
-  schemaVersion: CONFIG_SCHEMA_VERSION,
-  general: {
-    backendPort: 8080,
-    launchMode: "cuda", // 'cuda' | 'cpu'
-    modelPath: "",
-    modelDir: "",
-    backendProjectPath: "",
-    defaultModel: "lama",
-    autoStart: true,
-  },
-  fileManagement: {
-    downloadPath: "",
-    tempPath: "",
-    imageFolderName: "images",
-    videoFolderName: "videos",
-  },
-  advanced: {
-    imageHistoryLimit: 10,
-    imageWarningSize: 50, // MB
-    stateSaveLimit: 100, // MB
-    imageProcessingMethod: "path",
-    imageOutputFormat: "auto",
-    imageOutputQuality: DEFAULT_IMAGE_OUTPUT_QUALITY,
-    imageOutputNamingMode: "original",
-    imageOutputFixedPrefix: "moonshine",
-    imageBrushDefault: { ...DEFAULT_IMAGE_BRUSH },
-    videoBrushDefault: { ...DEFAULT_VIDEO_BRUSH },
-  },
-  ui: {
-    theme: "light",
-    buttonSize: "sm",
-    brandColors: { ...DEFAULT_BRAND_COLORS },
-    showStartupAnimation: true,
-    showWelcomeDialog: true,
-    confirmBeforeExit: true,
-    autoSaveInterval: 30000,
-  },
-  shortcuts: JSON.parse(JSON.stringify(SHORTCUT_DEFAULTS)),
-  video: {
-    frameExtractionFormat: "jpg",
-    batchFrameCount: 120,
-    historyLimit: 5,
-    defaultFrameRate: 30,
-    maxKeyframes: 100,
-    autoNextFrameInterval: 0.1,
-    tempFramesPath: "",
-    supportedFormats: ["mp4", "mov", "avi", "mkv", "wmv"],
-    maxConcurrentFrameProcessing: 4,
-    enableFrameSkipping: true,
-    memoryOptimization: true,
-    autoSaveInterval: 30,
-    maxDraftRetention: 7,
-    batchRetryCount: 3,
-    failureRetentionCount: 3,
-    proxyMaxSide: 1280,
-    previewTrialSeconds: 3,
-  },
-};
 // Global configuration object
-let globalConfig = { ...DEFAULT_CONFIG };
+let globalConfig = cloneConfig(DEFAULT_APP_CONFIG);
 
 const TARGET_PYTHON_VERSION = "3.11.5";
 const MIN_SYSTEM_PYTHON_MINOR = 10;
@@ -183,104 +90,8 @@ const BACKEND_PATH_CJK_BLOCK_MESSAGE =
 const CJK_PATH_PATTERN = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u;
 let packagedIntegrityStatus = null;
 
-function normalizeShortcutKeys(keys = []) {
-  const normalized = Array.from(
-    new Set(
-      (Array.isArray(keys) ? keys : [])
-        .map((item) => String(item || "").trim())
-        .filter(Boolean)
-        .map((item) => {
-          if (item === " " || item === "Space") return "Space";
-          if (item === "Control") return "Ctrl";
-          return item.length === 1 ? item.toUpperCase() : item;
-        })
-    )
-  );
-
-  return normalized.sort((left, right) => {
-    const order = ["Ctrl", "Alt", "Shift", "Meta"];
-    const leftIndex = order.indexOf(left);
-    const rightIndex = order.indexOf(right);
-    if (leftIndex !== -1 || rightIndex !== -1) {
-      if (leftIndex === -1) return 1;
-      if (rightIndex === -1) return -1;
-      return leftIndex - rightIndex;
-    }
-    return left.localeCompare(right);
-  });
-}
-
-function normalizeShortcutConfig(shortcuts = {}) {
-  const nextConfig = {};
-
-  Object.entries(SHORTCUT_DEFAULTS).forEach(([actionId, defaultKeys]) => {
-    const normalizedKeys = normalizeShortcutKeys(shortcuts?.[actionId] || defaultKeys);
-    nextConfig[actionId] =
-      normalizedKeys.length === SHORTCUT_KEY_COUNTS[actionId]
-        ? normalizedKeys
-        : [...defaultKeys];
-  });
-
-  return nextConfig;
-}
-
 function validateShortcutConfig(shortcuts = {}) {
-  const normalized = normalizeShortcutConfig(shortcuts);
-  const seen = new Set();
-
-  return Object.entries(normalized).every(([actionId, keys]) => {
-    if (keys.length !== SHORTCUT_KEY_COUNTS[actionId]) {
-      return false;
-    }
-
-    const signature = keys.join("+");
-    if (seen.has(signature)) {
-      return false;
-    }
-    seen.add(signature);
-    return true;
-  });
-}
-
-function cloneConfig(value) {
-  return JSON.parse(JSON.stringify(value));
-}
-
-function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function isTypeCompatible(defaultValue, candidateValue) {
-  if (candidateValue === undefined) return false;
-  if (Array.isArray(defaultValue)) return Array.isArray(candidateValue);
-  if (isPlainObject(defaultValue)) return isPlainObject(candidateValue);
-  if (typeof defaultValue === "number") {
-    return typeof candidateValue === "number" && !Number.isNaN(candidateValue);
-  }
-  return typeof candidateValue === typeof defaultValue;
-}
-
-function alignConfigWithDefaultSchema(defaultValue, candidateValue) {
-  const defaultClone = cloneConfig(defaultValue);
-
-  if (Array.isArray(defaultValue)) {
-    return Array.isArray(candidateValue) ? cloneConfig(candidateValue) : defaultClone;
-  }
-
-  if (isPlainObject(defaultValue)) {
-    if (!isPlainObject(candidateValue)) {
-      return defaultClone;
-    }
-
-    return Object.keys(defaultValue).reduce((result, key) => {
-      result[key] = alignConfigWithDefaultSchema(defaultValue[key], candidateValue[key]);
-      return result;
-    }, {});
-  }
-
-  return isTypeCompatible(defaultValue, candidateValue)
-    ? cloneConfig(candidateValue)
-    : defaultClone;
+  return validateShortcutConfigShape(shortcuts).length === 0;
 }
 
 function clampNumber(value, min, max) {
@@ -311,6 +122,12 @@ function mergeConfigForStrictValidation(config = {}) {
     merged.general = {
       ...merged.general,
       ...config.general,
+    };
+  }
+  if (isPlainObject(config?.fileManagement)) {
+    merged.fileManagement = {
+      ...merged.fileManagement,
+      ...config.fileManagement,
     };
   }
   return merged;
@@ -437,6 +254,25 @@ function readJsonFileSafe(filePath, fallbackValue = null) {
 function writeJsonFileSafe(filePath, data) {
   ensureParentDirectory(filePath);
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+}
+
+function getLatestFailedVideoTaskIds(registry = readVideoProcessingRegistry()) {
+  const latestFailedTaskByFingerprint = new Map();
+
+  Object.entries(registry.tasks || {}).forEach(([taskId, task]) => {
+    const status = String(task?.status || "");
+    const fingerprint = String(task?.fingerprint || "").trim();
+    if (!fingerprint || !["failed", "running"].includes(status)) {
+      return;
+    }
+
+    const previous = latestFailedTaskByFingerprint.get(fingerprint);
+    if (!previous || getVideoTaskTimestamp(task) >= getVideoTaskTimestamp(previous.task)) {
+      latestFailedTaskByFingerprint.set(fingerprint, { taskId, task });
+    }
+  });
+
+  return new Set(Array.from(latestFailedTaskByFingerprint.values()).map(({ taskId }) => taskId));
 }
 
 function readVideoProcessingRegistry() {
@@ -1636,21 +1472,22 @@ function getConfigPath() {
   return path.join(configDir, "config.json");
 }
 
-function mergeConfigWithDefaults(config = {}) {
-  if (
-    config &&
-    typeof config === "object" &&
-    !config.general &&
-    typeof config.apiPort === "number"
-  ) {
-    config = {
-      general: {
-        backendPort: config.apiPort,
-      },
-    };
-  }
+function createRuntimeDefaultConfig() {
+  const userDataPath = app.getPath("userData");
+  const nextConfig = createDefaultAppConfig();
+  nextConfig.fileManagement.downloadPath = path.join(userDataPath, "downloads");
+  nextConfig.fileManagement.tempPath = path.join(userDataPath, "temp");
+  nextConfig.general.modelPath = getDefaultModelDir();
+  nextConfig.general.modelDir = "";
+  nextConfig.general.backendProjectPath = getDefaultBackendProjectPath();
+  nextConfig.general.defaultModel = "lama";
+  nextConfig.video.tempFramesPath = path.join(userDataPath, "temp", "video_frames");
+  return nextConfig;
+}
 
-  const merged = alignConfigWithDefaultSchema(DEFAULT_CONFIG, config);
+function mergeConfigWithDefaults(config = {}) {
+  const migratedConfig = migrateLegacyConfigShape(config);
+  const merged = alignConfigWithDefaultSchema(createRuntimeDefaultConfig(), migratedConfig);
   merged.schemaVersion = CONFIG_SCHEMA_VERSION;
   return merged;
 }
@@ -1722,6 +1559,34 @@ function sanitizeAppConfig(config = {}) {
     merged.general.backendProjectPath
   );
   merged.ui.showStartupAnimation = normalizeBoolean(merged.ui?.showStartupAnimation, true);
+  merged.fileManagement.tempCleanup = {
+    enabled: normalizeBoolean(
+      merged.fileManagement?.tempCleanup?.enabled,
+      DEFAULT_TEMP_CLEANUP.enabled
+    ),
+    onStartup: normalizeBoolean(
+      merged.fileManagement?.tempCleanup?.onStartup,
+      DEFAULT_TEMP_CLEANUP.onStartup
+    ),
+    maxAgeDays: normalizeInteger(
+      merged.fileManagement?.tempCleanup?.maxAgeDays,
+      DEFAULT_TEMP_CLEANUP.maxAgeDays,
+      1,
+      365
+    ),
+    includeImages: normalizeBoolean(
+      merged.fileManagement?.tempCleanup?.includeImages,
+      DEFAULT_TEMP_CLEANUP.includeImages
+    ),
+    includeVideos: normalizeBoolean(
+      merged.fileManagement?.tempCleanup?.includeVideos,
+      DEFAULT_TEMP_CLEANUP.includeVideos
+    ),
+    keepRecentFailures: normalizeBoolean(
+      merged.fileManagement?.tempCleanup?.keepRecentFailures,
+      DEFAULT_TEMP_CLEANUP.keepRecentFailures
+    ),
+  };
   merged.advanced.imageProcessingMethod =
     merged.advanced?.imageProcessingMethod === "base64" ? "base64" : "path";
   merged.advanced.imageOutputFormat = IMAGE_OUTPUT_FORMAT_OPTIONS.includes(
@@ -1849,6 +1714,40 @@ function validateConfig(config) {
       return false;
     }
 
+    const tempCleanup = config.fileManagement?.tempCleanup;
+    if (!isPlainObject(tempCleanup)) {
+      return false;
+    }
+    const tempCleanupKeys = Object.keys(tempCleanup);
+    if (
+      tempCleanupKeys.length !== Object.keys(DEFAULT_TEMP_CLEANUP).length ||
+      tempCleanupKeys.some(
+        (key) => !Object.prototype.hasOwnProperty.call(DEFAULT_TEMP_CLEANUP, key)
+      )
+    ) {
+      return false;
+    }
+    if (
+      [
+        tempCleanup.enabled,
+        tempCleanup.onStartup,
+        tempCleanup.includeImages,
+        tempCleanup.includeVideos,
+        tempCleanup.keepRecentFailures,
+      ].some((value) => typeof value !== "boolean")
+    ) {
+      return false;
+    }
+    if (
+      typeof tempCleanup.maxAgeDays !== "number" ||
+      Number.isNaN(tempCleanup.maxAgeDays) ||
+      !Number.isInteger(tempCleanup.maxAgeDays) ||
+      tempCleanup.maxAgeDays < 1 ||
+      tempCleanup.maxAgeDays > 365
+    ) {
+      return false;
+    }
+
     if (
       typeof config.video.historyLimit !== "number" ||
       Number.isNaN(config.video.historyLimit) ||
@@ -1922,7 +1821,10 @@ function loadAppConfig() {
       const sanitizedConfig = sanitizeAppConfig(configData);
       if (validateConfig(sanitizedConfig)) {
         globalConfig = sanitizedConfig;
-        if (JSON.stringify(configData) !== JSON.stringify(sanitizedConfig)) {
+        if (
+          needsConfigMigration(configData) ||
+          JSON.stringify(configData) !== JSON.stringify(sanitizedConfig)
+        ) {
           fs.writeFileSync(configPath, JSON.stringify(sanitizedConfig, null, 2));
         }
         console.log("Configuration file loaded successfully");
@@ -1954,30 +1856,14 @@ function loadAppConfig() {
 function createDefaultConfig() {
   try {
     const configPath = getConfigPath();
-
-    // Initialize default paths
-    const userDataPath = app.getPath("userData");
-    DEFAULT_CONFIG.fileManagement.downloadPath = path.join(
-      userDataPath,
-      "downloads"
-    );
-    DEFAULT_CONFIG.fileManagement.tempPath = path.join(userDataPath, "temp");
-    DEFAULT_CONFIG.general.modelPath = getDefaultModelDir();
-    DEFAULT_CONFIG.general.modelDir = "";
-    DEFAULT_CONFIG.general.backendProjectPath = getDefaultBackendProjectPath();
-    DEFAULT_CONFIG.general.defaultModel = "lama";
-    DEFAULT_CONFIG.video.tempFramesPath = path.join(
-      userDataPath,
-      "temp",
-      "video_frames"
-    );
-    fs.writeFileSync(configPath, JSON.stringify(DEFAULT_CONFIG, null, 2));
-    globalConfig = sanitizeAppConfig(DEFAULT_CONFIG);
+    const defaultConfig = createRuntimeDefaultConfig();
+    fs.writeFileSync(configPath, JSON.stringify(defaultConfig, null, 2));
+    globalConfig = sanitizeAppConfig(defaultConfig);
     global.projectPath = globalConfig.general.backendProjectPath || "";
 
     [
-      DEFAULT_CONFIG.fileManagement.downloadPath,
-      DEFAULT_CONFIG.fileManagement.tempPath,
+      globalConfig.fileManagement.downloadPath,
+      globalConfig.fileManagement.tempPath,
     ].forEach((dir) => {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
@@ -1987,6 +1873,33 @@ function createDefaultConfig() {
     console.log("Default configuration file created successfully");
   } catch (error) {
     console.error("Failed to create default configuration:", error);
+  }
+}
+
+function runStartupTempCleanup() {
+  const cleanupOptions = normalizeTempCleanupOptions(globalConfig.fileManagement?.tempCleanup);
+  if (!cleanupOptions.enabled || !cleanupOptions.onStartup) {
+    return;
+  }
+
+  try {
+    const result = cleanupAppTempFiles(cleanupOptions);
+    if (result?.success) {
+      const data = result.data || {};
+      console.log(
+        [
+          "Startup temp cleanup completed:",
+          `files=${Number(data.removedFileCount || 0)}`,
+          `directories=${Number(data.removedDirectoryCount || 0)}`,
+          `videoTasks=${Number(data.removedTaskCount || 0)}`,
+          `bytes=${Number(data.removedBytes || 0)}`,
+        ].join(" ")
+      );
+    } else {
+      console.warn("Startup temp cleanup failed:", result?.error || "unknown error");
+    }
+  } catch (error) {
+    console.warn("Startup temp cleanup failed:", error);
   }
 }
 
@@ -3957,7 +3870,10 @@ ipcMain.handle("read-file-with-progress", async (event, filePath) => {
 // IPC handler - save temporary video file
 ipcMain.handle("save-temp-video", async (event, { fileName, buffer }) => {
   try {
-    const tempDir = path.join(app.getPath("temp"), "moonshine-videos");
+    const tempDir = path.join(
+      globalConfig.fileManagement?.tempPath || createRuntimeDefaultConfig().fileManagement.tempPath,
+      "moonshine-videos"
+    );
     if (!fs.existsSync(tempDir)) {
       fs.mkdirSync(tempDir, { recursive: true });
     }
@@ -3997,6 +3913,273 @@ ipcMain.handle("cleanup-temp-files", async (event, tempDir) => {
     console.error("Failed to clean up temporary files:", error);
   }
 });
+
+function normalizeTempCleanupOptions(options = {}, fallback = globalConfig.fileManagement?.tempCleanup) {
+  const source = isPlainObject(options) && Object.keys(options).length > 0 ? options : fallback || {};
+  return {
+    enabled: normalizeBoolean(source.enabled, DEFAULT_TEMP_CLEANUP.enabled),
+    onStartup: normalizeBoolean(source.onStartup, DEFAULT_TEMP_CLEANUP.onStartup),
+    maxAgeDays: normalizeInteger(source.maxAgeDays, DEFAULT_TEMP_CLEANUP.maxAgeDays, 1, 365),
+    includeImages: normalizeBoolean(source.includeImages, DEFAULT_TEMP_CLEANUP.includeImages),
+    includeVideos: normalizeBoolean(source.includeVideos, DEFAULT_TEMP_CLEANUP.includeVideos),
+    keepRecentFailures: normalizeBoolean(
+      source.keepRecentFailures,
+      DEFAULT_TEMP_CLEANUP.keepRecentFailures
+    ),
+  };
+}
+
+function buildTempCleanupTargets(tempRoot, cleanupOptions = {}) {
+  const targets = [];
+  if (cleanupOptions.includeImages) {
+    targets.push(globalConfig.fileManagement?.imageFolderName || "images");
+  }
+  if (cleanupOptions.includeVideos) {
+    targets.push(
+      globalConfig.fileManagement?.videoFolderName || "videos",
+      "video_frames",
+      "moonshine-videos"
+    );
+  }
+
+  return Array.from(new Set(targets.map((name) => String(name || "").trim()).filter(Boolean))).map(
+    (name) => path.join(tempRoot, name)
+  );
+}
+
+function shouldRemoveTempEntry(entryPath, cutoffMs, stats = null) {
+  if (!fs.existsSync(entryPath)) {
+    return false;
+  }
+  const entryStats = stats || fs.statSync(entryPath);
+  return Number(entryStats.mtimeMs || 0) < cutoffMs;
+}
+
+function cleanupManagedTempDirectory({ directory, tempRoot, cutoffMs }) {
+  const result = {
+    removedFileCount: 0,
+    removedDirectoryCount: 0,
+    removedBytes: 0,
+    skippedCount: 0,
+  };
+
+  if (!fs.existsSync(directory)) {
+    return result;
+  }
+  if (!isPathInsideDirectory(directory, tempRoot)) {
+    throw new Error(`Refusing to clean outside temp path: ${directory}`);
+  }
+
+  const stats = fs.statSync(directory);
+  if (!stats.isDirectory()) {
+    if (shouldRemoveTempEntry(directory, cutoffMs, stats)) {
+      result.removedBytes += stats.size || 0;
+      fs.rmSync(directory, { force: true });
+      result.removedFileCount += 1;
+    } else {
+      result.skippedCount += 1;
+    }
+    return result;
+  }
+
+  fs.readdirSync(directory, { withFileTypes: true }).forEach((entry) => {
+    const entryPath = path.join(directory, entry.name);
+    if (!isPathInsideDirectory(entryPath, tempRoot)) {
+      result.skippedCount += 1;
+      return;
+    }
+    const entryStats = fs.statSync(entryPath);
+    if (!shouldRemoveTempEntry(entryPath, cutoffMs, entryStats)) {
+      result.skippedCount += 1;
+      return;
+    }
+    result.removedBytes += entryStats.size || 0;
+    fs.rmSync(entryPath, { recursive: true, force: true });
+    if (entryStats.isDirectory()) {
+      result.removedDirectoryCount += 1;
+    } else {
+      result.removedFileCount += 1;
+    }
+  });
+
+  return result;
+}
+
+function isVideoProcessingTaskNewerThanCutoff(task = {}, cutoffMs = Number.NaN) {
+  if (!Number.isFinite(cutoffMs)) {
+    return false;
+  }
+
+  const timestamps = [getVideoTaskTimestamp(task)];
+  [task?.taskRoot, task?.temporarySourcePath].forEach((entryPath) => {
+    if (typeof entryPath !== "string" || !entryPath || !fs.existsSync(entryPath)) {
+      return;
+    }
+    try {
+      timestamps.push(Number(fs.statSync(entryPath).mtimeMs || 0));
+    } catch {
+      // Missing or locked entries should not block cleanup of stale registry records.
+    }
+  });
+
+  return Math.max(...timestamps) >= cutoffMs;
+}
+
+function cleanupVideoProcessingTempWithPolicy(cleanupOptions = {}, cutoffMs = Number.NaN) {
+  if (!cleanupOptions.includeVideos) {
+    return {
+      removedTaskCount: 0,
+      removedDirectoryCount: 0,
+      removedTempSourceCount: 0,
+      preservedTaskCount: 0,
+      missingTaskCount: 0,
+    };
+  }
+
+  const preserveTaskIds = cleanupOptions.keepRecentFailures
+    ? getLatestFailedVideoTaskIds()
+    : new Set();
+  return cleanupVideoProcessingTempEntries({ preserveTaskIds, cutoffMs });
+}
+
+function cleanupAppTempFiles(options = {}) {
+  const cleanupOptions = normalizeTempCleanupOptions(options);
+  const tempRoot = path.normalize(
+    String(globalConfig.fileManagement?.tempPath || createRuntimeDefaultConfig().fileManagement.tempPath)
+  );
+  if (!tempRoot || !fs.existsSync(tempRoot)) {
+    return {
+      success: true,
+      data: {
+        ...cleanupOptions,
+        removedFileCount: 0,
+        removedDirectoryCount: 0,
+        removedTaskCount: 0,
+        removedTempSourceCount: 0,
+        removedBytes: 0,
+        skippedCount: 0,
+      },
+    };
+  }
+
+  const cutoffMs = Date.now() - cleanupOptions.maxAgeDays * 24 * 60 * 60 * 1000;
+  const aggregate = {
+    removedFileCount: 0,
+    removedDirectoryCount: 0,
+    removedTaskCount: 0,
+    removedTempSourceCount: 0,
+    removedBytes: 0,
+    skippedCount: 0,
+  };
+
+  buildTempCleanupTargets(tempRoot, cleanupOptions).forEach((directory) => {
+    const result = cleanupManagedTempDirectory({ directory, tempRoot, cutoffMs });
+    aggregate.removedFileCount += result.removedFileCount;
+    aggregate.removedDirectoryCount += result.removedDirectoryCount;
+    aggregate.removedBytes += result.removedBytes;
+    aggregate.skippedCount += result.skippedCount;
+  });
+
+  const videoResult = cleanupVideoProcessingTempWithPolicy(cleanupOptions, cutoffMs);
+  aggregate.removedTaskCount += Number(videoResult.removedTaskCount || 0);
+  aggregate.removedDirectoryCount += Number(videoResult.removedDirectoryCount || 0);
+  aggregate.removedTempSourceCount += Number(videoResult.removedTempSourceCount || 0);
+  aggregate.skippedCount += Number(videoResult.preservedTaskCount || 0);
+
+  return {
+    success: true,
+    data: {
+      ...cleanupOptions,
+      ...aggregate,
+      tempPath: tempRoot,
+    },
+  };
+}
+
+function cleanupVideoProcessingTempEntries({
+  preserveTaskIds = new Set(),
+  cutoffMs = Number.NaN,
+  pruneMissingTasks = true,
+} = {}) {
+  const normalizedPreserveTaskIds =
+    preserveTaskIds instanceof Set ? preserveTaskIds : new Set(preserveTaskIds || []);
+  const registry = readVideoProcessingRegistry();
+  const tasks = Object.entries(registry.tasks || {});
+  const nextTasks = {};
+  let removedTaskCount = 0;
+  let removedDirectoryCount = 0;
+  let removedTempSourceCount = 0;
+  let preservedTaskCount = 0;
+  let missingTaskCount = 0;
+
+  tasks.forEach(([taskId, task]) => {
+    const preserveTask = normalizedPreserveTaskIds.has(taskId);
+    const taskRoot = typeof task?.taskRoot === "string" ? task.taskRoot : "";
+    const temporarySourcePath =
+      typeof task?.temporarySourcePath === "string" ? task.temporarySourcePath : "";
+    const hasTaskRoot = Boolean(taskRoot) && fs.existsSync(taskRoot);
+    const hasTemporarySource = Boolean(temporarySourcePath) && fs.existsSync(temporarySourcePath);
+    const isRecentTask = isVideoProcessingTaskNewerThanCutoff(task, cutoffMs);
+
+    if (preserveTask || isRecentTask) {
+      preservedTaskCount += 1;
+      if (hasTaskRoot || hasTemporarySource) {
+        nextTasks[taskId] = task;
+      } else {
+        missingTaskCount += 1;
+        if (!pruneMissingTasks) {
+          nextTasks[taskId] = task;
+        }
+      }
+      return;
+    }
+
+    if (hasTaskRoot) {
+      fs.rmSync(taskRoot, { recursive: true, force: true });
+      removedDirectoryCount += 1;
+    }
+
+    if (hasTemporarySource) {
+      fs.rmSync(temporarySourcePath, { force: true });
+      removedTempSourceCount += 1;
+    }
+
+    if (hasTaskRoot || hasTemporarySource) {
+      removedTaskCount += 1;
+    } else {
+      missingTaskCount += 1;
+      if (!pruneMissingTasks) {
+        nextTasks[taskId] = task;
+      }
+    }
+  });
+
+  writeVideoProcessingRegistry({
+    ...registry,
+    tasks: nextTasks,
+  });
+
+  return {
+    removedTaskCount,
+    removedDirectoryCount,
+    removedTempSourceCount,
+    preservedTaskCount,
+    missingTaskCount,
+  };
+}
+
+ipcMain.handle("cleanup-app-temp-files", async (event, options = {}) => {
+  try {
+    return cleanupAppTempFiles(options);
+  } catch (error) {
+    console.error("Failed to clean up app temp files:", error);
+    return {
+      success: false,
+      error: error.message,
+    };
+  }
+});
+
 ipcMain.handle("cleanup-video-processing-temp", async (event, options = {}) => {
   try {
     const preserveTaskIds = new Set(
@@ -4004,82 +4187,16 @@ ipcMain.handle("cleanup-video-processing-temp", async (event, options = {}) => {
         ? options.preserveTaskIds.filter((taskId) => typeof taskId === "string" && taskId.trim())
         : []
     );
-    const registry = readVideoProcessingRegistry();
-    const tasks = Object.entries(registry.tasks || {});
-    const latestFailedTaskIds = new Set();
-    const latestFailedTaskByFingerprint = new Map();
-
-    tasks.forEach(([taskId, task]) => {
-      const status = String(task?.status || "");
-      const fingerprint = String(task?.fingerprint || "").trim();
-      if (!fingerprint || !["failed", "running"].includes(status)) {
-        return;
-      }
-
-      const previous = latestFailedTaskByFingerprint.get(fingerprint);
-      if (!previous || getVideoTaskTimestamp(task) >= getVideoTaskTimestamp(previous.task)) {
-        latestFailedTaskByFingerprint.set(fingerprint, { taskId, task });
-      }
-    });
-
-    latestFailedTaskByFingerprint.forEach(({ taskId }) => {
-      latestFailedTaskIds.add(taskId);
-    });
-
-    const nextTasks = {};
-    let removedTaskCount = 0;
-    let removedDirectoryCount = 0;
-    let removedTempSourceCount = 0;
-    let missingTaskCount = 0;
-
-    tasks.forEach(([taskId, task]) => {
-      const preserveTask = preserveTaskIds.has(taskId) || latestFailedTaskIds.has(taskId);
-      const taskRoot = typeof task?.taskRoot === "string" ? task.taskRoot : "";
-      const temporarySourcePath =
-        typeof task?.temporarySourcePath === "string" ? task.temporarySourcePath : "";
-      const hasTaskRoot = Boolean(taskRoot) && fs.existsSync(taskRoot);
-      const hasTemporarySource = Boolean(temporarySourcePath) && fs.existsSync(temporarySourcePath);
-
-      if (preserveTask) {
-        if (hasTaskRoot || hasTemporarySource) {
-          nextTasks[taskId] = task;
-        } else {
-          missingTaskCount += 1;
-        }
-        return;
-      }
-
-      if (hasTaskRoot) {
-        fs.rmSync(taskRoot, { recursive: true, force: true });
-        removedDirectoryCount += 1;
-      }
-
-      if (hasTemporarySource) {
-        fs.rmSync(temporarySourcePath, { force: true });
-        removedTempSourceCount += 1;
-      }
-
-      if (hasTaskRoot || hasTemporarySource) {
-        removedTaskCount += 1;
-      } else {
-        missingTaskCount += 1;
-      }
-    });
-
-    writeVideoProcessingRegistry({
-      ...registry,
-      tasks: nextTasks,
+    const latestFailedTaskIds = getLatestFailedVideoTaskIds();
+    latestFailedTaskIds.forEach((taskId) => preserveTaskIds.add(taskId));
+    const cleanupResult = cleanupVideoProcessingTempEntries({
+      preserveTaskIds,
+      pruneMissingTasks: false,
     });
 
     return {
       success: true,
-      data: {
-        removedTaskCount,
-        removedDirectoryCount,
-        removedTempSourceCount,
-        preservedTaskCount: Object.keys(nextTasks).length,
-        missingTaskCount,
-      },
+      data: cleanupResult,
     };
   } catch (error) {
     console.error("Failed to clean up video processing temp directories:", error);
@@ -4298,6 +4415,7 @@ app.whenReady().then(async () => {
 
   registerAtomProtocol();
   loadAppConfig();
+  runStartupTempCleanup();
   createWindow();
 });
 app.on("before-quit", async (event) => {
