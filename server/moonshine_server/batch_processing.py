@@ -50,6 +50,7 @@ def batch_inpaint(
     concat: bool = False,
     output_format: str = "auto",
     output_quality: int = 95,
+    return_results: bool = False,
 ):
     if image.is_dir() and output.is_file():
         logger.error(
@@ -79,7 +80,8 @@ def batch_inpaint(
     first_mask = list(mask_paths.values())[0]
 
     console = Console()
-    processed_count = 0 
+    processed_count = 0
+    results = []
 
     with Progress(
         SpinnerColumn(),
@@ -104,6 +106,15 @@ def batch_inpaint(
                 else:
                     # 否则使用第一个蒙版或跳过
                     progress.log(f"mask for {image_p} not found")
+                    if return_results:
+                        results.append(
+                            {
+                                "index": len(results),
+                                "image_path": str(image_p),
+                                "success": False,
+                                "error": f"mask for {image_p} not found",
+                            }
+                        )
                     progress.update(task, advance=1)
                     continue
             else:
@@ -168,6 +179,19 @@ def batch_inpaint(
             with open(save_p, "wb") as fw:
                 fw.write(img_bytes)
             processed_count += 1
+            if return_results:
+                results.append(
+                    {
+                        "index": len(results),
+                        "image_path": str(image_p),
+                        "mask_path": str(mask_p),
+                        "output_path": str(save_p),
+                        "success": True,
+                        "format": output_spec["format"],
+                        "mime_type": output_spec["mime_type"],
+                        "extension": output_spec["extension"],
+                    }
+                )
             progress.update(task, advance=1)
             torch_gc()
         # 处理完成后，如果模板蒙版存在，则删除它
@@ -181,4 +205,4 @@ def batch_inpaint(
             # memory_info = psutil.Process(pid).memory_info()
             # memory_in_mb = memory_info.rss / (1024 * 1024)
             # print(f"原图大小：{img.shape},当前进程的内存占用：{memory_in_mb}MB")
-    return processed_count
+    return results if return_results else processed_count

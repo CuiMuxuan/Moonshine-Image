@@ -5,11 +5,15 @@ import { useConfigStore } from "./config";
 import { buildImageOutputRequestOptions } from "src/utils/imageOutputOptions";
 
 const DEFAULT_PROCESSING_CONFIG = Object.freeze({
+  method: "auto",
   imageType: "path",
   maskType: "base64",
   responseType: "path",
   tempPath: "",
 });
+
+const AUTO_BASE64_MAX_FILE_COUNT = 100;
+const AUTO_BASE64_MAX_TOTAL_BYTES = 100 * 1024 * 1024;
 
 const getRendererDisplayUrl = (filePath) => {
   if (!filePath) return "";
@@ -35,6 +39,9 @@ const normalizeImageFormat = (value = "") => {
   if (normalized === "jpeg") return "jpg";
   return ["png", "jpg", "webp", "gif", "bmp"].includes(normalized) ? normalized : "";
 };
+
+const normalizeProcessingMethod = (value = "") =>
+  ["auto", "path", "base64"].includes(value) ? value : "auto";
 
 const getExtensionFromName = (fileName = "") => {
   const match = String(fileName || "").toLowerCase().match(/\.([a-z0-9]+)$/);
@@ -192,11 +199,41 @@ const convertBase64ToArrayBuffer = (base64Data) => {
   return arrayBuffer;
 };
 
+const estimateBase64Bytes = (base64Data = "") => {
+  const raw = String(base64Data || "").split(",").pop() || "";
+  if (!raw) return 0;
+  const padding = raw.endsWith("==") ? 2 : raw.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((raw.length * 3) / 4) - padding);
+};
+
+const sanitizeFileNamePart = (value = "image") => {
+  const normalized = String(value || "image")
+    .replace(/[<>:"/\\|?*]/g, "_")
+    .split("")
+    .filter((char) => char.charCodeAt(0) >= 32)
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+  return (normalized || "image").slice(0, 96);
+};
+
+const splitNameAndExtension = (fileName = "image", fallbackExtension = ".png") => {
+  const extension = getExtensionFromName(fileName) || fallbackExtension || ".png";
+  const baseName = extension && fileName.toLowerCase().endsWith(extension)
+    ? fileName.slice(0, -extension.length)
+    : String(fileName || "image").replace(/\.[^.]+$/, "");
+  return {
+    baseName: sanitizeFileNamePart(baseName || "image"),
+    extension,
+  };
+};
+
 export const useFileManagerStore = defineStore("fileManager", {
   state: () => ({
     files: [],
     currentFileId: null,
     selectedFileIds: [],
+    lastProcessingInputWarnings: [],
     processingConfig: {
       ...DEFAULT_PROCESSING_CONFIG,
     },
@@ -223,13 +260,16 @@ export const useFileManagerStore = defineStore("fileManager", {
   actions: {
     initProcessingConfig() {
       const configStore = useConfigStore();
-      const method =
-        configStore.config.advanced?.imageProcessingMethod === "base64" ? "base64" : "path";
+      const method = normalizeProcessingMethod(
+        configStore.config.advanced?.imageProcessingMethod
+      );
+      const transport = method === "base64" ? "base64" : "path";
 
       this.processingConfig = {
         ...DEFAULT_PROCESSING_CONFIG,
-        imageType: method,
-        responseType: method,
+        method,
+        imageType: transport,
+        responseType: transport,
         tempPath: configStore.config.fileManagement?.tempPath || "",
       };
     },
@@ -259,10 +299,10 @@ export const useFileManagerStore = defineStore("fileManager", {
       const fileId = uuidv4();
       const configStore = useConfigStore();
       const preferredMethod =
-        configStore.config.advanced?.imageProcessingMethod === "base64" ? "base64" : "path";
+        normalizeProcessingMethod(configStore.config.advanced?.imageProcessingMethod);
 
       let imageData;
-      if (preferredMethod === "path" && window.electron && file?.path) {
+      if (preferredMethod !== "base64" && window.electron && file?.path) {
         const metadata = getImageMetadataFromFile(file);
         imageData = {
           type: "path",
@@ -655,6 +695,14 @@ export const useFileManagerStore = defineStore("fileManager", {
         .map((file) => file.id);
     },
 
+    invertImageSelection() {
+      const imageIds = this.files
+        .filter((file) => file.originalFile?.type?.startsWith("image/"))
+        .map((file) => file.id);
+      const selectedSet = new Set(this.selectedFileIds);
+      this.selectedFileIds = imageIds.filter((fileId) => !selectedSet.has(fileId));
+    },
+
     clearSelection() {
       this.selectedFileIds = [];
     },
@@ -682,48 +730,228 @@ export const useFileManagerStore = defineStore("fileManager", {
       return true;
     },
 
-    async prepareBatchInpaintData(filesToProcess) {
+    consumeProcessingInputWarnings() {
+      const warnings = [...this.lastProcessingInputWarnings];
+      this.lastProcessingInputWarnings = [];
+      return warnings;
+    },
+
+    getImageWarningSizeBytes(config) {
+      const warningMb = Math.max(
+        1,
+        Number(config?.advanced?.imageWarningSize || 50)
+      );
+      return warningMb * 1024 * 1024;
+    },
+
+    getImageInputSizeEstimate(file) {
+      const latestImage = Array.isArray(file?.history)
+        ? file.history[file.history.length - 1]
+        : null;
+      if (latestImage?.type === "base64") {
+        return estimateBase64Bytes(latestImage.data);
+      }
+      return Number(file?.originalFile?.size || file?.size || 0);
+    },
+
+    resolveProcessingTransport(filesToProcess = [], options = {}) {
       const configStore = useConfigStore();
-      const imageType = this.processingConfig.imageType === "base64" ? "base64" : "path";
-      const responseType = this.processingConfig.responseType === "base64" ? "base64" : "path";
-      const tempRoot = configStore.config.fileManagement?.tempPath || "";
-      const imageFolderName = configStore.config.fileManagement?.imageFolderName || "images";
-      const tempPath =
+      const method = normalizeProcessingMethod(
+        configStore.config.advanced?.imageProcessingMethod
+      );
+
+      if (method === "path" || method === "base64") {
+        return method;
+      }
+
+      if (options.folderMode) {
+        return "path";
+      }
+
+      const files = Array.isArray(filesToProcess) ? filesToProcess : [];
+      if (
+        files.length === 0 ||
+        files.length > AUTO_BASE64_MAX_FILE_COUNT
+      ) {
+        return "path";
+      }
+
+      const warningSizeBytes = this.getImageWarningSizeBytes(configStore.config);
+      let totalSizeBytes = 0;
+      for (const file of files) {
+        const sizeBytes = this.getImageInputSizeEstimate(file);
+        if (!sizeBytes || sizeBytes > warningSizeBytes) {
+          return "path";
+        }
+        totalSizeBytes += sizeBytes;
+        if (totalSizeBytes > AUTO_BASE64_MAX_TOTAL_BYTES) {
+          return "path";
+        }
+      }
+
+      return "base64";
+    },
+
+    async getPathFileSizeBytes(filePath) {
+      if (!filePath || !window.electron?.ipcRenderer?.invoke) {
+        return 0;
+      }
+      const stats = await window.electron.ipcRenderer.invoke("get-file-stats", filePath);
+      if (!stats?.success) {
+        return 0;
+      }
+      return Number(stats.data?.size || 0);
+    },
+
+    async assertCanConvertPathToBase64(file, filePath, config) {
+      const sizeBytes =
+        Number(file?.originalFile?.path === filePath ? file.originalFile?.size : 0) ||
+        Number(file?.size || 0) ||
+        await this.getPathFileSizeBytes(filePath);
+      const warningSizeBytes = this.getImageWarningSizeBytes(config);
+      if (sizeBytes > warningSizeBytes) {
+        const warningMb = Math.round(warningSizeBytes / 1024 / 1024);
+        throw new Error(
+          `${file?.name || "当前图片"} 超过 ${warningMb}MB，不能转换为 Base64，请切换为文件路径或自动模式。`
+        );
+      }
+    },
+
+    createProcessingInputContext(config, transport) {
+      const tempRoot = config.fileManagement?.tempPath || "";
+      const imageFolderName = config.fileManagement?.imageFolderName || "images";
+      const imageTempPath =
         tempRoot && window.electron?.ipcRenderer?.joinPath
           ? window.electron.ipcRenderer.joinPath(tempRoot, imageFolderName).replace(/\\/g, "/")
           : "";
+      const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const chainInputPath =
+        imageTempPath && window.electron?.ipcRenderer?.joinPath
+          ? window.electron.ipcRenderer
+              .joinPath(imageTempPath, "chain-inputs", runId)
+              .replace(/\\/g, "/")
+          : "";
+
+      return {
+        config,
+        transport,
+        imageTempPath,
+        chainInputPath,
+        warnings: [],
+      };
+    },
+
+    getOriginalImageSource(file) {
+      const originalImage = Array.isArray(file?.history) ? file.history[0] : file?.image;
+      return originalImage || file?.image || null;
+    },
+
+    async materializeBase64ImageToTempPath(file, historyItem, historyIndex, context) {
+      if (!window.electron?.ipcRenderer?.invoke || !context.chainInputPath) {
+        throw new Error("当前环境无法将内存图片写入临时文件，请切换为 Base64 模式。");
+      }
+
+      const outputExtension =
+        historyItem?.extension ||
+        getExtensionFromMimeType(historyItem?.mimeType || historyItem?.mime_type) ||
+        getExtensionFromName(file?.name) ||
+        ".png";
+      const originalParts = splitNameAndExtension(file?.name || "image", outputExtension);
+      const targetName = `${originalParts.baseName}__latest_${String(file?.id || "file").slice(0, 8)}_h${historyIndex}${outputExtension}`;
+      const targetPath = window.electron.ipcRenderer
+        .joinPath(context.chainInputPath, targetName)
+        .replace(/\\/g, "/");
+      const savedPath = await window.electron.ipcRenderer.invoke("save-file", {
+        filePath: targetPath,
+        blob: convertBase64ToArrayBuffer(historyItem.data),
+      });
+
+      return typeof savedPath === "string" ? savedPath : targetPath;
+    },
+
+    async resolveLatestImageInput(file, targetTransport, context) {
+      const history = Array.isArray(file?.history) && file.history.length > 0
+        ? file.history
+        : [file?.image].filter(Boolean);
+      let historyIndex = Math.max(0, history.length - 1);
+      let imageSource = history[historyIndex];
+
+      if (imageSource?.type === "path" && imageSource.data) {
+        const exists = await this.fileExists(imageSource.data);
+        if (!exists && historyIndex > 0) {
+          context.warnings.push(`${file?.name || imageSource.data}：最新结果文件不存在，已改用原图。`);
+          imageSource = this.getOriginalImageSource(file);
+          historyIndex = 0;
+        }
+      }
+
+      if (!imageSource) {
+        throw new Error(`无法读取图片数据: ${file?.name || "unknown"}`);
+      }
+
+      if (targetTransport === "path") {
+        if (imageSource.type === "path") {
+          const imagePath = imageSource.data || resolveOriginalFilePath(file);
+          if (!imagePath) {
+            throw new Error(`无法读取图片路径: ${file?.name || "unknown"}`);
+          }
+          if (!(await this.fileExists(imagePath))) {
+            throw new Error(buildMissingFileMessage(file?.name));
+          }
+          return imagePath;
+        }
+
+        if (imageSource.type === "base64" && imageSource.data) {
+          return await this.materializeBase64ImageToTempPath(
+            file,
+            imageSource,
+            historyIndex,
+            context
+          );
+        }
+      }
+
+      if (targetTransport === "base64") {
+        if (imageSource.type === "base64" && imageSource.data) {
+          return imageSource.data;
+        }
+
+        const imagePath = imageSource.data || resolveOriginalFilePath(file);
+        if (!imagePath) {
+          throw new Error(`无法读取图片路径: ${file?.name || "unknown"}`);
+        }
+        if (!(await this.fileExists(imagePath))) {
+          throw new Error(buildMissingFileMessage(file?.name));
+        }
+        await this.assertCanConvertPathToBase64(file, imagePath, context.config);
+        const fileBase64 = await this.fileToBase64({
+          name: file.name,
+          type: file.type,
+          path: imagePath,
+        });
+        return fileBase64.split(",")[1];
+      }
+
+      throw new Error(`不支持的图片处理方式: ${targetTransport}`);
+    },
+
+    async prepareBatchInpaintData(filesToProcess) {
+      const configStore = useConfigStore();
+      const imageType = this.resolveProcessingTransport(filesToProcess);
+      const responseType = imageType;
+      const context = this.createProcessingInputContext(configStore.config, imageType);
+      this.lastProcessingInputWarnings = [];
+      this.processingConfig = {
+        ...this.processingConfig,
+        method: normalizeProcessingMethod(configStore.config.advanced?.imageProcessingMethod),
+        imageType,
+        responseType,
+        tempPath: context.imageTempPath,
+      };
 
       const batchItems = [];
       for (const file of filesToProcess) {
-        const latestImage = file.history[file.history.length - 1];
-
-        let imageData = "";
-        if (imageType === "path") {
-          if (latestImage.type === "path") {
-            imageData = latestImage.data;
-          } else if (file.history.length <= 1) {
-            imageData = resolveOriginalFilePath(file);
-          } else {
-            throw new Error(
-              `当前图像仅保存在内存中，无法按路径模式继续处理，请切换为 base64 模式或重新导入：${file.name}`
-            );
-          }
-          if (!imageData) {
-            throw new Error(`无法读取图片路径: ${file.name}`);
-          }
-          if (!(await this.fileExists(imageData))) {
-            throw new Error(buildMissingFileMessage(file.name));
-          }
-        } else if (latestImage.type === "base64") {
-          imageData = latestImage.data;
-        } else {
-          const fileBase64 = await this.fileToBase64({
-            name: file.name,
-            type: file.type,
-            path: latestImage.data || resolveOriginalFilePath(file),
-          });
-          imageData = fileBase64.split(",")[1];
-        }
+        const imageData = await this.resolveLatestImageInput(file, imageType, context);
 
         if (!file.mask?.data) {
           throw new Error(`缺少蒙版数据: ${file.name}`);
@@ -735,71 +963,47 @@ export const useFileManagerStore = defineStore("fileManager", {
           mask: file.mask.data,
         });
       }
+      this.lastProcessingInputWarnings = [...new Set(context.warnings)];
 
       return {
         data: batchItems,
         image_type: imageType,
         mask_type: "base64",
         response_type: responseType,
-        temp_path: responseType === "path" ? tempPath : "",
+        temp_path: responseType === "path" ? context.imageTempPath : "",
         ...buildImageOutputRequestOptions(configStore.config),
       };
     },
 
     async prepareMoonshineImageProcessData(filesToProcess) {
       const configStore = useConfigStore();
-      const imageType = this.processingConfig.imageType === "base64" ? "base64" : "path";
-      const responseType = this.processingConfig.responseType === "base64" ? "base64" : "path";
-      const tempRoot = configStore.config.fileManagement?.tempPath || "";
-      const imageFolderName = configStore.config.fileManagement?.imageFolderName || "images";
-      const tempPath =
-        tempRoot && window.electron?.ipcRenderer?.joinPath
-          ? window.electron.ipcRenderer.joinPath(tempRoot, imageFolderName).replace(/\\/g, "/")
-          : "";
+      const imageType = this.resolveProcessingTransport(filesToProcess);
+      const responseType = imageType;
+      const context = this.createProcessingInputContext(configStore.config, imageType);
+      this.lastProcessingInputWarnings = [];
+      this.processingConfig = {
+        ...this.processingConfig,
+        method: normalizeProcessingMethod(configStore.config.advanced?.imageProcessingMethod),
+        imageType,
+        responseType,
+        tempPath: context.imageTempPath,
+      };
 
       const batchItems = [];
       for (const file of filesToProcess) {
-        const latestImage = file.history[file.history.length - 1];
-
-        let imageData = "";
-        if (imageType === "path") {
-          if (latestImage.type === "path") {
-            imageData = latestImage.data;
-          } else if (file.history.length <= 1) {
-            imageData = resolveOriginalFilePath(file);
-          } else {
-            throw new Error(
-              `当前图像仅保存在内存中，无法按路径模式继续处理，请切换为 base64 模式或重新导入：${file.name}`
-            );
-          }
-          if (!imageData) {
-            throw new Error(`无法读取图片路径: ${file.name}`);
-          }
-          if (!(await this.fileExists(imageData))) {
-            throw new Error(buildMissingFileMessage(file.name));
-          }
-        } else if (latestImage.type === "base64") {
-          imageData = latestImage.data;
-        } else {
-          const fileBase64 = await this.fileToBase64({
-            name: file.name,
-            type: file.type,
-            path: latestImage.data || resolveOriginalFilePath(file),
-          });
-          imageData = fileBase64.split(",")[1];
-        }
-
+        const imageData = await this.resolveLatestImageInput(file, imageType, context);
         batchItems.push({
           id: file.id,
           image: imageData,
         });
       }
+      this.lastProcessingInputWarnings = [...new Set(context.warnings)];
 
       return {
         data: batchItems,
         image_type: imageType,
         response_type: responseType,
-        temp_path: responseType === "path" ? tempPath : "",
+        temp_path: responseType === "path" ? context.imageTempPath : "",
         ...buildImageOutputRequestOptions(configStore.config),
       };
     },

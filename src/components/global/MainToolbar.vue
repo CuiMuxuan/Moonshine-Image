@@ -106,6 +106,7 @@
 import { ref, watch } from "vue";
 import { useRoute } from "vue-router";
 
+import navBrandImage from "src/assets/icons/moonshine-icon-primary.svg";
 import sponsorAlipayImage from "src/assets/branding/Alipay.jpg";
 import sponsorWechatImage from "src/assets/branding/wxPay.png";
 import { resolvePublicAssetPath } from "src/utils/publicAsset";
@@ -124,7 +125,6 @@ defineProps({
 const route = useRoute();
 const emit = defineEmits(["route-change", "toggle-theme"]);
 
-const navBrandImage = resolvePublicAssetPath("icons/cmx-logo128.png");
 const authorAvatarImage = resolvePublicAssetPath("images/moonshine128x128.jpg");
 const showSponsorDialog = ref(false);
 const currentRoute = ref("image");

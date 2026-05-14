@@ -938,7 +938,7 @@ class Api:
             # Run the existing folder-based batch inpaint pipeline.
             start_time = time.time()
             
-            processed_count = batch_inpaint(
+            folder_results = batch_inpaint(
                 model="lama",  # Keep current default model for folder mode.
                 device=device,
                 image=image_path,
@@ -946,6 +946,10 @@ class Api:
                 output=output_path,
                 output_format=req.output_format,
                 output_quality=req.output_quality,
+                return_results=True,
+            )
+            success_count = sum(
+                1 for result in folder_results if result.get("success", False)
             )
             
             total_time = time.time() - start_time
@@ -954,10 +958,12 @@ class Api:
                 "success": True,
                 "message": "Batch processing completed",
                 "total_time": total_time,
-                "processed_count": processed_count,
+                "processed_count": success_count,
+                "success_count": success_count,
                 "image_folder": str(image_path),
                 "mask_folder": str(mask_path),
-                "output_folder": str(output_path)
+                "output_folder": str(output_path),
+                "results": folder_results,
             }))
             
         except Exception as e:

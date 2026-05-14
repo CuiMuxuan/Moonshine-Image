@@ -1,58 +1,97 @@
 <template>
-  <q-virtual-scroll
-    :items="filteredFiles"
-    :virtual-scroll-item-size="72"
-    type="list"
-    class="file-list"
-    :class="listClass"
-    v-slot="{ item: file }"
-  >
-    <q-item
-      :key="file.id"
-      clickable
-      :active="selectedFile?.id === file.id"
-      :active-class="activeItemClass"
-      class="file-list-item"
-      @click="$emit('update:selected-file', file)"
+  <div class="file-list-shell" :class="listClass">
+    <div class="file-list-toolbar">
+      <q-btn
+        dense
+        flat
+        no-caps
+        icon="select_all"
+        label="全选"
+        :color="allVisibleImagesSelected ? 'primary' : undefined"
+        data-testid="image-file-list-select-all"
+        :disable="filteredFiles.length === 0"
+        @click="$emit('select-all')"
+      />
+      <q-btn
+        dense
+        flat
+        no-caps
+        icon="flip_to_back"
+        label="反选"
+        data-testid="image-file-list-invert-selection"
+        :disable="filteredFiles.length === 0"
+        @click="$emit('invert-selection')"
+      />
+      <q-btn
+        dense
+        flat
+        no-caps
+        color="negative"
+        icon="delete"
+        label="删除"
+        data-testid="image-file-list-delete-selected"
+        :disable="selectedFiles.length === 0"
+        @click="$emit('delete-selected')"
+      />
+    </div>
+
+    <q-virtual-scroll
+      :items="filteredFiles"
+      :virtual-scroll-item-size="72"
+      type="list"
+      class="file-list"
+      v-slot="{ item: file }"
     >
-      <q-item-section avatar>
-        <q-checkbox
-          :model-value="isFileSelected(file)"
-          :val="file"
-          @update:model-value="toggleFileSelection(file)"
-          @click.stop
-        />
-      </q-item-section>
-
-      <q-item-section avatar>
-        <q-avatar square>
-          <img
-            :src="getFileDisplayUrl(file)"
-            style="width: 100%; height: 100%; object-fit: cover"
-            @error="(e) => (e.target.src = getFileIcon(file))"
+      <q-item
+        :key="file.id"
+        clickable
+        :active="selectedFile?.id === file.id"
+        :active-class="activeItemClass"
+        class="file-list-item"
+        @click="$emit('update:selected-file', file)"
+      >
+        <q-item-section avatar>
+          <q-checkbox
+            :model-value="isFileSelected(file)"
+            :val="file"
+            @update:model-value="toggleFileSelection(file)"
+            @click.stop
           />
-        </q-avatar>
-      </q-item-section>
+        </q-item-section>
 
-      <q-item-section>
-        <q-item-label>{{ file.name }}</q-item-label>
-        <q-item-label caption :class="captionClass">
-          {{ (file.size / 1024).toFixed(2) }} KB
-        </q-item-label>
-      </q-item-section>
+        <q-item-section avatar>
+          <q-avatar square>
+            <img
+              :src="getFileDisplayUrl(file)"
+              style="width: 100%; height: 100%; object-fit: cover"
+              @error="(e) => (e.target.src = getFileIcon(file))"
+            />
+          </q-avatar>
+        </q-item-section>
 
-      <q-item-section side>
-        <q-btn
-          round
-          dense
-          flat
-          icon="delete"
-          color="negative"
-          @click.stop="$emit('remove-file', file.id)"
-        />
-      </q-item-section>
-    </q-item>
-  </q-virtual-scroll>
+        <q-item-section class="file-list-meta">
+          <q-item-label class="file-list-name">
+            {{ formatMiddleEllipsis(file.name) }}
+            <q-tooltip>{{ file.name }}</q-tooltip>
+          </q-item-label>
+          <q-item-label caption :class="captionClass">
+            {{ (file.size / 1024).toFixed(2) }} KB
+          </q-item-label>
+        </q-item-section>
+
+        <q-item-section side>
+          <q-btn
+            round
+            dense
+            flat
+            icon="delete"
+            color="negative"
+            @click.stop="$emit('remove-file', file.id)"
+          />
+        </q-item-section>
+      </q-item>
+    </q-virtual-scroll>
+  </div>
 </template>
 
 <script setup>
@@ -78,7 +117,14 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["update:selected-file", "remove-file", "toggle-selection"]);
+const emit = defineEmits([
+  "update:selected-file",
+  "remove-file",
+  "toggle-selection",
+  "select-all",
+  "invert-selection",
+  "delete-selected",
+]);
 
 const $q = useQuasar();
 
@@ -95,6 +141,10 @@ const activeItemClass = computed(() =>
 const captionClass = computed(() =>
   $q.dark.isActive ? "text-grey-5" : "text-grey-7"
 );
+const allVisibleImagesSelected = computed(() =>
+  filteredFiles.value.length > 0 &&
+  filteredFiles.value.every((file) => isFileSelected(file))
+);
 
 const isFileSelected = (file) => {
   return props.selectedFiles.some((selectedFile) => selectedFile.id === file.id);
@@ -102,6 +152,22 @@ const isFileSelected = (file) => {
 
 const toggleFileSelection = (file) => {
   emit("toggle-selection", file);
+};
+
+const formatMiddleEllipsis = (fileName = "") => {
+  const normalized = String(fileName || "");
+  if (normalized.length <= 28) {
+    return normalized;
+  }
+
+  const extensionMatch = normalized.match(/(\.[^.]{1,12})$/);
+  const extension = extensionMatch?.[1] || "";
+  const nameWithoutExtension = extension
+    ? normalized.slice(0, -extension.length)
+    : normalized;
+  const head = nameWithoutExtension.slice(0, 12);
+  const tail = nameWithoutExtension.slice(-8);
+  return `${head}...${tail}${extension}`;
 };
 
 const getFileIcon = (file) => {
@@ -132,12 +198,39 @@ const getFileDisplayUrl = (file) => {
 </script>
 
 <style scoped>
-.file-list {
+.file-list-shell {
   height: 100%;
   min-height: 100%;
+  display: flex;
+  flex-direction: column;
   border: 0;
   box-sizing: border-box;
+}
+
+.file-list {
+  flex: 1 1 auto;
+  min-height: 0;
   padding: 4px 8px;
+}
+
+.file-list-toolbar {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 8px 8px 4px;
+}
+
+.file-list-toolbar :deep(.q-btn__content) {
+  flex-wrap: nowrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.file-list-toolbar :deep(.q-btn__content span) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .file-list--light {
@@ -154,6 +247,17 @@ const getFileDisplayUrl = (file) => {
   margin: 0;
   border-radius: 10px;
   transition: background-color 0.18s ease, color 0.18s ease;
+}
+
+.file-list-meta {
+  min-width: 0;
+}
+
+.file-list-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .file-list-item + .file-list-item {

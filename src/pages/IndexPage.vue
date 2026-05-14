@@ -175,6 +175,36 @@ const normalizeComparablePath = (value = "") =>
     .replace(/\/+$/, "")
     .toLowerCase();
 
+const normalizeRelativePath = (value = "") =>
+  String(value || "").replace(/\\/g, "/").replace(/^\/+/, "");
+
+const getPathExtension = (filePath = "") => {
+  const match = String(filePath || "").match(/(\.[^./\\]+)$/);
+  return match?.[1] || "";
+};
+
+const replacePathExtension = (filePath = "", extension = "") => {
+  const normalizedExtension = extension
+    ? extension.startsWith(".") ? extension : `.${extension}`
+    : getPathExtension(filePath) || ".png";
+  return String(filePath || "image").replace(/(\.[^./\\]+)?$/, normalizedExtension);
+};
+
+const splitRelativePath = (relativePath = "") => {
+  const normalized = normalizeRelativePath(relativePath);
+  const slashIndex = normalized.lastIndexOf("/");
+  if (slashIndex === -1) {
+    return { directory: "", fileName: normalized };
+  }
+  return {
+    directory: normalized.slice(0, slashIndex),
+    fileName: normalized.slice(slashIndex + 1),
+  };
+};
+
+const getFileStem = (fileName = "") =>
+  String(fileName || "").replace(/\.[^.]*$/, "");
+
 const resolveManagedSavePathMode = ({
   candidatePath = "",
   downloadPath = "",
@@ -461,6 +491,32 @@ const handleSelectAll = (val) => {
   fileManagerStore.selectAllFiles(val);
 };
 
+const getLoadedImageFiles = () =>
+  fileManagerStore.files.filter((file) =>
+    file.originalFile?.type?.startsWith("image/")
+  );
+
+const areAllLoadedImagesSelected = () => {
+  const imageFiles = getLoadedImageFiles();
+  if (imageFiles.length === 0) {
+    return false;
+  }
+
+  const selectedSet = new Set(fileManagerStore.selectedFileIds);
+  return imageFiles.every((file) => selectedSet.has(file.id));
+};
+
+const handleLeftListSelectAll = () => {
+  const shouldSelectAll = !areAllLoadedImagesSelected();
+  selectAll.value = shouldSelectAll;
+  fileManagerStore.selectAllFiles(shouldSelectAll);
+};
+
+const handleInvertSelection = () => {
+  fileManagerStore.invertImageSelection();
+  selectAll.value = areAllLoadedImagesSelected();
+};
+
 const handleImageLoaded = () => {
   isImageLoaded.value = true;
   nextTick(() => {
@@ -668,20 +724,242 @@ const restoreMaskUiState = (maskUiState = {}) => {
   setMaskDrawingMode(false, { persist: false });
 };
 
-const finalizeSuccessfulMaskRun = async (
-  maskUiState,
-  { processedFileIds = [], forceClearCurrentMask = false } = {}
-) => {
-  const currentId = fileManagerStore.currentFile?.id;
-  const shouldClearCurrentMask =
-    Boolean(currentId) && (forceClearCurrentMask || processedFileIds.includes(currentId));
+const clearMasksForProcessedFileIds = (processedFileIds = []) => {
+  const uniqueIds = [...new Set(processedFileIds.filter(Boolean))];
+  uniqueIds.forEach((fileId) => {
+    fileManagerStore.updateFileMask(fileId, null);
+  });
+};
 
-  if (shouldClearCurrentMask) {
-    fileManagerStore.updateFileMask(currentId, null);
+const finalizeSuccessfulMaskRun = async (maskUiState, options = {}) => {
+  if (Array.isArray(options.processedFileIds)) {
+    clearMasksForProcessedFileIds(options.processedFileIds);
   }
-
   await nextTick();
   restoreMaskUiState(maskUiState);
+};
+
+const notifyProcessingInputWarnings = () => {
+  const warnings = fileManagerStore.consumeProcessingInputWarnings();
+  if (warnings.length === 0) return;
+
+  const visibleWarnings = warnings.slice(0, 3).join("；");
+  const suffix = warnings.length > 3 ? `，另有 ${warnings.length - 3} 项` : "";
+  $q.notify({
+    type: "warning",
+    message: `${visibleWarnings}${suffix}`,
+    position: "top",
+    timeout: 5000,
+  });
+};
+
+const base64ToArrayBuffer = (base64Data = "") => {
+  const raw = String(base64Data || "").split(",").pop() || "";
+  const binaryString = atob(raw);
+  const arrayBuffer = new ArrayBuffer(binaryString.length);
+  const bytes = new Uint8Array(arrayBuffer);
+  for (let index = 0; index < binaryString.length; index += 1) {
+    bytes[index] = binaryString.charCodeAt(index);
+  }
+  return arrayBuffer;
+};
+
+const listImageFilesFromFolder = async (targetFolderPath) => {
+  if (!window.electron?.ipcRenderer?.invoke || !targetFolderPath) {
+    return [];
+  }
+  const result = await window.electron.ipcRenderer.invoke("list-image-files", {
+    folderPath: targetFolderPath,
+    recursive: true,
+  });
+  if (!result?.success) {
+    throw new Error(result?.error || "读取文件夹图片失败");
+  }
+  return Array.isArray(result.data) ? result.data : [];
+};
+
+const buildLoadedFileByOriginalPath = () => {
+  const result = new Map();
+  fileManagerStore.files.forEach((file) => {
+    const originalPath = file.originalFile?.path || file.image?.data || "";
+    const key = normalizeComparablePath(originalPath);
+    if (key) {
+      result.set(key, file);
+    }
+  });
+  return result;
+};
+
+const createFolderStagingContext = () => {
+  const config = configStore.config;
+  const imageFolder = config.fileManagement?.imageFolderName || "images";
+  const tempRoot = config.fileManagement?.tempPath || "";
+  if (!tempRoot) {
+    return null;
+  }
+  const runId = `folder_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const stagingRoot = joinRendererPath(tempRoot, imageFolder, "folder-chain-inputs", runId);
+  const imageInputFolder = joinRendererPath(stagingRoot, "images");
+  const maskInputFolder = joinRendererPath(stagingRoot, "masks");
+  return {
+    ...fileManagerStore.createProcessingInputContext(config, "path"),
+    stagingRoot,
+    imageInputFolder,
+    maskInputFolder,
+    stagedImageToFileId: new Map(),
+  };
+};
+
+const copyFileToPath = async (source, target) => {
+  const result = await window.electron.ipcRenderer.invoke("copy-file", { source, target });
+  if (!result?.success) {
+    throw new Error(result?.error || `复制文件失败: ${source}`);
+  }
+  return result.targetPath || target;
+};
+
+const saveBase64ToPath = async (base64Data, targetPath) => {
+  const savedPath = await window.electron.ipcRenderer.invoke("save-file", {
+    filePath: targetPath,
+    blob: base64ToArrayBuffer(base64Data),
+  });
+  return typeof savedPath === "string" ? savedPath : targetPath;
+};
+
+const buildMaskPathMap = async (targetMaskFolderPath) => {
+  const maskFiles = targetMaskFolderPath
+    ? await listImageFilesFromFolder(targetMaskFolderPath)
+    : [];
+  const byStem = new Map();
+  let templatePath = "";
+  maskFiles.forEach((file) => {
+    const stem = getFileStem(file.name).toLowerCase();
+    if (stem === "mask_template") {
+      templatePath = file.path;
+    }
+    if (stem && !byStem.has(stem)) {
+      byStem.set(stem, file.path);
+    }
+  });
+  return { byStem, templatePath };
+};
+
+const buildStagedFolderInputs = async ({ requiresMask = false } = {}) => {
+  if (!window.electron?.ipcRenderer?.invoke || !folderPath.value) {
+    return null;
+  }
+
+  const folderImages = await listImageFilesFromFolder(folderPath.value);
+  if (folderImages.length === 0) {
+    return null;
+  }
+
+  const loadedByPath = buildLoadedFileByOriginalPath();
+  const matchedEntries = folderImages
+    .map((entry) => ({
+      entry,
+      file: loadedByPath.get(normalizeComparablePath(entry.path)),
+    }))
+    .filter(({ file }) => Boolean(file));
+  const needsStaging = matchedEntries.some(
+    ({ file }) => (file.history?.length || 0) > 1 || Boolean(file.mask?.data)
+  );
+
+  if (!needsStaging) {
+    return null;
+  }
+
+  const context = createFolderStagingContext();
+  if (!context) {
+    return null;
+  }
+  const maskMap = requiresMask ? await buildMaskPathMap(maskFolderPath.value) : null;
+  if (requiresMask && fileManagerStore.currentFile?.mask?.data) {
+    await saveBase64ToPath(
+      fileManagerStore.currentFile.mask.data,
+      joinRendererPath(context.maskInputFolder, "mask_template.png")
+    );
+  } else if (requiresMask && maskMap?.templatePath) {
+    await copyFileToPath(
+      maskMap.templatePath,
+      joinRendererPath(context.maskInputFolder, "mask_template.png")
+    );
+  }
+
+  fileManagerStore.processingConfig = {
+    ...fileManagerStore.processingConfig,
+    method: "path",
+    imageType: "path",
+    responseType: "path",
+    tempPath: configStore.config.fileManagement?.tempPath || "",
+  };
+  fileManagerStore.lastProcessingInputWarnings = [];
+
+  for (const entry of folderImages) {
+    const loadedFile = loadedByPath.get(normalizeComparablePath(entry.path));
+    const sourcePath = loadedFile
+      ? await fileManagerStore.resolveLatestImageInput(loadedFile, "path", context)
+      : entry.path;
+    const sourceExtension = getPathExtension(sourcePath) || getPathExtension(entry.name) || ".png";
+    const targetRelativePath = replacePathExtension(entry.relativePath || entry.name, sourceExtension);
+    const targetImagePath = joinRendererPath(context.imageInputFolder, targetRelativePath);
+    const copiedImagePath = await copyFileToPath(sourcePath, targetImagePath);
+
+    if (loadedFile) {
+      context.stagedImageToFileId.set(
+        normalizeComparablePath(copiedImagePath),
+        loadedFile.id
+      );
+    }
+
+    if (!requiresMask) {
+      continue;
+    }
+
+    const { directory, fileName } = splitRelativePath(targetRelativePath);
+    const maskTargetPath = joinRendererPath(
+      context.maskInputFolder,
+      directory,
+      `${getFileStem(fileName)}.png`
+    );
+    if (loadedFile?.mask?.data) {
+      await saveBase64ToPath(loadedFile.mask.data, maskTargetPath);
+      continue;
+    }
+    const sourceMaskPath = maskMap?.byStem?.get(getFileStem(entry.name).toLowerCase());
+    if (sourceMaskPath) {
+      await copyFileToPath(sourceMaskPath, maskTargetPath);
+    }
+  }
+
+  fileManagerStore.lastProcessingInputWarnings = [...new Set(context.warnings)];
+  return context;
+};
+
+const appendFolderResultsToLoadedFiles = async (response, stagingContext) => {
+  if (!stagingContext || !Array.isArray(response?.results)) {
+    return [];
+  }
+
+  const processedFileIds = [];
+  for (const result of response.results) {
+    if (!result?.success || !result.output_path) {
+      continue;
+    }
+    const fileId = stagingContext.stagedImageToFileId.get(
+      normalizeComparablePath(result.image_path)
+    );
+    if (!fileId) {
+      continue;
+    }
+    await fileManagerStore.addProcessingResult(fileId, result.output_path, {
+      format: result.format,
+      mimeType: result.mime_type,
+      extension: result.extension,
+    });
+    processedFileIds.push(fileId);
+  }
+  return processedFileIds;
 };
 
 // 确认删除选中文件时同时删除对应的蒙版
@@ -992,6 +1270,7 @@ const runSlbrModel = async () => {
     const requestData = await fileManagerStore.prepareMoonshineImageProcessData(
       filesToProcess
     );
+    notifyProcessingInputWarnings();
     requestData.model_id = "slbr";
     requestData.options = getCurrentModelOptions();
 
@@ -1121,6 +1400,7 @@ const runRemoveModel = async () => {
     const requestData = await fileManagerStore.prepareBatchInpaintData(
       filesToProcess
     );
+    notifyProcessingInputWarnings();
 
     // 调用API
     const response = await InpaintService.performBatchInpainting(requestData);
@@ -1172,10 +1452,13 @@ const processFolderImages = async () => {
     isPageDisabled.value = true;
 
     // 实现文件夹处理逻辑
+    const stagingContext = await buildStagedFolderInputs({ requiresMask: true });
+    notifyProcessingInputWarnings();
+
     const folderData = {
       device: cudaAvailable.value ? "cuda" : "cpu",
-      image_folder: folderPath.value,
-      mask_folder: maskFolderPath.value,
+      image_folder: stagingContext?.imageInputFolder || folderPath.value,
+      mask_folder: stagingContext?.maskInputFolder || maskFolderPath.value,
       output_folder: effectiveSavePath.value,
       ...getImageOutputRequestOptions(),
     };
@@ -1183,7 +1466,11 @@ const processFolderImages = async () => {
     const response = await InpaintService.performFolderInpainting(folderData);
     // 处理返回结果
     if (response.success) {
-      await finalizeSuccessfulMaskRun(maskUiState, { forceClearCurrentMask: true });
+      const processedFileIds = await appendFolderResultsToLoadedFiles(
+        response,
+        stagingContext
+      );
+      await finalizeSuccessfulMaskRun(maskUiState, { processedFileIds });
       const result = response;
       $q.notify({
         type: "positive",
@@ -1217,16 +1504,20 @@ const processSlbrFolderImages = async () => {
     );
     isPageDisabled.value = true;
 
+    const stagingContext = await buildStagedFolderInputs({ requiresMask: false });
+    notifyProcessingInputWarnings();
+
     const folderData = {
       model_id: "slbr",
       device: cudaAvailable.value ? "cuda" : "cpu",
-      image_folder: folderPath.value,
+      image_folder: stagingContext?.imageInputFolder || folderPath.value,
       output_folder: effectiveSavePath.value,
       options: getCurrentModelOptions(),
       ...getImageOutputRequestOptions(),
     };
     const response = await InpaintService.performMoonshineFolderProcessing(folderData);
     if (response.success) {
+      await appendFolderResultsToLoadedFiles(response, stagingContext);
       $q.notify({
         type: "positive",
         message: `文件夹处理完成，共处理 ${response.processed_count} 张图像，成功 ${response.success_count} 张`,
@@ -1395,10 +1686,83 @@ const undoProcessing = () => {
 
 const registerImageE2ETestBridge = () => {
   if (typeof window === "undefined" || window.__MOONSHINE_E2E__ !== true) return;
+  const findBridgeFiles = (fileIds = []) => {
+    const ids = Array.isArray(fileIds) ? fileIds : [];
+    if (ids.length === 0) {
+      return fileManagerStore.currentFile ? [fileManagerStore.currentFile] : [];
+    }
+    return ids
+      .map((fileId) => fileManagerStore.files.find((file) => file.id === fileId))
+      .filter(Boolean);
+  };
+  const summarizeBridgeRequest = (requestData = {}) => {
+    const firstImage = requestData.data?.[0]?.image;
+    const firstMask = requestData.data?.[0]?.mask;
+    const firstImageText = typeof firstImage === "string" ? firstImage : "";
+    return {
+      imageType: requestData.image_type,
+      maskType: requestData.mask_type,
+      responseType: requestData.response_type,
+      tempPath: requestData.temp_path || "",
+      outputFormat: requestData.output_format,
+      outputQuality: requestData.output_quality,
+      dataLength: Array.isArray(requestData.data) ? requestData.data.length : 0,
+      firstImageKind:
+        /^[a-zA-Z]:[\\/]/.test(firstImageText) ||
+        firstImageText.startsWith("/") ||
+        firstImageText.includes("chain-inputs")
+          ? "path"
+          : firstImageText
+            ? "base64"
+            : "",
+      firstImageIncludesChainInputs: firstImageText.includes("chain-inputs"),
+      firstMaskPresent: Boolean(firstMask),
+    };
+  };
   window.__MOONSHINE_IMAGE_TEST__ = {
     addFile: async (file) => fileManagerStore.addFile(file),
+    addPathFile: (descriptor) => {
+      const created = fileManagerStore.addPathFiles([descriptor]);
+      if (created[0]) {
+        fileManagerStore.setCurrentFile(created[0].id);
+      }
+      return {
+        createdCount: created.length,
+        fileId: created[0]?.id || "",
+        snapshot: window.__MOONSHINE_IMAGE_TEST__.getSnapshot(),
+      };
+    },
     setMask: (fileId, maskData) => fileManagerStore.updateFileMask(fileId, maskData),
     clearMask: (fileId) => fileManagerStore.updateFileMask(fileId, null),
+    setCurrentFile: (fileId) => {
+      fileManagerStore.setCurrentFile(fileId);
+      return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
+    },
+    toggleSelectionById: (fileId) => {
+      fileManagerStore.toggleFileSelection(fileId);
+      return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
+    },
+    clearSelection: () => {
+      fileManagerStore.clearSelection();
+      return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
+    },
+    selectAllFiles: () => {
+      handleLeftListSelectAll();
+      return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
+    },
+    invertSelection: () => {
+      handleInvertSelection();
+      return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
+    },
+    setLeftDrawerOpen: (value) => {
+      leftDrawerOpen.value = Boolean(value);
+      return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
+    },
+    deleteSelectedImmediately: () => {
+      const selectedIds = [...fileManagerStore.selectedFileIds];
+      selectedIds.forEach((fileId) => fileManagerStore.removeFile(fileId));
+      return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
+    },
     setCurrentModel: (modelId) => {
       handleModelChange(modelId, { notify: false });
       return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
@@ -1409,8 +1773,43 @@ const registerImageE2ETestBridge = () => {
     },
     addProcessingResult: (fileId, resultData, metadata = {}) =>
       fileManagerStore.addProcessingResult(fileId, resultData, metadata),
+    finalizeSuccessfulMaskRun: async (fileIds = []) => {
+      await finalizeSuccessfulMaskRun(captureMaskUiState(), {
+        processedFileIds: Array.isArray(fileIds) ? fileIds : [],
+      });
+      return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
+    },
     undoProcessing: (fileId = fileManagerStore.currentFileId) =>
       fileManagerStore.undoProcessing(fileId),
+    setConfigPatch: async (patch = {}) => {
+      const nextConfig = {
+        ...configStore.config,
+        ...patch,
+        advanced: {
+          ...(configStore.config.advanced || {}),
+          ...(patch.advanced || {}),
+        },
+        fileManagement: {
+          ...(configStore.config.fileManagement || {}),
+          ...(patch.fileManagement || {}),
+        },
+      };
+      return configStore.saveConfig(nextConfig);
+    },
+    prepareMoonshineImageProcessData: async (fileIds = []) =>
+      summarizeBridgeRequest(
+        await fileManagerStore.prepareMoonshineImageProcessData(
+          findBridgeFiles(fileIds)
+        )
+      ),
+    prepareBatchInpaintData: async (fileIds = []) =>
+      summarizeBridgeRequest(
+        await fileManagerStore.prepareBatchInpaintData(findBridgeFiles(fileIds))
+      ),
+    resolveProcessingTransport: (fileIds = [], options = {}) =>
+      fileManagerStore.resolveProcessingTransport(findBridgeFiles(fileIds), options),
+    consumeProcessingInputWarnings: () =>
+      fileManagerStore.consumeProcessingInputWarnings(),
     getSnapshot: () => ({
       currentModel: currentModel.value,
       availableModels: imageModelOptions.value.map((option) => option.value),
@@ -1423,8 +1822,23 @@ const registerImageE2ETestBridge = () => {
       currentFileId: fileManagerStore.currentFileId,
       currentFileName: fileManagerStore.currentFile?.name || "",
       currentHistoryLength: fileManagerStore.currentFile?.history?.length || 0,
+      currentLatestHistoryType:
+        fileManagerStore.currentFile?.history?.[
+          fileManagerStore.currentFile.history.length - 1
+        ]?.type || "",
       currentHasMask: Boolean(fileManagerStore.currentFile?.mask),
+      maskStates: fileManagerStore.files.map((file) => ({
+        id: file.id,
+        name: file.name,
+        hasMask: Boolean(file.mask),
+      })),
       selectedFileIds: [...fileManagerStore.selectedFileIds],
+      config: {
+        imageProcessingMethod:
+          configStore.config.advanced?.imageProcessingMethod || "",
+        imageWarningSize: configStore.config.advanced?.imageWarningSize || 0,
+        tempPath: configStore.config.fileManagement?.tempPath || "",
+      },
     }),
   };
 };
@@ -1565,16 +1979,8 @@ const saveMaskToFolder = async () => {
 // 监听selectedFiles变化，更新selectAll状态
 watch(
   () => fileManagerStore.selectedFiles,
-  (newVal) => {
-    if (fileManagerStore.files.length > 0) {
-      selectAll.value =
-        newVal.length ===
-        fileManagerStore.files.filter((f) =>
-          f.originalFile?.type.startsWith("image/")
-        ).length;
-    } else {
-      selectAll.value = false;
-    }
+  () => {
+    selectAll.value = areAllLoadedImagesSelected();
   },
   { deep: true }
 );
@@ -1870,6 +2276,9 @@ const syncLayoutDrawers = () => {
       "update:selected-file": handleFileSelection,
       "toggle-selection": toggleFileSelection,
       "remove-file": handleRemoveFile,
+      "select-all": handleLeftListSelectAll,
+      "invert-selection": handleInvertSelection,
+      "delete-selected": confirmDeleteSelected,
     },
   });
 

@@ -40,14 +40,15 @@
       </q-btn>
 
       <div
-        v-if="fileManagerStore.files.length > 0"
+        v-if="shouldShowFileIndicator"
         ref="fileIndicatorRef"
         class="file-indicator"
+        data-testid="moonshine-file-list-indicator"
         @mouseenter="handleMouseEnter"
         @mouseleave="handleMouseLeave"
       >
         <q-btn flat round dense icon="expand_less" color="primary" class="file-count-btn">
-          <q-badge color="negative" floating :label="fileManagerStore.files.length" rounded />
+          <q-badge color="negative" floating :label="floatingListCount" rounded />
         </q-btn>
 
         <teleport to="body">
@@ -56,51 +57,100 @@
             class="file-list-popup"
             :class="{ 'file-list-popup--dark': $q.dark.isActive }"
             :style="popupStyle"
+            data-testid="moonshine-file-list-popup"
             @mouseenter="handleMouseEnter"
             @mouseleave="handleMouseLeave"
             bordered
             flat
           >
             <q-card-section class="q-pa-xs">
-              <div class="text-subtitle2 text-primary q-mb-xs q-px-sm">
-                已加载文件（{{ fileManagerStore.files.length }}）
+              <div
+                class="text-subtitle2 text-primary q-mb-xs q-px-sm"
+                data-testid="moonshine-file-list-title"
+              >
+                {{ floatingListTitle }}
               </div>
               <q-separator class="q-mb-xs" />
               <q-virtual-scroll
-                :items="fileManagerStore.files"
+                v-if="floatingListFiles.length > 0"
+                :items="floatingListFiles"
                 :virtual-scroll-item-size="54"
                 :style="scrollAreaStyle"
                 class="file-list-container q-pa-none"
+                data-testid="moonshine-file-virtual-list"
                 type="list"
                 v-slot="{ item: file }"
               >
-                  <q-item
-                    :key="file.id"
-                    class="file-item q-pa-xs"
-                    clickable
-                    v-ripple
-                    :class="{ 'file-item-active': file.id === fileManagerStore.currentFileId }"
-                    @click="fileManagerStore.setCurrentFile(file.id)"
-                  >
-                    <q-item-section avatar>
-                      <q-avatar size="28px" color="primary" text-color="white">
-                        <q-icon :name="getFileIcon(file)" />
-                      </q-avatar>
-                    </q-item-section>
+                <q-item
+                  :key="file.id"
+                  class="file-item q-pa-xs"
+                  clickable
+                  v-ripple
+                  :class="{ 'file-item-active': file.id === fileManagerStore.currentFileId }"
+                  @click="fileManagerStore.setCurrentFile(file.id)"
+                >
+                  <q-item-section avatar>
+                    <q-avatar size="32px" color="primary" text-color="white" class="file-thumb">
+                      <q-icon :name="getFileIcon(file)" />
+                      <img
+                        v-if="getFileThumbnailUrl(file)"
+                        :src="getFileThumbnailUrl(file)"
+                        loading="lazy"
+                        class="file-thumb-image"
+                        data-testid="moonshine-file-thumbnail"
+                        @error="hideBrokenThumbnail"
+                      />
+                    </q-avatar>
+                  </q-item-section>
 
-                    <q-item-section>
-                      <q-item-label class="text-caption ellipsis">{{ file.name }}</q-item-label>
-                      <q-item-label caption>
-                        历史记录：{{ file.history.length }}
-                        <span v-if="file.mask" class="q-ml-xs">已设置蒙版</span>
-                      </q-item-label>
-                    </q-item-section>
+                  <q-item-section>
+                    <q-item-label class="text-caption ellipsis">{{ file.name }}</q-item-label>
+                    <q-item-label caption>
+                      历史记录：{{ file.history.length }}
+                    </q-item-label>
+                  </q-item-section>
 
-                    <q-item-section side>
-                      <q-btn flat round dense size="sm" icon="close" color="negative" @click.stop="removeFile(file.id)" />
-                    </q-item-section>
-                  </q-item>
+                  <q-item-section side>
+                    <div class="file-item-actions">
+                      <q-badge
+                        v-if="file.mask"
+                        color="primary"
+                        outline
+                        label="蒙版"
+                        data-testid="moonshine-file-mask-tag"
+                      />
+                      <q-btn
+                        v-if="canUnselectFloatingFile(file)"
+                        flat
+                        round
+                        dense
+                        size="sm"
+                        icon="close"
+                        color="grey-7"
+                        data-testid="moonshine-file-unselect"
+                        @click.stop="unselectFile(file.id)"
+                      />
+                      <q-btn
+                        flat
+                        round
+                        dense
+                        size="sm"
+                        icon="delete"
+                        color="negative"
+                        data-testid="moonshine-file-delete"
+                        @click.stop="removeFile(file.id)"
+                      />
+                    </div>
+                  </q-item-section>
+                </q-item>
               </q-virtual-scroll>
+              <div
+                v-else
+                class="file-list-empty text-caption text-grey-7 q-pa-md text-center"
+                data-testid="moonshine-file-list-empty"
+              >
+                暂无选中文件
+              </div>
             </q-card-section>
           </q-card>
         </teleport>
@@ -152,6 +202,11 @@ const props = defineProps({
     type: String,
     default: "",
   },
+  listMode: {
+    type: String,
+    default: "all",
+    validator: (value) => ["all", "selection"].includes(value),
+  },
 });
 
 const emit = defineEmits(["update:modelValue", "file-added", "file-removed"]);
@@ -183,6 +238,52 @@ const canShowFloatingList = computed(
     viewportHeight.value >= POPUP_MIN_SCREEN_HEIGHT
 );
 
+const isImageFile = (file) => file?.type?.startsWith("image/");
+
+const selectedImageFiles = computed(() =>
+  fileManagerStore.selectedFiles.filter(isImageFile)
+);
+
+const currentPreviewFile = computed(() =>
+  isImageFile(fileManagerStore.currentFile) ? fileManagerStore.currentFile : null
+);
+
+const usesSelectionList = computed(() => props.listMode === "selection");
+
+const floatingListFiles = computed(() => {
+  if (!usesSelectionList.value) {
+    return fileManagerStore.files;
+  }
+
+  if (selectedImageFiles.value.length > 0) {
+    return selectedImageFiles.value;
+  }
+
+  return currentPreviewFile.value ? [currentPreviewFile.value] : [];
+});
+
+const floatingListCount = computed(() => floatingListFiles.value.length);
+
+const shouldShowFileIndicator = computed(() =>
+  usesSelectionList.value || fileManagerStore.files.length > 0
+);
+
+const floatingListTitle = computed(() => {
+  if (!usesSelectionList.value) {
+    return `已加载文件（${fileManagerStore.files.length}）`;
+  }
+
+  if (selectedImageFiles.value.length > 0) {
+    return `已选文件 ${selectedImageFiles.value.length}`;
+  }
+
+  if (currentPreviewFile.value) {
+    return "当前预览 1";
+  }
+
+  return "已选文件 0";
+});
+
 const popupWidth = computed(() => {
   const available = Math.max(0, viewportWidth.value - POPUP_MARGIN * 2);
   const minWidth = Math.min(POPUP_MIN_WIDTH, available);
@@ -194,7 +295,10 @@ const popupMaxHeight = computed(() =>
 );
 
 const popupEstimatedHeight = computed(() => {
-  const listHeight = Math.min(fileManagerStore.files.length * 60, popupMaxHeight.value);
+  const listHeight = Math.min(
+    Math.max(1, floatingListFiles.value.length) * 60,
+    popupMaxHeight.value
+  );
   return Math.min(listHeight + 64, viewportHeight.value - POPUP_MARGIN * 2);
 });
 
@@ -231,7 +335,10 @@ const popupStyle = computed(() => {
 });
 
 const scrollAreaStyle = computed(() => {
-  const height = Math.min(fileManagerStore.files.length * 60, popupMaxHeight.value);
+  const height = Math.min(
+    Math.max(1, floatingListFiles.value.length) * 60,
+    popupMaxHeight.value
+  );
   return `height: ${height}px; max-height: ${popupMaxHeight.value}px;`;
 });
 
@@ -269,6 +376,38 @@ const getFileIcon = (file) => {
     text: "description",
     application: "insert_drive_file",
   }[type] || "insert_drive_file";
+};
+
+const getFileThumbnailUrl = (file) => {
+  const history = Array.isArray(file?.history) ? file.history : [];
+  const latestImage = history[history.length - 1];
+  const url = latestImage?.displayUrl || file?.image?.displayUrl || "";
+
+  if (url && url.startsWith("file://") && window.electron) {
+    const filePath = url.replace("file://", "");
+    return `atom://${filePath}`;
+  }
+
+  return url;
+};
+
+const hideBrokenThumbnail = (event) => {
+  if (event?.target?.style) {
+    event.target.style.display = "none";
+  }
+};
+
+const canUnselectFloatingFile = (file) =>
+  usesSelectionList.value &&
+  selectedImageFiles.value.length > 0 &&
+  fileManagerStore.selectedFileIds.includes(file?.id);
+
+const unselectFile = (fileId) => {
+  if (!fileManagerStore.selectedFileIds.includes(fileId)) {
+    return;
+  }
+
+  fileManagerStore.toggleFileSelection(fileId);
 };
 
 const normalizePathKey = (filePath = "") =>
@@ -652,6 +791,31 @@ defineExpose({
 
 .file-item-active {
   background: rgba(59, 130, 246, 0.1);
+}
+
+.file-thumb {
+  overflow: hidden;
+}
+
+.file-thumb-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.file-item-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.file-list-empty {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 :global(body.body--dark) .file-list-popup {

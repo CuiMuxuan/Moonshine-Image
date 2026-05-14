@@ -16,6 +16,9 @@
       @update:selected-file="$emit('update:selected-file', $event)"
       @toggle-selection="$emit('toggle-selection', $event)"
       @remove-file="$emit('remove-file', $event)"
+      @select-all="$emit('select-all')"
+      @invert-selection="$emit('invert-selection')"
+      @delete-selected="$emit('delete-selected')"
     />
   </q-drawer>
 </template>
@@ -54,7 +57,10 @@ const emit = defineEmits([
   'update:drawer-open',
   'update:selected-file',
   'toggle-selection',
-  'remove-file'
+  'remove-file',
+  'select-all',
+  'invert-selection',
+  'delete-selected'
 ])
 
 // 使用计算属性处理双向绑定

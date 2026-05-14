@@ -48,6 +48,16 @@ function runAssertions() {
     pattern: /ConfigManager\.validateConfig\(\s*ConfigManager\.mergeForStrictValidation\(newConfig\)\s*\)[\s\S]*ConfigManager\.mergeWithDefault\(newConfig\)/,
   });
   assertPattern({
+    file: "src/shared/appConfigSchema.js",
+    description: "Image processing method supports automatic transport selection by default",
+    pattern: /IMAGE_PROCESSING_METHOD_OPTIONS[\s\S]*"auto"[\s\S]*imageProcessingMethod:\s*"auto"/,
+  });
+  assertPattern({
+    file: "src/components/global/GlobalSettings.vue",
+    description: "Global settings exposes automatic image processing transport",
+    pattern: /label:\s*"自动（推荐）"[\s\S]*value:\s*"auto"[\s\S]*100MB/,
+  });
+  assertPattern({
     file: "src-electron/electron-main.js",
     description: "Electron save-app-config validates raw payload before sanitizing",
     pattern: /validateConfig\(mergeConfigForStrictValidation\(newConfig\)\)[\s\S]*const sanitizedConfig = sanitizeAppConfig\(newConfig\)/,
@@ -141,6 +151,26 @@ function runAssertions() {
     description: "Download filenames use latest result extension",
     pattern: /const outputExtension = latestImage\?\.extension \|\| extension \|\| "\.png";/,
   });
+  assertPattern({
+    file: "src/stores/fileManager.js",
+    description: "Auto transport uses Base64 only for non-folder batches up to 100 files and 100MB total",
+    pattern: /AUTO_BASE64_MAX_FILE_COUNT = 100[\s\S]*AUTO_BASE64_MAX_TOTAL_BYTES = 100 \* 1024 \* 1024[\s\S]*resolveProcessingTransport[\s\S]*options\.folderMode[\s\S]*return "base64"/,
+  });
+  assertPattern({
+    file: "src/stores/fileManager.js",
+    description: "Latest image input resolver converts between path and Base64 with size validation",
+    pattern: /assertCanConvertPathToBase64[\s\S]*resolveLatestImageInput[\s\S]*materializeBase64ImageToTempPath[\s\S]*fileToBase64/,
+  });
+  assertPattern({
+    file: "src/pages/IndexPage.vue",
+    description: "Mask-required successful runs clear masks only for successfully processed image ids",
+    pattern: /const clearMasksForProcessedFileIds = \(processedFileIds = \[\]\) => \{[\s\S]*updateFileMask\(fileId,\s*null\)[\s\S]*finalizeSuccessfulMaskRun\(maskUiState,\s*\{[\s\S]*processedFileIds/,
+  });
+  assertPattern({
+    file: "src/pages/IndexPage.vue",
+    description: "Folder mode can stage loaded latest image results and append output paths back to history",
+    pattern: /buildStagedFolderInputs[\s\S]*resolveLatestImageInput\(loadedFile,\s*"path"[\s\S]*appendFolderResultsToLoadedFiles[\s\S]*addProcessingResult/,
+  });
 
   logSection("Bulk Import");
   assertPattern({
@@ -159,9 +189,24 @@ function runAssertions() {
     pattern: /<q-virtual-scroll[\s\S]*get-files-stats[\s\S]*loadFilesFromPathsOptimized[\s\S]*addPathFiles\(chunk\)/,
   });
   assertPattern({
+    file: "src/components/common/MoonshineFile.vue",
+    description: "Image footer file popup can show selected files/current preview with lazy thumbnails and mask tags",
+    pattern: /(?=[\s\S]*listMode)(?=[\s\S]*selectedImageFiles)(?=[\s\S]*currentPreviewFile)(?=[\s\S]*floatingListTitle)(?=[\s\S]*loading="lazy")(?=[\s\S]*moonshine-file-mask-tag)(?=[\s\S]*moonshine-file-unselect)[\s\S]*moonshine-file-delete/,
+  });
+  assertPattern({
+    file: "src/components/image/ImageProcessingToolbar.vue",
+    description: "Image processing footer uses the selected-file popup mode",
+    pattern: /<moonshine-file[\s\S]*list-mode="selection"/,
+  });
+  assertPattern({
     file: "src/components/common/FileList.vue",
     description: "Left image list uses QVirtualScroll",
     pattern: /<q-virtual-scroll[\s\S]*:items="filteredFiles"[\s\S]*virtual-scroll-item-size/,
+  });
+  assertPattern({
+    file: "src/components/common/FileList.vue",
+    description: "Left image list exposes toggleable select all, invert selection, shortened delete, and middle ellipsis tooltip",
+    pattern: /(?=[\s\S]*data-testid="image-file-list-select-all")(?=[\s\S]*allVisibleImagesSelected)(?=[\s\S]*data-testid="image-file-list-invert-selection")(?=[\s\S]*label="删除")(?=[\s\S]*formatMiddleEllipsis)[\s\S]*<q-tooltip>\{\{ file\.name \}\}<\/q-tooltip>/,
   });
 
   console.log("\nAll P1 image regression assertions passed.");

@@ -222,7 +222,7 @@ function createMockConfig() {
       language: "zh-CN",
     },
     advanced: {
-      imageProcessingMethod: "base64",
+      imageProcessingMethod: "auto",
       imageOutputFormat: "auto",
       imageOutputQuality: 95,
       imageOutputNamingMode: "original",
@@ -235,7 +235,7 @@ function createMockConfig() {
     },
     fileManagement: {
       downloadPath: "",
-      tempPath: "",
+      tempPath: "C:\\Moonshine-E2E\\temp",
       imageFolderName: "images",
       videoFolderName: "videos",
       tempCleanup: {
@@ -299,6 +299,15 @@ async function installElectronMock(context) {
 
     const savedConfig = { ...initialConfig };
     const listeners = new Map();
+    const tinyPngBuffer = [
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+      0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+      0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
+      0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+      0x00, 0x03, 0x01, 0x01, 0x00, 0xc9, 0xfe, 0x92, 0xef, 0x00, 0x00, 0x00,
+      0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    const savedFiles = new Map();
 
     const normalizePath = (input) => String(input || "").replace(/\//g, "\\");
     const basename = (input) => normalizePath(input).split("\\").filter(Boolean).at(-1) || "";
@@ -312,16 +321,42 @@ async function installElectronMock(context) {
       return "application/octet-stream";
     };
 
+    const resolveMockSize = (filePath) =>
+      /large|oversize|big/i.test(String(filePath || ""))
+        ? 2 * 1024 * 1024
+        : savedFiles.get(normalizePath(filePath))?.buffer?.length || 1024;
     const buildStats = (filePath) => ({
       success: true,
       path: String(filePath || ""),
       normalizedPath: normalizePath(filePath),
       name: basename(filePath),
-      size: 1024,
+      size: resolveMockSize(filePath),
       type: extensionToMime(filePath),
       mtimeMs: Date.now(),
       lastModified: Date.now(),
+      data: {
+        path: String(filePath || ""),
+        name: basename(filePath),
+        size: resolveMockSize(filePath),
+        type: extensionToMime(filePath),
+        buffer: savedFiles.get(normalizePath(filePath))?.buffer || tinyPngBuffer,
+      },
     });
+    const readMockFile = (filePath) => {
+      const normalizedPath = normalizePath(filePath);
+      const saved = savedFiles.get(normalizedPath);
+      return {
+        success: true,
+        data: {
+          path: String(filePath || ""),
+          name: basename(filePath) || "Moonshine-E2E.PNG",
+          type: extensionToMime(filePath) || "image/png",
+          size: saved?.buffer?.length || tinyPngBuffer.length,
+          lastModified: Date.now(),
+          buffer: saved?.buffer || tinyPngBuffer,
+        },
+      };
+    };
 
     const invoke = async (channel, payload) => {
       switch (channel) {
@@ -357,8 +392,36 @@ async function installElectronMock(context) {
             success: true,
             files: (Array.isArray(payload) ? payload : []).map(buildStats),
           };
+        case "list-image-files":
+          return {
+            success: true,
+            files: [
+              buildStats("C:\\Moonshine-E2E\\folder\\alpha.png"),
+              buildStats("C:\\Moonshine-E2E\\folder\\beta.webp"),
+            ],
+          };
+        case "save-file": {
+          const filePath = payload?.filePath || payload?.path || "";
+          const normalizedPath = normalizePath(filePath);
+          const blob = payload?.blob;
+          const buffer =
+            Array.isArray(blob)
+              ? blob
+              : blob instanceof ArrayBuffer
+                ? Array.from(new Uint8Array(blob))
+                : tinyPngBuffer;
+          savedFiles.set(normalizedPath, {
+            buffer,
+            type: extensionToMime(filePath),
+          });
+          return filePath;
+        }
+        case "copy-file":
+          return { success: true, targetPath: payload?.target || payload?.source || "" };
+        case "read-file-with-progress":
+          return readMockFile(payload);
         case "read-file":
-          return { success: true, data: "", content: "" };
+          return readMockFile(payload);
         case "select-file":
           return { canceled: true, filePaths: [] };
         case "select-folder":
@@ -581,6 +644,36 @@ async function testImageWorkflow(page) {
 
   assert(afterMask.currentHasMask, "Image mask creation should mark the current image as masked.");
 
+  const autoTransportRequest = await page.evaluate(async () => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    const snapshot = bridge.getSnapshot();
+    await bridge.setConfigPatch({
+      advanced: {
+        imageProcessingMethod: "auto",
+        imageWarningSize: 50,
+      },
+      fileManagement: {
+        tempPath: "C:\\Moonshine-E2E\\temp",
+      },
+    });
+    return {
+      moonshine: await bridge.prepareMoonshineImageProcessData([snapshot.currentFileId]),
+      batch: await bridge.prepareBatchInpaintData([snapshot.currentFileId]),
+    };
+  });
+  assert(
+    autoTransportRequest.moonshine.imageType === "base64" &&
+      autoTransportRequest.moonshine.responseType === "base64" &&
+      autoTransportRequest.moonshine.tempPath === "",
+    "Auto transport should use Base64 for small non-folder image processing."
+  );
+  assert(
+    autoTransportRequest.batch.imageType === "base64" &&
+      autoTransportRequest.batch.maskType === "base64" &&
+      autoTransportRequest.batch.firstMaskPresent,
+    "Auto transport should use Base64 images and Base64 masks for small masked batches."
+  );
+
   const afterProcessing = await page.evaluate(async (processedUrl) => {
     const snapshot = window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
     await window.__MOONSHINE_IMAGE_TEST__.addProcessingResult(
@@ -592,12 +685,67 @@ async function testImageWorkflow(page) {
   }, resultUrl);
 
   assert(afterProcessing.currentHistoryLength === 2, "Image processing should append a history item.");
+  assert(afterProcessing.currentHasMask, "Image processing should preserve the current mask for chained runs.");
+
+  const pathChainRequest = await page.evaluate(async () => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    const snapshot = bridge.getSnapshot();
+    await bridge.setConfigPatch({
+      advanced: {
+        imageProcessingMethod: "path",
+        imageWarningSize: 50,
+      },
+      fileManagement: {
+        tempPath: "C:\\Moonshine-E2E\\temp",
+      },
+    });
+    return bridge.prepareMoonshineImageProcessData([snapshot.currentFileId]);
+  });
+  assert(
+    pathChainRequest.imageType === "path" &&
+      pathChainRequest.responseType === "path" &&
+      pathChainRequest.tempPath.includes("images") &&
+      pathChainRequest.firstImageKind === "path" &&
+      pathChainRequest.firstImageIncludesChainInputs,
+    "Path transport should materialize the latest Base64 result into chain-inputs for the next model."
+  );
+
+  const afterPathResult = await page.evaluate(async () => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    const snapshot = bridge.getSnapshot();
+    await bridge.addProcessingResult(
+      snapshot.currentFileId,
+      "C:\\Moonshine-E2E\\temp\\images\\result_after_lama.png",
+      { format: "png", mimeType: "image/png", extension: ".png" }
+    );
+    return bridge.getSnapshot();
+  });
+  assert(
+    afterPathResult.currentHistoryLength === 3 &&
+      afterPathResult.currentLatestHistoryType === "path",
+    "Path response processing should append a path-based history result."
+  );
+  assert(afterPathResult.currentHasMask, "Path response processing should keep the current mask available.");
+
+  const afterMaskModelFinalize = await page.evaluate(async () => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    const snapshot = bridge.getSnapshot();
+    return bridge.finalizeSuccessfulMaskRun([snapshot.currentFileId]);
+  });
+  assert(
+    !afterMaskModelFinalize.currentHasMask,
+    "Successful mask-required processing should clear the processed image mask."
+  );
 
   const afterUndo = await page.evaluate(() => {
     window.__MOONSHINE_IMAGE_TEST__.undoProcessing();
     return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
   });
-  assert(afterUndo.currentHistoryLength === 1, "Image processing undo should remove the latest result.");
+  assert(
+    afterUndo.currentHistoryLength === 2 &&
+      afterUndo.currentLatestHistoryType === "base64",
+    "Image processing undo should remove the latest path result and restore the previous processed image."
+  );
 
   const afterClearMask = await page.evaluate(() => {
     const snapshot = window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
@@ -605,6 +753,302 @@ async function testImageWorkflow(page) {
     return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
   });
   assert(!afterClearMask.currentHasMask, "Image mask deletion should clear the mask.");
+
+  const largePathChecks = await page.evaluate(async () => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    const added = bridge.addPathFile({
+      path: "C:\\Moonshine-E2E\\inputs\\Large-OverSize.PNG",
+      normalizedPath: "C:\\Moonshine-E2E\\inputs\\Large-OverSize.PNG",
+      name: "Large-OverSize.PNG",
+      type: "image/png",
+      size: 2 * 1024 * 1024,
+      lastModified: Date.now(),
+    });
+    await bridge.setConfigPatch({
+      advanced: {
+        imageProcessingMethod: "auto",
+        imageWarningSize: 1,
+      },
+      fileManagement: {
+        tempPath: "C:\\Moonshine-E2E\\temp",
+      },
+    });
+    const autoTransport = bridge.resolveProcessingTransport([added.fileId]);
+    const folderTransport = bridge.resolveProcessingTransport([added.fileId], {
+      folderMode: true,
+    });
+    const autoRequest = await bridge.prepareMoonshineImageProcessData([added.fileId]);
+    await bridge.setConfigPatch({
+      advanced: {
+        imageProcessingMethod: "base64",
+        imageWarningSize: 1,
+      },
+    });
+    let base64Error = "";
+    try {
+      await bridge.prepareMoonshineImageProcessData([added.fileId]);
+    } catch (error) {
+      base64Error = error?.message || String(error);
+    }
+    return {
+      added,
+      autoTransport,
+      folderTransport,
+      autoRequest,
+      base64Error,
+    };
+  });
+  assert(largePathChecks.added.createdCount === 1, "Path image import should add one image descriptor.");
+  assert(
+    largePathChecks.autoTransport === "path" &&
+      largePathChecks.folderTransport === "path" &&
+      largePathChecks.autoRequest.imageType === "path",
+    "Auto transport should choose Path for oversized images and folder-mode requests."
+  );
+  assert(
+    /Base64|base64/.test(largePathChecks.base64Error),
+    "Forced Base64 should reject oversized path images before reading file content."
+  );
+
+  const partialMaskClear = await page.evaluate(async (maskDataUrl) => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    const failed = bridge.addPathFile({
+      path: "C:\\Moonshine-E2E\\inputs\\Failed-Keep-Mask.PNG",
+      normalizedPath: "C:\\Moonshine-E2E\\inputs\\Failed-Keep-Mask.PNG",
+      name: "Failed-Keep-Mask.PNG",
+      type: "image/png",
+      size: 1024,
+      lastModified: Date.now(),
+    });
+    const success = bridge.addPathFile({
+      path: "C:\\Moonshine-E2E\\inputs\\Success-Clear-Mask.PNG",
+      normalizedPath: "C:\\Moonshine-E2E\\inputs\\Success-Clear-Mask.PNG",
+      name: "Success-Clear-Mask.PNG",
+      type: "image/png",
+      size: 1024,
+      lastModified: Date.now(),
+    });
+    bridge.setMask(failed.fileId, maskDataUrl);
+    bridge.setMask(success.fileId, maskDataUrl);
+    const snapshot = await bridge.finalizeSuccessfulMaskRun([success.fileId]);
+    return {
+      failedFileId: failed.fileId,
+      successFileId: success.fileId,
+      maskStates: snapshot.maskStates,
+    };
+  }, maskUrl);
+  const failedMaskState = partialMaskClear.maskStates.find(
+    (file) => file.id === partialMaskClear.failedFileId
+  );
+  const successMaskState = partialMaskClear.maskStates.find(
+    (file) => file.id === partialMaskClear.successFileId
+  );
+  assert(
+    failedMaskState?.hasMask === true && successMaskState?.hasMask === false,
+    "Partial mask-required processing should clear masks only for successful images."
+  );
+
+  const longFileName =
+    "very-long-moonshine-e2e-image-file-name-that-should-keep-extension.png";
+  const afterLongFile = await page.evaluate(async ({ bytes, fileName }) => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    await bridge.setConfigPatch({
+      advanced: {
+        imageProcessingMethod: "auto",
+        imageWarningSize: 50,
+      },
+    });
+    const file = new File([new Uint8Array(bytes)], fileName, {
+      type: "image/png",
+      lastModified: Date.now(),
+    });
+    await bridge.addFile(file);
+    return bridge.getSnapshot();
+  }, { bytes: Array.from(tinyPngBytes), fileName: longFileName });
+  assert(afterLongFile.fileCount >= 3, "Adding an additional long-named image should keep it in the list.");
+
+  const footerListSetup = await page.evaluate(({ failedFileId, successFileId }) => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    bridge.clearSelection();
+    bridge.setCurrentFile(failedFileId);
+    bridge.toggleSelectionById(failedFileId);
+    bridge.toggleSelectionById(successFileId);
+    return bridge.getSnapshot();
+  }, {
+    failedFileId: partialMaskClear.failedFileId,
+    successFileId: partialMaskClear.successFileId,
+  });
+  assert(
+    footerListSetup.selectedFileIds.length === 2,
+    "Image footer list setup should select two files."
+  );
+
+  await page.hover('[data-testid="moonshine-file-list-indicator"]');
+  await page.waitForSelector('[data-testid="moonshine-file-list-popup"]', {
+    state: "visible",
+    timeout: 10000,
+  });
+  const footerSelectedTitle = await page
+    .locator('[data-testid="moonshine-file-list-title"]')
+    .textContent();
+  assert(
+    (footerSelectedTitle || "").includes("已选文件 2"),
+    "Image footer list should count selected files instead of all loaded files."
+  );
+  assert(
+    (await page.locator('[data-testid="moonshine-file-thumbnail"]').count()) > 0,
+    "Image footer list should render lazy thumbnails for visible rows."
+  );
+  assert(
+    (await page.locator('[data-testid="moonshine-file-mask-tag"]').count()) >= 1,
+    "Image footer list should show a mask tag only for files with masks."
+  );
+
+  const beforeFooterUnselect = await page.evaluate(() =>
+    window.__MOONSHINE_IMAGE_TEST__.getSnapshot()
+  );
+  await page.locator('[data-testid="moonshine-file-unselect"]').first().click();
+  await page.waitForFunction(
+    () => window.__MOONSHINE_IMAGE_TEST__?.getSnapshot().selectedFileIds.length === 1,
+    null,
+    { timeout: 10000 }
+  );
+  const afterFooterUnselect = await page.evaluate(() =>
+    window.__MOONSHINE_IMAGE_TEST__.getSnapshot()
+  );
+  assert(
+    afterFooterUnselect.fileCount === beforeFooterUnselect.fileCount,
+    "Image footer list X button should remove a file from selection without deleting it."
+  );
+
+  await page.locator('[data-testid="moonshine-file-delete"]').first().click();
+  await page.waitForFunction(
+    (previousCount) =>
+      window.__MOONSHINE_IMAGE_TEST__?.getSnapshot().fileCount === previousCount - 1,
+    beforeFooterUnselect.fileCount,
+    { timeout: 10000 }
+  );
+  const afterFooterDelete = await page.evaluate(() =>
+    window.__MOONSHINE_IMAGE_TEST__.getSnapshot()
+  );
+  assert(
+    afterFooterDelete.fileCount === beforeFooterUnselect.fileCount - 1,
+    "Image footer list delete button should remove the file from loaded files."
+  );
+
+  await page.evaluate((fileId) => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    bridge.clearSelection();
+    bridge.setCurrentFile(fileId);
+    return bridge.getSnapshot();
+  }, partialMaskClear.failedFileId);
+  await page.hover('[data-testid="moonshine-file-list-indicator"]');
+  await page.waitForSelector('[data-testid="moonshine-file-list-popup"]', {
+    state: "visible",
+    timeout: 10000,
+  });
+  const footerPreviewTitle = await page
+    .locator('[data-testid="moonshine-file-list-title"]')
+    .textContent();
+  assert(
+    (footerPreviewTitle || "").includes("当前预览 1"),
+    "Image footer list should fall back to the current preview image when nothing is selected."
+  );
+  assert(
+    (await page.locator('[data-testid="moonshine-file-unselect"]').count()) === 0,
+    "Image footer preview fallback should hide the unselect action."
+  );
+  assert(
+    (await page.locator('[data-testid="moonshine-file-delete"]').count()) >= 1,
+    "Image footer preview fallback should keep the delete-file action."
+  );
+
+  await page.evaluate(() => window.__MOONSHINE_IMAGE_TEST__.setLeftDrawerOpen(true));
+  await page.waitForSelector('[data-testid="image-file-list-select-all"]', {
+    timeout: 20000,
+  });
+  const firstRenderedFileNames = await page.evaluate(() =>
+    Array.from(document.querySelectorAll(".file-list-name"))
+      .map((item) => (item.textContent || "").trim())
+      .filter(Boolean)
+  );
+  await page.locator(".file-list").evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    element.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  await page.waitForTimeout(150);
+  const renderedFileNames = await page.evaluate((initialNames) => {
+    const names = Array.from(document.querySelectorAll(".file-list-name"))
+      .map((item) => (item.textContent || "").trim())
+      .filter(Boolean);
+    return [...new Set([...initialNames, ...names])];
+  }, firstRenderedFileNames);
+  assert(
+    renderedFileNames.some((name) => name.includes("...") && name.endsWith(".png")),
+    `Long image names should render with middle ellipsis while preserving extension. Rendered names: ${JSON.stringify(renderedFileNames)}`
+  );
+
+  await page.click('[data-testid="image-file-list-select-all"]');
+  const afterSelectAll = await page.evaluate(() =>
+    window.__MOONSHINE_IMAGE_TEST__.getSnapshot()
+  );
+  assert(
+    afterSelectAll.selectedFileIds.length === afterSelectAll.fileCount,
+    "Left image list Select All should select every loaded image."
+  );
+
+  await page.click('[data-testid="image-file-list-select-all"]');
+  const afterSelectAllToggleOff = await page.evaluate(() =>
+    window.__MOONSHINE_IMAGE_TEST__.getSnapshot()
+  );
+  assert(
+    afterSelectAllToggleOff.selectedFileIds.length === 0,
+    "Left image list Select All should clear selection when all loaded images are already selected."
+  );
+
+  await page.click('[data-testid="image-file-list-select-all"]');
+  const afterSelectAllToggleOn = await page.evaluate(() =>
+    window.__MOONSHINE_IMAGE_TEST__.getSnapshot()
+  );
+  assert(
+    afterSelectAllToggleOn.selectedFileIds.length === afterSelectAllToggleOn.fileCount,
+    "Left image list Select All should reselect every loaded image after toggling off."
+  );
+
+  const deleteButtonText = await page
+    .locator('[data-testid="image-file-list-delete-selected"]')
+    .textContent();
+  assert(
+    /删除/.test(deleteButtonText || "") && !/选中/.test(deleteButtonText || ""),
+    "Left image list delete button label should be shortened to 删除."
+  );
+
+  await page.click('[data-testid="image-file-list-invert-selection"]');
+  const afterInvertSelection = await page.evaluate(() =>
+    window.__MOONSHINE_IMAGE_TEST__.getSnapshot()
+  );
+  assert(
+    afterInvertSelection.selectedFileIds.length === 0,
+    "Left image list Invert Selection should clear selection when all images were selected."
+  );
+
+  await page.click('[data-testid="image-file-list-select-all"]');
+  await page.click('[data-testid="image-file-list-delete-selected"]');
+  await page.waitForSelector(".q-dialog", { state: "visible", timeout: 10000 });
+  await page.locator(".q-dialog .q-btn").last().click();
+  await page.waitForFunction(
+    () => window.__MOONSHINE_IMAGE_TEST__?.getSnapshot().fileCount === 0,
+    null,
+    { timeout: 10000 }
+  );
+  const afterDeleteSelected = await page.evaluate(() =>
+    window.__MOONSHINE_IMAGE_TEST__.getSnapshot()
+  );
+  assert(
+    afterDeleteSelected.fileCount === 0 &&
+      afterDeleteSelected.selectedFileIds.length === 0,
+    "Left image list Delete Selected should remove selected images and clear selection."
+  );
 }
 
 async function testVideoWorkflow(page) {
@@ -942,6 +1386,59 @@ async function testBackendTerminalRefresh(page) {
     "Finished backend batch summary should use the accent completion style."
   );
 
+  await page.waitForTimeout(1150);
+  const heartbeatStoppedAfterWait = await page.evaluate(() => {
+    const line = window.__MOONSHINE_BACKEND_MANAGER_TEST__
+      .getTerminalLines()
+      .find((item) => item.message.includes("SLBR 处理完成"));
+    return {
+      message: line?.message || "",
+      refreshId: line?.refreshId || 0,
+    };
+  });
+  assert(
+    heartbeatStoppedAfterWait.message === heartbeatStopped.progressMessage,
+    "Completed backend progress row should keep its final message frozen."
+  );
+
+  const rawCompleteProgress = await page.evaluate(() => {
+    const bridge = window.__MOONSHINE_BACKEND_MANAGER_TEST__;
+    bridge.clearTerminal();
+    bridge.addTerminalLog(
+      "Batch processing: 100%|鈻堚枅鈻堚枅鈻堚枅鈻堚枅鈻堚枅| 5/5 [00:02<00:00, 1.72it/s]",
+      "info"
+    );
+    const line = bridge.getTerminalLines().find((item) => item.type === "progress-complete");
+    return {
+      activeProgressCount: bridge.getTerminalLines().filter((item) => item.progressActive).length,
+      hasProgressInfo: Boolean(line?.hasProgressInfo),
+      message: line?.message || "",
+      refreshId: line?.refreshId || 0,
+      type: line?.type || "",
+    };
+  });
+  assert(
+    rawCompleteProgress.activeProgressCount === 0 &&
+      rawCompleteProgress.hasProgressInfo === false &&
+      rawCompleteProgress.type === "progress-complete",
+    "Raw 100% progress lines should be stored as frozen completed progress rows."
+  );
+  await page.waitForTimeout(1150);
+  const rawCompleteProgressAfterWait = await page.evaluate(() => {
+    const line = window.__MOONSHINE_BACKEND_MANAGER_TEST__
+      .getTerminalLines()
+      .find((item) => item.type === "progress-complete");
+    return {
+      message: line?.message || "",
+      refreshId: line?.refreshId || 0,
+    };
+  });
+  assert(
+    rawCompleteProgressAfterWait.message === rawCompleteProgress.message &&
+      rawCompleteProgressAfterWait.refreshId === rawCompleteProgress.refreshId,
+    "Raw completed progress rows should not refresh elapsed time after completion."
+  );
+
   const imageBatchProgress = await page.evaluate(() => {
     const bridge = window.__MOONSHINE_BACKEND_MANAGER_TEST__;
     bridge.clearTerminal();
@@ -982,6 +1479,19 @@ async function testBackendTerminalRefresh(page) {
       line.message.includes("批量图片处理完成：共 5 张，用时 2 秒")
     ),
     "Image batch finished log should be converted into an accent completion summary."
+  );
+
+  const singleImageBatchCompletion = await page.evaluate(() => {
+    const bridge = window.__MOONSHINE_BACKEND_MANAGER_TEST__;
+    bridge.clearTerminal();
+    bridge.addTerminalLog("Batch processing completed in 3.10s for 1 images", "info");
+    return bridge.getTerminalMessages();
+  });
+  assert(
+    singleImageBatchCompletion.some((message) =>
+      message.includes("单张图片处理完成，用时 3.1 秒")
+    ),
+    "Single image batch completion should use singular user-facing copy."
   );
 
   await page.click('[data-testid="backend-manager-close-button"]');
@@ -1087,7 +1597,8 @@ async function runWorkflowTest() {
       const text = message.text();
       if (
         !/Failed to load model list/i.test(text) &&
-        !/Video player initialization timed out/i.test(text)
+        !/Video player initialization timed out/i.test(text) &&
+        !/Failed to load resource: net::ERR_UNKNOWN_URL_SCHEME/i.test(text)
       ) {
         consoleProblems.push(`${message.type()}: ${text}`);
       }

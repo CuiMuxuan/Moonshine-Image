@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Moonshine icon primary</title>
+  <desc id="desc">Transparent-background Moonshine primary icon with moon phase, polished heart gemstone bottle, and diagonal reflection.</desc>
+  <defs>
+    <radialGradient id="moonBase" cx="24%" cy="39%" r="84%">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.34" stop-color="#f0ecf7"/>
+      <stop offset="0.62" stop-color="#c9c0e2"/>
+      <stop offset="0.9" stop-color="#8a7cb4"/>
+      <stop offset="1" stop-color="#6f639c"/>
+    </radialGradient>
+    <radialGradient id="moonShadow" cx="74%" cy="42%" r="56%">
+      <stop offset="0" stop-color="#030204" stop-opacity="1"/>
+      <stop offset="0.46" stop-color="#050407" stop-opacity="0.98"/>
+      <stop offset="0.68" stop-color="#080609" stop-opacity="0.88"/>
+      <stop offset="0.86" stop-color="#0d0b0f" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#0d0b0f" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="terminatorSoftness" x1="76" y1="128" x2="190" y2="128" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.36" stop-color="#d8dced" stop-opacity="0.08"/>
+      <stop offset="0.52" stop-color="#0d0b0f" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#030204" stop-opacity="0.76"/>
+    </linearGradient>
+    <linearGradient id="bottomMoonShade" x1="74" y1="174" x2="150" y2="232" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#6974cc" stop-opacity="0.22"/>
+    </linearGradient>
+    <radialGradient id="bottleGlass" cx="38%" cy="22%" r="82%">
+      <stop offset="0" stop-color="#f6dcf4"/>
+      <stop offset="0.2" stop-color="#c59ad4"/>
+      <stop offset="0.48" stop-color="#765193"/>
+      <stop offset="0.76" stop-color="#2a1d33"/>
+      <stop offset="1" stop-color="#0d0b0f"/>
+    </radialGradient>
+    <linearGradient id="bottleRim" x1="62" y1="86" x2="196" y2="156" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#bba4d4"/>
+      <stop offset="0.44" stop-color="#e6ddf4"/>
+      <stop offset="1" stop-color="#8e7fc1"/>
+    </linearGradient>
+    <linearGradient id="neckGlass" x1="108" y1="38" x2="150" y2="74" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.4" stop-color="#c0f0ef"/>
+      <stop offset="1" stop-color="#8e7fc1"/>
+    </linearGradient>
+    <filter id="moonGlow" x="-35%" y="-35%" width="170%" height="170%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="4"/>
+    </filter>
+    <filter id="softLight" x="-45%" y="-45%" width="190%" height="190%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="2.4"/>
+    </filter>
+  </defs>
+
+  <g id="reference-moon-phase">
+    <circle cx="128" cy="128" r="99" fill="#a596c7" opacity="0.11" filter="url(#moonGlow)"/>
+    <circle cx="128" cy="128" r="99" fill="url(#moonBase)"/>
+    <circle cx="128" cy="128" r="99" fill="url(#moonShadow)"/>
+    <circle cx="128" cy="128" r="99" fill="url(#terminatorSoftness)"/>
+    <circle cx="128" cy="128" r="99" fill="url(#bottomMoonShade)"/>
+    <path d="M68 88c-18 34-18 73 0 108" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" opacity="0.16" fill="none"/>
+  </g>
+
+  <g id="polished-heart-bottle" stroke="#d8dced" stroke-width="2" stroke-linejoin="round">
+    <path id="heart-body" d="M128 211C80 183 51 151 51 116c0-31 24-52 58-52 8 0 16 2 23 7 7-5 15-7 23-7 34 0 58 21 58 52 0 35-29 67-85 95Z" fill="url(#bottleGlass)"/>
+    <path id="soft-top-rim" d="M64 115c9-25 27-38 53-38 6 0 11 1 16 4 5-3 10-4 16-4 26 0 44 13 53 38" stroke="url(#bottleRim)" stroke-width="4.2" stroke-linecap="round" opacity="0.62" fill="none"/>
+    <path id="bottom-depth" d="M80 166c21 20 57 31 96 0-12 22-31 36-48 44-17-8-36-22-48-44Z" fill="#070509" opacity="0.22"/>
+    <rect x="108" y="58" width="40" height="14" rx="6" fill="#d8dced"/>
+    <rect x="115" y="48" width="26" height="12" rx="4" fill="#a596c7"/>
+    <polygon id="small-cap-gem" points="128,27 107,48 128,63 149,48" fill="url(#neckGlass)"/>
+  </g>
+
+  <g id="subtle-glass-cuts" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M76 126c22 19 38 47 52 85 14-38 30-66 52-85" stroke-width="1.25" opacity="0.22"/>
+    <path d="M92 88c16 6 27 13 36 22 9-9 20-16 36-22" stroke-width="1.2" opacity="0.24"/>
+    <path d="M88 163c27 8 54 8 81 0" stroke-width="1.1" opacity="0.18"/>
+  </g>
+
+  <g id="diagonal-reflection-x">
+    <path d="M101 105l22 25-22 25 25-22 25 22-22-25 22-25-25 22Z" fill="#ffffff" opacity="0.72" filter="url(#softLight)"/>
+    <path d="M108 112l15 18-15 18 18-15 18 15-15-18 15-18-18 15Z" fill="#e6ddf4" opacity="0.72"/>
+  </g>
+</svg>
+

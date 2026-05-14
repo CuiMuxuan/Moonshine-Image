@@ -451,7 +451,23 @@ const fileManagerStore = useFileManagerStore();
 const globalLoadingState = inject("globalLoadingState", ref({ showing: false }));
 
 const launchModeOptions = [{ label: "CUDA 加速", value: "cuda" }, { label: "CPU 模式", value: "cpu" }];
-const imageProcessingOptions = [{ label: "文件路径（推荐）", value: "path", description: "更适合本地 Electron 批处理，前端内存压力更低。" }, { label: "Base64", value: "base64", description: "兼容性更直接，但大量图片时更占内存。" }];
+const imageProcessingOptions = [
+  {
+    label: "自动（推荐）",
+    value: "auto",
+    description: "100 张以内、单张不超过图片警告大小且总量不超过 100MB 时使用 Base64，其他情况使用路径模式。",
+  },
+  {
+    label: "文件路径",
+    value: "path",
+    description: "更适合大批量、本地路径和文件夹处理，前端内存压力更低。",
+  },
+  {
+    label: "Base64",
+    value: "base64",
+    description: "小批量时可减少临时文件，但大量图片时更占内存。",
+  },
+];
 const imageOutputFormatOptions = [
   { label: "自动（尽量保持原格式）", value: "auto", description: "根据原图格式与透明通道选择合适输出格式。" },
   { label: "保持原格式", value: "original", description: "尽量沿用原图扩展名与编码类型。" },
@@ -523,7 +539,7 @@ const validatePort = (port) => {
     portErrorMessage.value = "";
   }
 };
-const getImageProcessingHint = () => imageProcessingOptions.find((item) => item.value === (localConfig.value.advanced?.imageProcessingMethod || "path"))?.description || "";
+const getImageProcessingHint = () => imageProcessingOptions.find((item) => item.value === (localConfig.value.advanced?.imageProcessingMethod || "auto"))?.description || "";
 const getImageOutputFormatHint = () => imageOutputFormatOptions.find((item) => item.value === (localConfig.value.advanced?.imageOutputFormat || "auto"))?.description || "";
 const getBrushConfig = (key) => localConfig.value.advanced?.[key] || DEFAULT_IMAGE_BRUSH;
 const getShortcutDisplayValue = (actionId) => formatShortcutKeys(recordingShortcutId.value === actionId && recordingKeys.value.length ? recordingKeys.value : localConfig.value.shortcuts?.[actionId] || []);
@@ -718,8 +734,11 @@ const doSaveSettings = async () => {
     if (!storeResult.success) throw new Error(storeResult.error || storeResult.errors?.join("；") || "保存配置失败");
     if (serializableConfig.advanced?.imageProcessingMethod) {
       const processingMethod = serializableConfig.advanced.imageProcessingMethod;
-      fileManagerStore.processingConfig.imageType = processingMethod;
-      fileManagerStore.processingConfig.responseType = processingMethod;
+      fileManagerStore.processingConfig.method = processingMethod;
+      fileManagerStore.processingConfig.imageType =
+        processingMethod === "base64" ? "base64" : "path";
+      fileManagerStore.processingConfig.responseType =
+        processingMethod === "base64" ? "base64" : "path";
     }
     $q.notify({ type: "positive", message: "设置保存成功", position: "top" });
     showDialog.value = false;

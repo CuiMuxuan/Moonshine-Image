@@ -511,8 +511,18 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/components/global/BackendManager.vue",
+    description: "Backend manager freezes raw 100 percent progress rows without live heartbeat metadata",
+    pattern: /const isParsedProgressComplete =[\s\S]*isCompleteProgressInfo\(progressInfo\)[\s\S]*isCompletionLog \|\| isParsedProgressComplete[\s\S]*line\.progressInfo = line\.progressActive \? progressInfo : null/,
+  });
+  assertPattern({
+    file: "src/components/global/BackendManager.vue",
     description: "Backend manager converts raw video batch logs into user-facing copy",
     pattern: /const parseVideoBatchStartLog[\s\S]*start\\s\+video\\s\+batch[\s\S]*const parseVideoBatchFinishLog[\s\S]*finished\\s\+video\\s\+batch[\s\S]*开始处理视频批次[\s\S]*视频批次/,
+  });
+  assertPattern({
+    file: "src/components/global/BackendManager.vue",
+    description: "Backend manager uses singular completion copy for one processed image",
+    pattern: /imageFinishLog\.totalFrames === 1[\s\S]*单张图片处理完成，用时 \$\{imageFinishLog\.elapsedSeconds\} 秒/,
   });
   assertPattern({
     file: "server/moonshine_server/api.py",

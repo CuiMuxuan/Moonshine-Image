@@ -8,6 +8,7 @@ export const CONFIG_SCHEMA_VERSION = 3;
 export const DEFAULT_THEME_MODE = "light";
 export const DEFAULT_UI_BUTTON_SIZE = "sm";
 export const UI_BUTTON_SIZE_OPTIONS = Object.freeze(["xs", "sm", "md"]);
+export const IMAGE_PROCESSING_METHOD_OPTIONS = Object.freeze(["auto", "path", "base64"]);
 export const IMAGE_OUTPUT_NAMING_MODES = Object.freeze(["original", "prefixUuid"]);
 export const IMAGE_OUTPUT_FORMAT_OPTIONS = Object.freeze([
   "auto",
@@ -72,7 +73,7 @@ export const createDefaultAppConfig = () => ({
     imageHistoryLimit: 10,
     imageWarningSize: 50,
     stateSaveLimit: 100,
-    imageProcessingMethod: "path",
+    imageProcessingMethod: "auto",
     imageOutputFormat: "auto",
     imageOutputQuality: DEFAULT_IMAGE_OUTPUT_QUALITY,
     imageOutputNamingMode: "original",

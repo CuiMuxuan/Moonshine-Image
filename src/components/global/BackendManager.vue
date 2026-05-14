@@ -846,6 +846,9 @@ const normalizeBackendTerminalText = (message = "") => {
 
   const imageFinishLog = parseImageBatchFinishLog(message);
   if (imageFinishLog) {
+    if (imageFinishLog.totalFrames === 1) {
+      return `单张图片处理完成，用时 ${imageFinishLog.elapsedSeconds} 秒。`;
+    }
     return `批量图片处理完成：共 ${imageFinishLog.totalFrames} 张，用时 ${imageFinishLog.elapsedSeconds} 秒。`;
   }
 
@@ -1218,11 +1221,13 @@ const addTerminalLog = (message, type = "info") => {
       label: activeVideoBatchProgressContext.modelId,
     };
   }
+  const isParsedProgressComplete =
+    Boolean(progressInfo) && isCompleteProgressInfo(progressInfo);
   const lineType =
-    progressInfo || isProgressLine(cleanText) || type === "progress"
-      ? "progress"
-      : isCompletionLog
-        ? "progress-complete"
+    isCompletionLog || isParsedProgressComplete
+      ? "progress-complete"
+      : progressInfo || isProgressLine(cleanText) || type === "progress"
+        ? "progress"
         : type;
   const timestamp = new Date().toLocaleTimeString();
   const hasCursorControl = cleanText.includes("\r") || cleanText.includes("\n");
@@ -1237,7 +1242,7 @@ const addTerminalLog = (message, type = "info") => {
       line.message === text &&
       line.type === lineType &&
       line.progressKey === progressKey &&
-      line.progressActive === Boolean(progressKey) &&
+      line.progressActive === (lineType === "progress" && Boolean(progressKey)) &&
       lineType === "progress";
     if (isSameProgressRefresh) {
       line.timestamp = timestamp;
@@ -1251,7 +1256,7 @@ const addTerminalLog = (message, type = "info") => {
       line.message === text &&
       line.type === lineType &&
       line.progressKey === progressKey &&
-      line.progressActive === Boolean(progressKey)
+      line.progressActive === (lineType === "progress" && Boolean(progressKey))
     ) {
       return false;
     }
@@ -1260,8 +1265,8 @@ const addTerminalLog = (message, type = "info") => {
     line.type = lineType;
     line.timestamp = timestamp;
     line.progressKey = progressKey;
-    line.progressActive = Boolean(progressKey);
-    line.progressInfo = progressInfo;
+    line.progressActive = lineType === "progress" && Boolean(progressKey);
+    line.progressInfo = line.progressActive ? progressInfo : null;
     line.refreshId = ++terminalLineRefreshId;
     syncTerminalProgressHeartbeat();
     return true;
@@ -1298,8 +1303,8 @@ const addTerminalLog = (message, type = "info") => {
     activeTerminalLine = createTerminalLine(text, lineType, {
       timestamp,
       progressKey,
-      progressActive: Boolean(progressKey),
-      progressInfo,
+      progressActive: lineType === "progress" && Boolean(progressKey),
+      progressInfo: lineType === "progress" ? progressInfo : null,
     });
     terminalOutput.value.push(activeTerminalLine);
     syncTerminalProgressHeartbeat();
@@ -1310,10 +1315,28 @@ const addTerminalLog = (message, type = "info") => {
       completeActiveProgressLine(logInfo);
       activeVideoBatchProgressContext =
         logInfo.kind === "video-finish" ? null : activeVideoBatchProgressContext;
+    } else if (isParsedProgressComplete) {
+      const completedExistingLine = completeActiveProgressLine({
+        modelId: progressInfo?.label || "backend",
+        totalFrames: progressInfo?.total,
+        elapsedSeconds: progressInfo?.baseElapsedSeconds,
+      });
+      if (completedExistingLine) {
+        activeTerminalLine = null;
+        syncTerminalProgressHeartbeat();
+        return;
+      }
     } else if (lineType === "error" || lineType === "warning") {
       deactivateTerminalProgressLines();
     }
-    terminalOutput.value.push(createTerminalLine(text, lineType, { timestamp }));
+    terminalOutput.value.push(
+      createTerminalLine(text, lineType, {
+        timestamp,
+        progressKey: isParsedProgressComplete ? getTerminalProgressKey(text) : "",
+        progressActive: false,
+        progressInfo: null,
+      })
+    );
     activeTerminalLine = null;
     syncTerminalProgressHeartbeat();
   };

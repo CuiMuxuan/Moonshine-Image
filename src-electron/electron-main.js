@@ -39,6 +39,7 @@ import {
   DEFAULT_APP_CONFIG,
   DEFAULT_IMAGE_OUTPUT_QUALITY,
   DEFAULT_TEMP_CLEANUP,
+  IMAGE_PROCESSING_METHOD_OPTIONS,
   IMAGE_OUTPUT_FORMAT_OPTIONS,
   IMAGE_OUTPUT_NAMING_MODES,
   isPlainObject,
@@ -1587,8 +1588,11 @@ function sanitizeAppConfig(config = {}) {
       DEFAULT_TEMP_CLEANUP.keepRecentFailures
     ),
   };
-  merged.advanced.imageProcessingMethod =
-    merged.advanced?.imageProcessingMethod === "base64" ? "base64" : "path";
+  merged.advanced.imageProcessingMethod = IMAGE_PROCESSING_METHOD_OPTIONS.includes(
+    merged.advanced?.imageProcessingMethod
+  )
+    ? merged.advanced.imageProcessingMethod
+    : "auto";
   merged.advanced.imageOutputFormat = IMAGE_OUTPUT_FORMAT_OPTIONS.includes(
     String(merged.advanced?.imageOutputFormat || "").toLowerCase()
   )
@@ -1681,7 +1685,7 @@ function validateConfig(config) {
     // Validate image processing method
     if (
       config.advanced?.imageProcessingMethod &&
-      !["base64", "path"].includes(config.advanced.imageProcessingMethod)
+      !IMAGE_PROCESSING_METHOD_OPTIONS.includes(config.advanced.imageProcessingMethod)
     ) {
       return false;
     }
@@ -3744,6 +3748,46 @@ const buildFileStatsPayload = (filePath) => {
   };
 };
 
+const IMAGE_FILE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".bmp"]);
+
+function listImageFilesInDirectory(rootPath, options = {}) {
+  const root = path.normalize(String(rootPath || ""));
+  const recursive = options.recursive !== false;
+  if (!root || !fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+    throw new Error(`Directory does not exist: ${rootPath}`);
+  }
+
+  const result = [];
+  const visit = (directory) => {
+    fs.readdirSync(directory, { withFileTypes: true }).forEach((entry) => {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (recursive) {
+          visit(entryPath);
+        }
+        return;
+      }
+      if (!entry.isFile() || !IMAGE_FILE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
+        return;
+      }
+
+      const payload = buildFileStatsPayload(entryPath);
+      if (!payload.success) {
+        return;
+      }
+      result.push({
+        ...payload.data,
+        path: payload.path,
+        normalizedPath: payload.normalizedPath,
+        relativePath: path.relative(root, payload.normalizedPath),
+      });
+    });
+  };
+
+  visit(root);
+  return result.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+}
+
 // IPC handler - get file stats
 ipcMain.handle("get-file-stats", async (event, filePath) => {
   try {
@@ -3773,6 +3817,18 @@ ipcMain.handle("get-files-stats", async (event, filePaths = []) => {
     };
   } catch (error) {
     console.error("Failed to get batch file stats:", error);
+    return { success: false, error: error.message, data: [] };
+  }
+});
+
+ipcMain.handle("list-image-files", async (event, { folderPath, recursive = true } = {}) => {
+  try {
+    return {
+      success: true,
+      data: listImageFilesInDirectory(folderPath, { recursive }),
+    };
+  } catch (error) {
+    console.error("Failed to list image files:", error);
     return { success: false, error: error.message, data: [] };
   }
 });

@@ -14,6 +14,7 @@ import {
   DEFAULT_THEME_MODE,
   DEFAULT_UI_BUTTON_SIZE,
   DEFAULT_VIDEO_BRUSH,
+  IMAGE_PROCESSING_METHOD_OPTIONS,
   IMAGE_OUTPUT_FORMAT_OPTIONS,
   IMAGE_OUTPUT_NAMING_MODES,
   isPlainObject,
@@ -75,6 +76,7 @@ export {
   DEFAULT_VIDEO_BRUSH,
   DEFAULT_TEMP_CLEANUP,
   DEFAULT_IMAGE_OUTPUT_QUALITY,
+  IMAGE_PROCESSING_METHOD_OPTIONS,
   IMAGE_OUTPUT_FORMAT_OPTIONS,
   IMAGE_OUTPUT_NAMING_MODES,
   normalizeBrandColors,
@@ -138,9 +140,9 @@ export class ConfigManager {
 
     if (
       config.advanced?.imageProcessingMethod &&
-      !["base64", "path"].includes(config.advanced.imageProcessingMethod)
+      !IMAGE_PROCESSING_METHOD_OPTIONS.includes(config.advanced.imageProcessingMethod)
     ) {
-      errors.push("图片处理方式必须是 base64 或 path。");
+      errors.push("图片处理方式必须是 auto、path 或 base64。");
     }
 
     if (
@@ -365,8 +367,11 @@ export class ConfigManager {
 
     merged.advanced = {
       ...merged.advanced,
-      imageProcessingMethod:
-        merged.advanced?.imageProcessingMethod === "base64" ? "base64" : "path",
+      imageProcessingMethod: IMAGE_PROCESSING_METHOD_OPTIONS.includes(
+        merged.advanced?.imageProcessingMethod
+      )
+        ? merged.advanced.imageProcessingMethod
+        : "auto",
       imageOutputFormat: IMAGE_OUTPUT_FORMAT_OPTIONS.includes(
         String(merged.advanced?.imageOutputFormat || "").toLowerCase()
       )
