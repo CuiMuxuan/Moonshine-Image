@@ -1,5 +1,6 @@
 .DS_Store
 .thumbs.db
+desktop.ini
 node_modules
 
 /IOPaint
