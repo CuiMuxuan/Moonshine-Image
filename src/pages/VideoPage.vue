@@ -533,6 +533,18 @@ const isProcessing = ref(false);
 const processingSucceeded = ref(false);
 const processingProgress = ref(0);
 const processingMessage = ref("");
+const VIDEO_PROCESSING_PHASES = Object.freeze({
+  IDLE: "idle",
+  PREPARING: "preparing",
+  STAGING: "staging",
+  BACKEND: "backend",
+  ENCODING: "encoding",
+  FINALIZING: "finalizing",
+  WRITING: "writing",
+  COMPLETE: "complete",
+  FAILED: "failed",
+});
+const processingPhase = ref(VIDEO_PROCESSING_PHASES.IDLE);
 const lastOutputPath = ref("");
 const lastOutputIsPreview = ref(false);
 const exportFpsMode = ref("source");
@@ -2623,6 +2635,7 @@ const replaceCurrentVideoSource = async () => {
     timelineScrollLeft.value = 0;
     processingSucceeded.value = false;
     processingMessage.value = "";
+    processingPhase.value = VIDEO_PROCESSING_PHASES.IDLE;
 
     await waitForVideoReady(VIDEO_READY_TIMEOUT_MS);
     updateVideoMountLoading(mountToken, "正在恢复预览位置", VIDEO_MOUNT_LOADING_PROGRESS.FINALIZE);
@@ -2693,6 +2706,7 @@ const restoreVideoHistory = async (entryId) => {
     processingSucceeded.value = false;
     lastOutputPath.value = "";
     processingMessage.value = "";
+    processingPhase.value = VIDEO_PROCESSING_PHASES.IDLE;
 
     updateVideoMountLoading(mountToken, "正在恢复历史编辑状态", 0.95);
     await waitForVideoReady(VIDEO_READY_TIMEOUT_MS);
@@ -3192,15 +3206,44 @@ const buildCompletedSegmentEntry = ({
   completedAt: Date.now(),
 });
 
-const withBackendProgressHint = (message = "") => {
+const normalizeProcessingPhase = (phase = processingPhase.value) => {
+  const resolvedPhase = String(phase || "");
+  if (Object.values(VIDEO_PROCESSING_PHASES).includes(resolvedPhase)) {
+    return resolvedPhase;
+  }
+  const currentPhase = String(processingPhase.value || "");
+  return Object.values(VIDEO_PROCESSING_PHASES).includes(currentPhase)
+    ? currentPhase
+    : VIDEO_PROCESSING_PHASES.IDLE;
+};
+
+const formatStageProgressText = (stageProgress = null) => {
+  const numericProgress = Number(stageProgress);
+  if (!Number.isFinite(numericProgress)) return "";
+  const percent = Math.max(0, Math.min(100, Math.round(numericProgress * 100)));
+  return `，当前阶段 ${percent}%`;
+};
+
+const appendStageProgressToMessage = (message = "", stageProgress = null) => {
   const normalizedMessage = String(message || "");
+  if (/当前阶段\s*\d+%/.test(normalizedMessage)) return normalizedMessage;
+  return `${normalizedMessage}${formatStageProgressText(stageProgress)}`;
+};
+
+const withBackendProgressHint = (
+  message = "",
+  phase = processingPhase.value
+) => {
+  const normalizedMessage = String(message || "");
+  const normalizedPhase = normalizeProcessingPhase(phase);
   if (
+    normalizedPhase === VIDEO_PROCESSING_PHASES.COMPLETE ||
     normalizedMessage.startsWith("处理完成") ||
     normalizedMessage.startsWith("样片试跑完成")
   ) {
     return "可点击打开目录查看视频文件";
   }
-  return backendRunningState?.value
+  return normalizedPhase === VIDEO_PROCESSING_PHASES.BACKEND && backendRunningState?.value
     ? `${normalizedMessage}\n可打开后端管理页面查看进度`
     : normalizedMessage;
 };
@@ -3226,21 +3269,41 @@ const hideGlobalLoadingOverlay = () => {
 const normalizeProcessingProgress = (progress = processingProgress.value) =>
   Math.max(0, Math.min(1, Number(progress || 0)));
 
-const setProcessingUiState = (message, progress = processingProgress.value) => {
-  const resolvedMessage = withBackendProgressHint(message);
+const setProcessingUiState = (
+  message,
+  progress = processingProgress.value,
+  phase = processingPhase.value,
+  stageProgress = null
+) => {
+  const normalizedPhase = normalizeProcessingPhase(phase);
+  processingPhase.value = normalizedPhase;
+  const resolvedMessage = withBackendProgressHint(
+    appendStageProgressToMessage(message, stageProgress),
+    normalizedPhase
+  );
   processingMessage.value = resolvedMessage;
   processingProgress.value = normalizeProcessingProgress(progress);
   return resolvedMessage;
 };
 
-const applyProcessingUi = (message, progress = processingProgress.value) => {
-  const resolvedMessage = setProcessingUiState(message, progress);
+const applyProcessingUi = (
+  message,
+  progress = processingProgress.value,
+  phase = processingPhase.value,
+  stageProgress = null
+) => {
+  const resolvedMessage = setProcessingUiState(message, progress, phase, stageProgress);
   updateGlobalLoadingOverlay(resolvedMessage, processingProgress.value);
 };
 
-const updateProcessingUiWithoutOverlay = (message, progress = processingProgress.value) => {
+const updateProcessingUiWithoutOverlay = (
+  message,
+  progress = processingProgress.value,
+  phase = processingPhase.value,
+  stageProgress = null
+) => {
   clearProcessingBatchMessageContext();
-  setProcessingUiState(message, progress);
+  setProcessingUiState(message, progress, phase, stageProgress);
 };
 
 const flushProcessingUiFrame = async () => {
@@ -3586,8 +3649,9 @@ const buildBatchMessage = ({
   batchNumber,
   totalBatches,
   stageLabel,
+  etaProgress = null,
 }) => {
-  const baseMessage = `正在处理第 ${batchNumber}/${totalBatches} 批：${stageLabel}`;
+  const baseMessage = `正在处理第 ${batchNumber}/${totalBatches} 批：${stageLabel}${formatStageProgressText(etaProgress)}`;
   const etaSeconds = getCurrentProcessingEtaSeconds();
   if (etaSeconds === null) return baseMessage;
   return `${baseMessage}，预计剩余 ${formatEta(etaSeconds)}`;
@@ -3597,7 +3661,8 @@ const refreshProcessingBatchMessage = () => {
   if (!processingBatchMessageContext) return;
   applyProcessingUi(
     buildBatchMessage(processingBatchMessageContext),
-    processingProgress.value
+    processingProgress.value,
+    processingBatchMessageContext.phase
   );
 };
 
@@ -3618,6 +3683,7 @@ const updateBatchProcessingUi = ({
   remainingBatchCount = null,
   etaMode = PROCESSING_ETA_MODES.DYNAMIC,
   etaProgress = null,
+  phase = processingPhase.value,
 }) => {
   const previousBatchMessageContext = processingBatchMessageContext;
   const previousEtaSeconds = getCurrentProcessingEtaSeconds();
@@ -3658,6 +3724,7 @@ const updateBatchProcessingUi = ({
     etaMode,
     progress,
     etaProgress: normalizedEtaProgress,
+    phase: normalizeProcessingPhase(phase),
   };
 
   if (shouldFreezeEta) {
@@ -3703,7 +3770,11 @@ const updateBatchProcessingUi = ({
     }
   }
 
-  applyProcessingUi(buildBatchMessage(processingBatchMessageContext), progress);
+  applyProcessingUi(
+    buildBatchMessage(processingBatchMessageContext),
+    progress,
+    processingBatchMessageContext.phase
+  );
 };
 
 const refreshProcessingEtaEstimate = () => {
@@ -3720,14 +3791,72 @@ const refreshProcessingEtaEstimate = () => {
   refreshProcessingBatchMessage();
 };
 
-const updateProcessingUi = (message, progress = processingProgress.value) => {
+const updateProcessingUi = (
+  message,
+  progress = processingProgress.value,
+  phase = processingPhase.value,
+  stageProgress = null
+) => {
   clearProcessingBatchMessageContext();
-  applyProcessingUi(message, progress);
+  applyProcessingUi(message, progress, phase, stageProgress);
 };
 
 const formatProcessingStageError = (stageLabel, error) => {
   const detail = error?.message ? String(error.message) : String(error || "");
   return detail ? `${stageLabel}失败: ${detail}` : `${stageLabel}失败`;
+};
+
+let videoProcessingFallbackNotified = false;
+
+const getConfiguredVideoProcessingEngine = () => {
+  const mode = String(configStore.config.advanced?.videoProcessingEngine || "auto").toLowerCase();
+  return ["auto", "webav", "ffmpeg"].includes(mode) ? mode : "auto";
+};
+
+const invokeVideoFfmpegIpc = async (channel, payload = {}) => {
+  if (!window.electron?.ipcRenderer?.invoke) {
+    throw new Error("当前环境无法调用 FFmpeg");
+  }
+
+  const result = await window.electron.ipcRenderer.invoke(channel, payload);
+  if (!result?.success) {
+    throw new Error(result?.error || `FFmpeg 操作失败: ${channel}`);
+  }
+  return result;
+};
+
+const notifyVideoFfmpegFallback = (stageLabel, error) => {
+  console.warn(`${stageLabel} WebAV failed, falling back to FFmpeg:`, error);
+  if (videoProcessingFallbackNotified) {
+    return;
+  }
+
+  videoProcessingFallbackNotified = true;
+  $q.notify({
+    type: "warning",
+    message: `${stageLabel} WebAV 失败，已切换 FFmpeg 兜底导出`,
+    position: "top",
+    timeout: 4200,
+  });
+};
+
+const runWithVideoProcessingEngine = async ({ stageLabel, webav, ffmpeg }) => {
+  const engine = getConfiguredVideoProcessingEngine();
+  if (engine === "ffmpeg") {
+    return await ffmpeg();
+  }
+  if (engine === "webav") {
+    return await webav();
+  }
+
+  try {
+    return await webav();
+  } catch (error) {
+    notifyVideoFfmpegFallback(stageLabel, error);
+    updateProcessingUi(`${stageLabel} WebAV 失败，正在切换 FFmpeg 兜底`, processingProgress.value);
+    await flushProcessingUiFrame();
+    return await ffmpeg();
+  }
 };
 
 const ensureMp4ExportSupported = async (width, height) => {
@@ -3894,7 +4023,12 @@ const concatSegmentPathsInLayers = async ({
     const ratio = totalOperations > 0 ? completedOperations / totalOperations : 1;
     const displayStep = Math.min(completedOperations + 1, totalOperations);
     const progress = FINAL_CONCAT_PROGRESS_BASE + progressSpan * ratio;
-    updateProcessingUi(`正在拼接视频分段（${displayStep}/${totalOperations}）`, progress);
+    updateProcessingUi(
+      `正在拼接视频分段（${displayStep}/${totalOperations}）`,
+      progress,
+      VIDEO_PROCESSING_PHASES.FINALIZING,
+      ratio
+    );
   };
 
   while (currentPaths.length > 1) {
@@ -3970,7 +4104,7 @@ const concatSegmentPathsInLayers = async ({
   };
 };
 
-const exportProcessedBatchSegment = async ({
+const exportProcessedBatchSegmentWithWebAv = async ({
   framePaths,
   outputPath,
   width,
@@ -4014,6 +4148,7 @@ const exportProcessedBatchSegment = async ({
       remainingBatchCount: getActiveStageRemainingBatchCount({ batchNumber, totalBatches }),
       progress: progressBase,
       etaProgress: 0,
+      phase: VIDEO_PROCESSING_PHASES.ENCODING,
     });
     await flushProcessingUiFrame();
     unbindProgress = combinator.on("OutputProgress", (progress) => {
@@ -4027,6 +4162,7 @@ const exportProcessedBatchSegment = async ({
         remainingBatchCount: getActiveStageRemainingBatchCount({ batchNumber, totalBatches }),
         progress: progressBase + progressWeight * normalized,
         etaProgress: normalized,
+        phase: VIDEO_PROCESSING_PHASES.ENCODING,
       });
     });
 
@@ -4038,6 +4174,66 @@ const exportProcessedBatchSegment = async ({
     frameClip.destroy();
   }
 };
+
+const exportProcessedBatchSegmentWithFfmpeg = async ({
+  framePaths,
+  outputPath,
+  fps,
+  progressBase,
+  progressWeight,
+  batchNumber,
+  totalBatches,
+  batchDurations,
+  pipelineBatchDurations,
+}) => {
+  const missingFramePaths = await getMissingFilePaths(framePaths);
+  if (missingFramePaths.length > 0) {
+    const preview = missingFramePaths.slice(0, 2).join("；");
+    const suffix = missingFramePaths.length > 2 ? " 等文件" : "";
+    throw new Error(`当前批次缺少结果帧文件：${preview}${suffix}`);
+  }
+
+  updateBatchProcessingUi({
+    batchNumber,
+    totalBatches,
+    stageLabel: "正在使用 FFmpeg 编码临时视频分段",
+    batchDurations,
+    pipelineBatchDurations,
+    remainingBatchCount: getActiveStageRemainingBatchCount({ batchNumber, totalBatches }),
+    progress: progressBase + progressWeight * 0.15,
+    etaProgress: 0.15,
+    phase: VIDEO_PROCESSING_PHASES.ENCODING,
+  });
+  await flushProcessingUiFrame();
+
+  const result = await invokeVideoFfmpegIpc("ffmpeg-encode-frame-sequence", {
+    framePaths,
+    outputPath,
+    fps,
+    taskId: `video_segment_${batchNumber}_${Date.now()}`,
+  });
+
+  updateBatchProcessingUi({
+    batchNumber,
+    totalBatches,
+    stageLabel: "FFmpeg 临时视频分段编码完成",
+    batchDurations,
+    pipelineBatchDurations,
+    remainingBatchCount: getActiveStageRemainingBatchCount({ batchNumber, totalBatches }),
+    progress: progressBase + progressWeight,
+    etaProgress: 1,
+    phase: VIDEO_PROCESSING_PHASES.ENCODING,
+  });
+
+  return result.filePath || outputPath;
+};
+
+const exportProcessedBatchSegment = async (options) =>
+  runWithVideoProcessingEngine({
+    stageLabel: "编码临时视频分段",
+    webav: () => exportProcessedBatchSegmentWithWebAv(options),
+    ffmpeg: () => exportProcessedBatchSegmentWithFfmpeg(options),
+  });
 
 const detectSourceHasAudio = async (sourceFile) => {
   let sourceClip = null;
@@ -4065,7 +4261,7 @@ const detectSourceHasAudio = async (sourceFile) => {
   }
 };
 
-const finalizeProcessedVideo = async ({
+const finalizeProcessedVideoWithWebAv = async ({
   segmentPaths,
   sourceFile,
   sourcePath,
@@ -4078,7 +4274,12 @@ const finalizeProcessedVideo = async ({
     previewTrialSeconds,
   });
 
-  updateProcessingUi("正在进行最后的拼接与封装", FINAL_CONCAT_PROGRESS_BASE);
+  updateProcessingUi(
+    "正在进行最后的拼接与封装",
+    FINAL_CONCAT_PROGRESS_BASE,
+    VIDEO_PROCESSING_PHASES.FINALIZING,
+    0
+  );
   await flushProcessingUiFrame();
 
   if (segmentPaths.length === 0) {
@@ -4094,7 +4295,11 @@ const finalizeProcessedVideo = async ({
 
   if (!hasAudio) {
     if (segmentPaths.length === 1) {
-      updateProcessingUi("正在写入最终视频文件", 0.98);
+      updateProcessingUi(
+        "正在写入最终视频文件",
+        0.98,
+        VIDEO_PROCESSING_PHASES.WRITING
+      );
       await flushProcessingUiFrame();
       try {
         return await saveStreamToPath(await openPathAsStream(segmentPaths[0]), outputPath);
@@ -4104,7 +4309,12 @@ const finalizeProcessedVideo = async ({
     }
 
     if (segmentPaths.length <= FINAL_CONCAT_GROUP_SIZE) {
-      updateProcessingUi("正在拼接视频分段（1/1）", FINAL_CONCAT_PROGRESS_BASE);
+      updateProcessingUi(
+        "正在拼接视频分段（1/1）",
+        FINAL_CONCAT_PROGRESS_BASE,
+        VIDEO_PROCESSING_PHASES.FINALIZING,
+        0
+      );
       await flushProcessingUiFrame();
       try {
         return await concatSegmentGroupToPath({
@@ -4134,7 +4344,12 @@ const finalizeProcessedVideo = async ({
     let mergedPathForAudio = segmentPaths[0];
     if (segmentPaths.length > 1) {
       if (segmentPaths.length <= FINAL_CONCAT_GROUP_SIZE) {
-        updateProcessingUi("正在拼接视频分段（1/1）", FINAL_CONCAT_PROGRESS_BASE);
+        updateProcessingUi(
+          "正在拼接视频分段（1/1）",
+          FINAL_CONCAT_PROGRESS_BASE,
+          VIDEO_PROCESSING_PHASES.FINALIZING,
+          0
+        );
         await flushProcessingUiFrame();
         try {
           mergedPathForAudio = await concatSegmentGroupToPath({
@@ -4163,7 +4378,12 @@ const finalizeProcessedVideo = async ({
       }
     }
 
-    updateProcessingUi("正在混合原视频音频", FINAL_AUDIO_MIX_PROGRESS);
+    updateProcessingUi(
+      "正在混合原视频音频",
+      FINAL_AUDIO_MIX_PROGRESS,
+      VIDEO_PROCESSING_PHASES.FINALIZING,
+      0.5
+    );
     await flushProcessingUiFrame();
 
     let finalStream = null;
@@ -4177,7 +4397,11 @@ const finalizeProcessedVideo = async ({
       throw new Error(formatProcessingStageError("混合原视频音频", error));
     }
 
-    updateProcessingUi("正在写入最终视频文件", 0.98);
+    updateProcessingUi(
+      "正在写入最终视频文件",
+      0.98,
+      VIDEO_PROCESSING_PHASES.WRITING
+    );
     await flushProcessingUiFrame();
     try {
       return await saveStreamToPath(finalStream, outputPath);
@@ -4193,6 +4417,107 @@ const finalizeProcessedVideo = async ({
     }
   }
 };
+
+const ffprobeSourceHasAudio = async (sourcePath) => {
+  const result = await invokeVideoFfmpegIpc("ffprobe-media", { inputPath: sourcePath });
+  return Boolean(result.data?.hasAudio);
+};
+
+const buildFfmpegIntermediatePath = ({ segmentPaths, outputPath, suffix }) => {
+  const baseDirectory = getDirectoryPath(segmentPaths[0] || outputPath);
+  const baseName = outputPath
+    .split(/[\\/]/)
+    .pop()
+    .replace(/\.[^.]+$/, "");
+  return joinRendererPath(baseDirectory, `${baseName}_${suffix}_${Date.now()}.mp4`);
+};
+
+const finalizeProcessedVideoWithFfmpeg = async ({
+  segmentPaths,
+  sourceFile,
+  sourcePath,
+  previewTrialSeconds = null,
+}) => {
+  const outputPath = await buildOutputVideoPath(sourceFile, sourcePath, {
+    previewTrialSeconds,
+  });
+
+  updateProcessingUi(
+    "正在使用 FFmpeg 进行最后的拼接与封装",
+    FINAL_CONCAT_PROGRESS_BASE,
+    VIDEO_PROCESSING_PHASES.FINALIZING,
+    0
+  );
+  await flushProcessingUiFrame();
+
+  if (segmentPaths.length === 0) {
+    throw new Error("没有可用于封装的视频分段");
+  }
+
+  let hasAudio = false;
+  try {
+    hasAudio = await ffprobeSourceHasAudio(sourcePath);
+  } catch (error) {
+    throw new Error(formatProcessingStageError("检测源视频音轨", error));
+  }
+
+  const transientPaths = [];
+  try {
+    if (!hasAudio) {
+      const concatResult = await invokeVideoFfmpegIpc("ffmpeg-concat-segments", {
+        segmentPaths,
+        outputPath,
+        taskId: `video_concat_${Date.now()}`,
+      });
+      return concatResult.filePath || outputPath;
+    }
+
+    let mergedPathForAudio = segmentPaths[0];
+    if (segmentPaths.length > 1) {
+      const mergedOutputPath = buildFfmpegIntermediatePath({
+        segmentPaths,
+        outputPath,
+        suffix: "ffmpeg_concat",
+      });
+      const concatResult = await invokeVideoFfmpegIpc("ffmpeg-concat-segments", {
+        segmentPaths,
+        outputPath: mergedOutputPath,
+        taskId: `video_concat_audio_${Date.now()}`,
+      });
+      mergedPathForAudio = concatResult.filePath || mergedOutputPath;
+      transientPaths.push(mergedPathForAudio);
+    }
+
+    updateProcessingUi(
+      "正在使用 FFmpeg 混合原视频音频",
+      FINAL_AUDIO_MIX_PROGRESS,
+      VIDEO_PROCESSING_PHASES.FINALIZING,
+      0.5
+    );
+    await flushProcessingUiFrame();
+    const muxResult = await invokeVideoFfmpegIpc("ffmpeg-mux-audio", {
+      videoPath: mergedPathForAudio,
+      sourcePath,
+      outputPath,
+      taskId: `video_mux_${Date.now()}`,
+    });
+    return muxResult.filePath || outputPath;
+  } finally {
+    const removableTransientPaths = transientPaths.filter(
+      (filePath) => filePath && !segmentPaths.includes(filePath) && filePath !== outputPath
+    );
+    if (removableTransientPaths.length > 0) {
+      await removeTemporaryFiles(removableTransientPaths);
+    }
+  }
+};
+
+const finalizeProcessedVideo = async (options) =>
+  runWithVideoProcessingEngine({
+    stageLabel: "视频最终封装",
+    webav: () => finalizeProcessedVideoWithWebAv(options),
+    ffmpeg: () => finalizeProcessedVideoWithFfmpeg(options),
+  });
 
 const buildBatchDescriptor = ({
   start,
@@ -4270,6 +4595,7 @@ const prepareBatchArtifacts = async ({
 
   for (let frameIndex = start; frameIndex < end; frameIndex += 1) {
     if (reportProgress) {
+      const stageRatio = (frameIndex - start) / Math.max(batchFrameCount, 1);
       updateBatchProcessingUi({
         batchNumber,
         totalBatches,
@@ -4278,7 +4604,9 @@ const prepareBatchArtifacts = async ({
         remainingBatchCount: getActiveStageRemainingBatchCount({ batchNumber, totalBatches }),
         progress:
           batchProgressBase +
-          ((frameIndex - start) / Math.max(batchFrameCount, 1)) * batchProgressSpan * 0.3,
+          stageRatio * batchProgressSpan * 0.3,
+        etaProgress: stageRatio,
+        phase: VIDEO_PROCESSING_PHASES.STAGING,
       });
     }
 
@@ -4438,8 +4766,13 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
   lastOutputPath.value = "";
   lastOutputIsPreview.value = false;
   resetProcessingEtaState();
+  videoProcessingFallbackNotified = false;
   processingEtaState.sessionStartedAtMs = performance.now();
-  applyProcessingUi(isPreviewTrial ? "准备试跑样片" : "准备处理任务", 0);
+  applyProcessingUi(
+    isPreviewTrial ? "准备试跑样片" : "准备处理任务",
+    0,
+    VIDEO_PROCESSING_PHASES.PREPARING
+  );
 
   let paths = null;
   let tempSourcePath = "";
@@ -4638,7 +4971,8 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
       if (segmentPaths.length > 0) {
         updateProcessingUi(
           "已复用上次任务中已完成的分段，正在继续处理",
-          (processedFrames / totalFrames) * 0.85
+          (processedFrames / totalFrames) * 0.85,
+          VIDEO_PROCESSING_PHASES.PREPARING
         );
       }
 
@@ -4674,6 +5008,8 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
               totalBatches,
             }),
             progress: currentTask.descriptor.batchProgressBase,
+            etaProgress: 0,
+            phase: VIDEO_PROCESSING_PHASES.STAGING,
           });
         }
 
@@ -4727,6 +5063,10 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
                 totalBatches,
               }),
               progress: currentBatch.batchProgressBase + currentBatch.batchProgressSpan * 0.45,
+              phase:
+                requestedModelId === "slbr" && currentBatch.batchItems.length === 0
+                  ? VIDEO_PROCESSING_PHASES.STAGING
+                  : VIDEO_PROCESSING_PHASES.BACKEND,
             });
             await flushProcessingUiFrame();
 
@@ -4833,6 +5173,8 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
           pipelineBatchDurations,
           progress: (processedFrames / totalFrames) * 0.85,
           remainingBatchCount: Math.max(0, totalBatches - currentBatch.batchNumber),
+          etaProgress: 1,
+          phase: VIDEO_PROCESSING_PHASES.ENCODING,
         });
       }
 
@@ -4862,7 +5204,7 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
         lastOutputPath: outputPath,
         lastError: "",
       });
-      updateProcessingUi(fallbackSummary, 1);
+      updateProcessingUi(fallbackSummary, 1, VIDEO_PROCESSING_PHASES.COMPLETE);
       $q.notify({
         type: "positive",
         message:
@@ -4894,7 +5236,8 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
     processingSucceeded.value = false;
     updateProcessingUiWithoutOverlay(
       isPreviewTrial ? "样片试跑失败" : "处理失败",
-      processingProgress.value
+      processingProgress.value,
+      VIDEO_PROCESSING_PHASES.FAILED
     );
     hideGlobalLoadingOverlay();
     console.error("Video processing failed:", error);

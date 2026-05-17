@@ -25,6 +25,8 @@ import {
   PACKAGED_BACKEND_PROJECT_DIR,
   PACKAGED_BACKEND_RESOURCE_DIR,
   PACKAGED_DEFAULT_MODEL_FILE,
+  PACKAGED_FFMPEG_RESOURCE_DIR,
+  PACKAGED_FFMPEG_TARGET_DIR,
   PACKAGED_MODELS_RESOURCE_DIR,
   PACKAGED_RUNTIME_ENV_DIR,
   PACKAGED_RUNTIME_METADATA_FILE,
@@ -42,6 +44,7 @@ import {
   IMAGE_PROCESSING_METHOD_OPTIONS,
   IMAGE_OUTPUT_FORMAT_OPTIONS,
   IMAGE_OUTPUT_NAMING_MODES,
+  VIDEO_PROCESSING_ENGINE_OPTIONS,
   isPlainObject,
   migrateLegacyConfigShape,
   needsConfigMigration,
@@ -61,6 +64,7 @@ app.setPath("userData", path.join(app.getPath("appData"), APP_DISPLAY_NAME));
 // Backend service process
 let backendProcess = null;
 global.projectPath = "";
+const activeFfmpegTasks = new Map();
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -172,6 +176,14 @@ function getPackagedRuntimeMetadataPath() {
 
 function getPackagedModelsPath() {
   return path.join(getResourcesRootPath(), PACKAGED_MODELS_RESOURCE_DIR);
+}
+
+function getPackagedFfmpegResourceRootPath() {
+  return path.join(
+    getResourcesRootPath(),
+    PACKAGED_FFMPEG_RESOURCE_DIR,
+    PACKAGED_FFMPEG_TARGET_DIR
+  );
 }
 
 function getDefaultModelDir() {
@@ -1611,6 +1623,11 @@ function sanitizeAppConfig(config = {}) {
     : "original";
   merged.advanced.imageOutputFixedPrefix =
     String(merged.advanced?.imageOutputFixedPrefix || "moonshine").trim() || "moonshine";
+  merged.advanced.videoProcessingEngine = VIDEO_PROCESSING_ENGINE_OPTIONS.includes(
+    merged.advanced?.videoProcessingEngine
+  )
+    ? merged.advanced.videoProcessingEngine
+    : "auto";
   merged.shortcuts = normalizeShortcutConfig(merged.shortcuts);
   if (isLegacyDefaultModelPath(merged.general.modelPath)) {
     merged.general.modelPath = getDefaultModelDir();
@@ -1715,6 +1732,13 @@ function validateConfig(config) {
     }
 
     if (!String(config.advanced?.imageOutputFixedPrefix || "").trim()) {
+      return false;
+    }
+
+    if (
+      config.advanced?.videoProcessingEngine &&
+      !VIDEO_PROCESSING_ENGINE_OPTIONS.includes(config.advanced.videoProcessingEngine)
+    ) {
       return false;
     }
 
@@ -2296,6 +2320,408 @@ ipcMain.handle("ensure-directory", async (event, dirPath) => {
     return { success: true };
   } catch (error) {
     console.error("Failed to create directory:", error);
+    return { success: false, error: error.message };
+  }
+});
+
+function getFfmpegCandidateBinRoots() {
+  const roots = [];
+  const envRoot = String(process.env.MOONSHINE_FFMPEG_ROOT || "").trim();
+  if (envRoot) {
+    roots.push(envRoot, path.join(envRoot, "bin"));
+  }
+
+  if (app.isPackaged) {
+    roots.push(getPackagedFfmpegResourceRootPath());
+  } else {
+    roots.push("C:\\code\\ffmpeg\\bin", "C:\\code\\ffmpeg");
+  }
+
+  return Array.from(new Set(roots.map((entry) => path.normalize(entry))));
+}
+
+function getFfmpegExecutablePath(binaryName) {
+  const executableName = os.platform() === "win32" ? `${binaryName}.exe` : binaryName;
+
+  for (const binRoot of getFfmpegCandidateBinRoots()) {
+    const candidatePath = path.join(binRoot, executableName);
+    if (fs.existsSync(candidatePath)) {
+      return candidatePath;
+    }
+  }
+
+  return "";
+}
+
+function getFfmpegRuntimeInfo() {
+  const ffmpegPath = getFfmpegExecutablePath("ffmpeg");
+  const ffprobePath = getFfmpegExecutablePath("ffprobe");
+
+  return {
+    ffmpegPath,
+    ffprobePath,
+    binRoot: ffmpegPath ? path.dirname(ffmpegPath) : "",
+    packaged: app.isPackaged,
+  };
+}
+
+function ensureFfmpegRuntime() {
+  const runtime = getFfmpegRuntimeInfo();
+  const missing = [];
+  if (!runtime.ffmpegPath) missing.push("ffmpeg");
+  if (!runtime.ffprobePath) missing.push("ffprobe");
+  if (missing.length > 0) {
+    throw new Error(
+      `FFmpeg runtime is incomplete. Missing: ${missing.join(", ")}.`
+    );
+  }
+  return runtime;
+}
+
+function normalizeFfmpegFps(value) {
+  const fps = Number(value);
+  if (!Number.isFinite(fps) || fps <= 0) {
+    return 30;
+  }
+  return Math.min(240, Math.max(1, fps));
+}
+
+function escapeFfconcatPath(filePath) {
+  return String(filePath || "")
+    .replace(/\\/g, "/")
+    .replace(/'/g, "'\\''");
+}
+
+function createTemporaryConcatFile(outputPath, lines) {
+  const outputDir = path.dirname(outputPath);
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  const listPath = path.join(
+    outputDir,
+    `ffmpeg_concat_${Date.now()}_${Math.random().toString(16).slice(2, 8)}.ffconcat`
+  );
+  fs.writeFileSync(listPath, `${lines.join("\n")}\n`, "utf8");
+  return listPath;
+}
+
+function createFrameSequenceConcatFile(framePaths, outputPath, fps) {
+  const duration = 1 / normalizeFfmpegFps(fps);
+  const lines = ["ffconcat version 1.0"];
+  framePaths.forEach((framePath) => {
+    lines.push(`file '${escapeFfconcatPath(framePath)}'`);
+    lines.push(`duration ${duration.toFixed(8)}`);
+  });
+  lines.push(`file '${escapeFfconcatPath(framePaths[framePaths.length - 1])}'`);
+  return createTemporaryConcatFile(outputPath, lines);
+}
+
+function createSegmentConcatFile(segmentPaths, outputPath) {
+  const lines = segmentPaths.map((segmentPath) => `file '${escapeFfconcatPath(segmentPath)}'`);
+  return createTemporaryConcatFile(outputPath, lines);
+}
+
+function getProcessOutputTail(text, maxLength = 2400) {
+  const normalized = String(text || "").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return normalized.slice(normalized.length - maxLength);
+}
+
+function runManagedFfmpegProcess(command, args = [], options = {}) {
+  const taskId =
+    options.taskId ||
+    `ffmpeg_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: getUtf8ProcessEnv(options.env),
+    });
+
+    let stdout = "";
+    let stderr = "";
+    activeFfmpegTasks.set(taskId, child);
+
+    const handleOutput = (data, target) => {
+      const text = decodeProcessOutput(data);
+      if (target === "stdout") {
+        stdout += text;
+      } else {
+        stderr += text;
+        if (options.event?.sender && options.progressEventName) {
+          options.event.sender.send(options.progressEventName, {
+            taskId,
+            stderr: text,
+          });
+        }
+      }
+    };
+
+    child.stdout?.on("data", (data) => handleOutput(data, "stdout"));
+    child.stderr?.on("data", (data) => handleOutput(data, "stderr"));
+    child.on("error", (error) => {
+      activeFfmpegTasks.delete(taskId);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      activeFfmpegTasks.delete(taskId);
+      if (code === 0) {
+        resolve({ taskId, stdout, stderr });
+        return;
+      }
+
+      reject(
+        new Error(
+          [
+            `FFmpeg exited with code ${code}.`,
+            getProcessOutputTail(stderr) || getProcessOutputTail(stdout),
+          ]
+            .filter(Boolean)
+            .join("\n")
+        )
+      );
+    });
+  });
+}
+
+async function runFfmpeg(args = [], options = {}) {
+  const runtime = ensureFfmpegRuntime();
+  return runManagedFfmpegProcess(runtime.ffmpegPath, args, options);
+}
+
+async function runFfprobe(args = [], options = {}) {
+  const runtime = ensureFfmpegRuntime();
+  return runManagedFfmpegProcess(runtime.ffprobePath, args, options);
+}
+
+function validateExistingFiles(filePaths = [], label = "file") {
+  const missingPaths = filePaths.filter((filePath) => !filePath || !fs.existsSync(filePath));
+  if (missingPaths.length > 0) {
+    const preview = missingPaths.slice(0, 3).join("; ");
+    throw new Error(`${label} does not exist: ${preview}`);
+  }
+}
+
+ipcMain.handle("check-ffmpeg-runtime", async () => {
+  try {
+    const runtime = ensureFfmpegRuntime();
+    const [versionResult, probeVersionResult, encoderResult] = await Promise.all([
+      runManagedFfmpegProcess(runtime.ffmpegPath, ["-version"]),
+      runManagedFfmpegProcess(runtime.ffprobePath, ["-version"]),
+      runManagedFfmpegProcess(runtime.ffmpegPath, ["-hide_banner", "-encoders"]),
+    ]);
+    const encoderText = encoderResult.stdout || encoderResult.stderr || "";
+    const versionLine = String(versionResult.stdout || "")
+      .split(/\r?\n/)
+      .find(Boolean);
+    const probeVersionLine = String(probeVersionResult.stdout || "")
+      .split(/\r?\n/)
+      .find(Boolean);
+
+    return {
+      success: true,
+      data: {
+        ...runtime,
+        versionLine,
+        probeVersionLine,
+        hasLibx264: /\blibx264\b/.test(encoderText),
+        hasAac: /\baac\b/.test(encoderText),
+      },
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("ffprobe-media", async (event, { inputPath } = {}) => {
+  try {
+    validateExistingFiles([inputPath], "media");
+    const result = await runFfprobe([
+      "-v",
+      "error",
+      "-print_format",
+      "json",
+      "-show_streams",
+      "-show_format",
+      inputPath,
+    ]);
+    const data = JSON.parse(result.stdout || "{}");
+    const streams = Array.isArray(data.streams) ? data.streams : [];
+    return {
+      success: true,
+      data: {
+        ...data,
+        hasAudio: streams.some((stream) => stream.codec_type === "audio"),
+        hasVideo: streams.some((stream) => stream.codec_type === "video"),
+      },
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("ffmpeg-encode-frame-sequence", async (event, payload = {}) => {
+  let listPath = "";
+  try {
+    const framePaths = Array.isArray(payload.framePaths) ? payload.framePaths : [];
+    if (framePaths.length === 0) {
+      throw new Error("No frame paths were provided.");
+    }
+    validateExistingFiles(framePaths, "frame");
+
+    const outputPath = resolveWritableFilePath(payload.outputPath);
+    const fps = normalizeFfmpegFps(payload.fps);
+    listPath = createFrameSequenceConcatFile(framePaths, outputPath, fps);
+
+    await runFfmpeg(
+      [
+        "-y",
+        "-hide_banner",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        listPath,
+        "-r",
+        String(fps),
+        "-vf",
+        "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        String(payload.crf || 18),
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        outputPath,
+      ],
+      {
+        taskId: payload.taskId,
+        event,
+        progressEventName: "ffmpeg-progress",
+      }
+    );
+
+    return { success: true, filePath: outputPath };
+  } catch (error) {
+    return { success: false, error: error.message };
+  } finally {
+    if (listPath && fs.existsSync(listPath)) {
+      fs.rmSync(listPath, { force: true });
+    }
+  }
+});
+
+ipcMain.handle("ffmpeg-concat-segments", async (event, payload = {}) => {
+  let listPath = "";
+  try {
+    const segmentPaths = Array.isArray(payload.segmentPaths) ? payload.segmentPaths : [];
+    if (segmentPaths.length === 0) {
+      throw new Error("No segment paths were provided.");
+    }
+    validateExistingFiles(segmentPaths, "segment");
+
+    if (segmentPaths.length === 1) {
+      const sourcePath = segmentPaths[0];
+      const outputPath = path.normalize(String(payload.outputPath || sourcePath));
+      if (path.normalize(sourcePath) === outputPath) {
+        return { success: true, filePath: sourcePath };
+      }
+      const resolvedOutputPath = resolveWritableFilePath(outputPath);
+      fs.copyFileSync(sourcePath, resolvedOutputPath);
+      return { success: true, filePath: resolvedOutputPath };
+    }
+
+    const outputPath = resolveWritableFilePath(payload.outputPath);
+    listPath = createSegmentConcatFile(segmentPaths, outputPath);
+    await runFfmpeg(
+      [
+        "-y",
+        "-hide_banner",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        listPath,
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
+        outputPath,
+      ],
+      {
+        taskId: payload.taskId,
+        event,
+        progressEventName: "ffmpeg-progress",
+      }
+    );
+    return { success: true, filePath: outputPath };
+  } catch (error) {
+    return { success: false, error: error.message };
+  } finally {
+    if (listPath && fs.existsSync(listPath)) {
+      fs.rmSync(listPath, { force: true });
+    }
+  }
+});
+
+ipcMain.handle("ffmpeg-mux-audio", async (event, payload = {}) => {
+  try {
+    const { videoPath, sourcePath } = payload;
+    validateExistingFiles([videoPath, sourcePath], "media");
+    const outputPath = resolveWritableFilePath(payload.outputPath);
+    await runFfmpeg(
+      [
+        "-y",
+        "-hide_banner",
+        "-i",
+        videoPath,
+        "-i",
+        sourcePath,
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a?",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-shortest",
+        "-movflags",
+        "+faststart",
+        outputPath,
+      ],
+      {
+        taskId: payload.taskId,
+        event,
+        progressEventName: "ffmpeg-progress",
+      }
+    );
+    return { success: true, filePath: outputPath };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("cancel-ffmpeg-task", async (event, taskId) => {
+  try {
+    const processToCancel = activeFfmpegTasks.get(taskId);
+    if (!processToCancel) {
+      return { success: true, canceled: false };
+    }
+    processToCancel.kill("SIGTERM");
+    activeFfmpegTasks.delete(taskId);
+    return { success: true, canceled: true };
+  } catch (error) {
     return { success: false, error: error.message };
   }
 });

@@ -373,13 +373,31 @@
                   </q-tab-panel>
 
                   <q-tab-panel name="video" class="q-pa-none">
-                    <div class="grid">
-                      <q-input v-model.number="localConfig.video.batchFrameCount" label="固定批次帧数" type="number" :min="1" />
-                      <q-select v-model="localConfig.video.frameExtractionFormat" label="拆帧存储格式" emit-value map-options :options="frameFormatOptions" />
-                      <q-input v-model.number="localConfig.video.historyLimit" label="视频历史记录上限" type="number" :min="1" :max="50" />
-                      <q-input v-model.number="localConfig.video.batchRetryCount" label="批次重试次数" type="number" :min="1" :max="10" />
-                      <q-input v-model.number="localConfig.video.proxyMaxSide" label="代理预览最大边长" type="number" :min="256" :max="4096" />
-                      <q-select v-model="localConfig.video.previewTrialSeconds" label="样片试跑时长" emit-value map-options :options="previewTrialOptions" />
+                    <div class="q-gutter-lg">
+                      <div class="mini-block">
+                        <div class="text-subtitle2 text-weight-medium q-mb-sm">视频处理引擎</div>
+                        <q-select
+                          v-model="localConfig.advanced.videoProcessingEngine"
+                          label="导出与封装引擎"
+                          :options="videoProcessingEngineOptions"
+                          emit-value
+                          map-options
+                          outlined
+                          dense
+                          data-testid="global-settings-video-processing-engine"
+                        >
+                          <template #hint>{{ getVideoProcessingEngineHint() }}</template>
+                        </q-select>
+                      </div>
+
+                      <div class="grid">
+                        <q-input v-model.number="localConfig.video.batchFrameCount" label="固定批次帧数" type="number" :min="1" />
+                        <q-select v-model="localConfig.video.frameExtractionFormat" label="拆帧存储格式" emit-value map-options :options="frameFormatOptions" />
+                        <q-input v-model.number="localConfig.video.historyLimit" label="视频历史记录上限" type="number" :min="1" :max="50" />
+                        <q-input v-model.number="localConfig.video.batchRetryCount" label="批次重试次数" type="number" :min="1" :max="10" />
+                        <q-input v-model.number="localConfig.video.proxyMaxSide" label="代理预览最大边长" type="number" :min="256" :max="4096" />
+                        <q-select v-model="localConfig.video.previewTrialSeconds" label="样片试跑时长" emit-value map-options :options="previewTrialOptions" />
+                      </div>
                     </div>
 
                   </q-tab-panel>
@@ -433,7 +451,7 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
 import { useQuasar } from "quasar";
 import ModelManagementPanel from "src/components/global/ModelManagementPanel.vue";
-import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_TEMP_CLEANUP, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, UI_BUTTON_SIZE_OPTIONS } from "src/config/ConfigManager";
+import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_TEMP_CLEANUP, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, UI_BUTTON_SIZE_OPTIONS, VIDEO_PROCESSING_ENGINE_OPTIONS } from "src/config/ConfigManager";
 import { createDefaultShortcuts, formatShortcutKeys, getShortcutDefinition, getShortcutTokenFromKeyboardEvent, getShortcutsByGroup, normalizeShortcutKeys, SHORTCUT_GROUP_META, SHORTCUT_GROUPS, validateShortcutConfig } from "src/utils/shortcutConfig";
 import { useAppStateStore } from "src/stores/appState";
 import { useConfigStore } from "src/stores/config";
@@ -477,6 +495,25 @@ const imageOutputFormatOptions = [
 ];
 const imageNamingOptions = [{ label: "原文件名", value: "original" }, { label: "固定前缀 + UUID", value: "prefixUuid" }];
 const frameFormatOptions = [{ label: "JPG", value: "jpg" }, { label: "PNG", value: "png" }, { label: "WebP", value: "webp" }];
+const videoProcessingEngineOptionMeta = {
+  auto: {
+    label: "自动（推荐）",
+    description: "优先使用 WebAV；WebAV 编码、拼接、混音或高分辨率导出失败后，自动切换 FFmpeg 重试。",
+  },
+  webav: {
+    label: "WebAV",
+    description: "仅使用 WebAV，适合定位浏览器视频能力问题；失败时不会自动兜底。",
+  },
+  ffmpeg: {
+    label: "FFmpeg",
+    description: "直接使用内置 FFmpeg 完成导出与封装，绕开 WebCodecs 能力限制。",
+  },
+};
+const videoProcessingEngineOptions = VIDEO_PROCESSING_ENGINE_OPTIONS.map((value) => ({
+  value,
+  label: videoProcessingEngineOptionMeta[value]?.label || value,
+  description: videoProcessingEngineOptionMeta[value]?.description || "",
+}));
 const previewTrialOptions = [{ label: "3 秒", value: 3 }, { label: "10 秒", value: 10 }];
 const themeColorFields = [
   { key: "primary", label: "Primary" },
@@ -541,6 +578,7 @@ const validatePort = (port) => {
 };
 const getImageProcessingHint = () => imageProcessingOptions.find((item) => item.value === (localConfig.value.advanced?.imageProcessingMethod || "auto"))?.description || "";
 const getImageOutputFormatHint = () => imageOutputFormatOptions.find((item) => item.value === (localConfig.value.advanced?.imageOutputFormat || "auto"))?.description || "";
+const getVideoProcessingEngineHint = () => videoProcessingEngineOptions.find((item) => item.value === (localConfig.value.advanced?.videoProcessingEngine || "auto"))?.description || "";
 const getBrushConfig = (key) => localConfig.value.advanced?.[key] || DEFAULT_IMAGE_BRUSH;
 const getShortcutDisplayValue = (actionId) => formatShortcutKeys(recordingShortcutId.value === actionId && recordingKeys.value.length ? recordingKeys.value : localConfig.value.shortcuts?.[actionId] || []);
 const stopShortcutRecording = () => { recordingShortcutId.value = ""; recordingKeys.value = []; };

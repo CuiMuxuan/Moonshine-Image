@@ -21,6 +21,7 @@ import {
   isTypeCompatible,
   migrateLegacyConfigShape,
   UI_BUTTON_SIZE_OPTIONS,
+  VIDEO_PROCESSING_ENGINE_OPTIONS,
 } from "src/shared/appConfigSchema";
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
@@ -79,6 +80,7 @@ export {
   IMAGE_PROCESSING_METHOD_OPTIONS,
   IMAGE_OUTPUT_FORMAT_OPTIONS,
   IMAGE_OUTPUT_NAMING_MODES,
+  VIDEO_PROCESSING_ENGINE_OPTIONS,
   normalizeBrandColors,
   normalizeBrushConfig,
   normalizeButtonSize,
@@ -171,6 +173,13 @@ export class ConfigManager {
 
     if (!String(config.advanced?.imageOutputFixedPrefix || "").trim()) {
       errors.push("图片输出固定前缀不能为空。");
+    }
+
+    if (
+      config.advanced?.videoProcessingEngine &&
+      !VIDEO_PROCESSING_ENGINE_OPTIONS.includes(config.advanced.videoProcessingEngine)
+    ) {
+      errors.push("视频处理引擎必须是 auto、webav 或 ffmpeg。");
     }
 
     if (!["light", "dark"].includes(config.ui?.theme)) {
@@ -390,6 +399,11 @@ export class ConfigManager {
         : "original",
       imageOutputFixedPrefix:
         String(merged.advanced?.imageOutputFixedPrefix || "moonshine").trim() || "moonshine",
+      videoProcessingEngine: VIDEO_PROCESSING_ENGINE_OPTIONS.includes(
+        merged.advanced?.videoProcessingEngine
+      )
+        ? merged.advanced.videoProcessingEngine
+        : "auto",
       imageBrushDefault: normalizeBrushConfig(
         merged.advanced?.imageBrushDefault,
         DEFAULT_IMAGE_BRUSH

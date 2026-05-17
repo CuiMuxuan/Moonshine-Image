@@ -3,12 +3,13 @@ import {
   normalizeShortcutConfig,
 } from "../utils/shortcutConfig.js";
 
-export const CONFIG_SCHEMA_VERSION = 3;
+export const CONFIG_SCHEMA_VERSION = 4;
 
 export const DEFAULT_THEME_MODE = "light";
 export const DEFAULT_UI_BUTTON_SIZE = "sm";
 export const UI_BUTTON_SIZE_OPTIONS = Object.freeze(["xs", "sm", "md"]);
 export const IMAGE_PROCESSING_METHOD_OPTIONS = Object.freeze(["auto", "path", "base64"]);
+export const VIDEO_PROCESSING_ENGINE_OPTIONS = Object.freeze(["auto", "webav", "ffmpeg"]);
 export const IMAGE_OUTPUT_NAMING_MODES = Object.freeze(["original", "prefixUuid"]);
 export const IMAGE_OUTPUT_FORMAT_OPTIONS = Object.freeze([
   "auto",
@@ -78,6 +79,7 @@ export const createDefaultAppConfig = () => ({
     imageOutputQuality: DEFAULT_IMAGE_OUTPUT_QUALITY,
     imageOutputNamingMode: "original",
     imageOutputFixedPrefix: "moonshine",
+    videoProcessingEngine: "auto",
     imageBrushDefault: { ...DEFAULT_IMAGE_BRUSH },
     videoBrushDefault: { ...DEFAULT_VIDEO_BRUSH },
   },

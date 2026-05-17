@@ -92,6 +92,36 @@ function runCommandCapture(command, args, options = {}) {
   return String(result.stdout || "").trim();
 }
 
+function getRuntimeEnvPrefix() {
+  const envListJson = runCommandCapture("conda", ["env", "list", "--json"]);
+  const envList = JSON.parse(envListJson || "{}");
+  const envs = Array.isArray(envList.envs) ? envList.envs : [];
+  const matchedEnv = envs.find((envPath) =>
+    path.normalize(String(envPath || "")).endsWith(path.normalize(runtimeEnvName))
+  );
+  if (!matchedEnv) {
+    throw new Error(`Unable to resolve conda environment prefix: ${runtimeEnvName}`);
+  }
+  return matchedEnv;
+}
+
+function copyRuntimeEnvDirectory(sourceEnvPath, destinationEnvPath) {
+  fs.rmSync(destinationEnvPath, { recursive: true, force: true });
+  fs.cpSync(sourceEnvPath, destinationEnvPath, {
+    recursive: true,
+    force: true,
+    dereference: true,
+    filter: (sourcePath) => {
+      const name = path.basename(sourcePath);
+      return (
+        name !== "__pycache__" &&
+        !name.endsWith(".pyc") &&
+        !name.endsWith(".pyo")
+      );
+    },
+  });
+}
+
 function writeRuntimePythonScript(scriptName, script) {
   ensureDir(runtimePythonScriptDir);
   const scriptPath = path.join(runtimePythonScriptDir, scriptName);
@@ -449,6 +479,18 @@ function materializeRuntimeDirectory() {
     runtimeEnvPath,
     "--force",
   ]);
+
+  const expectedPythonPath = path.join(
+    runtimeEnvPath,
+    process.platform === "win32" ? "python.exe" : "bin/python"
+  );
+  if (!fs.existsSync(expectedPythonPath)) {
+    const sourceEnvPath = getRuntimeEnvPrefix();
+    console.warn(
+      `conda-pack output is missing ${path.basename(expectedPythonPath)}; copying environment from ${sourceEnvPath}`
+    );
+    copyRuntimeEnvDirectory(sourceEnvPath, runtimeEnvPath);
+  }
 }
 
 function writeRuntimeManifest() {

@@ -123,6 +123,11 @@ function runAssertions() {
     description: "Video page persists UI state with shared capture helper",
     pattern: /const persistVideoUiStateToAppState = \(\) => \{\s*appStateStore\.saveUIState\("video", captureVideoUiState\(\)\);\s*\};/,
   });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video page supports configurable FFmpeg fallback when WebAV export fails",
+    pattern: /getConfiguredVideoProcessingEngine[\s\S]*runWithVideoProcessingEngine[\s\S]*WebAV 失败，正在切换 FFmpeg 兜底[\s\S]*exportProcessedBatchSegmentWithFfmpeg[\s\S]*finalizeProcessedVideoWithFfmpeg/,
+  });
 
   logSection("Image Workflow");
 
@@ -293,14 +298,29 @@ function runAssertions() {
     pattern: /export const CONFIG_SCHEMA_VERSION[\s\S]*alignConfigWithDefaultSchema[\s\S]*migrateLegacyConfigShape[\s\S]*needsConfigMigration/,
   });
   assertPattern({
+    file: "src/shared/appConfigSchema.js",
+    description: "Shared config schema owns video processing engine defaults",
+    pattern: /VIDEO_PROCESSING_ENGINE_OPTIONS = Object\.freeze\(\["auto", "webav", "ffmpeg"\]\)[\s\S]*videoProcessingEngine:\s*"auto"/,
+  });
+  assertPattern({
     file: "src/config/ConfigManager.js",
     description: "Frontend config manager uses shared default config instead of a local default tree",
     pattern: /from "src\/shared\/appConfigSchema"[\s\S]*static defaultConfig = DEFAULT_APP_CONFIG;/,
   });
   assertPattern({
+    file: "src/config/ConfigManager.js",
+    description: "Frontend config manager validates and normalizes video processing engine",
+    pattern: /VIDEO_PROCESSING_ENGINE_OPTIONS[\s\S]*视频处理引擎必须是 auto、webav 或 ffmpeg[\s\S]*videoProcessingEngine:\s*VIDEO_PROCESSING_ENGINE_OPTIONS\.includes/,
+  });
+  assertPattern({
     file: "src-electron/electron-main.js",
     description: "Electron config uses shared schema and migrates older config files on load",
     pattern: /from "\.\.\/src\/shared\/appConfigSchema\.js"[\s\S]*needsConfigMigration\(configData\)[\s\S]*fs\.writeFileSync\(configPath, JSON\.stringify\(sanitizedConfig, null, 2\)\)/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Electron config validates and sanitizes video processing engine",
+    pattern: /VIDEO_PROCESSING_ENGINE_OPTIONS[\s\S]*merged\.advanced\.videoProcessingEngine = VIDEO_PROCESSING_ENGINE_OPTIONS\.includes[\s\S]*!VIDEO_PROCESSING_ENGINE_OPTIONS\.includes\(config\.advanced\.videoProcessingEngine\)/,
   });
   assertPattern({
     file: "src/shared/appConfigSchema.js",
@@ -443,6 +463,26 @@ function runAssertions() {
     file: "src/components/global/GlobalSettings.vue",
     description: "Global settings exposes temp cleanup controls and video failure retention in file management",
     pattern: /data-testid="global-settings-tab-files"[\s\S]*data-testid="global-settings-cleanup-temp-files-button"[\s\S]*data-testid="global-settings-temp-cleanup-enabled"[\s\S]*data-testid="global-settings-temp-cleanup-max-age-days"[\s\S]*data-testid="global-settings-video-failure-retention-count"/,
+  });
+  assertPattern({
+    file: "src/components/global/GlobalSettings.vue",
+    description: "Global settings exposes video processing engine selector",
+    pattern: /v-model="localConfig\.advanced\.videoProcessingEngine"[\s\S]*data-testid="global-settings-video-processing-engine"[\s\S]*videoProcessingEngineOptions/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Electron exposes FFmpeg runtime and video export IPC",
+    pattern: /ipcMain\.handle\("check-ffmpeg-runtime"[\s\S]*ipcMain\.handle\("ffprobe-media"[\s\S]*ipcMain\.handle\("ffmpeg-encode-frame-sequence"[\s\S]*ipcMain\.handle\("ffmpeg-concat-segments"[\s\S]*ipcMain\.handle\("ffmpeg-mux-audio"[\s\S]*ipcMain\.handle\("cancel-ffmpeg-task"/,
+  });
+  assertPattern({
+    file: "scripts/prepare-electron-resources.mjs",
+    description: "Electron resource preparation bundles FFmpeg from a local runtime root",
+    pattern: /PACKAGED_FFMPEG_RESOURCE_DIR[\s\S]*resolveFfmpegSourceRoot[\s\S]*MOONSHINE_FFMPEG_ROOT[\s\S]*copyPackagedFfmpegRuntime/,
+  });
+  assertPattern({
+    file: "quasar.config.js",
+    description: "Electron packaging includes FFmpeg extra resources",
+    pattern: /extraResource:\s*\[[\s\S]*build-resources\/ffmpeg[\s\S]*extraResources:\s*\[[\s\S]*from:\s*"build-resources\/ffmpeg"[\s\S]*to:\s*"ffmpeg"/,
   });
   assertPattern({
     file: "src/components/common/ModelCapabilityRadar.vue",

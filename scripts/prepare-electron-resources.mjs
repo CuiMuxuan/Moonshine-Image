@@ -7,6 +7,8 @@ import {
   INTEGRITY_MANIFEST_FILE,
   INTEGRITY_RESOURCE_DIR,
   INTEGRITY_SIGNATURE_FILE,
+  PACKAGED_FFMPEG_RESOURCE_DIR,
+  PACKAGED_FFMPEG_TARGET_DIR,
   PACKAGED_MODELS_RESOURCE_DIR,
   PACKAGED_RUNTIME_METADATA_FILE,
   PACKAGED_RUNTIME_RESOURCE_DIR,
@@ -21,6 +23,11 @@ const repoRoot = path.resolve(__dirname, "..");
 const sourceModelsRoot = path.join(repoRoot, "models");
 const buildResourcesRoot = path.join(repoRoot, "build-resources");
 const packagedModelsRoot = path.join(buildResourcesRoot, PACKAGED_MODELS_RESOURCE_DIR);
+const packagedFfmpegRoot = path.join(
+  buildResourcesRoot,
+  PACKAGED_FFMPEG_RESOURCE_DIR,
+  PACKAGED_FFMPEG_TARGET_DIR
+);
 const integrityRoot = path.join(buildResourcesRoot, INTEGRITY_RESOURCE_DIR);
 const defaultPrivateKeyPath = path.join(
   repoRoot,
@@ -38,6 +45,10 @@ const protectedResourceDirs = [
   {
     rootDir: packagedModelsRoot,
     resourcePrefix: PACKAGED_MODELS_RESOURCE_DIR,
+  },
+  {
+    rootDir: path.join(buildResourcesRoot, PACKAGED_FFMPEG_RESOURCE_DIR),
+    resourcePrefix: PACKAGED_FFMPEG_RESOURCE_DIR,
   },
 ];
 const protectedResourceFiles = [
@@ -118,6 +129,86 @@ function copyPackagedModels() {
   }
 }
 
+function resolveFfmpegSourceRoot() {
+  const candidateRoots = [
+    process.env.MOONSHINE_FFMPEG_ROOT,
+    "C:\\code\\ffmpeg",
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  for (const candidateRoot of candidateRoots) {
+    if (
+      fs.existsSync(path.join(candidateRoot, "ffmpeg.exe")) &&
+      fs.existsSync(path.join(candidateRoot, "ffprobe.exe"))
+    ) {
+      return path.dirname(candidateRoot);
+    }
+
+    const binRoot = path.join(candidateRoot, "bin");
+    if (
+      fs.existsSync(path.join(binRoot, "ffmpeg.exe")) &&
+      fs.existsSync(path.join(binRoot, "ffprobe.exe"))
+    ) {
+      return candidateRoot;
+    }
+  }
+
+  throw new Error(
+    "Missing FFmpeg runtime. Set MOONSHINE_FFMPEG_ROOT or place FFmpeg at C:\\code\\ffmpeg."
+  );
+}
+
+function copyOptionalFile(sourcePath, destinationPath) {
+  if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) {
+    return false;
+  }
+
+  ensureDir(path.dirname(destinationPath));
+  fs.copyFileSync(sourcePath, destinationPath);
+  return true;
+}
+
+function copyPackagedFfmpegRuntime() {
+  const sourceRoot = resolveFfmpegSourceRoot();
+  const sourceBinRoot = path.join(sourceRoot, "bin");
+  resetDir(packagedFfmpegRoot);
+
+  const copiedRequired = [
+    copyOptionalFile(
+      path.join(sourceBinRoot, "ffmpeg.exe"),
+      path.join(packagedFfmpegRoot, "ffmpeg.exe")
+    ),
+    copyOptionalFile(
+      path.join(sourceBinRoot, "ffprobe.exe"),
+      path.join(packagedFfmpegRoot, "ffprobe.exe")
+    ),
+  ];
+
+  if (copiedRequired.some((copied) => !copied)) {
+    throw new Error(`FFmpeg runtime is incomplete: ${sourceBinRoot}`);
+  }
+
+  for (const absolutePath of listFiles(sourceBinRoot)) {
+    const lowerName = path.basename(absolutePath).toLowerCase();
+    if (!lowerName.endsWith(".dll")) {
+      continue;
+    }
+
+    copyOptionalFile(absolutePath, path.join(packagedFfmpegRoot, path.basename(absolutePath)));
+  }
+
+  [
+    "LICENSE",
+    "LICENSE.txt",
+    "COPYING.GPLv3",
+    "COPYING.LGPLv3",
+    "README.txt",
+  ].forEach((fileName) => {
+    copyOptionalFile(path.join(sourceRoot, fileName), path.join(packagedFfmpegRoot, fileName));
+  });
+}
+
 function createManifestEntries() {
   const entries = [];
 
@@ -168,6 +259,7 @@ export function prepareElectronResources() {
   prepareBackendResources();
   buildPackagedWindowsRuntime({ allowFallback: true });
   copyPackagedModels();
+  copyPackagedFfmpegRuntime();
   resetDir(integrityRoot);
 
   const manifest = {

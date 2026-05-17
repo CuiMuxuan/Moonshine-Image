@@ -276,6 +276,7 @@ export default defineConfig((ctx) => {
           "build-resources/backend",
           "build-resources/runtime",
           "build-resources/models",
+          "build-resources/ffmpeg",
           "build-resources/integrity",
         ],
       },
@@ -316,6 +317,10 @@ export default defineConfig((ctx) => {
           {
             from: "build-resources/models",
             to: "models",
+          },
+          {
+            from: "build-resources/ffmpeg",
+            to: "ffmpeg",
           },
           {
             from: "build-resources/integrity",
