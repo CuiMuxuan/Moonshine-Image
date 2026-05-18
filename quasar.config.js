@@ -246,7 +246,7 @@ export default defineConfig((ctx) => {
         },
 
         // Application metadata
-        appVersion: "1.0.0",
+        appVersion: "1.1.0",
         appCopyright: "Copyright © 2023 CuiMuxuan",
         appCategoryType: "public.app-category.utilities",
 

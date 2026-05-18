@@ -54,6 +54,8 @@
           <q-checkbox
             :model-value="isFileSelected(file)"
             :val="file"
+            color="primary"
+            class="file-list-checkbox"
             @update:model-value="toggleFileSelection(file)"
             @click.stop
           />
@@ -136,7 +138,7 @@ const listClass = computed(() =>
   $q.dark.isActive ? "file-list--dark" : "file-list--light"
 );
 const activeItemClass = computed(() =>
-  $q.dark.isActive ? "file-list-item--active-dark text-primary" : "file-list-item--active-light text-primary"
+  $q.dark.isActive ? "file-list-item--active-dark" : "file-list-item--active-light"
 );
 const captionClass = computed(() =>
   $q.dark.isActive ? "text-grey-5" : "text-grey-7"
@@ -274,9 +276,35 @@ const getFileDisplayUrl = (file) => {
 
 .file-list-item--active-light {
   background: rgba(59, 130, 246, 0.12);
+  color: var(--q-primary);
 }
 
 .file-list-item--active-dark {
   background: rgba(59, 130, 246, 0.2);
+  color: var(--q-secondary);
+}
+
+.file-list-item :deep(.file-list-checkbox) {
+  color: var(--q-primary);
+}
+
+.file-list-item :deep(.file-list-checkbox .q-checkbox__inner--falsy) {
+  color: rgba(113, 113, 122, 0.82);
+}
+
+.file-list--dark .file-list-item :deep(.file-list-checkbox .q-checkbox__inner--falsy) {
+  color: rgba(228, 228, 231, 0.68);
+}
+
+.file-list-item :deep(.file-list-checkbox .q-checkbox__inner--truthy .q-checkbox__bg) {
+  color: var(--q-primary);
+}
+
+.file-list-item :deep(.file-list-checkbox .q-checkbox__inner--truthy .q-checkbox__svg) {
+  color: #ffffff !important;
+}
+
+.file-list-item :deep(.file-list-checkbox .q-checkbox__inner--truthy .q-checkbox__truthy) {
+  stroke: #ffffff !important;
 }
 </style>

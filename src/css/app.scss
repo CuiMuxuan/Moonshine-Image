@@ -68,8 +68,7 @@ body.body--dark {
   --moonshine-scrollbar-thumb-hover: rgba(228, 219, 244, 0.7);
   --moonshine-scrollbar-track: rgba(255, 255, 255, 0.08);
 
-  .q-btn.text-primary,
-  .q-btn .text-primary {
+  .q-btn.text-primary {
     color: var(--q-secondary) !important;
   }
 
@@ -79,8 +78,57 @@ body.body--dark {
   }
 
   .q-btn.bg-primary .q-icon,
-  .q-btn.bg-primary .q-btn__content {
+  .q-btn.bg-primary .q-spinner,
+  .q-btn.bg-primary .q-btn__content,
+  .q-btn.bg-primary > .absolute-full,
+  .q-btn.bg-primary > .absolute-full * {
     color: #262238 !important;
+  }
+
+  .q-btn.bg-primary > .absolute-full .q-spinner,
+  .q-btn.bg-secondary > .absolute-full,
+  .q-btn.bg-secondary > .absolute-full .q-spinner,
+  .q-btn.bg-secondary > .absolute-full * {
+    color: #262238 !important;
+  }
+
+  .q-btn.bg-positive > .absolute-full .q-spinner,
+  .q-btn.bg-positive > .absolute-full *,
+  .q-btn.bg-negative > .absolute-full .q-spinner,
+  .q-btn.bg-negative > .absolute-full *,
+  .q-btn.bg-warning > .absolute-full .q-spinner,
+  .q-btn.bg-warning > .absolute-full *,
+  .q-btn.bg-info > .absolute-full .q-spinner,
+  .q-btn.bg-info > .absolute-full *,
+  .q-btn.bg-accent > .absolute-full .q-spinner,
+  .q-btn.bg-accent > .absolute-full * {
+    color: #ffffff !important;
+  }
+
+  .q-btn.bg-primary > .absolute-full .q-spinner .path,
+  .q-btn.bg-secondary > .absolute-full .q-spinner .path {
+    stroke: #262238 !important;
+  }
+
+  .q-btn.bg-positive > .absolute-full .q-spinner .path,
+  .q-btn.bg-negative > .absolute-full .q-spinner .path,
+  .q-btn.bg-warning > .absolute-full .q-spinner .path,
+  .q-btn.bg-info > .absolute-full .q-spinner .path,
+  .q-btn.bg-accent > .absolute-full .q-spinner .path {
+    stroke: #ffffff !important;
+  }
+
+  .q-checkbox__inner--truthy .q-checkbox__svg,
+  .q-checkbox__inner--indet .q-checkbox__svg {
+    color: #ffffff !important;
+  }
+
+  .q-checkbox__inner--truthy .q-checkbox__truthy {
+    stroke: #ffffff !important;
+  }
+
+  .q-checkbox__inner--indet .q-checkbox__indet {
+    fill: #ffffff !important;
   }
 
   .q-btn--outline.text-primary::before {

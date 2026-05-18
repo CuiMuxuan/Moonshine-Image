@@ -502,6 +502,10 @@ import {
   buildBackendPathBlockedMessage,
   validateBackendPathsForConfig,
 } from "src/utils/backendPathValidation";
+import {
+  clearActiveProcessingTask,
+  setActiveProcessingTask,
+} from "src/utils/processingTaskGuard";
 
 import CanvasPlayer from "src/components/video/CanvasPlayer.vue";
 import ResourceManage from "src/components/video/ResourceManage.vue";
@@ -530,6 +534,7 @@ const videoOverlayRef = ref(null);
 const currentProgress = ref(0);
 const isDragging = ref(false);
 const isProcessing = ref(false);
+const VIDEO_PROCESSING_TASK_ID = "video-processing";
 const processingSucceeded = ref(false);
 const processingProgress = ref(0);
 const processingMessage = ref("");
@@ -1867,6 +1872,15 @@ watch(
     }
   }
 );
+
+watch(isProcessing, (processing) => {
+  setActiveProcessingTask({
+    taskId: VIDEO_PROCESSING_TASK_ID,
+    type: "video",
+    label: "视频处理任务",
+    active: processing,
+  });
+});
 
 watch(
   () => (videoStore.selectedKeyframe ? `${videoStore.selectedKeyframe.id}:${videoStore.selectedKeyframe.time}` : ""),
@@ -6071,6 +6085,7 @@ onBeforeRouteLeave(() => {
 });
 
 onUnmounted(() => {
+  clearActiveProcessingTask(VIDEO_PROCESSING_TASK_ID);
   unregisterVideoE2ETestBridge();
   canPersistVideoUiState = false;
   preserveVideoPagePlaybackState();

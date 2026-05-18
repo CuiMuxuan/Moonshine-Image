@@ -1,5 +1,8 @@
 <template>
-  <div class="model-capability-radar">
+  <div
+    class="model-capability-radar"
+    :class="{ 'model-capability-radar--dark': $q.dark.isActive }"
+  >
     <svg
       class="radar-svg"
       viewBox="0 0 420 360"
@@ -55,6 +58,9 @@
 
 <script setup>
 import { computed } from "vue";
+import { useQuasar } from "quasar";
+
+const $q = useQuasar();
 
 const CAPABILITY_LABELS = Object.freeze([
   { key: "speed", label: "处理速度" },
@@ -212,21 +218,19 @@ const ariaLabel = computed(() => `${props.modelLabel}能力雷达图`);
   white-space: nowrap;
 }
 
-:global(body.body--dark) .radar-grid-polygon {
+.model-capability-radar--dark .radar-grid-polygon {
   stroke: rgba(255, 255, 255, 0.18);
 }
 
-:global(body.body--dark) .radar-axis {
+.model-capability-radar--dark .radar-axis {
   stroke: rgba(255, 255, 255, 0.14);
 }
 
-:global(body.body--dark) .radar-legend-item {
+.model-capability-radar--dark .radar-legend-item {
   background: rgba(255, 255, 255, 0.06);
 }
 
-:global(body.body--dark) .radar-label,
-:global(.settings-card--dark) .radar-label,
-:global(.model-management-panel--dark) .radar-label {
+.model-capability-radar--dark .radar-label {
   color: rgba(229, 231, 235, 0.72);
   fill: rgba(229, 231, 235, 0.72) !important;
   font-size: 12px;

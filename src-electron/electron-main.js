@@ -65,6 +65,7 @@ app.setPath("userData", path.join(app.getPath("appData"), APP_DISPLAY_NAME));
 let backendProcess = null;
 global.projectPath = "";
 const activeFfmpegTasks = new Map();
+const activeProcessingTasks = new Map();
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -1108,13 +1109,6 @@ async function ensureBundledRuntimeReady(sendLog) {
     return {
       success: false,
       error: `Bundled runtime metadata is missing: ${getPackagedRuntimeMetadataPath()}`,
-    };
-  }
-
-  if (!fs.existsSync(getBundledDefaultModelPath())) {
-    return {
-      success: false,
-      error: `Bundled default model is missing: ${getBundledDefaultModelPath()}`,
     };
   }
 
@@ -4650,6 +4644,39 @@ function cleanupVideoProcessingTempEntries({
   };
 }
 
+function getActiveProcessingTaskSummary() {
+  const tasks = Array.from(activeProcessingTasks.values());
+  const imageCount = tasks.filter((task) => task.type === "image").length;
+  const videoCount = tasks.filter((task) => task.type === "video").length;
+  const labels = tasks
+    .map((task) => String(task.label || "").trim())
+    .filter(Boolean)
+    .slice(0, 3);
+
+  return {
+    count: tasks.length,
+    imageCount,
+    videoCount,
+    labels,
+  };
+}
+
+function buildActiveProcessingCloseMessage() {
+  const summary = getActiveProcessingTaskSummary();
+  const parts = [];
+  if (summary.imageCount > 0) {
+    parts.push(`${summary.imageCount} 个图片任务`);
+  }
+  if (summary.videoCount > 0) {
+    parts.push(`${summary.videoCount} 个视频任务`);
+  }
+  const taskText = parts.length > 0 ? parts.join("、") : `${summary.count} 个任务`;
+  const labelText =
+    summary.labels.length > 0 ? `\n\n当前任务：${summary.labels.join("，")}` : "";
+
+  return `当前还有 ${taskText} 正在处理中。直接关闭会中断处理进程，可能导致当前结果丢失。${labelText}\n\n确定要关闭 Moonshine-Image 吗？`;
+}
+
 ipcMain.handle("cleanup-app-temp-files", async (event, options = {}) => {
   try {
     return cleanupAppTempFiles(options);
@@ -4688,6 +4715,24 @@ ipcMain.handle("cleanup-video-processing-temp", async (event, options = {}) => {
     };
   }
 });
+ipcMain.on("set-active-processing-task", (event, payload = {}) => {
+  const taskId = String(payload?.taskId || "").trim();
+  if (!taskId) {
+    return;
+  }
+
+  if (payload.active === false) {
+    activeProcessingTasks.delete(taskId);
+    return;
+  }
+
+  activeProcessingTasks.set(taskId, {
+    taskId,
+    type: String(payload.type || "task"),
+    label: String(payload.label || "处理中任务"),
+    updatedAt: Date.now(),
+  });
+});
 ipcMain.handle("remove-directory-recursive", async (event, dirPath) => {
   try {
     if (fs.existsSync(dirPath)) {
@@ -4723,6 +4768,7 @@ const platform = process.platform || os.platform();
 const currentDir = fileURLToPath(new URL(".", import.meta.url));
 
 let mainWindow;
+let allowCloseWithActiveProcessingTasks = false;
 
 async function createWindow() {
   /**
@@ -4840,7 +4886,32 @@ async function createWindow() {
     });
   }
 
+  mainWindow.on("close", (event) => {
+    if (allowCloseWithActiveProcessingTasks || activeProcessingTasks.size === 0) {
+      return;
+    }
+
+    const choice = dialog.showMessageBoxSync(mainWindow, {
+      type: "warning",
+      buttons: ["继续处理", "关闭应用"],
+      defaultId: 0,
+      cancelId: 0,
+      title: "任务仍在处理中",
+      message: "任务仍在处理中",
+      detail: buildActiveProcessingCloseMessage(),
+      noLink: true,
+    });
+
+    if (choice !== 1) {
+      event.preventDefault();
+      return;
+    }
+
+    allowCloseWithActiveProcessingTasks = true;
+  });
+
   mainWindow.on("closed", () => {
+    activeProcessingTasks.clear();
     mainWindow = null;
   });
 }

@@ -405,6 +405,22 @@ const normalizeMaskDataUrl = (mask) => {
   return "";
 };
 
+const canvasHasVisibleMaskPixels = () => {
+  const canvas = maskCanvas.value;
+  if (!canvas || !ctx.value || canvas.width <= 0 || canvas.height <= 0) return false;
+
+  try {
+    const pixels = ctx.value.getImageData(0, 0, canvas.width, canvas.height).data;
+    for (let index = 3; index < pixels.length; index += 4) {
+      if (pixels[index] > 0) return true;
+    }
+    return false;
+  } catch (error) {
+    console.error("Failed to inspect mask canvas:", error);
+    return true;
+  }
+};
+
 const initCanvas = () => {
   const canvas = maskCanvas.value;
   if (!canvas || !store.imageWidth || !store.imageHeight) return;
@@ -458,10 +474,19 @@ const toggleMaskVisibility = (visible) => {
   maskVisible.value = visible;
 };
 
-const getMaskData = () => maskCanvas.value?.toDataURL("image/png") || "";
+const getMaskData = () => {
+  if (!canvasHasVisibleMaskPixels()) return "";
+  return maskCanvas.value?.toDataURL("image/png") || "";
+};
 
 const emitMask = () => {
   if (!ctx.value || !maskCanvas.value) return;
+
+  if (!canvasHasVisibleMaskPixels()) {
+    pendingMaskSyncDataUrl.value = "";
+    emit("update:mask", null);
+    return;
+  }
 
   const dataUrl = maskCanvas.value.toDataURL("image/png");
   pendingMaskSyncDataUrl.value = dataUrl;

@@ -179,8 +179,13 @@ def start(
 
     scanned_models = scan_models()
     if model not in [it.name for it in scanned_models]:
-        logger.info(f"{model} not found in {model_dir}, try to downloading")
-        cli_download_model(model)
+        if input:
+            logger.info(f"{model} not found in {model_dir}, try to downloading")
+            cli_download_model(model)
+        else:
+            logger.warning(
+                f"{model} not found in {model_dir}. Server will start without a loaded model."
+            )
 
     from moonshine_server.api import Api
     from moonshine_server.schema import ApiConfig

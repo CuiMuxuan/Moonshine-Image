@@ -69,6 +69,10 @@ import { buildImageOutputBaseName, splitFileName } from "src/utils/fileNaming";
 import { buildImageOutputRequestOptions } from "src/utils/imageOutputOptions";
 import { MASK_TOOL_MODES } from "src/utils/maskTool";
 import {
+  clearActiveProcessingTask,
+  setActiveProcessingTask,
+} from "src/utils/processingTaskGuard";
+import {
   buildBackendPathBlockedMessage,
   validateBackendPathsForConfig,
 } from "src/utils/backendPathValidation";
@@ -281,6 +285,7 @@ const layoutFooter = inject("layoutFooter", null);
 const layoutDrawers = inject("layoutDrawers", null);
 const globalSettings = inject("globalSettings", null);
 const isPageDisabled = ref(false);
+const IMAGE_PROCESSING_TASK_ID = "image-processing";
 const imagePageFooterOwner = Symbol("image-page-footer");
 const imagePageLeftDrawerOwner = Symbol("image-page-left-drawer");
 const imagePageRightDrawerOwner = Symbol("image-page-right-drawer");
@@ -301,6 +306,19 @@ const backendEngineValue = computed(() => {
       typeof value.openDiagnostics === "function" ? value.openDiagnostics : () => {},
   };
 });
+const setImageProcessingGuard = (active, label = "图片任务正在处理中") => {
+  if (active) {
+    setActiveProcessingTask({
+      taskId: IMAGE_PROCESSING_TASK_ID,
+      type: "image",
+      label,
+      active: true,
+    });
+    return;
+  }
+
+  clearActiveProcessingTask(IMAGE_PROCESSING_TASK_ID);
+};
 const currentDisplayUrl = computed(() => {
   const file = fileManagerStore.currentFile;
   if (!file || !file.history?.length) {
@@ -1262,6 +1280,7 @@ const runSlbrModel = async () => {
   }
 
   try {
+    setImageProcessingGuard(true, `正在处理 ${filesToProcess.length} 张图像`);
     loadingControl.show(
       `正在处理 ${filesToProcess.length} 张图像，你可以打开终端管理页面查看进度`
     );
@@ -1293,6 +1312,7 @@ const runSlbrModel = async () => {
     });
     console.error("透明水印去除失败:", error);
   } finally {
+    setImageProcessingGuard(false);
     loadingControl.hide();
     isPageDisabled.value = false;
   }
@@ -1385,6 +1405,7 @@ const runRemoveModel = async () => {
   }
 
   try {
+    setImageProcessingGuard(true, `正在处理 ${filesToProcess.length} 张图像`);
     if (backendRunning.value) {
       loadingControl.show(
         `正在处理 ${filesToProcess.length} 张图像，你可以打开终端管理页面查看进度`
@@ -1432,6 +1453,7 @@ const runRemoveModel = async () => {
     });
     console.error("图像处理失败:", error);
   } finally {
+    setImageProcessingGuard(false);
     restoreMaskUiState(maskUiState);
     loadingControl.hide();
     isPageDisabled.value = false;
@@ -1441,6 +1463,7 @@ const runRemoveModel = async () => {
 const processFolderImages = async () => {
   const maskUiState = captureMaskUiState();
   try {
+    setImageProcessingGuard(true, "正在批量处理文件夹图像");
     // 显示加载状态
     if (backendRunning.value) {
       loadingControl.show(
@@ -1491,6 +1514,7 @@ const processFolderImages = async () => {
     });
     console.error("处理文件夹失败:", error);
   } finally {
+    setImageProcessingGuard(false);
     restoreMaskUiState(maskUiState);
     loadingControl.hide();
     isPageDisabled.value = false;
@@ -1499,6 +1523,7 @@ const processFolderImages = async () => {
 // 下载按钮点击事件处理函数
 const processSlbrFolderImages = async () => {
   try {
+    setImageProcessingGuard(true, "正在批量处理文件夹图像");
     loadingControl.show(
       "正在批量处理文件夹图像，你可以打开终端管理页面查看进度"
     );
@@ -1535,6 +1560,7 @@ const processSlbrFolderImages = async () => {
     });
     console.error("透明水印文件夹处理失败:", error);
   } finally {
+    setImageProcessingGuard(false);
     loadingControl.hide();
     isPageDisabled.value = false;
   }
@@ -1826,11 +1852,11 @@ const registerImageE2ETestBridge = () => {
         fileManagerStore.currentFile?.history?.[
           fileManagerStore.currentFile.history.length - 1
         ]?.type || "",
-      currentHasMask: Boolean(fileManagerStore.currentFile?.mask),
+      currentHasMask: Boolean(fileManagerStore.currentFile?.mask?.data),
       maskStates: fileManagerStore.files.map((file) => ({
         id: file.id,
         name: file.name,
-        hasMask: Boolean(file.mask),
+        hasMask: Boolean(file.mask?.data),
       })),
       selectedFileIds: [...fileManagerStore.selectedFileIds],
       config: {
@@ -2661,6 +2687,7 @@ onBeforeRouteLeave(async (to, from, next) => {
 });
 // 在组件卸载时清理资源
 onUnmounted(async () => {
+  setImageProcessingGuard(false);
   unregisterImageE2ETestBridge();
   layoutFooter?.clearPageFooter?.(imagePageFooterOwner);
   layoutDrawers?.clearPageDrawer?.("left", imagePageLeftDrawerOwner);

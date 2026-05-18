@@ -23,6 +23,7 @@ const repoRoot = path.resolve(__dirname, "..");
 const sourceModelsRoot = path.join(repoRoot, "models");
 const buildResourcesRoot = path.join(repoRoot, "build-resources");
 const packagedModelsRoot = path.join(buildResourcesRoot, PACKAGED_MODELS_RESOURCE_DIR);
+const modelBundle = normalizeModelBundle(process.env.MOONSHINE_MODEL_BUNDLE);
 const packagedFfmpegRoot = path.join(
   buildResourcesRoot,
   PACKAGED_FFMPEG_RESOURCE_DIR,
@@ -66,6 +67,24 @@ const protectedResourceFiles = [
     ].join("/"),
   },
 ];
+const bundledModelFileNames = new Set(["big-lama.pt", "slbr.pth.tar"]);
+
+function normalizeModelBundle(value) {
+  const normalized = String(value || "bundled").trim().toLowerCase();
+  const aliases = {
+    external: "external",
+    "external-models": "external",
+    bundled: "bundled",
+    "bundled-models": "bundled",
+  };
+  const result = aliases[normalized];
+  if (!result) {
+    throw new Error(
+      `Unsupported MOONSHINE_MODEL_BUNDLE: ${value}. Expected external or bundled.`
+    );
+  }
+  return result;
+}
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -117,12 +136,19 @@ function sha256File(filePath) {
 
 function copyPackagedModels() {
   resetDir(packagedModelsRoot);
+  if (modelBundle === "external") {
+    return;
+  }
+
   if (!fs.existsSync(sourceModelsRoot)) {
     throw new Error(`Models source directory does not exist: ${sourceModelsRoot}`);
   }
 
   for (const absolutePath of listFiles(sourceModelsRoot)) {
     const relativePath = path.relative(sourceModelsRoot, absolutePath);
+    if (!bundledModelFileNames.has(relativePath.replace(/\\/g, "/"))) {
+      continue;
+    }
     const destinationPath = path.join(packagedModelsRoot, relativePath);
     ensureDir(path.dirname(destinationPath));
     fs.copyFileSync(absolutePath, destinationPath);
@@ -265,6 +291,8 @@ export function prepareElectronResources() {
   const manifest = {
     schemaVersion: 1,
     appVersion: process.env.npm_package_version || "0.0.1",
+    runtimeFlavor: process.env.MOONSHINE_RUNTIME_FLAVOR || "cu130",
+    modelBundle,
     generatedAt: new Date().toISOString(),
     hashAlgorithm: "sha256",
     entries: createManifestEntries(),

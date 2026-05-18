@@ -1,6 +1,6 @@
 {
   "name": "moonshine-image",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "moonshine's image handle client",
   "productName": "Moonshine-Image",
   "author": "CuiMuxuan <cjh020715@163.com>",
@@ -24,6 +24,7 @@
     "build:runtime:win": "node scripts/build-runtime-win.mjs",
     "prepare:backend": "node scripts/prepare-backend-resources.mjs",
     "prepare:electron-resources": "node scripts/prepare-electron-resources.mjs",
+    "package:win:matrix": "node scripts/package-win-matrix.mjs",
     "generate:integrity-keypair": "node scripts/generate-integrity-keypair.mjs",
     "postinstall": "quasar prepare"
   },

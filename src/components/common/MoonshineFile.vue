@@ -113,7 +113,7 @@
                   <q-item-section side>
                     <div class="file-item-actions">
                       <q-badge
-                        v-if="file.mask"
+                        v-if="fileHasMask(file)"
                         color="primary"
                         outline
                         label="蒙版"
@@ -390,6 +390,9 @@ const getFileThumbnailUrl = (file) => {
 
   return url;
 };
+
+const fileHasMask = (file) =>
+  Boolean(file?.mask?.data || file?.mask?.displayUrl);
 
 const hideBrokenThumbnail = (event) => {
   if (event?.target?.style) {

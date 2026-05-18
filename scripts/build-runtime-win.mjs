@@ -31,13 +31,38 @@ const runtimeTmpDir = path.join(buildResourcesRoot, ".tmp", "runtime");
 const runtimePythonScriptDir = path.join(runtimeTmpDir, "python-scripts");
 const missingRequirementsPath = path.join(runtimeTmpDir, "missing-requirements.txt");
 const pinnedRuntimePackagesPath = path.join(runtimeTmpDir, "pinned-runtime-packages.txt");
+const runtimeRequirementsPath = path.join(runtimeTmpDir, "runtime-requirements-no-torch.txt");
 const requirementsPath = path.join(repoRoot, "server", "requirements.txt");
 const smokeImagePath = path.join(smokeInputDir, "image.png");
 const smokeMaskPath = path.join(smokeMaskDir, "image.png");
 const sourceModelPath = path.join(repoRoot, "models", PACKAGED_DEFAULT_MODEL_FILE);
+const hasExplicitRuntimeFlavor = Boolean(process.env.MOONSHINE_RUNTIME_FLAVOR);
+const runtimeFlavor = normalizeRuntimeFlavor(process.env.MOONSHINE_RUNTIME_FLAVOR);
 const runtimeEnvName =
-  process.env.MOONSHINE_RUNTIME_ENV_NAME || "moonshine-runtime-311";
+  process.env.MOONSHINE_RUNTIME_ENV_NAME ||
+  (hasExplicitRuntimeFlavor ? `moonshine-runtime-311-${runtimeFlavor}` : "moonshine-runtime-311");
 const targetPythonVersion = "3.11.5";
+const torchVersion = "2.11.0";
+const torchvisionVersion = "0.26.0";
+const defaultCu126TorchWheelPath =
+  "C:\\Users\\cjh02\\Downloads\\torch-2.11.0+cu126-cp311-cp311-win_amd64.whl";
+const torchFlavorConfig = {
+  cpu: {
+    indexUrl: "https://download.pytorch.org/whl/cpu",
+    expectedCuda: null,
+    installSource: "pytorch-cpu-index",
+  },
+  cu126: {
+    indexUrl: "https://download.pytorch.org/whl/cu126",
+    expectedCuda: "12.6",
+    installSource: "local-torch-wheel-cu126",
+  },
+  cu130: {
+    indexUrl: "https://download.pytorch.org/whl/cu130",
+    expectedCuda: "13.0",
+    installSource: "pytorch-cu130-index-or-existing-env",
+  },
+};
 const obsoleteRuntimePackages = [
   "gradio",
   "gradio-client",
@@ -45,6 +70,16 @@ const obsoleteRuntimePackages = [
   "accelerate",
   "controlnet-aux",
 ];
+
+function normalizeRuntimeFlavor(value) {
+  const normalized = String(value || "cu130").trim().toLowerCase();
+  if (["cpu", "cu126", "cu130"].includes(normalized)) {
+    return normalized;
+  }
+  throw new Error(
+    `Unsupported MOONSHINE_RUNTIME_FLAVOR: ${value}. Expected cpu, cu126 or cu130.`
+  );
+}
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -240,7 +275,7 @@ function removeObsoleteRuntimePackages() {
   ]);
 }
 
-function getMissingRequirements() {
+function getMissingRequirements(requirementsFilePath = requirementsPath) {
   const script = String.raw`
 import importlib.metadata as metadata
 import re
@@ -300,7 +335,7 @@ print("\n".join(missing))
 `;
 
   const output = runRuntimePythonScriptCapture("missing-requirements.py", script, [
-    requirementsPath,
+    requirementsFilePath,
   ]);
 
   return output
@@ -350,25 +385,147 @@ print(json.dumps(result))
   }
 }
 
-function installRuntimeDependencies() {
-  const torchWheelPath = process.env.MOONSHINE_TORCH_WHEEL;
-  if (torchWheelPath && fs.existsSync(torchWheelPath)) {
+function writeRuntimeRequirementsWithoutTorch() {
+  ensureDir(runtimeTmpDir);
+  const filteredLines = fs
+    .readFileSync(requirementsPath, "utf8")
+    .split(/\r?\n/)
+    .filter((line) => {
+      const stripped = line.trim();
+      if (!stripped || stripped.startsWith("#")) {
+        return true;
+      }
+      const packageName = stripped
+        .split("#", 1)[0]
+        .trim()
+        .split(/[<>=!~;\[]/, 1)[0]
+        .trim()
+        .toLowerCase()
+        .replace(/_/g, "-");
+      return packageName !== "torch" && packageName !== "torchvision";
+    });
+
+  fs.writeFileSync(runtimeRequirementsPath, `${filteredLines.join("\n").trim()}\n`);
+  return runtimeRequirementsPath;
+}
+
+function getRuntimeTorchInfo() {
+  const script = String.raw`
+import json
+
+result = {
+    "torchVersion": "",
+    "torchCudaVersion": None,
+    "torchCudaAvailable": False,
+    "torchvisionVersion": "",
+}
+
+try:
+    import torch
+    result["torchVersion"] = getattr(torch, "__version__", "")
+    result["torchCudaVersion"] = getattr(torch.version, "cuda", None)
+    result["torchCudaAvailable"] = bool(torch.cuda.is_available())
+except Exception as error:
+    result["torchError"] = str(error)
+
+try:
+    import torchvision
+    result["torchvisionVersion"] = getattr(torchvision, "__version__", "")
+except Exception as error:
+    result["torchvisionError"] = str(error)
+
+print(json.dumps(result, ensure_ascii=False))
+`;
+
+  const output = runRuntimePythonScriptCapture("torch-runtime-info.py", script);
+  try {
+    return JSON.parse(output);
+  } catch {
+    return {};
+  }
+}
+
+function isTorchRuntimeSatisfied(info) {
+  if (!info?.torchVersion || !info?.torchvisionVersion) {
+    return false;
+  }
+
+  const expectedCuda = torchFlavorConfig[runtimeFlavor].expectedCuda;
+  if (runtimeFlavor === "cpu") {
+    return !info.torchCudaVersion;
+  }
+
+  return (
+    info.torchCudaVersion === expectedCuda ||
+    String(info.torchVersion).includes(`+${runtimeFlavor}`) ||
+    String(info.torchvisionVersion).includes(`+${runtimeFlavor}`)
+  );
+}
+
+function installTorchRuntime() {
+  const initialInfo = getRuntimeTorchInfo();
+  if (isTorchRuntimeSatisfied(initialInfo)) {
+    return {
+      ...initialInfo,
+      torchInstallSource: "existing-env",
+    };
+  }
+
+  const config = torchFlavorConfig[runtimeFlavor];
+  const pipBaseArgs = ["run", "-n", runtimeEnvName, "python", "-m", "pip", "install"];
+
+  if (runtimeFlavor === "cu126") {
+    const torchWheelPath =
+      process.env.MOONSHINE_TORCH_WHEEL || defaultCu126TorchWheelPath;
+    if (!fs.existsSync(torchWheelPath)) {
+      throw new Error(
+        `Missing CUDA 12.6 torch wheel: ${torchWheelPath}. Set MOONSHINE_TORCH_WHEEL to a local torch ${torchVersion}+cu126 wheel.`
+      );
+    }
+    runCommand("conda", [...pipBaseArgs, torchWheelPath]);
     runCommand("conda", [
-      "run",
-      "-n",
-      runtimeEnvName,
-      "python",
-      "-m",
-      "pip",
-      "install",
-      torchWheelPath,
+      ...pipBaseArgs,
+      `torchvision==${torchvisionVersion}`,
+      "--index-url",
+      config.indexUrl,
+      "--no-deps",
+      "--force-reinstall",
+    ]);
+  } else {
+    runCommand("conda", [
+      ...pipBaseArgs,
+      `torch==${torchVersion}`,
+      `torchvision==${torchvisionVersion}`,
+      "--index-url",
+      config.indexUrl,
+      "--force-reinstall",
     ]);
   }
 
-  const missingRequirements = getMissingRequirements();
+  const nextInfo = getRuntimeTorchInfo();
+  if (!isTorchRuntimeSatisfied(nextInfo)) {
+    throw new Error(
+      `Installed PyTorch runtime does not match ${runtimeFlavor}: ${JSON.stringify(nextInfo)}`
+    );
+  }
+
+  return {
+    ...nextInfo,
+    torchInstallSource:
+      runtimeFlavor === "cu126" && process.env.MOONSHINE_TORCH_WHEEL
+        ? process.env.MOONSHINE_TORCH_WHEEL
+        : config.installSource,
+  };
+}
+
+function installRuntimeDependencies() {
+  const torchInfo = installTorchRuntime();
+  const runtimeRequirements = writeRuntimeRequirementsWithoutTorch();
+
+  const missingRequirements = getMissingRequirements(runtimeRequirements);
   if (missingRequirements.length === 0) {
     console.log("Runtime dependencies are already satisfied.");
-    return;
+    return torchInfo;
   }
 
   ensureDir(runtimeTmpDir);
@@ -398,6 +555,10 @@ function installRuntimeDependencies() {
   }
 
   runCommand("conda", installArgs);
+  return {
+    ...getRuntimeTorchInfo(),
+    torchInstallSource: torchInfo.torchInstallSource,
+  };
 }
 
 function createSmokeFixtures() {
@@ -493,7 +654,7 @@ function materializeRuntimeDirectory() {
   }
 }
 
-function writeRuntimeManifest() {
+function writeRuntimeManifest(torchInfo = {}) {
   const pythonExecutable =
     process.platform === "win32" ? `${PACKAGED_RUNTIME_ENV_DIR}/python.exe` : `${PACKAGED_RUNTIME_ENV_DIR}/bin/python`;
   const condaUnpackExecutable =
@@ -503,6 +664,8 @@ function writeRuntimeManifest() {
   const manifest = {
     schemaVersion: 2,
     envName: runtimeEnvName,
+    runtimeFlavor,
+    modelBundle: process.env.MOONSHINE_MODEL_BUNDLE || "bundled",
     pythonVersion: targetPythonVersion,
     layout: "directory",
     envDir: PACKAGED_RUNTIME_ENV_DIR,
@@ -510,6 +673,11 @@ function writeRuntimeManifest() {
     condaUnpackExecutable,
     builtAt: new Date().toISOString(),
     pythonSha256: sha256File(path.join(runtimeRoot, pythonExecutable)),
+    torchVersion: torchInfo.torchVersion || "",
+    torchCudaVersion: torchInfo.torchCudaVersion || null,
+    torchCudaAvailable: Boolean(torchInfo.torchCudaAvailable),
+    torchvisionVersion: torchInfo.torchvisionVersion || "",
+    torchInstallSource: torchInfo.torchInstallSource || "",
     modelFile: PACKAGED_DEFAULT_MODEL_FILE,
     smokeTest: {
       image: path.relative(repoRoot, smokeImagePath).replace(/\\/g, "/"),
@@ -523,11 +691,20 @@ function writeRuntimeManifest() {
 }
 
 function hasReusableRuntimeArtifact() {
-  return (
-    fs.existsSync(runtimeEnvPath) &&
-    fs.existsSync(path.join(runtimeEnvPath, process.platform === "win32" ? "python.exe" : "bin/python")) &&
-    fs.existsSync(runtimeManifestPath)
-  );
+  if (
+    !fs.existsSync(runtimeEnvPath) ||
+    !fs.existsSync(path.join(runtimeEnvPath, process.platform === "win32" ? "python.exe" : "bin/python")) ||
+    !fs.existsSync(runtimeManifestPath)
+  ) {
+    return false;
+  }
+
+  try {
+    const manifest = JSON.parse(fs.readFileSync(runtimeManifestPath, "utf8"));
+    return !manifest.runtimeFlavor || manifest.runtimeFlavor === runtimeFlavor;
+  } catch {
+    return false;
+  }
 }
 
 export function buildPackagedWindowsRuntime(options = {}) {
@@ -537,10 +714,10 @@ export function buildPackagedWindowsRuntime(options = {}) {
     ensureSourceModelExists();
     ensureRuntimeEnv();
     removeObsoleteRuntimePackages();
-    installRuntimeDependencies();
+    const torchInfo = installRuntimeDependencies();
     runRuntimeSmokeTest();
     materializeRuntimeDirectory();
-    const manifest = writeRuntimeManifest();
+    const manifest = writeRuntimeManifest(torchInfo);
 
     return {
       success: true,

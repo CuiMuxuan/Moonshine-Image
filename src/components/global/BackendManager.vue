@@ -120,7 +120,11 @@
                     :loading="checking"
                     unelevated
                     class="q-mb-sm"
-                  />
+                  >
+                    <template #loading>
+                      <q-spinner :color="$q.dark.isActive ? 'dark' : 'white'" />
+                    </template>
+                  </q-btn>
                   <div class="q-gutter-sm">
                     <q-btn
                       v-if="!isBundledBackendMode && !environmentStatus.python"
@@ -226,7 +230,11 @@
                       !environmentStatus.python || !environmentStatus.project
                     "
                     unelevated
-                  />
+                  >
+                    <template #loading>
+                      <q-spinner :color="$q.dark.isActive ? 'dark' : 'white'" />
+                    </template>
+                  </q-btn>
                 </q-stepper-navigation>
               </q-step>
 
@@ -372,7 +380,11 @@
                       label="启动服务"
                       :loading="serviceLoading"
                       unelevated
-                    />
+                    >
+                      <template #loading>
+                        <q-spinner color="white" />
+                      </template>
+                    </q-btn>
                     <q-btn
                       v-if="serviceStatus === 'running'"
                       @click="stopService"
@@ -381,7 +393,11 @@
                       label="停止服务"
                       :loading="serviceLoading"
                       unelevated
-                    />
+                    >
+                      <template #loading>
+                        <q-spinner color="white" />
+                      </template>
+                    </q-btn>
                     <q-btn
                       v-if="serviceStatus === 'running'"
                       @click="restartService"
@@ -390,7 +406,11 @@
                       label="重启服务"
                       :loading="serviceLoading"
                       outline
-                    />
+                    >
+                      <template #loading>
+                        <q-spinner color="orange" />
+                      </template>
+                    </q-btn>
                   </div>
                 </q-stepper-navigation>
               </q-step>
@@ -455,7 +475,11 @@
                   class="q-ml-sm"
                   :loading="commandExecuting"
                   unelevated
-                />
+                >
+                  <template #loading>
+                    <q-spinner :color="$q.dark.isActive ? 'dark' : 'white'" />
+                  </template>
+                </q-btn>
               </div>
             </div>
           </template>

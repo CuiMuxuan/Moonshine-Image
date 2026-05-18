@@ -475,6 +475,26 @@ function runAssertions() {
     pattern: /ipcMain\.handle\("check-ffmpeg-runtime"[\s\S]*ipcMain\.handle\("ffprobe-media"[\s\S]*ipcMain\.handle\("ffmpeg-encode-frame-sequence"[\s\S]*ipcMain\.handle\("ffmpeg-concat-segments"[\s\S]*ipcMain\.handle\("ffmpeg-mux-audio"[\s\S]*ipcMain\.handle\("cancel-ffmpeg-task"/,
   });
   assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Electron confirms window close while image or video tasks are processing",
+    pattern: /const activeProcessingTasks = new Map\(\)[\s\S]*ipcMain\.on\("set-active-processing-task"[\s\S]*mainWindow\.on\("close"[\s\S]*showMessageBoxSync[\s\S]*任务仍在处理中/,
+  });
+  assertPattern({
+    file: "src/pages/IndexPage.vue",
+    description: "Image processing marks the app busy during close-sensitive work",
+    pattern: /setActiveProcessingTask[\s\S]*IMAGE_PROCESSING_TASK_ID[\s\S]*setImageProcessingGuard\(true[\s\S]*setImageProcessingGuard\(false/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video processing marks the app busy during close-sensitive work",
+    pattern: /VIDEO_PROCESSING_TASK_ID[\s\S]*watch\(isProcessing[\s\S]*setActiveProcessingTask[\s\S]*clearActiveProcessingTask/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/model_manager.py",
+    description: "Backend can start without installed models and loads models lazily",
+    pattern: /self\.model = None[\s\S]*Default model .* is not installed[\s\S]*Model .* is not installed\. Please install the model before processing/,
+  });
+  assertPattern({
     file: "scripts/prepare-electron-resources.mjs",
     description: "Electron resource preparation bundles FFmpeg from a local runtime root",
     pattern: /PACKAGED_FFMPEG_RESOURCE_DIR[\s\S]*resolveFfmpegSourceRoot[\s\S]*MOONSHINE_FFMPEG_ROOT[\s\S]*copyPackagedFfmpegRuntime/,
