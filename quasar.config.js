@@ -12,6 +12,21 @@ const DEV_WATCH_IGNORED = [
   "**/models",
   "**/models/**",
 ];
+const electronDownloadMirror =
+  process.env.MOONSHINE_ELECTRON_MIRROR || process.env.ELECTRON_MIRROR || "";
+const electronDownloadCacheRoot =
+  process.env.MOONSHINE_ELECTRON_CACHE || ".electron-cache";
+const electronZipDir = process.env.MOONSHINE_ELECTRON_ZIP_DIR || "";
+const electronDownloadOptions = {
+  cacheRoot: electronDownloadCacheRoot,
+  ...(electronDownloadMirror
+    ? {
+        mirrorOptions: {
+          mirror: electronDownloadMirror,
+        },
+      }
+    : {}),
+};
 
 export default defineConfig((ctx) => {
   if (ctx.mode.electron && ctx.prod) {
@@ -241,9 +256,7 @@ export default defineConfig((ctx) => {
         out: "dist/electron/packaged",
         overwrite: true,
         asar: true,
-        download: {
-          cacheRoot: ".electron-cache",
-        },
+        ...(electronZipDir ? { electronZipDir } : { download: electronDownloadOptions }),
 
         // Application metadata
         appVersion: "1.1.0",

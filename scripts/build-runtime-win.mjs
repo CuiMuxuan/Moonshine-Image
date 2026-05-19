@@ -412,6 +412,7 @@ function writeRuntimeRequirementsWithoutTorch() {
 function getRuntimeTorchInfo() {
   const script = String.raw`
 import json
+from importlib import metadata
 
 result = {
     "torchVersion": "",
@@ -429,10 +430,9 @@ except Exception as error:
     result["torchError"] = str(error)
 
 try:
-    import torchvision
-    result["torchvisionVersion"] = getattr(torchvision, "__version__", "")
+    result["torchvisionVersion"] = metadata.version("torchvision")
 except Exception as error:
-    result["torchvisionError"] = str(error)
+    result["torchvisionMetadataError"] = str(error)
 
 print(json.dumps(result, ensure_ascii=False))
 `;

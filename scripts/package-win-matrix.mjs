@@ -20,12 +20,47 @@ const defaultCu126TorchWheelPath =
   "C:\\Users\\cjh02\\Downloads\\torch-2.11.0+cu126-cp311-cp311-win_amd64.whl";
 const runtimeFlavors = ["cpu", "cu126", "cu130"];
 const modelBundles = ["external-models", "bundled-models"];
+const electronBuildRetryCount = Math.max(
+  1,
+  Number.parseInt(process.env.MOONSHINE_ELECTRON_BUILD_RETRIES || "3", 10) || 3
+);
+const electronBuildRetryDelayMs = Math.max(
+  0,
+  Number.parseInt(process.env.MOONSHINE_ELECTRON_BUILD_RETRY_DELAY_MS || "15000", 10) || 15000
+);
+const skipExistingArtifacts = ["1", "true", "yes"].includes(
+  String(process.env.MOONSHINE_PACKAGE_SKIP_EXISTING || "").trim().toLowerCase()
+);
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
 }
 
+function formatCommand(command, args) {
+  return [command, ...args].join(" ");
+}
+
+function resolveNpmCliPath() {
+  const candidates = [
+    process.env.npm_execpath,
+    path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"),
+  ]
+    .map((candidate) => String(candidate || "").trim())
+    .filter(Boolean);
+
+  const npmCliPath = candidates.find(
+    (candidate) => candidate.endsWith(".js") && fs.existsSync(candidate)
+  );
+  if (!npmCliPath) {
+    throw new Error(
+      `Unable to resolve npm CLI path. Checked: ${candidates.join(", ") || "(none)"}`
+    );
+  }
+  return npmCliPath;
+}
+
 function runCommand(command, args, options = {}) {
+  const displayCommand = options.displayCommand || formatCommand(command, args);
   const result = spawnSync(command, args, {
     cwd: repoRoot,
     stdio: "inherit",
@@ -33,11 +68,59 @@ function runCommand(command, args, options = {}) {
     env: { ...process.env, ...(options.env || {}) },
   });
 
-  if (result.status !== 0) {
+  if (result.error) {
     throw new Error(
-      `${command} ${args.join(" ")} failed with exit code ${result.status ?? "unknown"}`
+      `${displayCommand} failed to start: ${result.error.message}`
     );
   }
+
+  if (result.status !== 0) {
+    const exitDetail =
+      result.status == null
+        ? `signal ${result.signal || "unknown"}`
+        : `exit code ${result.status}`;
+    throw new Error(`${displayCommand} failed with ${exitDetail}`);
+  }
+}
+
+function runNpm(args, options = {}) {
+  runCommand(process.execPath, [resolveNpmCliPath(), ...args], {
+    ...options,
+    displayCommand: `npm ${args.join(" ")}`,
+  });
+}
+
+function sleep(ms) {
+  if (ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function runElectronBuildWithRetry(env) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= electronBuildRetryCount; attempt += 1) {
+    try {
+      if (attempt > 1) {
+        console.log(
+          `Retrying Electron build (${attempt}/${electronBuildRetryCount})...`
+        );
+      }
+      runNpm(["run", "build", "--", "-m", "electron"], { env });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= electronBuildRetryCount) {
+        break;
+      }
+      console.warn(
+        `Electron build attempt ${attempt}/${electronBuildRetryCount} failed: ${error.message}`
+      );
+      console.warn(`Waiting ${Math.round(electronBuildRetryDelayMs / 1000)}s before retry...`);
+      sleep(electronBuildRetryDelayMs);
+    }
+  }
+
+  throw lastError;
 }
 
 function resolvePackagedDir() {
@@ -51,7 +134,14 @@ function resolvePackagedDir() {
 }
 
 function sha256File(filePath) {
-  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    const stream = fs.createReadStream(filePath);
+
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
 }
 
 function compressPackagedApp(packagedDir, zipPath) {
@@ -84,10 +174,19 @@ function createMatrixEnv(runtimeFlavor, modelBundle) {
   return env;
 }
 
-function buildOne(runtimeFlavor, modelBundle) {
+async function buildOne(runtimeFlavor, modelBundle) {
   const artifactName = `Moonshine-Image-v${version}-win-x64-${runtimeFlavor}-${modelBundle}.zip`;
   const zipPath = path.join(releaseRoot, artifactName);
   const env = createMatrixEnv(runtimeFlavor, modelBundle);
+
+  if (skipExistingArtifacts && fs.existsSync(zipPath)) {
+    console.log(`\n=== Skipping existing ${artifactName} ===`);
+    return {
+      artifactName,
+      zipPath,
+      sha256: await sha256File(zipPath),
+    };
+  }
 
   if (runtimeFlavor === "cu126" && !fs.existsSync(env.MOONSHINE_TORCH_WHEEL)) {
     throw new Error(
@@ -96,13 +195,13 @@ function buildOne(runtimeFlavor, modelBundle) {
   }
 
   console.log(`\n=== Building ${artifactName} ===`);
-  runCommand("npm", ["run", "build", "--", "-m", "electron"], { env });
+  runElectronBuildWithRetry(env);
   compressPackagedApp(resolvePackagedDir(), zipPath);
 
   return {
     artifactName,
     zipPath,
-    sha256: sha256File(zipPath),
+    sha256: await sha256File(zipPath),
   };
 }
 
@@ -111,14 +210,18 @@ function writeSha256Sums(artifacts) {
   fs.writeFileSync(path.join(releaseRoot, "SHA256SUMS.txt"), `${lines.join("\n")}\n`);
 }
 
-ensureDir(releaseRoot);
+async function main() {
+  ensureDir(releaseRoot);
 
-const artifacts = [];
-for (const runtimeFlavor of runtimeFlavors) {
-  for (const modelBundle of modelBundles) {
-    artifacts.push(buildOne(runtimeFlavor, modelBundle));
+  const artifacts = [];
+  for (const runtimeFlavor of runtimeFlavors) {
+    for (const modelBundle of modelBundles) {
+      artifacts.push(await buildOne(runtimeFlavor, modelBundle));
+    }
   }
+
+  writeSha256Sums(artifacts);
+  console.log(`\nPrepared ${artifacts.length} release artifacts in ${releaseRoot}`);
 }
 
-writeSha256Sums(artifacts);
-console.log(`\nPrepared ${artifacts.length} release artifacts in ${releaseRoot}`);
+await main();
