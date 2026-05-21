@@ -243,7 +243,7 @@
                   :name="3"
                   title="服务管理"
                   icon="play_arrow"
-                  :disable="!environmentStatus.configured && serviceStatus !== 'running'"
+                  :disable="!canUseServiceManagementStep"
                   header-class="text-primary"
                 >
                 <div class="q-mb-md">
@@ -377,8 +377,9 @@
                       @click="startService"
                       color="positive"
                       icon="play_arrow"
-                      label="启动服务"
-                      :loading="serviceLoading"
+                      :label="serviceStartButtonLabel"
+                      :loading="serviceLoading || serviceStatus === 'starting'"
+                      :disable="serviceStatus !== 'stopped'"
                       unelevated
                     >
                       <template #loading>
@@ -489,7 +490,7 @@
   </q-dialog>
 </template>
 <script setup>
-import { computed, ref, reactive, onMounted, onUnmounted, nextTick, watch } from "vue";
+import { computed, inject, ref, reactive, onMounted, onUnmounted, nextTick, watch } from "vue";
 import { useQuasar } from "quasar";
 import { useConfigStore } from "src/stores/config";
 import { api } from "src/boot/axios";
@@ -512,6 +513,21 @@ const configStore = useConfigStore();
 const $q = useQuasar();
 // Emits
 const emit = defineEmits(["update:modelValue"]);
+
+const backendRunningState = inject("backendRunning", ref(false));
+const backendEngineState = inject("backendEngine", ref({}));
+const readInjectedValue = (value) => value?.value ?? value;
+const observedBackendRunning = computed(() => {
+  const engineValue = readInjectedValue(backendEngineState) || {};
+  return Boolean(
+    readInjectedValue(backendRunningState) ||
+      (engineValue.isRunning?.value ?? engineValue.isRunning)
+  );
+});
+const isBackendPreparing = computed(() => {
+  const engineValue = readInjectedValue(backendEngineState) || {};
+  return Boolean(engineValue.isPreparing?.value ?? engineValue.isPreparing);
+});
 
 const backendMode = ref("external");
 const isBundledBackendMode = computed(() => backendMode.value === "bundled");
@@ -551,6 +567,7 @@ const currentStep = ref(1);
 const checking = ref(false);
 const commandExecuting = ref(false);
 const serviceLoading = ref(false);
+let serviceProcessPollTimerId = 0;
 
 // 环境状态
 const environmentStatus = reactive({
@@ -571,6 +588,12 @@ const installing = reactive({
 // 服务状态
 const serviceStatus = ref("stopped"); // 'stopped', 'starting', 'running', 'stopping'
 const serviceStatusText = ref("已停止");
+const canUseServiceManagementStep = computed(
+  () => environmentStatus.configured || ["starting", "running", "stopping"].includes(serviceStatus.value)
+);
+const serviceStartButtonLabel = computed(() =>
+  serviceStatus.value === "starting" ? "等待接口就绪" : "启动服务"
+);
 
 // 配置
 const pythonVersion = ref("");
@@ -1152,28 +1175,42 @@ const queueTerminalLog = (message, type = "info") => {
 const handleBackendOutput = (event, data) => {
   queueTerminalLog(data.message, data.type);
 };
+
+const markEnvironmentReadyForRunningProcess = () => {
+  environmentStatus.python = true;
+  environmentStatus.project = true;
+  environmentStatus.venv = true;
+  environmentStatus.dependencies = true;
+  environmentStatus.configured = true;
+  pythonVersion.value =
+    pythonVersion.value ||
+    (isBundledBackendMode.value ? "Bundled offline runtime ready" : "Python detected");
+  venvStatus.value = isBundledBackendMode.value ? "Ready (bundled-runtime)" : "Ready";
+  dependenciesStatus.value = isBundledBackendMode.value
+    ? "Bundled dependencies ready"
+    : "Installed";
+};
+
+const setServiceStartingFromProcess = () => {
+  markEnvironmentReadyForRunningProcess();
+  currentStep.value = 3;
+  serviceStatus.value = "starting";
+  serviceStatusText.value = "进程已启动，等待接口就绪...";
+};
+
 // 检查服务状态的函数
 const checkServiceStatus = async () => {
   try {
     const result = await window.electron.ipcRenderer.invoke("check-backend-status");
     if (result.success && result.running) {
-      serviceStatus.value = "running";
-      serviceStatusText.value = "运行中";
-      // 设置环境状态为已配置
-      environmentStatus.python = true;
-      environmentStatus.project = true;
-      environmentStatus.venv = true;
-      environmentStatus.dependencies = true;
-      environmentStatus.configured = true;
-      pythonVersion.value =
-        pythonVersion.value ||
-        (isBundledBackendMode.value ? "Bundled offline runtime ready" : "Python detected");
-      venvStatus.value = isBundledBackendMode.value
-        ? "Ready (bundled-runtime)"
-        : "Ready";
-      dependenciesStatus.value = isBundledBackendMode.value
-        ? "Bundled dependencies ready"
-        : "Installed";
+      if (observedBackendRunning.value) {
+        serviceStatus.value = "running";
+        serviceStatusText.value = "运行中";
+        // 设置环境状态为已配置
+        markEnvironmentReadyForRunningProcess();
+      } else {
+        setServiceStartingFromProcess();
+      }
     } else {
       serviceStatus.value = "stopped";
       serviceStatusText.value = "已停止";
@@ -1184,16 +1221,45 @@ const checkServiceStatus = async () => {
     serviceStatusText.value = "已停止";
   }
 };
+
+watch(
+  () => props.modelValue && observedBackendRunning.value,
+  async (running) => {
+    if (!running || serviceStatus.value === "running") {
+      return;
+    }
+    stopServiceProcessPolling();
+    await checkServiceStatus();
+  },
+  { flush: "post" }
+);
+
+watch(
+  () => props.modelValue && isBackendPreparing.value && !observedBackendRunning.value,
+  (shouldPoll) => {
+    if (shouldPoll) {
+      startServiceProcessPolling();
+      return;
+    }
+    stopServiceProcessPolling();
+  },
+  { flush: "post" }
+);
+
 // 监听对话框显示状态
 watch(
   () => props.modelValue,
   (newVal) => {
     showDialog.value = newVal;
+    if (!newVal) {
+      stopServiceProcessPolling();
+      return;
+    }
     if (newVal) {
       // 检查服务状态，如果服务正在运行则跳过环境检测
       syncCurrentBackendMode().finally(() => {
         checkServiceStatus().then(() => {
-          if (serviceStatus.value !== "running") {
+          if (!["starting", "running"].includes(serviceStatus.value)) {
             checkEnvironment();
           } else {
             // 服务正在运行，直接跳转到服务管理步骤
@@ -1202,6 +1268,9 @@ watch(
           }
         });
       });
+      if (isBackendPreparing.value && !observedBackendRunning.value) {
+        startServiceProcessPolling();
+      }
     }
   }
 );
@@ -1468,6 +1537,49 @@ const syncCurrentBackendMode = async () => {
   } catch (error) {
     console.warn("Failed to sync backend mode:", error);
   }
+};
+
+const syncServiceProcessStatus = async () => {
+  if (!props.modelValue || observedBackendRunning.value || serviceStatus.value === "running") {
+    return;
+  }
+
+  try {
+    const result = await window.electron.ipcRenderer.invoke("check-backend-status");
+    if (result.success && result.running) {
+      setServiceStartingFromProcess();
+      return;
+    }
+
+    if (!isBackendPreparing.value && serviceStatus.value === "starting") {
+      serviceStatus.value = "stopped";
+      serviceStatusText.value = "已停止";
+    }
+  } catch (error) {
+    console.error("同步服务进程状态失败:", error);
+    if (!isBackendPreparing.value && serviceStatus.value === "starting") {
+      serviceStatus.value = "stopped";
+      serviceStatusText.value = "已停止";
+    }
+  }
+};
+
+const stopServiceProcessPolling = () => {
+  if (!serviceProcessPollTimerId) {
+    return;
+  }
+  window.clearInterval(serviceProcessPollTimerId);
+  serviceProcessPollTimerId = 0;
+};
+
+const startServiceProcessPolling = () => {
+  if (serviceProcessPollTimerId || !props.modelValue || observedBackendRunning.value) {
+    return;
+  }
+  void syncServiceProcessStatus();
+  serviceProcessPollTimerId = window.setInterval(() => {
+    void syncServiceProcessStatus();
+  }, 800);
 };
 
 const ensureBackendPathsValid = async ({
@@ -2101,6 +2213,7 @@ onUnmounted(() => {
     window.clearTimeout(terminalFlushTimerId);
     terminalFlushTimerId = 0;
   }
+  stopServiceProcessPolling();
   clearTerminalProgressHeartbeat();
 });
 </script>

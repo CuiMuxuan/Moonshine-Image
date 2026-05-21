@@ -280,19 +280,22 @@ class Api:
             samplers=self.api_samplers(),
         )
 
-    def api_moonshine_models(self):
-        """Return the dynamic Moonshine model registry used by the client."""
-        self.model_manager.scan_models()
-        cuda_info = self._get_cuda_info()
+    def _attach_moonshine_model_runtime_metadata(self, models, cuda_info):
         slbr_recommended = recommend_slbr_params(cuda_info)
-        models = build_model_status(self._model_dir(), cuda_info)
-
         for model in models:
             if model.get("id") == "slbr":
                 model["parameters"] = {
                     **(model.get("parameters") or {}),
                     "recommended": slbr_recommended,
                 }
+        return models
+
+    def api_moonshine_models(self):
+        """Return the dynamic Moonshine model registry used by the client."""
+        self.model_manager.scan_models()
+        cuda_info = self._get_cuda_info()
+        models = build_model_status(self._model_dir(), cuda_info)
+        self._attach_moonshine_model_runtime_metadata(models, cuda_info)
 
         return JSONResponse(
             content=jsonable_encoder(
@@ -313,6 +316,7 @@ class Api:
 
         cuda_info = self._get_cuda_info()
         models = build_model_status(self._model_dir(), cuda_info)
+        self._attach_moonshine_model_runtime_metadata(models, cuda_info)
         model = next((item for item in models if item.get("id") == model_id), None)
         if model is None:
             raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")

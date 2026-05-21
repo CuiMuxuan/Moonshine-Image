@@ -143,7 +143,7 @@
                 </div>
 
                 <q-linear-progress
-                  v-if="getTask(model.id)"
+                  v-if="isTaskRunning(model.id)"
                   :value="getTaskProgress(model.id)"
                   rounded
                   color="primary"
