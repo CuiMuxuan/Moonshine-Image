@@ -339,6 +339,7 @@ const backendEngineValue = computed(() => {
     runDisabled: Boolean(value.runDisabled?.value ?? value.runDisabled),
     runDisabledTooltip: String((value.runDisabledTooltip?.value ?? value.runDisabledTooltip) || ""),
     hasFailed: Boolean(value.hasFailed?.value ?? value.hasFailed),
+    isPreparing: Boolean(value.isPreparing?.value ?? value.isPreparing),
     openDiagnostics:
       typeof value.openDiagnostics === "function" ? value.openDiagnostics : () => {},
   };
@@ -2500,6 +2501,8 @@ const syncLayoutFooter = () => {
       currentModel: currentModel.value,
       engineRunDisabled: backendEngineValue.value.runDisabled,
       engineRunTooltip: backendEngineValue.value.runDisabledTooltip,
+      enginePreparing: backendEngineValue.value.isPreparing,
+      enginePreparingLabel: backendEngineValue.value.runDisabledTooltip,
       engineFailed: backendEngineValue.value.hasFailed,
       showMaskTools: showMaskTools.value,
       maskMode: maskMode.value,

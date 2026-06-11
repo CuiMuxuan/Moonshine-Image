@@ -26,6 +26,8 @@
               :can-rollback-history="videoStore.canOpenVideoHistory"
               :engine-run-disabled="backendEngineValue.runDisabled"
               :engine-run-tooltip="backendEngineValue.runDisabledTooltip"
+              :engine-preparing="backendEngineValue.isPreparing"
+              :engine-preparing-label="backendEngineValue.runDisabledTooltip"
               :engine-failed="backendEngineValue.hasFailed"
               :history-entries="historyEntries"
               :current-model="currentModel"
@@ -1105,6 +1107,7 @@ const backendEngineValue = computed(() => {
   const value = backendEngine?.value || {};
   return {
     isRunning: Boolean(value.isRunning?.value ?? value.isRunning),
+    isPreparing: Boolean(value.isPreparing?.value ?? value.isPreparing),
     runDisabled: Boolean(value.runDisabled?.value ?? value.runDisabled),
     runDisabledTooltip: String((value.runDisabledTooltip?.value ?? value.runDisabledTooltip) || ""),
     hasFailed: Boolean(value.hasFailed?.value ?? value.hasFailed),

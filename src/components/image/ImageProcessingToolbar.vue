@@ -105,13 +105,19 @@
           <span class="toolbar-button-wrap" @click="handleRunWrapperClick">
             <q-btn
               flat
-              icon="play_arrow"
+              :icon="runButtonIcon"
               color="primary"
-              :label="$q.screen.gt.sm ? '运行' : ''"
+              :label="runButtonLabel"
+              :loading="enginePreparing"
               class="full-width"
               :disable="runButtonDisabled"
               @click="$emit('run-model')"
-            />
+            >
+              <template #loading>
+                <q-spinner size="20px" class="on-left" />
+                <span v-if="runButtonLabel">{{ runButtonLabel }}</span>
+              </template>
+            </q-btn>
             <q-tooltip v-if="runButtonTooltip">{{ runButtonTooltip }}</q-tooltip>
           </span>
 
@@ -196,6 +202,14 @@ const props = defineProps({
     default: false,
   },
   engineRunTooltip: {
+    type: String,
+    default: "",
+  },
+  enginePreparing: {
+    type: Boolean,
+    default: false,
+  },
+  enginePreparingLabel: {
     type: String,
     default: "",
   },
@@ -322,7 +336,23 @@ const undoTooltip = computed(() => {
   return "撤销处理";
 });
 
+const runButtonPreparingText = computed(
+  () => props.enginePreparingLabel || props.engineRunTooltip || "正在启动后端服务"
+);
+
+const runButtonIcon = computed(() =>
+  props.enginePreparing ? "sync" : "play_arrow"
+);
+
+const runButtonLabel = computed(() => {
+  if (props.enginePreparing) {
+    return $q.screen.gt.xs ? "启动中" : "";
+  }
+  return $q.screen.gt.sm ? "运行" : "";
+});
+
 const runButtonDisabled = computed(() => {
+  if (props.enginePreparing) return true;
   if (props.engineRunDisabled) return true;
   if (!props.currentModel) return true;
   const canRunFolderWithoutSelectedFile =
@@ -331,6 +361,9 @@ const runButtonDisabled = computed(() => {
 });
 
 const runButtonTooltip = computed(() => {
+  if (props.enginePreparing) {
+    return runButtonPreparingText.value;
+  }
   if (props.engineRunDisabled && props.engineRunTooltip) {
     return props.engineRunTooltip;
   }

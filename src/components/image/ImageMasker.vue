@@ -185,29 +185,17 @@
             </q-btn>
 
             <q-btn
-              :color="samToolMode === SAM_TOOL_MODES.SELECT ? 'primary' : 'grey-7'"
+              :color="samToolMode === SAM_TOOL_MODES.ERASE ? 'negative' : 'primary'"
               text-color="white"
-              icon="ads_click"
+              :icon="samToolToggleIcon"
               :disable="samPredicting"
               :size="toolbarButtonSize"
               class="sam-control-button"
-              data-testid="sam-select-tool-button"
-              @click="setSamToolMode(SAM_TOOL_MODES.SELECT)"
+              data-testid="sam-tool-toggle-button"
+              :data-mode="samToolMode"
+              @click="toggleSamToolMode"
             >
-              <q-tooltip :class="toolbarTooltipContentClass">点选/框选智能选区</q-tooltip>
-            </q-btn>
-
-            <q-btn
-              :color="samToolMode === SAM_TOOL_MODES.ERASE ? 'negative' : 'primary'"
-              text-color="white"
-              icon="auto_fix_off"
-              :disable="!canUseSamEraseTool"
-              :size="toolbarButtonSize"
-              class="sam-control-button"
-              data-testid="sam-erase-tool-button"
-              @click="setSamToolMode(SAM_TOOL_MODES.ERASE)"
-            >
-              <q-tooltip :class="toolbarTooltipContentClass">{{ samEraseTooltip }}</q-tooltip>
+              <q-tooltip :class="toolbarTooltipContentClass">{{ samToolToggleTooltip }}</q-tooltip>
             </q-btn>
 
             <q-btn
@@ -229,7 +217,20 @@
                 :transition-hide="settingsPopupTransitionHide"
               >
                 <div class="sam-settings-panel q-pa-md">
-                  <div class="sam-settings-title">SAM 模型</div>
+                  <div class="sam-popup-header">
+                    <div class="sam-settings-title">SAM 模型</div>
+                    <q-btn
+                      flat
+                      dense
+                      round
+                      icon="close"
+                      color="primary"
+                      data-testid="sam-settings-close-button"
+                      @click="samSettingsMenuOpen = false"
+                    >
+                      <q-tooltip :class="toolbarTooltipContentClass">关闭设置</q-tooltip>
+                    </q-btn>
+                  </div>
                   <q-select
                     v-if="resolvedSamModelOptions.length"
                     :model-value="selectedSamModelId"
@@ -255,7 +256,11 @@
                     {{ samPerformanceText }}
                   </div>
 
-                  <div class="sam-settings-section" data-testid="sam-text-settings-section">
+                  <div
+                    v-if="props.samTextAvailable"
+                    class="sam-settings-section"
+                    data-testid="sam-text-settings-section"
+                  >
                     <div class="sam-settings-title">文本智选</div>
                     <q-input
                       v-model="samTextPrompt"
@@ -377,7 +382,20 @@
                 :transition-hide="settingsPopupTransitionHide"
               >
                 <div class="sam-candidate-panel q-pa-sm">
-                  <div class="sam-settings-title q-px-sm q-pt-xs">候选蒙版</div>
+                  <div class="sam-popup-header sam-popup-header--compact q-px-sm q-pt-xs">
+                    <div class="sam-settings-title">候选蒙版</div>
+                    <q-btn
+                      flat
+                      dense
+                      round
+                      icon="close"
+                      color="primary"
+                      data-testid="sam-candidate-close-button"
+                      @click="samCandidateMenuOpen = false"
+                    >
+                      <q-tooltip :class="toolbarTooltipContentClass">关闭候选列表</q-tooltip>
+                    </q-btn>
+                  </div>
                   <q-list dense separator class="sam-candidate-list">
                     <q-item
                       v-for="candidate in samCandidates"

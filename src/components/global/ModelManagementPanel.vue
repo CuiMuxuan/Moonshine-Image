@@ -764,7 +764,7 @@ const modelRegistryRequestOptions = computed(() => ({
 }));
 
 const createModelLeafNode = (model) => ({
-  id: model.id,
+  id: `model-${model.id}`,
   label:
     model.type === "mask"
       ? [model.modelVersion || model.familyLabel, model.variant || model.label || model.id]
@@ -777,7 +777,7 @@ const createModelLeafNode = (model) => ({
 });
 
 const createModelGroupNode = ({ id, label, icon, models }) => ({
-  id,
+  id: `group-${id}`,
   label,
   icon,
   children: models.map(createModelLeafNode),
@@ -791,7 +791,7 @@ const modelTreeNodes = computed(() => {
 
   return [
     {
-      id: "image-models",
+      id: "group-image-models",
       label: "图片处理模型",
       icon: "image",
       children: [
@@ -820,7 +820,7 @@ const modelTreeNodes = computed(() => {
       ].filter((node) => node.children.length > 0),
     },
     {
-      id: "smart-selection-models",
+      id: "group-smart-selection-models",
       label: "智能选区模型",
       icon: "center_focus_strong",
       children: [
@@ -1049,8 +1049,17 @@ const refreshModels = async () => {
 };
 
 const handleModelTreeSelected = (nodeId) => {
-  if (modelRegistry.models.some((model) => model.id === nodeId)) {
-    selectedModelId.value = nodeId;
+  const findNode = (nodes = []) => {
+    for (const node of nodes) {
+      if (node.id === nodeId) return node;
+      const child = findNode(node.children || []);
+      if (child) return child;
+    }
+    return null;
+  };
+  const node = findNode(modelTreeNodes.value);
+  if (node?.modelId && modelRegistry.models.some((model) => model.id === node.modelId)) {
+    selectedModelId.value = node.modelId;
   }
 };
 

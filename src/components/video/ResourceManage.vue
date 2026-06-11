@@ -358,10 +358,10 @@
                 outline
                 no-caps
                 color="primary"
-                icon="play_arrow"
+                :icon="runButtonIcon"
                 :label="actionButtonMode === 'icon' ? undefined : runButtonLabel"
-                :disable="!canRun || isProcessing || engineRunDisabled"
-                :loading="isProcessing"
+                :disable="!canRun || isProcessing || engineRunDisabled || enginePreparing"
+                :loading="isProcessing || enginePreparing"
                 :class="[
                   'action-button',
                   'sidebar-action-button',
@@ -369,7 +369,12 @@
                   { 'action-button-icon-only': actionButtonMode === 'icon' },
                 ]"
                 @click.stop="emit('run')"
-              />
+              >
+                <template #loading>
+                  <q-spinner size="20px" class="on-left" />
+                  <span v-if="actionButtonMode !== 'icon'">{{ runButtonLabel }}</span>
+                </template>
+              </q-btn>
               <q-tooltip>{{ runActionTooltip }}</q-tooltip>
             </span>
 
@@ -568,6 +573,14 @@ const props = defineProps({
     type: String,
     default: "",
   },
+  enginePreparing: {
+    type: Boolean,
+    default: false,
+  },
+  enginePreparingLabel: {
+    type: String,
+    default: "",
+  },
   engineFailed: {
     type: Boolean,
     default: false,
@@ -656,10 +669,16 @@ const fileSizeText = computed(() => {
   const index = Math.min(units.length - 1, Math.floor(Math.log(size) / Math.log(1024)));
   return `${(size / 1024 ** index).toFixed(2)} ${units[index]}`;
 });
-const runButtonLabel = computed(() =>
-  actionButtonMode.value === "full" ? "运行处理" : "运行"
+const backendPreparingText = computed(
+  () => props.enginePreparingLabel || props.engineRunTooltip || "正在启动后端服务"
 );
+const runButtonIcon = computed(() => (props.enginePreparing ? "sync" : "play_arrow"));
+const runButtonLabel = computed(() => {
+  if (props.enginePreparing) return "启动中";
+  return actionButtonMode.value === "full" ? "运行处理" : "运行";
+});
 const runActionTooltip = computed(() => {
+  if (props.enginePreparing) return backendPreparingText.value;
   if (props.engineRunDisabled && props.engineRunTooltip) {
     return props.engineRunTooltip;
   }
