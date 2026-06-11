@@ -38,14 +38,15 @@ const smokeMaskPath = path.join(smokeMaskDir, "image.png");
 const sourceModelPath = path.join(repoRoot, "models", PACKAGED_DEFAULT_MODEL_FILE);
 const hasExplicitRuntimeFlavor = Boolean(process.env.MOONSHINE_RUNTIME_FLAVOR);
 const runtimeFlavor = normalizeRuntimeFlavor(process.env.MOONSHINE_RUNTIME_FLAVOR);
+const modelBundle = normalizeModelBundle(process.env.MOONSHINE_MODEL_BUNDLE);
 const runtimeEnvName =
   process.env.MOONSHINE_RUNTIME_ENV_NAME ||
-  (hasExplicitRuntimeFlavor ? `moonshine-runtime-311-${runtimeFlavor}` : "moonshine-runtime-311");
-const targetPythonVersion = "3.11.5";
+  (hasExplicitRuntimeFlavor ? `moonshine-runtime-312-${runtimeFlavor}` : "moonshine-runtime-312");
+const targetPythonVersion = "3.12.11";
 const torchVersion = "2.11.0";
 const torchvisionVersion = "0.26.0";
 const defaultCu126TorchWheelPath =
-  "C:\\Users\\cjh02\\Downloads\\torch-2.11.0+cu126-cp311-cp311-win_amd64.whl";
+  "C:\\Users\\cjh02\\Downloads\\torch-2.11.0+cu126-cp312-cp312-win_amd64.whl";
 const torchFlavorConfig = {
   cpu: {
     indexUrl: "https://download.pytorch.org/whl/cpu",
@@ -78,6 +79,16 @@ function normalizeRuntimeFlavor(value) {
   }
   throw new Error(
     `Unsupported MOONSHINE_RUNTIME_FLAVOR: ${value}. Expected cpu, cu126 or cu130.`
+  );
+}
+
+function normalizeModelBundle(value) {
+  const normalized = String(value || "bundled-models").trim().toLowerCase();
+  if (["bundled-models", "external-models"].includes(normalized)) {
+    return normalized;
+  }
+  throw new Error(
+    `Unsupported MOONSHINE_MODEL_BUNDLE: ${value}. Expected bundled-models or external-models.`
   );
 }
 
@@ -665,7 +676,7 @@ function writeRuntimeManifest(torchInfo = {}) {
     schemaVersion: 2,
     envName: runtimeEnvName,
     runtimeFlavor,
-    modelBundle: process.env.MOONSHINE_MODEL_BUNDLE || "bundled",
+    modelBundle,
     pythonVersion: targetPythonVersion,
     layout: "directory",
     envDir: PACKAGED_RUNTIME_ENV_DIR,

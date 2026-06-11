@@ -234,6 +234,7 @@ let hideTimeout = null;
 
 const canShowFloatingList = computed(
   () =>
+    floatingListFiles.value.length > 0 &&
     viewportWidth.value >= POPUP_MIN_SCREEN_WIDTH &&
     viewportHeight.value >= POPUP_MIN_SCREEN_HEIGHT
 );
@@ -264,9 +265,7 @@ const floatingListFiles = computed(() => {
 
 const floatingListCount = computed(() => floatingListFiles.value.length);
 
-const shouldShowFileIndicator = computed(() =>
-  usesSelectionList.value || fileManagerStore.files.length > 0
-);
+const shouldShowFileIndicator = computed(() => floatingListFiles.value.length > 0);
 
 const floatingListTitle = computed(() => {
   if (!usesSelectionList.value) {
@@ -751,6 +750,14 @@ defineExpose({
   flex: 1;
   min-width: 44px;
   transition: all 0.3s ease;
+  white-space: nowrap;
+}
+
+.file-select-btn :deep(.q-btn__content) {
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
 }
 
 .file-select-btn:hover {

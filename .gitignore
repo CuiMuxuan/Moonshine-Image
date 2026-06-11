@@ -5,6 +5,7 @@ node_modules
 
 /IOPaint
 /models
+/output
 
 # Python cache files
 __pycache__/
@@ -45,9 +46,12 @@ yarn-error.log*
 .env.local*
 
 # local planning docs
-moonshine-product-iteration-plan.md
-docs/p0-stability-regression-checklist.md
-docs/*regression-checklist*.md
-docs/*iteration-plan*.md
+/docs
+docs/
+/*-plan.md
+task_plan.md
+findings.md
+progress.md
 .npm-cache/
 .electron-cache/
+.codegraph/

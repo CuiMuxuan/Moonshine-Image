@@ -249,9 +249,9 @@ const menuContentClass = computed(() =>
 
 const controlsStyle = computed(() => {
   const minWidthMap = {
-    md: 560,
-    sm: 520,
-    xs: 476,
+    md: 430,
+    sm: 390,
+    xs: 350,
   };
 
   if (props.layout === "video-sidebar") {
@@ -336,7 +336,7 @@ const brushPreviewStyle = computed(() => {
   display: flex;
   align-items: stretch;
   flex-wrap: nowrap;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   min-width: 0;
   border-radius: 999px;
   overflow: hidden;
@@ -348,6 +348,7 @@ const brushPreviewStyle = computed(() => {
 }
 
 .control-button {
+  min-width: 46px;
   min-height: 42px;
 }
 
@@ -362,21 +363,28 @@ const brushPreviewStyle = computed(() => {
 }
 
 .mode-toggle {
-  min-width: 180px;
-  flex: 1 1 auto;
+  min-width: 0;
+  flex: 0 0 auto;
   display: flex;
   align-items: stretch;
 }
 
 .mode-button {
-  flex: 1 1 0;
-  min-width: 56px;
+  flex: 0 0 auto;
+  min-width: 46px;
   min-height: 42px;
 }
 
 .mode-button :deep(.q-icon img) {
   width: 20px;
   height: 20px;
+}
+
+.tool-main-group :deep(.q-btn),
+.control-group :deep(.q-btn) {
+  min-width: 46px;
+  padding-left: 10px;
+  padding-right: 10px;
 }
 
 @container (max-width: 560px) {

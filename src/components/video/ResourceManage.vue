@@ -150,7 +150,7 @@
           </div>
 
           <div class="row q-col-gutter-sm q-mb-sm">
-            <div class="col-12">
+            <div :class="isSlbrModel ? 'col-12' : 'col-6'">
               <q-btn
                 outline
                 no-caps
@@ -161,6 +161,21 @@
                 :disable="isProcessing"
                 @click="handleCreatePrimaryItem"
               />
+            </div>
+            <div v-if="!isSlbrModel" class="col-6">
+              <q-btn
+                outline
+                no-caps
+                color="primary"
+                icon="auto_awesome_motion"
+                label="智能选区"
+                class="full-width sidebar-action-button"
+                :disable="samVideoActionDisabled"
+                :loading="samVideoRunning"
+                @click="emit('run-sam-video-selection')"
+              >
+                <q-tooltip>{{ samVideoActionTooltip }}</q-tooltip>
+              </q-btn>
             </div>
           </div>
 
@@ -174,10 +189,44 @@
               @click="videoStore.selectMask(mask.id)"
             >
               <q-item-section>
-                <q-item-label>{{ mask.name }}</q-item-label>
+                <q-item-label class="mask-title-row">
+                  <span>{{ mask.name }}</span>
+                  <q-badge v-if="mask.type === 'samVideo'" color="amber-8" text-color="white">
+                    SAM
+                  </q-badge>
+                </q-item-label>
                 <q-item-label caption>
                   {{ formatSeconds(mask.startTime) }} - {{ formatSeconds(mask.endTime) }}
                 </q-item-label>
+                <div v-if="mask.type === 'samVideo'" class="sam-object-list">
+                  <div
+                    v-for="objectItem in mask.samObjects || []"
+                    :key="`${mask.id}-${objectItem.objectId}`"
+                    class="sam-object-row"
+                  >
+                    <q-checkbox
+                      dense
+                      :model-value="objectItem.enabled !== false"
+                      :disable="isProcessing"
+                      :label="`对象 ${objectItem.objectId}`"
+                      @update:model-value="
+                        (value) =>
+                          videoStore.setSamVideoObjectEnabled(mask.id, objectItem.objectId, value)
+                      "
+                    />
+                    <q-btn
+                      flat
+                      round
+                      dense
+                      icon="delete"
+                      color="negative"
+                      :disable="isProcessing"
+                      @click.stop="videoStore.removeSamVideoObject(mask.id, objectItem.objectId)"
+                    >
+                      <q-tooltip>删除对象</q-tooltip>
+                    </q-btn>
+                  </div>
+                </div>
               </q-item-section>
 
               <q-item-section side>
@@ -547,6 +596,18 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  samVideoRunning: {
+    type: Boolean,
+    default: false,
+  },
+  samVideoActionDisabled: {
+    type: Boolean,
+    default: false,
+  },
+  samVideoActionTooltip: {
+    type: String,
+    default: "使用 SAM2 为当前视频创建智能蒙版轨道",
+  },
 });
 
 const emit = defineEmits([
@@ -565,6 +626,7 @@ const emit = defineEmits([
   "restore-history",
   "video-uploaded",
   "video-cleared",
+  "run-sam-video-selection",
 ]);
 
 const $q = useQuasar();
@@ -836,6 +898,27 @@ onUnmounted(() => {
 .value {
   color: #111827;
   text-align: right;
+}
+
+.mask-title-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.sam-object-list {
+  border-left: 2px solid rgba(245, 158, 11, 0.35);
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  padding-left: 8px;
+}
+
+.sam-object-row {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  justify-content: space-between;
 }
 
 .model-settings,

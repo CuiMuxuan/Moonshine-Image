@@ -250,6 +250,93 @@ function runAssertions() {
     pattern: /formatStageProgressText[\s\S]*当前阶段 \$\{percent\}%[\s\S]*etaProgress: normalizedEtaProgress/,
   });
 
+  logSection("SAM2 Video Workflow");
+  assertPattern({
+    file: "server/moonshine_server/schema.py",
+    description: "SAM2 video request supports direct video paths and multi-object prompts while keeping legacy fields",
+    pattern: /class SamVideoObjectPrompt[\s\S]*object_id:\s*int[\s\S]*points:\s*List\[SamPromptPoint\][\s\S]*class MoonshineSamVideoPropagateRequest[\s\S]*input_type:\s*Literal\["jpegFrameDirectory",\s*"videoPath"\][\s\S]*frame_dir:\s*Optional\[str\][\s\S]*video_path:\s*Optional\[str\][\s\S]*object_id:\s*int[\s\S]*objects:\s*List\[SamVideoObjectPrompt\][\s\S]*frame_dir is required[\s\S]*video_path is required/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/moonshine/sam_service.py",
+    description: "SAM2 video service stages local video paths with OpenCV and registers multiple object prompts",
+    pattern: /(?=[\s\S]*import cv2)(?=[\s\S]*def _stage_video_to_jpeg_frames)(?=[\s\S]*cv2\.VideoCapture)(?=[\s\S]*cv2\.imwrite)(?=[\s\S]*def _normalize_video_objects)(?=[\s\S]*duplicate_ids)(?=[\s\S]*def propagate_video)(?=[\s\S]*input_type: str = "jpegFrameDirectory")(?=[\s\S]*video_path: Optional\[str\])(?=[\s\S]*normalized_objects)(?=[\s\S]*for prompt in normalized_objects:)(?=[\s\S]*predictor\.add_new_points_or_box)(?=[\s\S]*"objectCount": len\(normalized_objects\))(?=[\s\S]*"type": normalized_input_type)[\s\S]*/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/api.py",
+    description: "SAM2 video API passes direct video path and multi-object prompts into the service",
+    pattern: /def api_moonshine_sam_video_propagate[\s\S]*video_path=req\.video_path[\s\S]*input_type=req\.input_type[\s\S]*objects=req\.objects/,
+  });
+  assertPattern({
+    file: "src/services/SamPredictionService.js",
+    description: "Frontend SAM service sends SAM2 video input type, video path, and objects",
+    pattern: /propagateSamVideo[\s\S]*inputType[\s\S]*objects = Array\.isArray\(request\.objects\)[\s\S]*input_type: inputType[\s\S]*video_path: request\.video_path \|\| request\.videoPath[\s\S]*objects,/,
+  });
+  assertPattern({
+    file: "src-electron/electron-preload.js",
+    description: "Electron preload exposes webUtils.getPathForFile so desktop video uploads can keep their real local path",
+    pattern: /const \{ contextBridge, ipcRenderer, webUtils \} = require\("electron"\)[\s\S]*getPathForFile: \(file\) => \{[\s\S]*typeof webUtils\?\.getPathForFile !== "function"[\s\S]*return webUtils\.getPathForFile\(file\);/,
+  });
+  assertPattern({
+    file: "src/components/video/VideoUploaderButton.vue",
+    description: "Video uploader records Electron local file paths before falling back to browser file.path",
+    pattern: /const getVideoFileLocalPath = \(file\) => \{[\s\S]*window\.electron\?\.ipcRenderer\?\.getPathForFile\?\.\(file\)[\s\S]*file\.path[\s\S]*const sourcePath = getVideoFileLocalPath\(file\);[\s\S]*videoStore\.setVideoFile\(file,[\s\S]*sourcePath,[\s\S]*emit\("uploaded", \{[\s\S]*sourcePath,/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video drag/drop records Electron local file paths before falling back to browser file.path",
+    pattern: /const getVideoFileLocalPath = \(file\) => \{[\s\S]*window\.electron\?\.ipcRenderer\?\.getPathForFile\?\.\(file\)[\s\S]*file\.path[\s\S]*const loadDroppedVideoFile = async \(file\) => \{[\s\S]*const sourcePath = getVideoFileLocalPath\(file\);[\s\S]*videoStore\.setVideoFile\(file,[\s\S]*sourcePath,/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video page exposes a mask-list-level SAM video action plus dark-aware SAM2 settings panel and E2E bridge",
+    pattern: /(?=[\s\S]*sam-video-action-disabled)(?=[\s\S]*samVideoSelectionActionTooltip)(?=[\s\S]*run-sam-video-selection)(?=[\s\S]*runSamVideoSelectionFromMaskList)(?=[\s\S]*sam-video-panel)(?=[\s\S]*SAM2 视频选区设置)(?=[\s\S]*q-linear-progress)(?=[\s\S]*samVideoState)(?=[\s\S]*canRunSamVideoPropagation)(?=[\s\S]*runSamVideoPropagation)(?=[\s\S]*propagateSamVideo\()(?=[\s\S]*inputType: "videoPath")(?=[\s\S]*createSamVideoTrackFromResult)(?=[\s\S]*createSamVideoTrack)(?=[\s\S]*addSamVideoObject)(?=[\s\S]*setSamVideoResult)(?=[\s\S]*:global\(body\.body--dark\) \.sam-video-panel)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "SAM2 video selection remains runnable for previewable desktop files and resolves a temp local path at runtime",
+    pattern: /(?=[\s\S]*const canRunSamVideoPropagation = computed\([\s\S]*videoStore\.hasVideoFile[\s\S]*Boolean\(videoStore\.videoFile\)[\s\S]*samVideoState\.objects\.length > 0)(?=[\s\S]*当前视频可预览但未暴露原始本地路径，运行时会先缓存为本地临时文件)(?=[\s\S]*已导入视频，运行时会先缓存为本地临时文件)(?=[\s\S]*const checkLocalFileExists = async \(filePath\) => \{[\s\S]*get-file-stats)(?=[\s\S]*const ensureSamVideoSourcePath = async \(\) => \{[\s\S]*await checkLocalFileExists\(existingPath\)[\s\S]*原视频路径已失效，正在缓存当前视频到本地临时文件[\s\S]*resolveVideoSourcePath\(videoStore\.videoFile, \{[\s\S]*preferExistingPath: !existingPath)(?=[\s\S]*videoStore\.setCurrentSourceMeta\(\{[\s\S]*sourcePath,[\s\S]*sourceName: videoStore\.currentSourceName \|\| videoStore\.videoFile\??\.name \|\| "")[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video source resolver validates stale file.path values before falling back to the desktop temp video cache",
+    pattern: /const resolveVideoSourcePath = async \(file, options = \{\}\) => \{[\s\S]*preferExistingPath = true[\s\S]*await checkLocalFileExists\(filePath\)[\s\S]*视频原始路径已不可用，正在保存临时视频副本[\s\S]*file\.arrayBuffer[\s\S]*save-temp-video[\s\S]*temporarySourcePath: sourcePath/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "SAM2 video selection uses global loading and explains missing local video paths",
+    pattern: /(?=[\s\S]*v-if="isProcessing \|\| samVideoState\.running")(?=[\s\S]*samVideoMissingLocalPathMessage)(?=[\s\S]*当前视频没有后端可读取的本地文件路径)(?=[\s\S]*updateGlobalLoadingOverlay\("正在运行 SAM2 视频智能选区", samVideoState\.progress\))(?=[\s\S]*updateGlobalLoadingOverlay\("SAM2 视频智能选区已完成，正在创建蒙版轨道", 1\))(?=[\s\S]*hideGlobalLoadingOverlay\(\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Fullscreen drawing toolbar is only available for editable non-SAM mask tracks",
+    pattern: /(?=[\s\S]*const selectedMaskIsEditableStandard = computed\(\(\) =>[\s\S]*isEditableStandardMask\(videoStore\.selectedMask\))(?=[\s\S]*const isFullscreenLamaViewportMode = computed\([\s\S]*selectedMaskIsEditableStandard\.value[\s\S]*!samVideoState\.running[\s\S]*!isProcessing\.value)(?=[\s\S]*<MaskFloatingToolbar[\s\S]*v-if="isFullscreenLamaViewportMode"[\s\S]*:disabled="!selectedMaskIsEditableStandard \|\| isProcessing \|\| samVideoState\.running")(?=[\s\S]*showFullscreenDrawingToolbar\.value = false)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/components/video/ResourceManage.vue",
+    description: "Video resource manager places SAM smart selection at the same level as creating a manual mask",
+    pattern: /(?=[\s\S]*isSlbrModel \? '增加范围' : '新建蒙版')(?=[\s\S]*label="智能选区")(?=[\s\S]*samVideoActionDisabled)(?=[\s\S]*samVideoActionTooltip)(?=[\s\S]*run-sam-video-selection)(?=[\s\S]*mask\.type === ['"]samVideo['"])(?=[\s\S]*setSamVideoObjectEnabled)(?=[\s\S]*removeSamVideoObject)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/stores/videoManager.js",
+    description: "Video store persists SAM video frames and manages object visibility separately from deletion",
+    pattern: /(?=[\s\S]*type:\s*MASK_TRACK_TYPES\.SAM_VIDEO)(?=[\s\S]*samObjects)(?=[\s\S]*samFrames)(?=[\s\S]*setSamVideoObjectEnabled)(?=[\s\S]*enabled:\s*Boolean\(enabled\))(?=[\s\S]*removeSamVideoObject)(?=[\s\S]*filter\(\(item\) => item\.objectId !== normalizedObjectId\))/,
+  });
+  assertPattern({
+    file: "src/components/video/VideoPreviewOverlay.vue",
+    description: "Video preview renders enabled SAM video objects and blocks manual SAM track editing",
+    pattern: /(?=[\s\S]*videoStore\.selectedMask\?\.type === "samVideo")(?=[\s\S]*mask\.type === "samVideo")(?=[\s\S]*enabledObjects)(?=[\s\S]*nearestFrame)(?=[\s\S]*ctx\.drawImage\(item\.image)/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Final video mask renderer composites enabled SAM video objects by nearest propagated frame",
+    pattern: /(?=[\s\S]*const loadSamFrameImages)(?=[\s\S]*mask\.type === "samVideo")(?=[\s\S]*enabledObjects)(?=[\s\S]*nearestFrame)(?=[\s\S]*ctx\.drawImage\(item\.image)/,
+  });
+  assertPattern({
+    file: "src/components/video/VideoMaskEditor.vue",
+    description: "Video mask editor shows SAM video tracks as object-managed read-only tracks",
+    pattern: /videoStore\.selectedMask\?\.type === 'samVideo'[\s\S]*label="轨道名称"[\s\S]*updateSelectedMaskName[\s\S]*SAM 视频轨道由 SAM2 传播结果生成[\s\S]*samObjects/,
+  });
+
   logSection("Runtime Smoke");
   runFfmpegSmoke();
 

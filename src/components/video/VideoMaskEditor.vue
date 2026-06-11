@@ -82,6 +82,40 @@
     </div>
   </div>
 
+  <div v-else-if="videoStore.selectedMask?.type === 'samVideo'" class="mask-editor">
+    <q-input
+      :model-value="videoStore.selectedMask.name"
+      dense
+      outlined
+      label="轨道名称"
+      :disable="disabled"
+      @update:model-value="updateSelectedMaskName"
+    />
+
+    <q-banner
+      dense
+      rounded
+      class="sam-track-hint"
+      :class="$q.dark.isActive ? 'text-amber-2' : 'text-grey-9'"
+    >
+      SAM 视频轨道由 SAM2 传播结果生成，时间范围固定，只能在左侧按对象勾选隐藏或删除对象。
+    </q-banner>
+
+    <q-list bordered separator class="sam-track-object-list q-mt-sm">
+      <q-item
+        v-for="objectItem in videoStore.selectedMask.samObjects || []"
+        :key="objectItem.objectId"
+      >
+        <q-item-section>
+          <q-item-label>对象 {{ objectItem.objectId }}</q-item-label>
+          <q-item-label caption>
+            {{ objectItem.enabled === false ? "已隐藏" : "已启用" }}
+          </q-item-label>
+        </q-item-section>
+      </q-item>
+    </q-list>
+  </div>
+
   <div v-else-if="videoStore.selectedMask" class="mask-editor">
     <q-expansion-item
       v-model="sections.brush"
@@ -474,6 +508,11 @@ const getKeyframeDescription = (keyframe) => {
   return "关键帧可编辑时间、位置和缩放。";
 };
 
+const updateSelectedMaskName = (value) => {
+  if (!videoStore.selectedMaskId) return;
+  videoStore.renameMask(videoStore.selectedMaskId, String(value || "").trim() || "SAM 轨道");
+};
+
 const getKeyframeScaleValue = (keyframe) => getMaskKeyframeUniformScale(keyframe);
 
 const showWarning = (message) => {
@@ -485,19 +524,19 @@ const showWarning = (message) => {
 };
 
 const clearMask = () => {
-  if (!videoStore.selectedMaskId) return;
+  if (!videoStore.selectedMaskId || videoStore.selectedMask?.type === "samVideo") return;
   videoStore.commitSelectedMaskBaseMask(
     createTransparentMaskDataUrl(videoStore.videoWidth, videoStore.videoHeight)
   );
 };
 
 const undoDraw = () => {
-  if (!videoStore.selectedMaskId) return;
+  if (!videoStore.selectedMaskId || videoStore.selectedMask?.type === "samVideo") return;
   videoStore.undoSelectedMaskDraw();
 };
 
 const createKeyframeAtCurrentTime = () => {
-  if (!videoStore.selectedMaskId) return;
+  if (!videoStore.selectedMaskId || videoStore.selectedMask?.type === "samVideo") return;
 
   const result = videoStore.createUserKeyframe(
     videoStore.selectedMaskId,
@@ -515,10 +554,13 @@ const createKeyframeAtCurrentTime = () => {
   }
 };
 
-const canEditTime = (keyframe) => keyframe.type === MASK_KEYFRAME_TYPES.USER;
+const canEditTime = (keyframe) =>
+  videoStore.selectedMask?.type !== "samVideo" && keyframe.type === MASK_KEYFRAME_TYPES.USER;
 const canEditTransform = (keyframe) =>
-  keyframe.type === MASK_KEYFRAME_TYPES.USER || keyframe.type === MASK_KEYFRAME_TYPES.END;
-const canDeleteKeyframe = (keyframe) => keyframe.type === MASK_KEYFRAME_TYPES.USER;
+  videoStore.selectedMask?.type !== "samVideo" &&
+  (keyframe.type === MASK_KEYFRAME_TYPES.USER || keyframe.type === MASK_KEYFRAME_TYPES.END);
+const canDeleteKeyframe = (keyframe) =>
+  videoStore.selectedMask?.type !== "samVideo" && keyframe.type === MASK_KEYFRAME_TYPES.USER;
 
 const handleKeyframeExpand = (keyframe, expanded) => {
   if (!videoStore.selectedMaskId) return;
@@ -786,6 +828,21 @@ const setProcessingRangeEndFromCurrentTime = () => {
 
 :global(body.body--dark) .slbr-range-hint {
   background: rgba(144, 202, 249, 0.12);
+}
+
+.sam-track-hint {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  font-size: 12px;
+}
+
+.sam-track-object-list {
+  background: rgba(245, 158, 11, 0.05);
+}
+
+:global(body.body--dark) .sam-track-hint {
+  background: rgba(245, 158, 11, 0.16);
+  border-color: rgba(251, 191, 36, 0.34);
 }
 
 .keyframe-toolbar {

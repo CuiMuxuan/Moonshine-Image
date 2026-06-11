@@ -42,8 +42,6 @@ QUALITY_HELP = """
 Image encoding quality, 0-100. Default is 95.
 """
 
-INTERACTIVE_SEG_HELP = "Enable interactive segmentation using Segment Anything."
-INTERACTIVE_SEG_MODEL_HELP = "Model size: mobile_sam < vit_b < vit_l < vit_h. Bigger model size means better segmentation but slower speed."
 REMOVE_BG_HELP = "Enable remove background plugin."
 REMOVE_BG_DEVICE_HELP = "Device for remove background plugin. 'cuda' only supports briaai models."
 ANIMESEG_HELP = "Enable anime segmentation plugin. Always run on CPU."

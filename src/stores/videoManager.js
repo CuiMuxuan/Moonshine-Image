@@ -35,6 +35,11 @@ const DEFAULT_MASK_TOOL = Object.freeze({
   brushAlpha: DEFAULT_VIDEO_BRUSH.alpha,
   brushColor: DEFAULT_VIDEO_BRUSH.color,
 });
+const MASK_TRACK_TYPES = Object.freeze({
+  STANDARD: "standard",
+  SAM_VIDEO: "samVideo",
+});
+const SAM_VIDEO_TRACK_COLOR = "#f59e0b";
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const isSameTime = (a, b) => Math.abs(Number(a || 0) - Number(b || 0)) <= KEYFRAME_TOLERANCE;
@@ -46,6 +51,12 @@ const cloneKeyframe = (keyframe) => ({
 const cloneMask = (mask) => ({
   ...mask,
   keyframes: (mask?.keyframes || []).map(cloneKeyframe),
+  samObjects: (mask?.samObjects || []).map((item) => ({ ...item })),
+  samFrames: (mask?.samFrames || []).map((frame) => ({
+    ...frame,
+    masks: (frame?.masks || []).map((item) => ({ ...item })),
+  })),
+  samPromptObjects: (mask?.samPromptObjects || []).map((item) => ({ ...item })),
 });
 
 const cloneProcessingRange = (range) => ({
@@ -62,6 +73,30 @@ const cloneMaskTool = (tool = {}) => ({
 
 const normalizeMaskDisplayColor = (color) =>
   typeof color === "string" && color.trim() ? color.trim() : DEFAULT_MASK_TOOL.brushColor;
+
+const isSamVideoMask = (mask) => mask?.type === MASK_TRACK_TYPES.SAM_VIDEO;
+
+const normalizeSamVideoObject = (object = {}) => {
+  const rawId = object.objectId ?? object.object_id ?? object.id;
+  const objectId = Math.max(1, Math.floor(Number(rawId || 1)));
+  return {
+    objectId,
+    enabled: object.enabled !== false,
+    pointCount: Math.max(0, Number(object.pointCount || 0)),
+    hasBox: Boolean(object.hasBox),
+  };
+};
+
+const normalizeSamVideoFrame = (frame = {}) => ({
+  frameIndex: Math.max(0, Math.floor(Number(frame.frameIndex ?? frame.frame_index ?? 0))),
+  time: Number(frame.time ?? 0),
+  masks: (frame.masks || [])
+    .map((item) => ({
+      objectId: Math.max(1, Math.floor(Number((item.objectId ?? item.object_id ?? item.id) || 1))),
+      mask: item.mask || "",
+    }))
+    .filter((item) => item.objectId > 0 && item.mask),
+});
 
 const createTransparentMaskDataUrl = (width, height) => {
   const canvas = document.createElement("canvas");
@@ -187,6 +222,8 @@ const reconcileMask = (mask = {}, duration = 0) => {
   const safeDuration = Math.max(0, Number(duration || 0));
   const startTime = clamp(Number(mask.startTime ?? 0), 0, safeDuration);
   const endTime = clamp(Number(mask.endTime ?? safeDuration), startTime, safeDuration);
+  const type =
+    mask.type === MASK_TRACK_TYPES.SAM_VIDEO ? MASK_TRACK_TYPES.SAM_VIDEO : MASK_TRACK_TYPES.STANDARD;
 
   const { start: startCandidate, end: endCandidate, users: userCandidates } =
     getLegacyKeyframeGroups(mask.keyframes);
@@ -220,15 +257,38 @@ const reconcileMask = (mask = {}, duration = 0) => {
   const normalizedMask = {
     id: mask.id || uuidv4(),
     name: mask.name || "蒙版",
+    type,
     enabled: mask.enabled !== false,
-    displayColor: normalizeMaskDisplayColor(mask.displayColor || mask.color),
+    displayColor: normalizeMaskDisplayColor(
+      mask.displayColor || mask.color || (type === MASK_TRACK_TYPES.SAM_VIDEO ? SAM_VIDEO_TRACK_COLOR : null)
+    ),
     baseMaskDataUrl: mask.baseMaskDataUrl || "",
     interpolation: "linear",
     startTime,
     endTime,
+    fixedTimeRange: type === MASK_TRACK_TYPES.SAM_VIDEO ? true : Boolean(mask.fixedTimeRange),
+    editable: type === MASK_TRACK_TYPES.SAM_VIDEO ? false : mask.editable !== false,
     endStateExplicit: Boolean(mask.endStateExplicit),
     keyframes: sortMaskKeyframes([startKeyframe, ...userKeyframes, endKeyframe]),
   };
+
+  if (type === MASK_TRACK_TYPES.SAM_VIDEO) {
+    normalizedMask.samObjects = (mask.samObjects || mask.objects || [])
+      .map(normalizeSamVideoObject)
+      .filter((item, index, array) =>
+        array.findIndex((candidate) => candidate.objectId === item.objectId) === index
+      );
+    normalizedMask.samFrames = (mask.samFrames || mask.frames || [])
+      .map(normalizeSamVideoFrame)
+      .filter((frame) => frame.masks.length > 0)
+      .sort((a, b) => a.frameIndex - b.frameIndex);
+    normalizedMask.samPromptObjects = (mask.samPromptObjects || mask.promptObjects || []).map((item) => ({
+      ...item,
+    }));
+    normalizedMask.samModelId = mask.samModelId || mask.modelId || "";
+    normalizedMask.samInput = mask.samInput ? { ...mask.samInput } : null;
+    normalizedMask.sourceFrameRate = Number(mask.sourceFrameRate || 0);
+  }
 
   return syncInheritedEndKeyframe(normalizedMask);
 };
@@ -312,15 +372,16 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
   );
   const hasSelectedMask = computed(() => Boolean(selectedMask.value));
   const canDeleteSelectedKeyframe = computed(
-    () => selectedKeyframe.value?.type === MASK_KEYFRAME_TYPES.USER
+    () => !isSamVideoMask(selectedMask.value) && selectedKeyframe.value?.type === MASK_KEYFRAME_TYPES.USER
   );
   const canEditSelectedKeyframeTime = computed(
-    () => selectedKeyframe.value?.type === MASK_KEYFRAME_TYPES.USER
+    () => !isSamVideoMask(selectedMask.value) && selectedKeyframe.value?.type === MASK_KEYFRAME_TYPES.USER
   );
   const canEditSelectedKeyframeTransform = computed(
     () =>
-      selectedKeyframe.value?.type === MASK_KEYFRAME_TYPES.USER ||
-      selectedKeyframe.value?.type === MASK_KEYFRAME_TYPES.END
+      !isSamVideoMask(selectedMask.value) &&
+      (selectedKeyframe.value?.type === MASK_KEYFRAME_TYPES.USER ||
+        selectedKeyframe.value?.type === MASK_KEYFRAME_TYPES.END)
   );
   const hasVideoHistory = computed(() => videoHistory.value.length > 0);
   const canOpenVideoHistory = computed(
@@ -374,7 +435,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
   };
   const canUndoMaskDraw = (maskId) => {
     const mask = getMaskById(maskId);
-    if (!mask) return false;
+    if (!mask || isSamVideoMask(mask)) return false;
 
     const state = ensureMaskDrawHistory(maskId, mask.baseMaskDataUrl || "");
     return state.index > 0;
@@ -846,6 +907,116 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     return mask;
   };
 
+  const getSamVideoTrackName = () => {
+    const count = masks.value.filter((item) => item.type === MASK_TRACK_TYPES.SAM_VIDEO).length + 1;
+    return `SAM 轨道 ${count}`;
+  };
+
+  const createSamVideoMaskTrack = ({ result = {}, name } = {}) => {
+    const frames = (result.frames || []).map(normalizeSamVideoFrame).filter((frame) => frame.masks.length > 0);
+    if (!frames.length) return null;
+
+    const fps = Math.max(
+      1,
+      Number(result?.input?.fps || result?.performance?.fps || sourceFrameRate.value || 30)
+    );
+    const frameIndexes = frames.map((frame) => frame.frameIndex);
+    const startFrame = Math.min(...frameIndexes);
+    const endFrame = Math.max(...frameIndexes);
+    const duration = Math.max(0, videoDuration.value || 0);
+    const startTime = clamp(startFrame / fps, 0, duration);
+    const endTime = clamp((endFrame + 1) / fps, startTime, duration);
+
+    const objectMap = new Map();
+    (result.objects || []).forEach((item) => {
+      const normalized = normalizeSamVideoObject(item);
+      objectMap.set(normalized.objectId, normalized);
+    });
+    frames.forEach((frame) => {
+      frame.masks.forEach((item) => {
+        if (!objectMap.has(item.objectId)) {
+          objectMap.set(item.objectId, normalizeSamVideoObject({ objectId: item.objectId }));
+        }
+      });
+    });
+
+    const identityTransform = getMaskKeyframeTransform(DEFAULT_TRANSFORM, DEFAULT_TRANSFORM);
+    const mask = reconcileMask(
+      {
+        id: uuidv4(),
+        name: name || getSamVideoTrackName(),
+        type: MASK_TRACK_TYPES.SAM_VIDEO,
+        enabled: true,
+        displayColor: SAM_VIDEO_TRACK_COLOR,
+        baseMaskDataUrl: "",
+        startTime,
+        endTime,
+        fixedTimeRange: true,
+        editable: false,
+        samObjects: [...objectMap.values()].sort((a, b) => a.objectId - b.objectId),
+        samFrames: frames.map((frame) => ({
+          ...frame,
+          time: frame.frameIndex / fps,
+        })),
+        samPromptObjects: (result.objects || []).map((item) => ({ ...item })),
+        samModelId: result.modelId || "",
+        samInput: result.input ? { ...result.input } : null,
+        sourceFrameRate: fps,
+        keyframes: [
+          {
+            id: uuidv4(),
+            type: MASK_KEYFRAME_TYPES.START,
+            time: startTime,
+            ...identityTransform,
+          },
+          {
+            id: uuidv4(),
+            type: MASK_KEYFRAME_TYPES.END,
+            time: endTime,
+            ...identityTransform,
+          },
+        ],
+      },
+      duration
+    );
+
+    masks.value = [...masks.value, mask];
+    selectMask(mask.id, null);
+    updateMaskTool({
+      drawingEnabled: false,
+      mode: MASK_TOOL_MODES.DRAW,
+    });
+    return mask;
+  };
+
+  const setSamVideoObjectEnabled = (maskId, objectId, enabled) => {
+    const mask = getMaskById(maskId);
+    if (!isSamVideoMask(mask)) return null;
+    const normalizedObjectId = Math.max(1, Math.floor(Number(objectId || 1)));
+    return commitMask(maskId, {
+      ...cloneMask(mask),
+      samObjects: (mask.samObjects || []).map((item) =>
+        item.objectId === normalizedObjectId ? { ...item, enabled: Boolean(enabled) } : item
+      ),
+    });
+  };
+
+  const removeSamVideoObject = (maskId, objectId) => {
+    const mask = getMaskById(maskId);
+    if (!isSamVideoMask(mask)) return null;
+    const normalizedObjectId = Math.max(1, Math.floor(Number(objectId || 1)));
+    return commitMask(maskId, {
+      ...cloneMask(mask),
+      samObjects: (mask.samObjects || []).filter((item) => item.objectId !== normalizedObjectId),
+      samFrames: (mask.samFrames || [])
+        .map((frame) => ({
+          ...frame,
+          masks: (frame.masks || []).filter((item) => item.objectId !== normalizedObjectId),
+        }))
+        .filter((frame) => frame.masks.length > 0),
+    });
+  };
+
   const createProcessingRange = ({
     name,
     startTime = currentTime.value,
@@ -1002,6 +1173,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
   const commitMaskBaseMask = (maskId, baseMaskDataUrl) => {
     const mask = getMaskById(maskId);
     if (!mask) return null;
+    if (isSamVideoMask(mask)) return null;
 
     const normalized = baseMaskDataUrl || "";
     const state = ensureMaskDrawHistory(maskId, mask.baseMaskDataUrl || "");
@@ -1141,6 +1313,12 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
         error: "未找到对应的蒙版。",
       });
     }
+    if (isSamVideoMask(mask)) {
+      return createResult(false, {
+        code: "sam-video-track-locked",
+        error: "SAM 视频轨道不支持手动关键帧编辑。",
+      });
+    }
 
     const requestedTime = clamp(
       Number(keyframeInput.time ?? currentTime.value),
@@ -1219,6 +1397,12 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
       return createResult(false, {
         code: "mask-not-found",
         error: "未找到对应的蒙版。",
+      });
+    }
+    if (isSamVideoMask(mask)) {
+      return createResult(false, {
+        code: "sam-video-track-locked",
+        error: "SAM 视频轨道不支持手动关键帧编辑。",
       });
     }
 
@@ -1338,6 +1522,12 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
         error: "未找到对应的蒙版。",
       });
     }
+    if (isSamVideoMask(mask)) {
+      return createResult(false, {
+        code: "sam-video-track-locked",
+        error: "SAM 视频轨道不支持手动关键帧编辑。",
+      });
+    }
 
     const targetKeyframe = mask.keyframes.find((item) => item.id === keyframeId) || null;
     if (!targetKeyframe) {
@@ -1397,6 +1587,12 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
         error: "未找到对应的蒙版。",
       });
     }
+    if (isSamVideoMask(mask)) {
+      return createResult(false, {
+        code: "sam-video-track-locked",
+        error: "SAM 视频轨道的时间范围由 SAM2 传播结果决定，不能手动调整。",
+      });
+    }
 
     const duration = Math.max(0, videoDuration.value || 0);
     const nextStart = clamp(Number(startTime ?? mask.startTime), 0, duration);
@@ -1442,6 +1638,12 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
       return createResult(false, {
         code: "mask-not-found",
         error: "未找到对应的蒙版。",
+      });
+    }
+    if (isSamVideoMask(mask)) {
+      return createResult(false, {
+        code: "sam-video-track-locked",
+        error: "SAM 视频轨道的时间范围由 SAM2 传播结果决定，不能手动调整。",
       });
     }
 
@@ -1585,6 +1787,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     clearVideoInfo,
     calculateDisplaySize,
     createMask,
+    createSamVideoMaskTrack,
     createProcessingRange,
     removeMask,
     removeProcessingRange,
@@ -1613,6 +1816,8 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     moveProcessingRange,
     renameMask,
     renameProcessingRange,
+    setSamVideoObjectEnabled,
+    removeSamVideoObject,
     updateMaskTool,
     setMaskToolDefaults,
     deferKeyframeDeformationUi,
@@ -1625,3 +1830,5 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     ensureProcessingRangesStayInRange,
   };
 });
+
+export { MASK_TRACK_TYPES, SAM_VIDEO_TRACK_COLOR };

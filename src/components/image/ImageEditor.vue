@@ -7,7 +7,7 @@
       :class="{
         'cursor-grab': !isDrawingMode && !isDragging && !isToolbarInteracting,
         'cursor-grabbing': !isDrawingMode && isDragging && !isToolbarInteracting,
-        'cursor-none': isDrawingMode && !isToolbarInteracting,
+        'cursor-none': isManualDrawingMode && !isToolbarInteracting,
       }"
       @wheel="onWheel"
       @pointerdown="onPointerDown"
@@ -28,6 +28,18 @@
         :show="true"
         :show-toolbar="showMasker"
         :drawing-mode="drawingMode"
+        :smart-selection-mode="smartSelectionMode"
+        :current-model="currentModel"
+        :sam-model-id="samModelId"
+        :sam-model-options="samModelOptions"
+        :sam-available="samAvailable"
+        :sam-text-available="samTextAvailable"
+        :sam-text-model-id="samTextModelId"
+        :sam-text-batch-target-count="samTextBatchTargetCount"
+        :sam-text-batch-state="samTextBatchState"
+        :sam-image="samImage"
+        :sam-image-type="samImageType"
+        :sam-context-id="samContextId"
         :tool-state="resolvedToolState"
         :scale="scale"
         :mask="mask"
@@ -36,6 +48,9 @@
         @update:drawing-mode="updateDrawingMode"
         @update:tool-state="updateMaskToolState"
         @update:toolbar-interacting="updateToolbarInteracting"
+        @sam-processing-state="$emit('sam-processing-state', $event)"
+        @sam-text-batch-request="$emit('sam-text-batch-request', $event)"
+        @sam-text-batch-cancel="$emit('sam-text-batch-cancel')"
       />
     </div>
   </div>
@@ -87,6 +102,54 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  smartSelectionMode: {
+    type: Boolean,
+    default: false,
+  },
+  currentModel: {
+    type: String,
+    default: "lama",
+  },
+  samModelId: {
+    type: String,
+    default: "sam_vit_b",
+  },
+  samModelOptions: {
+    type: Array,
+    default: () => [],
+  },
+  samAvailable: {
+    type: Boolean,
+    default: false,
+  },
+  samTextAvailable: {
+    type: Boolean,
+    default: false,
+  },
+  samTextModelId: {
+    type: String,
+    default: "sam3",
+  },
+  samTextBatchTargetCount: {
+    type: Number,
+    default: 0,
+  },
+  samTextBatchState: {
+    type: Object,
+    default: () => ({}),
+  },
+  samImage: {
+    type: String,
+    default: "",
+  },
+  samImageType: {
+    type: String,
+    default: "base64",
+  },
+  samContextId: {
+    type: String,
+    default: "",
+  },
   toolState: {
     type: Object,
     default: null,
@@ -115,6 +178,9 @@ const emit = defineEmits([
   "update:mask",
   "update:drawing-mode",
   "update:tool-state",
+  "sam-processing-state",
+  "sam-text-batch-request",
+  "sam-text-batch-cancel",
 ]);
 const imageUrl = computed(() => {
   if (props.imageUrl) {
@@ -148,7 +214,11 @@ const imageUrl = computed(() => {
 const mode = computed(() => store.mode);
 const scale = computed(() => store.scale);
 const drawingMode = computed(() => Boolean(props.drawingMode));
-const isDrawingMode = computed(() => Boolean(props.showMasker && drawingMode.value));
+const smartSelectionMode = computed(() => Boolean(props.smartSelectionMode));
+const isManualDrawingMode = computed(() => Boolean(props.showMasker && drawingMode.value));
+const isDrawingMode = computed(
+  () => Boolean(props.showMasker && (drawingMode.value || smartSelectionMode.value))
+);
 const resolvedToolState = computed(() => normalizeMaskToolUiState(props.toolState));
 
 const imageStyle = computed(() => ({
@@ -437,6 +507,8 @@ provide(
     undoMask: () => maskerRef.value?.undo?.(),
     canUndoMask: () => Boolean(maskerRef.value?.canUndo?.()),
     isMaskerReady: () => Boolean(maskerRef.value?.isReady?.()),
+    appendExternalSamTextResult: (payload) =>
+      maskerRef.value?.appendExternalSamTextResult?.(payload),
   })
 );
 
@@ -447,6 +519,8 @@ defineExpose({
   undoMask: () => maskerRef.value?.undo?.(),
   canUndoMask: () => Boolean(maskerRef.value?.canUndo?.()),
   isMaskerReady: () => Boolean(maskerRef.value?.isReady?.()),
+  appendExternalSamTextResult: (payload) =>
+    maskerRef.value?.appendExternalSamTextResult?.(payload),
 });
 </script>
 

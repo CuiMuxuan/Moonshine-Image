@@ -44,6 +44,20 @@ const supportedFormatText = computed(() =>
   supportedFormats.value.map((ext) => ext.toUpperCase()).join(" / ")
 );
 
+const getVideoFileLocalPath = (file) => {
+  if (!file) return "";
+  try {
+    return (
+      window.electron?.ipcRenderer?.getPathForFile?.(file) ||
+      file.path ||
+      ""
+    );
+  } catch (error) {
+    console.warn("读取视频本地路径失败，后续将使用临时文件兜底:", error);
+    return file.path || "";
+  }
+};
+
 onMounted(() => {
   if (videoStore.videoFile) {
     model.value = videoStore.videoFile;
@@ -65,15 +79,16 @@ const handleFileChange = async (file) => {
     return;
   }
 
+  const sourcePath = getVideoFileLocalPath(file);
   await videoStore.setVideoFile(file, {
     resetEditor: true,
     resetHistory: true,
     isReplacementSource: false,
-    sourcePath: file.path || "",
+    sourcePath,
     sourceName: file.name || "",
   });
   emit("uploaded", {
-    sourcePath: file.path || "",
+    sourcePath,
     sourceName: file.name || "",
   });
 };

@@ -17,7 +17,7 @@ const packagedCandidates = [
   path.join(repoRoot, "dist", "electron", "packaged", "Moonshine-Image-win32-x64"),
 ];
 const defaultCu126TorchWheelPath =
-  "C:\\Users\\cjh02\\Downloads\\torch-2.11.0+cu126-cp311-cp311-win_amd64.whl";
+  "C:\\Users\\cjh02\\Downloads\\torch-2.11.0+cu126-cp312-cp312-win_amd64.whl";
 const runtimeFlavors = ["cpu", "cu126", "cu130"];
 const modelBundles = ["external-models", "bundled-models"];
 const electronBuildRetryCount = Math.max(
@@ -162,8 +162,8 @@ function createMatrixEnv(runtimeFlavor, modelBundle) {
     MOONSHINE_MODEL_BUNDLE: modelBundle,
     MOONSHINE_RUNTIME_ENV_NAME:
       runtimeFlavor === "cu130"
-        ? process.env.MOONSHINE_CU130_RUNTIME_ENV_NAME || "moonshine-runtime-311"
-        : `moonshine-runtime-311-${runtimeFlavor}`,
+        ? process.env.MOONSHINE_CU130_RUNTIME_ENV_NAME || "moonshine-runtime-312"
+        : `moonshine-runtime-312-${runtimeFlavor}`,
   };
 
   if (runtimeFlavor === "cu126") {
@@ -184,6 +184,8 @@ async function buildOne(runtimeFlavor, modelBundle) {
     return {
       artifactName,
       zipPath,
+      runtimeFlavor,
+      modelBundle,
       sha256: await sha256File(zipPath),
     };
   }
@@ -201,6 +203,8 @@ async function buildOne(runtimeFlavor, modelBundle) {
   return {
     artifactName,
     zipPath,
+    runtimeFlavor,
+    modelBundle,
     sha256: await sha256File(zipPath),
   };
 }
@@ -208,6 +212,34 @@ async function buildOne(runtimeFlavor, modelBundle) {
 function writeSha256Sums(artifacts) {
   const lines = artifacts.map((artifact) => `${artifact.sha256}  ${artifact.artifactName}`);
   fs.writeFileSync(path.join(releaseRoot, "SHA256SUMS.txt"), `${lines.join("\n")}\n`);
+}
+
+function writeReleaseMatrixManifest(artifacts) {
+  const manifest = {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    version,
+    runtimeFlavors,
+    modelBundles,
+    pythonTarget: "3.12",
+    sam3Policy: {
+      cpu: "SAM3/SAM3.1 text smart selection is shown as unavailable in CPU packages.",
+      cu126: "SAM3/SAM3.1 text smart selection is available only when CUDA, dependencies, and models are ready.",
+      cu130: "SAM3/SAM3.1 text smart selection is available only when CUDA, dependencies, and models are ready.",
+      bundledModels: "SAM3 weights are not bundled by default; users install/download them from the project model source.",
+      externalModels: "The first launch must support model management download or manual model installation.",
+    },
+    artifacts: artifacts.map((artifact) => ({
+      artifactName: artifact.artifactName,
+      runtimeFlavor: artifact.runtimeFlavor,
+      modelBundle: artifact.modelBundle,
+      sha256: artifact.sha256,
+    })),
+  };
+  fs.writeFileSync(
+    path.join(releaseRoot, "release-matrix.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`
+  );
 }
 
 async function main() {
@@ -221,6 +253,7 @@ async function main() {
   }
 
   writeSha256Sums(artifacts);
+  writeReleaseMatrixManifest(artifacts);
   console.log(`\nPrepared ${artifacts.length} release artifacts in ${releaseRoot}`);
 }
 

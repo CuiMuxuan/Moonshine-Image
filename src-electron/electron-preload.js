@@ -27,7 +27,7 @@
  *   }
  * }
  */
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 const fs = require('fs').promises
 const path = require('path')
 
@@ -47,6 +47,10 @@ contextBridge.exposeInMainWorld("electron", {
       ipcRenderer.invoke("save-app-config", configData),
     // 获取应用配置
     getAppConfig: () => ipcRenderer.invoke("get-app-config"),
+    // SAM3 中文词表配置
+    getSam3Lexicon: () => ipcRenderer.invoke("get-sam3-lexicon"),
+    saveSam3Lexicon: (lexiconData) =>
+      ipcRenderer.invoke("save-sam3-lexicon", lexiconData),
     // 后端管理相关 API
     checkPython: () => ipcRenderer.invoke("check-python"),
     checkProject: () => ipcRenderer.invoke("check-project"),
@@ -79,6 +83,13 @@ contextBridge.exposeInMainWorld("electron", {
 
     joinPath: (...paths) => {
       return path.join(...paths);
+    },
+
+    getPathForFile: (file) => {
+      if (!file || typeof webUtils?.getPathForFile !== "function") {
+        return "";
+      }
+      return webUtils.getPathForFile(file);
     },
 
     saveFile: async (options) => {

@@ -16,6 +16,7 @@ from .modeling.memory_encoder import MemoryEncoder, MaskDownSampler, Fuser, CXBl
 from .modeling.position_encoding import PositionEmbeddingSine
 from .modeling.sam.transformer import RoPEAttention
 from .modeling.sam2_base import SAM2Base
+from .sam2_video_predictor import SAM2VideoPredictor
 
 common_kwargs = dict(
     num_maskmem=7,
@@ -69,7 +70,7 @@ common_kwargs_for_2_1 = dict(
 )
 
 
-def build_memory_attention():
+def build_memory_attention(rope_k_repeat=False):
     return MemoryAttention(
         d_model=256,
         pos_enc_at_input=True,
@@ -97,6 +98,7 @@ def build_memory_attention():
                 downsample_rate=1,
                 dropout=0.1,
                 kv_in_dim=64,
+                rope_k_repeat=rope_k_repeat,
             ),
         ),
         num_layers=4,
@@ -303,6 +305,78 @@ def build_sam2_1_large():
     )
 
 
+def build_sam2_video_tiny():
+    return SAM2VideoPredictor(
+        **common_kwargs,
+        image_encoder=build_image_encoder_tiny(),
+        memory_attention=build_memory_attention(rope_k_repeat=True),
+        memory_encoder=build_memory_encoder(),
+    )
+
+
+def build_sam2_video_small():
+    return SAM2VideoPredictor(
+        **common_kwargs,
+        image_encoder=build_image_encoder_small(),
+        memory_attention=build_memory_attention(rope_k_repeat=True),
+        memory_encoder=build_memory_encoder(),
+    )
+
+
+def build_sam2_video_base():
+    return SAM2VideoPredictor(
+        **common_kwargs,
+        image_encoder=build_image_encoder_base(),
+        memory_attention=build_memory_attention(rope_k_repeat=True),
+        memory_encoder=build_memory_encoder(),
+    )
+
+
+def build_sam2_video_large():
+    return SAM2VideoPredictor(
+        **common_kwargs,
+        image_encoder=build_image_encoder_large(),
+        memory_attention=build_memory_attention(rope_k_repeat=True),
+        memory_encoder=build_memory_encoder(),
+    )
+
+
+def build_sam2_1_video_tiny():
+    return SAM2VideoPredictor(
+        **common_kwargs_for_2_1,
+        image_encoder=build_image_encoder_tiny(),
+        memory_attention=build_memory_attention(rope_k_repeat=True),
+        memory_encoder=build_memory_encoder(),
+    )
+
+
+def build_sam2_1_video_small():
+    return SAM2VideoPredictor(
+        **common_kwargs_for_2_1,
+        image_encoder=build_image_encoder_small(),
+        memory_attention=build_memory_attention(rope_k_repeat=True),
+        memory_encoder=build_memory_encoder(),
+    )
+
+
+def build_sam2_1_video_base():
+    return SAM2VideoPredictor(
+        **common_kwargs_for_2_1,
+        image_encoder=build_image_encoder_base(),
+        memory_attention=build_memory_attention(rope_k_repeat=True),
+        memory_encoder=build_memory_encoder(),
+    )
+
+
+def build_sam2_1_video_large():
+    return SAM2VideoPredictor(
+        **common_kwargs_for_2_1,
+        image_encoder=build_image_encoder_large(),
+        memory_attention=build_memory_attention(rope_k_repeat=True),
+        memory_encoder=build_memory_encoder(),
+    )
+
+
 sam2_model_registry = {
     "sam2_tiny": build_sam2_tiny,
     "sam2_small": build_sam2_small,
@@ -314,6 +388,17 @@ sam2_model_registry = {
     "sam2_1_large": build_sam2_1_large,
 }
 
+sam2_video_model_registry = {
+    "sam2_tiny": build_sam2_video_tiny,
+    "sam2_small": build_sam2_video_small,
+    "sam2_base": build_sam2_video_base,
+    "sam2_large": build_sam2_video_large,
+    "sam2_1_tiny": build_sam2_1_video_tiny,
+    "sam2_1_small": build_sam2_1_video_small,
+    "sam2_1_base": build_sam2_1_video_base,
+    "sam2_1_large": build_sam2_1_video_large,
+}
+
 
 def build_sam2(
     name,
@@ -322,6 +407,20 @@ def build_sam2(
     mode="eval",
 ):
     model = sam2_model_registry[name]()
+    _load_checkpoint(model, ckpt_path)
+    model = model.to(device)
+    if mode == "eval":
+        model.eval()
+    return model
+
+
+def build_sam2_video_predictor(
+    name,
+    ckpt_path=None,
+    device="cuda",
+    mode="eval",
+):
+    model = sam2_video_model_registry[name]()
     _load_checkpoint(model, ckpt_path)
     model = model.to(device)
     if mode == "eval":

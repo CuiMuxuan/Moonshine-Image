@@ -64,24 +64,6 @@ class Device(Choices):
     mps = "mps"
 
 
-class InteractiveSegModel(Choices):
-    vit_b = "vit_b"
-    vit_l = "vit_l"
-    vit_h = "vit_h"
-    sam_hq_vit_b = "sam_hq_vit_b"
-    sam_hq_vit_l = "sam_hq_vit_l"
-    sam_hq_vit_h = "sam_hq_vit_h"
-    mobile_sam = "mobile_sam"
-    sam2_tiny = "sam2_tiny"
-    sam2_small = "sam2_small"
-    sam2_base = "sam2_base"
-    sam2_large = "sam2_large"
-    sam2_1_tiny = "sam2_1_tiny"
-    sam2_1_small = "sam2_1_small"
-    sam2_1_base = "sam2_1_base"
-    sam2_1_large = "sam2_1_large"
-
-
 class PluginInfo(BaseModel):
     name: str
     support_gen_image: bool = False
@@ -120,9 +102,6 @@ class ApiConfig(BaseModel):
     mask_dir: Optional[Path]
     output_dir: Optional[Path]
     quality: int
-    enable_interactive_seg: bool
-    interactive_seg_model: InteractiveSegModel
-    interactive_seg_device: Device
     enable_remove_bg: bool
     remove_bg_device: Device
     remove_bg_model: str
@@ -169,7 +148,7 @@ class RunPluginRequest(BaseModel):
     name: str
     image: str = Field(..., description="base64 encoded image")
     clicks: List[List[int]] = Field(
-        [], description="Clicks for interactive segmentation"
+        [], description="Click prompts for plugins that support them"
     )
     scale: float = Field(2.0, description="Scale for upscaling")
 
@@ -205,8 +184,6 @@ class ServerConfigResponse(BaseModel):
     removeBGModels: List[RemoveBGModel]
     realesrganModel: RealESRGANModel
     realesrganModels: List[RealESRGANModel]
-    interactiveSegModel: InteractiveSegModel
-    interactiveSegModels: List[InteractiveSegModel]
     enableFileManager: bool
     enableAutoSaving: bool
     disableModelSwitch: bool
@@ -364,6 +341,90 @@ class MoonshineImageFolderProcessRequest(BaseModel):
         if values.output_format == "jpeg":
             values.output_format = "jpg"
         return values
+
+
+class SamPromptPoint(BaseModel):
+    x: float = Field(..., ge=0)
+    y: float = Field(..., ge=0)
+    label: int = Field(1, ge=0, le=1)
+
+
+class SamPromptBox(BaseModel):
+    x: float = Field(..., ge=0)
+    y: float = Field(..., ge=0)
+    width: float = Field(..., gt=0)
+    height: float = Field(..., gt=0)
+
+
+class MoonshineModelRegistryRequest(BaseModel):
+    model_dir: Optional[str] = Field(None, description="Model directory selected by the desktop app")
+
+
+class MoonshineSamPredictRequest(BaseModel):
+    image: str = Field(..., description="Base64 image data or local image path")
+    image_type: Literal["base64", "path"] = Field("base64")
+    model_id: str = Field("sam_vit_b", description="SAM1/SAM2 model id")
+    points: List[SamPromptPoint] = Field(default_factory=list)
+    box: Optional[SamPromptBox] = None
+    multimask_output: bool = Field(True)
+
+    @model_validator(mode="after")
+    def validate_prompt(cls, values: "MoonshineSamPredictRequest"):
+        if not values.points and values.box is None:
+            raise ValueError("At least one point or box prompt is required")
+        return values
+
+
+class SamVideoObjectPrompt(BaseModel):
+    object_id: int = Field(1, ge=1)
+    points: List[SamPromptPoint] = Field(default_factory=list)
+    box: Optional[SamPromptBox] = None
+
+    @model_validator(mode="after")
+    def validate_prompt(cls, values: "SamVideoObjectPrompt"):
+        if not values.points and values.box is None:
+            raise ValueError("At least one point or box prompt is required for each object")
+        return values
+
+
+class MoonshineSamVideoPropagateRequest(BaseModel):
+    input_type: Literal["jpegFrameDirectory", "videoPath"] = Field(
+        "jpegFrameDirectory",
+        description="SAM2 video input kind",
+    )
+    frame_dir: Optional[str] = Field(None, description="Directory containing JPEG video frames")
+    video_path: Optional[str] = Field(None, description="Local video path to stage as JPEG frames")
+    model_id: str = Field("sam2_1_hiera_large", description="SAM2 model id")
+    frame_index: int = Field(0, ge=0)
+    object_id: int = Field(1, ge=1)
+    points: List[SamPromptPoint] = Field(default_factory=list)
+    box: Optional[SamPromptBox] = None
+    objects: List[SamVideoObjectPrompt] = Field(default_factory=list)
+    max_frames: Optional[int] = Field(None, ge=1)
+    reverse: bool = Field(False)
+    offload_video_to_cpu: bool = Field(True)
+    offload_state_to_cpu: bool = Field(True)
+
+    @model_validator(mode="after")
+    def validate_prompt(cls, values: "MoonshineSamVideoPropagateRequest"):
+        if values.input_type == "jpegFrameDirectory" and not values.frame_dir:
+            raise ValueError("frame_dir is required when input_type is jpegFrameDirectory")
+        if values.input_type == "videoPath" and not values.video_path:
+            raise ValueError("video_path is required when input_type is videoPath")
+        if not values.objects and not values.points and values.box is None:
+            raise ValueError("At least one point or box prompt is required")
+        return values
+
+
+class MoonshineSamTextPredictRequest(BaseModel):
+    image: str = Field(..., description="Base64 image data or local image path")
+    image_type: Literal["base64", "path"] = Field("base64")
+    model_id: str = Field("sam3", description="SAM3/SAM3.1 model id")
+    text: str = Field(..., min_length=1)
+    language: Literal["auto", "zh", "en"] = Field("auto")
+    prompt_source: str = Field("manual")
+    prompt_color: Optional[dict] = None
+    prompt_noun: Optional[dict] = None
 
 
 class VideoBatchFrameItem(BaseModel):

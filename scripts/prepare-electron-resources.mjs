@@ -70,17 +70,17 @@ const protectedResourceFiles = [
 const bundledModelFileNames = new Set(["big-lama.pt", "slbr.pth.tar"]);
 
 function normalizeModelBundle(value) {
-  const normalized = String(value || "bundled").trim().toLowerCase();
+  const normalized = String(value || "bundled-models").trim().toLowerCase();
   const aliases = {
-    external: "external",
-    "external-models": "external",
-    bundled: "bundled",
-    "bundled-models": "bundled",
+    external: "external-models",
+    "external-models": "external-models",
+    bundled: "bundled-models",
+    "bundled-models": "bundled-models",
   };
   const result = aliases[normalized];
   if (!result) {
     throw new Error(
-      `Unsupported MOONSHINE_MODEL_BUNDLE: ${value}. Expected external or bundled.`
+      `Unsupported MOONSHINE_MODEL_BUNDLE: ${value}. Expected external-models or bundled-models.`
     );
   }
   return result;
@@ -136,7 +136,7 @@ function sha256File(filePath) {
 
 function copyPackagedModels() {
   resetDir(packagedModelsRoot);
-  if (modelBundle === "external") {
+  if (modelBundle === "external-models") {
     return;
   }
 

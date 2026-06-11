@@ -13,6 +13,7 @@ const FALLBACK_IMAGE_MODELS = Object.freeze([
     sourceLinks: [],
     manualSources: [],
     manualHint: "",
+    license: {},
     runCapabilities: {
       scopes: ["selected", "folder"],
       folderInputs: ["imageFolder", "maskFolder"],
@@ -39,6 +40,11 @@ const normalizeModel = (model = {}) => ({
   label: String(model.label || model.name || model.id || "").trim(),
   description: String(model.description || "").trim(),
   type: String(model.type || "image").trim(),
+  family: String(model.family || "").trim(),
+  familyLabel: String(model.familyLabel || "").trim(),
+  modelVersion: String(model.modelVersion || "").trim(),
+  variant: String(model.variant || "").trim(),
+  category: String(model.category || "").trim(),
   installed: Boolean(model.installed),
   available: model.available !== false && Boolean(model.installed),
   requiresMask: model.requiresMask !== false,
@@ -46,7 +52,19 @@ const normalizeModel = (model = {}) => ({
   sourceLinks: Array.isArray(model.sourceLinks) ? model.sourceLinks : [],
   manualSources: Array.isArray(model.manualSources) ? model.manualSources : [],
   manualHint: String(model.manualHint || "").trim(),
-  files: Array.isArray(model.files) ? model.files : [],
+  license: model.license && typeof model.license === "object" ? model.license : {},
+  files: Array.isArray(model.files)
+    ? model.files.map((file = {}) => ({
+      ...file,
+      legacyPaths: Array.isArray(file.legacyPaths) ? file.legacyPaths : [],
+      legacyExists: Boolean(file.legacyExists),
+      legacyDetected: Boolean(file.legacyDetected),
+      legacyPathUsed: String(file.legacyPathUsed || ""),
+      resolvedPathKind: String(file.resolvedPathKind || ""),
+      migrationTarget: String(file.migrationTarget || ""),
+      canonicalPath: String(file.canonicalPath || ""),
+    }))
+    : [],
   missingFiles: Array.isArray(model.missingFiles) ? model.missingFiles : [],
   corruptFiles: Array.isArray(model.corruptFiles) ? model.corruptFiles : [],
   deviceCompatible: model.deviceCompatible !== false,
@@ -65,11 +83,18 @@ const normalizeModel = (model = {}) => ({
     : {},
 });
 
-const getModels = async () => {
+const buildModelDirectoryPayload = (options = {}) => {
+  const modelDir = String(options.modelDir || "").trim();
+  return modelDir ? { model_dir: modelDir, modelDir } : {};
+};
+
+const getModels = async (options = {}) => {
   try {
-    const response = await api.get("/api/v1/moonshine/models", {
-      params: {},
-    });
+    const directoryPayload = buildModelDirectoryPayload(options);
+    const response = await api.get(
+      "/api/v1/moonshine/models",
+      directoryPayload.model_dir ? { model_dir: directoryPayload.model_dir } : {}
+    );
     const models = Array.isArray(response?.models)
       ? response.models.map(normalizeModel).filter((model) => model.id)
       : [];
@@ -78,6 +103,7 @@ const getModels = async () => {
       currentModel: response?.currentModel || "lama",
       modelDir: response?.modelDir || "",
       cuda: response?.cuda || {},
+      runtime: response?.runtime || {},
       models: models.length > 0 ? models : [...FALLBACK_IMAGE_MODELS],
       usingFallback: models.length === 0,
     };
@@ -87,6 +113,7 @@ const getModels = async () => {
       currentModel: "lama",
       modelDir: "",
       cuda: {},
+      runtime: {},
       models: [...FALLBACK_IMAGE_MODELS],
       usingFallback: true,
       error,
@@ -94,14 +121,17 @@ const getModels = async () => {
   }
 };
 
-const getImageModels = async ({ installedOnly = true } = {}) => {
-  const registry = await getModels();
+const getImageModels = async ({ installedOnly = true, ...options } = {}) => {
+  const registry = await getModels(options);
   const imageModels = registry.models.filter((model) => model.type === "image");
   return installedOnly ? imageModels.filter((model) => model.installed) : imageModels;
 };
 
-const refreshModels = async () => {
-  const response = await api.post("/api/v1/moonshine/models/refresh");
+const refreshModels = async (options = {}) => {
+  const response = await api.post(
+    "/api/v1/moonshine/models/refresh",
+    buildModelDirectoryPayload(options)
+  );
   const models = Array.isArray(response?.models)
     ? response.models.map(normalizeModel).filter((model) => model.id)
     : [];
@@ -109,20 +139,27 @@ const refreshModels = async () => {
     currentModel: response?.currentModel || "lama",
     modelDir: response?.modelDir || "",
     cuda: response?.cuda || {},
+    runtime: response?.runtime || {},
     models,
   };
 };
 
-const verifyModel = async (modelId) => {
-  const response = await api.post(`/api/v1/moonshine/models/${encodeURIComponent(modelId)}/verify`);
+const verifyModel = async (modelId, options = {}) => {
+  const response = await api.post(
+    `/api/v1/moonshine/models/${encodeURIComponent(modelId)}/verify`,
+    buildModelDirectoryPayload(options)
+  );
   return {
     ...response,
     model: normalizeModel(response?.model || {}),
   };
 };
 
-const startModelDownload = async (modelId) => (
-  api.post(`/api/v1/moonshine/models/${encodeURIComponent(modelId)}/download`)
+const startModelDownload = async (modelId, options = {}) => (
+  api.post(
+    `/api/v1/moonshine/models/${encodeURIComponent(modelId)}/download`,
+    buildModelDirectoryPayload(options)
+  )
 );
 
 const getModelTask = async (taskId) => (

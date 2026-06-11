@@ -25,7 +25,7 @@ except:
 
 import uvicorn
 from PIL import Image
-from fastapi import APIRouter, FastAPI, Request, UploadFile
+from fastapi import APIRouter, Body, FastAPI, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -53,7 +53,7 @@ from moonshine_server.image_output import (
 )
 from moonshine_server.model.utils import torch_gc
 from moonshine_server.model_manager import ModelManager
-from moonshine_server.plugins import build_plugins, RealESRGANUpscaler, InteractiveSeg
+from moonshine_server.plugins import build_plugins, RealESRGANUpscaler
 from moonshine_server.plugins.base_plugin import BasePlugin
 from moonshine_server.plugins.remove_bg import RemoveBG
 from moonshine_server.schema import (
@@ -68,13 +68,16 @@ from moonshine_server.schema import (
     RemoveBGModel,
     SwitchPluginModelRequest,
     ModelInfo,
-    InteractiveSegModel,
     RealESRGANModel,
     BatchInpaintRequest, 
     BatchInpaintByFolderRequest,
     MoonshineImageProcessRequest,
     MoonshineImageFolderProcessRequest,
     VideoBatchInpaintRequest,
+    MoonshineModelRegistryRequest,
+    MoonshineSamPredictRequest,
+    MoonshineSamTextPredictRequest,
+    MoonshineSamVideoPropagateRequest,
 )
 from moonshine_server.moonshine.slbr_runner import (
     SlbrRunner,
@@ -89,6 +92,7 @@ from moonshine_server.moonshine.model_registry import (
     download_task_manager,
     get_model_manifest,
 )
+from moonshine_server.moonshine.sam_service import SamService, SamServiceError
 
 CURRENT_DIR = Path(__file__).parent.absolute().resolve()
 WEB_APP_DIR = CURRENT_DIR / "web_app"
@@ -175,6 +179,7 @@ class Api:
         self.plugins = self._build_plugins()
         self.model_manager = self._build_model_manager()
         self._moonshine_runners = {}
+        self._sam_services = {}
 
         # fmt: off
         self.add_api_route("/api/v1/gen-info", self.api_geninfo, methods=["POST"], response_model=GenInfoResponse)
@@ -199,6 +204,10 @@ class Api:
         self.add_api_route("/api/v1/moonshine/models/{model_id}/verify", self.api_verify_moonshine_model, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/models/{model_id}/download", self.api_download_moonshine_model, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/models/tasks/{task_id}", self.api_moonshine_model_task, methods=["GET"])
+        self.add_api_route("/api/v1/moonshine/sam/capabilities", self.api_moonshine_sam_capabilities, methods=["GET"])
+        self.add_api_route("/api/v1/moonshine/sam/predict", self.api_moonshine_sam_predict, methods=["POST"])
+        self.add_api_route("/api/v1/moonshine/sam/video/propagate", self.api_moonshine_sam_video_propagate, methods=["POST"])
+        self.add_api_route("/api/v1/moonshine/sam/text/predict", self.api_moonshine_sam_text_predict, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/image/process", self.api_moonshine_image_process, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/image/process_folder", self.api_moonshine_image_process_folder, methods=["POST"])
         
@@ -249,8 +258,6 @@ class Api:
                 self.config.remove_bg_model = req.model_name
             if req.plugin_name == RealESRGANUpscaler.name:
                 self.config.realesrgan_model = req.model_name
-            if req.plugin_name == InteractiveSeg.name:
-                self.config.interactive_seg_model = req.model_name
             torch_gc()
 
     def api_server_config(self) -> ServerConfigResponse:
@@ -271,8 +278,6 @@ class Api:
             removeBGModels=RemoveBGModel.values(),
             realesrganModel=self.config.realesrgan_model,
             realesrganModels=RealESRGANModel.values(),
-            interactiveSegModel=self.config.interactive_seg_model,
-            interactiveSegModels=InteractiveSegModel.values(),
             enableFileManager=self.file_manager is not None,
             enableAutoSaving=self.config.output_dir is not None,
             disableModelSwitch=False,
@@ -290,8 +295,36 @@ class Api:
                 }
         return models
 
-    def api_moonshine_models(self):
+    def _get_release_runtime_profile(self, cuda_info):
+        runtime_flavor = str(os.getenv("MOONSHINE_RUNTIME_FLAVOR") or "external").strip().lower()
+        model_bundle = str(os.getenv("MOONSHINE_MODEL_BUNDLE") or "external-models").strip().lower()
+        packaged_runtime = os.getenv("MOONSHINE_PACKAGED_RUNTIME") in {"1", "true", "yes"}
+        cuda_ready = bool(cuda_info.get("cuda_available")) and cuda_info.get("cuda_compatible") is not False
+        sam3_runtime_supported = runtime_flavor in {"cu126", "cu130"} or (
+            runtime_flavor == "external" and cuda_ready
+        )
+        return {
+            "runtimeFlavor": runtime_flavor,
+            "modelBundle": model_bundle,
+            "packagedRuntime": packaged_runtime,
+            "pythonTarget": "3.12",
+            "sam3TextSupportedByPackage": sam3_runtime_supported,
+            "sam3TextPackageReason": (
+                "SAM3 文本智能选区仅在 CUDA 运行时中作为高级能力开放。"
+                if runtime_flavor == "cpu"
+                else ""
+            ),
+            "externalModels": model_bundle == "external-models",
+            "bundledModels": model_bundle == "bundled-models",
+        }
+
+    def api_moonshine_models(
+        self,
+        req: Optional[MoonshineModelRegistryRequest] = Body(default=None),
+        model_dir: Optional[str] = Query(default=None),
+    ):
         """Return the dynamic Moonshine model registry used by the client."""
+        self._sync_model_dir(model_dir or (req.model_dir if req else ""))
         self.model_manager.scan_models()
         cuda_info = self._get_cuda_info()
         models = build_model_status(self._model_dir(), cuda_info)
@@ -303,13 +336,19 @@ class Api:
                     "currentModel": self.model_manager.name,
                     "modelDir": str(self._model_dir()),
                     "cuda": cuda_info,
+                    "runtime": self._get_release_runtime_profile(cuda_info),
                     "models": models,
                 }
             )
         )
 
-    def api_verify_moonshine_model(self, model_id: str):
+    def api_verify_moonshine_model(
+        self,
+        model_id: str,
+        req: Optional[MoonshineModelRegistryRequest] = Body(default=None),
+    ):
         """Refresh and return one model's file/install status."""
+        self._sync_model_dir(req.model_dir if req else "")
         manifest_item = get_model_manifest(model_id)
         if manifest_item is None:
             raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
@@ -325,13 +364,19 @@ class Api:
             content=jsonable_encoder(
                 {
                     "success": True,
+                    "runtime": self._get_release_runtime_profile(cuda_info),
                     "model": model,
                 }
             )
         )
 
-    def api_download_moonshine_model(self, model_id: str):
+    def api_download_moonshine_model(
+        self,
+        model_id: str,
+        req: Optional[MoonshineModelRegistryRequest] = Body(default=None),
+    ):
         """Create an in-process model download task."""
+        self._sync_model_dir(req.model_dir if req else "")
         try:
             task = download_task_manager.create_download_task(model_id, self._model_dir())
         except ValueError as error:
@@ -352,11 +397,92 @@ class Api:
             raise HTTPException(status_code=404, detail=f"Download task not found: {task_id}")
         return JSONResponse(content=jsonable_encoder(task.to_dict()))
 
+    def api_moonshine_sam_capabilities(self):
+        """Return SAM smart-selection capability state without loading predictor weights."""
+        return JSONResponse(content=jsonable_encoder(self._get_sam_service().capabilities()))
+
+    def api_moonshine_sam_predict(self, req: MoonshineSamPredictRequest):
+        """Run SAM1/SAM2 point/box prediction using manually installed model files."""
+        try:
+            result = self._get_sam_service().predict(
+                image=req.image,
+                image_type=req.image_type,
+                model_id=req.model_id,
+                points=req.points,
+                box=req.box,
+                multimask_output=req.multimask_output,
+            )
+        except SamServiceError as error:
+            raise HTTPException(status_code=422, detail=str(error))
+        finally:
+            torch_gc()
+        return JSONResponse(content=jsonable_encoder(result))
+
+    def api_moonshine_sam_video_propagate(self, req: MoonshineSamVideoPropagateRequest):
+        """Run SAM2 video propagation on a JPEG frame directory or local video path."""
+        try:
+            result = self._get_sam_service().propagate_video(
+                frame_dir=req.frame_dir,
+                video_path=req.video_path,
+                input_type=req.input_type,
+                model_id=req.model_id,
+                frame_index=req.frame_index,
+                object_id=req.object_id,
+                points=req.points,
+                box=req.box,
+                objects=req.objects,
+                max_frames=req.max_frames,
+                reverse=req.reverse,
+                offload_video_to_cpu=req.offload_video_to_cpu,
+                offload_state_to_cpu=req.offload_state_to_cpu,
+            )
+        except SamServiceError as error:
+            raise HTTPException(status_code=422, detail=str(error))
+        finally:
+            torch_gc()
+        return JSONResponse(content=jsonable_encoder(result))
+
+    def api_moonshine_sam_text_predict(self, req: MoonshineSamTextPredictRequest):
+        """Run SAM3 text smart selection when the managed runtime and model are ready."""
+        try:
+            result = self._get_sam_service().predict_text(
+                image=req.image,
+                image_type=req.image_type,
+                model_id=req.model_id,
+                text=req.text,
+                language=req.language,
+                prompt_source=req.prompt_source,
+                prompt_color=req.prompt_color,
+                prompt_noun=req.prompt_noun,
+            )
+        except SamServiceError as error:
+            raise HTTPException(status_code=422, detail=str(error))
+        finally:
+            torch_gc()
+        return JSONResponse(content=jsonable_encoder(result))
+
     def _model_dir(self) -> Path:
         model_dir = os.getenv("XDG_CACHE_HOME") or os.getenv("TORCH_HOME")
         if not model_dir:
             model_dir = str(Path.cwd() / "models")
         return Path(model_dir).expanduser().resolve()
+
+    def _sync_model_dir(self, model_dir: Optional[str]):
+        normalized = str(model_dir or "").strip()
+        if not normalized:
+            return
+        next_model_dir = Path(normalized).expanduser().resolve()
+        current_model_dir = self._model_dir()
+        if next_model_dir == current_model_dir:
+            return
+        logger.info(f"Switch model directory: {current_model_dir} -> {next_model_dir}")
+        next_model_dir.mkdir(exist_ok=True, parents=True)
+        os.environ["XDG_CACHE_HOME"] = str(next_model_dir)
+        os.environ["TORCH_HOME"] = str(next_model_dir)
+        os.environ["U2NET_HOME"] = str(next_model_dir)
+        os.environ["HF_HOME"] = str(next_model_dir / "huggingface")
+        self._moonshine_runners.clear()
+        self._sam_services.clear()
 
     def _get_slbr_runner(self) -> SlbrRunner:
         key = (str(self._model_dir()), str(self.config.device))
@@ -365,6 +491,15 @@ class Api:
             runner = SlbrRunner(self._model_dir(), self.config.device)
             self._moonshine_runners[key] = runner
         return runner
+
+    def _get_sam_service(self, device: Optional[str] = None) -> SamService:
+        sam_device = str(device or self.config.device or "cpu")
+        key = (str(self._model_dir()), sam_device)
+        service = self._sam_services.get(key)
+        if service is None:
+            service = SamService(self._model_dir(), sam_device)
+            self._sam_services[key] = service
+        return service
 
     def _get_moonshine_runner(self, model_id: str):
         if model_id == "slbr":
@@ -587,9 +722,6 @@ class Api:
 
     def _build_plugins(self) -> Dict[str, BasePlugin]:
         return build_plugins(
-            self.config.enable_interactive_seg,
-            self.config.interactive_seg_model,
-            self.config.interactive_seg_device,
             self.config.enable_remove_bg,
             self.config.remove_bg_device,
             self.config.remove_bg_model,

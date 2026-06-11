@@ -128,6 +128,26 @@ function runAssertions() {
     description: "Video page supports configurable FFmpeg fallback when WebAV export fails",
     pattern: /getConfiguredVideoProcessingEngine[\s\S]*runWithVideoProcessingEngine[\s\S]*WebAV 失败，正在切换 FFmpeg 兜底[\s\S]*exportProcessedBatchSegmentWithFfmpeg[\s\S]*finalizeProcessedVideoWithFfmpeg/,
   });
+  assertPattern({
+    file: "src/stores/videoManager.js",
+    description: "Video store has a dedicated SAM video mask track type",
+    pattern: /SAM_VIDEO:\s*"samVideo"[\s\S]*createSamVideoMaskTrack[\s\S]*setSamVideoObjectEnabled[\s\S]*removeSamVideoObject/,
+  });
+  assertPattern({
+    file: "src/stores/videoManager.js",
+    description: "SAM video tracks are locked from manual range and keyframe edits",
+    pattern: /(?=[\s\S]*sam-video-track-locked)(?=[\s\S]*时间范围由 SAM2 传播结果决定)(?=[\s\S]*SAM 视频轨道不支持手动关键帧编辑)/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "SAM2 propagation creates a SAM video track instead of applying first frame to a manual mask",
+    pattern: /(?=[\s\S]*createSamVideoTrackFromResult)(?=[\s\S]*videoStore\.createSamVideoMaskTrack)(?=[\s\S]*SAM2 已创建)/,
+  });
+  assertPattern({
+    file: "src/components/video/ResourceManage.vue",
+    description: "Video resource list exposes SAM object checkbox and object delete controls",
+    pattern: /mask\.type === 'samVideo'[\s\S]*q-checkbox[\s\S]*setSamVideoObjectEnabled[\s\S]*removeSamVideoObject/,
+  });
 
   logSection("Image Workflow");
 
@@ -138,6 +158,26 @@ function runAssertions() {
       /const backendPathValidation = await validateBackendPathsForConfig\(/,
       /switch\s*\(currentModel\.value\)\s*\{/,
     ],
+  });
+  assertPattern({
+    file: "src/shared/samLexiconDefaults.js",
+    description: "SAM3 lexicon defaults use separate color and noun dictionaries",
+    pattern: /DEFAULT_SAM3_COLOR_TERMS[\s\S]*DEFAULT_SAM3_NOUN_TERMS[\s\S]*createDefaultSam3Lexicon/,
+  });
+  assertPattern({
+    file: "src/services/SamLexiconService.js",
+    description: "SAM3 lexicon prompt builder supports manual, color-only, noun-only, and composed prompts",
+    pattern: /(?=[\s\S]*buildSam3LexiconPrompt)(?=[\s\S]*source: "manual")(?=[\s\S]*lexicon-color)(?=[\s\S]*lexicon-noun)(?=[\s\S]*lexicon-composed)/,
+  });
+  assertPattern({
+    file: "src/components/image/ImageMasker.vue",
+    description: "Image smart selection has SAM3 color and noun selectors",
+    pattern: /samTextColor[\s\S]*samTextNoun[\s\S]*samGeneratedPromptText/,
+  });
+  assertPattern({
+    file: "src/pages/IndexPage.vue",
+    description: "SAM3 batch text search forwards lexicon source metadata",
+    pattern: /promptSource = "manual"[\s\S]*promptColor = null[\s\S]*promptNoun = null[\s\S]*predictSamText\(\{[\s\S]*promptSource[\s\S]*promptColor[\s\S]*promptNoun/,
   });
   assertPattern({
     file: "src/pages/IndexPage.vue",
@@ -207,11 +247,11 @@ function runAssertions() {
 
   assertPatternOrder({
     file: "src/components/global/GlobalSettings.vue",
-    description: "Global settings validates model path before assignment",
+    description: "Global settings validates model directory before assignment",
     patterns: [
       /const selectModelPath = async \(\) => \{/,
       /const validation = await validateBackendPaths\(\{/,
-      /localConfig\.value\.general\.modelPath = value;/,
+      /localConfig\.value\.general\.modelDir = value;/,
     ],
   });
   assertPatternOrder({
@@ -279,8 +319,8 @@ function runAssertions() {
 
   assertPattern({
     file: "src/shared/appConfigSchema.js",
-    description: "Shared config schema defaults keep backendProjectPath + modelDir + modelPath",
-    pattern: /general:\s*\{[\s\S]*modelPath:\s*""[\s\S]*modelDir:\s*""[\s\S]*backendProjectPath:\s*""/,
+    description: "Shared config schema defaults keep backendProjectPath + modelDir",
+    pattern: /general:\s*\{[\s\S]*modelDir:\s*""[\s\S]*backendProjectPath:\s*""/,
   });
   assertPattern({
     file: "src/shared/appConfigSchema.js",
@@ -329,8 +369,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/config/ConfigManager.js",
-    description: "Config merge keeps modelPath normalization logic",
-    pattern: /modelPath:\s*normalizeModelPath\(merged\.general\?\.modelPath\)\s*\|\|\s*this\.defaultConfig\.general\.modelPath/,
+    description: "Config merge keeps modelDir normalization logic",
+    pattern: /modelDir:\s*normalizeModelDir\(merged\.general\?\.modelDir\)\s*\|\|\s*this\.defaultConfig\.general\.modelDir/,
   });
   assertPattern({
     file: "src/stores/appState.js",
@@ -353,7 +393,7 @@ function runAssertions() {
   assertPattern({
     file: "src/utils/backendPathValidation.js",
     description: "Frontend path selection blocked message includes current and selected paths",
-    pattern: /currentBackendProjectPath[\s\S]*selectedBackendProjectPath[\s\S]*selectedModelDir[\s\S]*selectedModelPath/,
+    pattern: /currentBackendProjectPath[\s\S]*selectedBackendProjectPath[\s\S]*selectedModelDir/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",
@@ -363,7 +403,7 @@ function runAssertions() {
   assertPattern({
     file: "src-electron/electron-main.js",
     description: "Electron main validates backend project/model paths for CJK",
-    pattern: /if \(normalized\.backendProjectPath && containsCjkCharacter\(normalized\.backendProjectPath\)\)[\s\S]*if \(normalized\.modelDir && containsCjkCharacter\(normalized\.modelDir\)\)[\s\S]*if \(normalized\.modelPath && containsCjkCharacter\(normalized\.modelPath\)\)/,
+    pattern: /if \(normalized\.backendProjectPath && containsCjkCharacter\(normalized\.backendProjectPath\)\)[\s\S]*if \(normalized\.modelDir && containsCjkCharacter\(normalized\.modelDir\)\)/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",
@@ -384,6 +424,57 @@ function runAssertions() {
     file: "src-electron/electron-main.js",
     description: "Electron main checks backend paths before service startup",
     pattern: /ipcMain\.handle\("start-backend-service"[\s\S]*buildBackendPathValidationResult\(\{[\s\S]*backendProjectPath: global\.projectPath,/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Packaged backend startup honors the configured model directory before falling back to bundled models",
+    pattern: /function resolveEffectiveModelDir\(input = \{\}\)[\s\S]*const configuredModelDir = String\(modelDir \|\| ""\)\.trim\(\);[\s\S]*return configuredModelDir \|\| getEffectiveBundledModelDir\(\);[\s\S]*if \(isBundledBackendMode\(global\.projectPath\)\)[\s\S]*const effectiveModelDir = resolveEffectiveModelDir\(\{[\s\S]*modelDir: config\?\.modelDir \|\| "",[\s\S]*args\.push\(`--model-dir=\$\{effectiveModelDir\}`\)/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Electron main probes backend port availability before service startup",
+    pattern: /function isBackendPortAvailable\(port[\s\S]*nodeNet\.createServer\(\)[\s\S]*probe\.listen\(port, host\);/,
+  });
+  assertPatternOrder({
+    file: "src-electron/electron-main.js",
+    description: "Electron main resolves an available backend port before spawning backend",
+    patterns: [
+      /const portResolution = await resolveAvailableBackendPort\(config\?\.port\);/,
+      /`--port=\$\{portResolution\.port\}`/,
+      /backendProcess = spawn\(backendPython, args,/,
+      /backendServicePort = portResolution\.port;/,
+    ],
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Backend startup returns the actual runtime port",
+    pattern: /return \{[\s\S]*success: true,[\s\S]*port: portResolution\.port,[\s\S]*requestedPort: portResolution\.requestedPort,[\s\S]*portChanged: portResolution\.portChanged,/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Backend status reports the current runtime port",
+    pattern: /ipcMain\.handle\("check-backend-status"[\s\S]*port: backendServicePort,/,
+  });
+  assertPatternOrder({
+    file: "src/layouts/MainLayout.vue",
+    description: "Silent backend auto-start syncs actual backend port before health checks",
+    patterns: [
+      /const startResult = await invoke\("start-backend-service",/,
+      /await syncBackendRuntimePort\(startResult\.port \|\| generalConfig\.backendPort \|\| 8080\);/,
+      /backendEngineStore\.setPhase\("verifying"\);/,
+      /reachable = await checkBackendStatus\(\{ notifyOnFailure: false \}\);/,
+    ],
+  });
+  assertPatternOrder({
+    file: "src/components/global/BackendManager.vue",
+    description: "Backend manager syncs and displays the actual runtime port after manual start",
+    patterns: [
+      /const result = await window\.electron\.ipcRenderer\.invoke\(/,
+      /const actualPort = Number\(result\.port \|\| backendConfig\.port\);/,
+      /await syncRuntimeBackendPort\(actualPort\);/,
+      /后端服务启动成功，端口: \$\{actualPort\}/,
+      /已更新前端 API 端口配置为: \$\{actualPort\}/,
+    ],
   });
 
   logSection("Backend API Contracts");
@@ -451,8 +542,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/components/global/MainToolbar.vue",
-    description: "Main toolbar exposes image/video route test ids",
-    pattern: /data-testid="nav-image-button"[\s\S]*data-testid="nav-video-button"/,
+    description: "Main toolbar exposes image/video route and theme toggle test ids",
+    pattern: /data-testid="nav-image-button"[\s\S]*data-testid="nav-video-button"[\s\S]*data-testid="toggle-theme-button"/,
   });
   assertPattern({
     file: "src/components/global/GlobalSettings.vue",

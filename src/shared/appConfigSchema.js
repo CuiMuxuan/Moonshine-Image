@@ -3,7 +3,7 @@ import {
   normalizeShortcutConfig,
 } from "../utils/shortcutConfig.js";
 
-export const CONFIG_SCHEMA_VERSION = 4;
+export const CONFIG_SCHEMA_VERSION = 6;
 
 export const DEFAULT_THEME_MODE = "light";
 export const DEFAULT_UI_BUTTON_SIZE = "sm";
@@ -51,12 +51,18 @@ export const DEFAULT_TEMP_CLEANUP = Object.freeze({
   keepRecentFailures: true,
 });
 
+export const DEFAULT_MASKING_CONFIG = Object.freeze({
+  defaultSamModel: "sam_vit_b",
+  defaultSam1Model: "sam_vit_b",
+  defaultSam2Model: "sam2_1_hiera_large",
+  defaultSam3Model: "sam3_1_multiplex",
+});
+
 export const createDefaultAppConfig = () => ({
   schemaVersion: CONFIG_SCHEMA_VERSION,
   general: {
     backendPort: 8080,
     launchMode: "cuda",
-    modelPath: "",
     modelDir: "",
     backendProjectPath: "",
     defaultModel: "lama",
@@ -82,6 +88,9 @@ export const createDefaultAppConfig = () => ({
     videoProcessingEngine: "auto",
     imageBrushDefault: { ...DEFAULT_IMAGE_BRUSH },
     videoBrushDefault: { ...DEFAULT_VIDEO_BRUSH },
+  },
+  masking: {
+    ...DEFAULT_MASKING_CONFIG,
   },
   ui: {
     theme: DEFAULT_THEME_MODE,
@@ -169,6 +178,15 @@ export const migrateLegacyConfigShape = (rawConfig = {}) => {
 
   const migrated = cloneConfig(rawConfig);
 
+  if (isPlainObject(migrated.general)) {
+    const legacyModelPath = String(migrated.general.modelPath || "").trim();
+    const modelDir = String(migrated.general.modelDir || "").trim();
+    if (!modelDir && legacyModelPath) {
+      migrated.general.modelDir = legacyModelPath;
+    }
+    delete migrated.general.modelPath;
+  }
+
   if (isPlainObject(migrated.fileManagement)) {
     const hasAutoCleanTemp = Object.prototype.hasOwnProperty.call(
       migrated.fileManagement,
@@ -193,6 +211,18 @@ export const normalizeConfigToCurrentSchema = (rawConfig = {}) => {
   const migrated = migrateLegacyConfigShape(rawConfig);
   const aligned = alignConfigWithDefaultSchema(defaultConfig, migrated);
   aligned.schemaVersion = CONFIG_SCHEMA_VERSION;
+  if (!String(aligned.masking?.defaultSamModel || "").trim()) {
+    aligned.masking.defaultSamModel = DEFAULT_MASKING_CONFIG.defaultSamModel;
+  }
+  if (!String(aligned.masking?.defaultSam1Model || "").trim()) {
+    aligned.masking.defaultSam1Model = aligned.masking.defaultSamModel;
+  }
+  if (!String(aligned.masking?.defaultSam2Model || "").trim()) {
+    aligned.masking.defaultSam2Model = DEFAULT_MASKING_CONFIG.defaultSam2Model;
+  }
+  if (!String(aligned.masking?.defaultSam3Model || "").trim()) {
+    aligned.masking.defaultSam3Model = DEFAULT_MASKING_CONFIG.defaultSam3Model;
+  }
   aligned.shortcuts = normalizeShortcutConfig(aligned.shortcuts);
   return aligned;
 };

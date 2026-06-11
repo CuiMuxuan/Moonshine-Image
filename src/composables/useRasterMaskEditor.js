@@ -390,6 +390,7 @@ export const useRasterMaskEditor = ({
         changed: false,
         rect: null,
         imageData: null,
+        operation: null,
       };
     }
 
@@ -405,6 +406,21 @@ export const useRasterMaskEditor = ({
     const changed = hasDirtyChanges();
     const canvas = getCanvas();
     const ctx = getCtx();
+    const completedMode = operationMode.value;
+    const completedTool = operationTool.value ? { ...operationTool.value } : null;
+    const completedDirtyRect = dirtyRect.value ? { ...dirtyRect.value } : null;
+    const completedOperationImageData =
+      changed &&
+      completedMode !== MASK_TOOL_MODES.RECT &&
+      completedDirtyRect &&
+      operationCtx.value
+        ? operationCtx.value.getImageData(
+            completedDirtyRect.x,
+            completedDirtyRect.y,
+            completedDirtyRect.width,
+            completedDirtyRect.height
+          )
+        : null;
     const currentImageData =
       changed && canvas && ctx ? ctx.getImageData(0, 0, canvas.width, canvas.height) : null;
 
@@ -423,6 +439,15 @@ export const useRasterMaskEditor = ({
       changed,
       rect: finalRect,
       imageData: currentImageData,
+      operation: changed
+        ? {
+            mode: completedMode,
+            tool: completedTool,
+            rect: finalRect ? { ...finalRect } : null,
+            dirtyRect: completedDirtyRect,
+            imageData: completedOperationImageData,
+          }
+        : null,
     };
   };
 

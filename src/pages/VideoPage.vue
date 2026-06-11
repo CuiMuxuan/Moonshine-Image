@@ -1,6 +1,6 @@
 ﻿<template>
   <q-page class="video-page" data-testid="video-page">
-    <div v-if="isProcessing" class="processing-page-mask"></div>
+    <div v-if="isProcessing || samVideoState.running" class="processing-page-mask"></div>
     <div class="video-layout">
       <div class="top-row" :class="{ 'has-timeline': videoStore.hasVideoFile }">
         <q-card class="left-panel">
@@ -33,6 +33,9 @@
               :current-model-metadata="currentModelMetadata"
               :model-parameter-values="modelParameterValues"
               :backend-running="backendEngineValue.isRunning || backendRunningState"
+              :sam-video-running="samVideoState.running"
+              :sam-video-action-disabled="!canRunSamVideoSelectionFromMaskList"
+              :sam-video-action-tooltip="samVideoSelectionActionTooltip"
               @run="runVideoProcessing"
               @run-preview="runVideoPreviewTrial"
               @update:preview-trial-seconds="previewTrialSeconds = $event"
@@ -44,6 +47,7 @@
               @open-output="openOutputDir"
               @replace-source="replaceCurrentVideoSource"
               @restore-history="restoreVideoHistory"
+              @run-sam-video-selection="runSamVideoSelectionFromMaskList"
             />
           </q-card-section>
         </q-card>
@@ -86,7 +90,7 @@
                       :display-height="videoStore.displayHeight"
                       :source-width="videoStore.videoWidth"
                       :source-height="videoStore.videoHeight"
-                      :disabled="isProcessing"
+                      :disabled="isProcessing || samVideoState.running"
                       :preview-visible="fullscreenMaskPreviewVisible"
                       :allow-mask-transform="!isFullscreenLamaViewportMode"
                       @draw-start="handleFullscreenDrawStart"
@@ -107,8 +111,8 @@
                 :brush-color="videoStore.maskTool.brushColor"
                 :brush-alpha="videoStore.maskTool.brushAlpha"
                 :can-undo="videoStore.canUndoSelectedMaskDraw"
-                :can-clear="Boolean(videoStore.selectedMaskId)"
-                :disabled="!videoStore.selectedMaskId || isProcessing"
+                :can-clear="selectedMaskIsEditableStandard"
+                :disabled="!selectedMaskIsEditableStandard || isProcessing || samVideoState.running"
                 drag-label="绘制工具拖动区域"
                 @drag-start="startFullscreenDrawingToolbarDrag"
                 @toggle-drawing="
@@ -240,6 +244,158 @@
 
         <q-card class="right-panel">
           <q-card-section class="side-panel-body">
+            <q-expansion-item
+              v-model="samVideoState.panelOpen"
+              dense
+              dense-toggle
+              expand-separator
+              icon="auto_awesome_motion"
+              label="SAM2 视频选区设置"
+              class="sam-video-panel"
+              data-testid="sam-video-panel"
+            >
+              <div class="sam-video-panel__body">
+                <div class="sam-video-panel__summary">
+                  <span>{{ samVideoSummaryText }}</span>
+                  <span v-if="samVideoState.lastResult">
+                    {{ samVideoResultSummaryText }}
+                  </span>
+                </div>
+
+                <div class="sam-video-controls">
+                  <q-input
+                    v-model.number="samVideoState.frameIndex"
+                    type="number"
+                    dense
+                    outlined
+                    label="提示帧"
+                    :min="0"
+                    :disable="samVideoState.running || isProcessing"
+                  />
+                  <q-input
+                    v-model.number="samVideoState.maxFrames"
+                    type="number"
+                    dense
+                    outlined
+                    label="最多帧"
+                    :min="1"
+                    :disable="samVideoState.running || isProcessing"
+                  />
+                </div>
+
+                <div class="sam-video-object-row">
+                  <q-input
+                    v-model.number="samVideoDraft.objectId"
+                    type="number"
+                    dense
+                    outlined
+                    label="对象"
+                    :min="1"
+                    :disable="samVideoState.running || isProcessing"
+                  />
+                  <q-input
+                    v-model.number="samVideoDraft.x"
+                    type="number"
+                    dense
+                    outlined
+                    label="X"
+                    :min="0"
+                    :disable="samVideoState.running || isProcessing"
+                  />
+                  <q-input
+                    v-model.number="samVideoDraft.y"
+                    type="number"
+                    dense
+                    outlined
+                    label="Y"
+                    :min="0"
+                    :disable="samVideoState.running || isProcessing"
+                  />
+                  <q-btn
+                    round
+                    flat
+                    color="primary"
+                    icon="add"
+                    :disable="samVideoState.running || isProcessing"
+                    @click="addSamVideoObjectFromDraft"
+                  >
+                    <q-tooltip>添加对象点提示</q-tooltip>
+                  </q-btn>
+                </div>
+
+                <q-list
+                  v-if="samVideoState.objects.length"
+                  dense
+                  bordered
+                  separator
+                  class="sam-video-object-list"
+                >
+                  <q-item
+                    v-for="objectPrompt in samVideoState.objects"
+                    :key="objectPrompt.objectId"
+                  >
+                    <q-item-section>
+                      <q-item-label>对象 {{ objectPrompt.objectId }}</q-item-label>
+                      <q-item-label caption>
+                        点 {{ objectPrompt.points.length }} 个
+                      </q-item-label>
+                    </q-item-section>
+                    <q-item-section side>
+                      <q-btn
+                        round
+                        dense
+                        flat
+                        color="negative"
+                        icon="delete"
+                        :disable="samVideoState.running || isProcessing"
+                        @click="removeSamVideoObject(objectPrompt.objectId)"
+                      >
+                        <q-tooltip>移除对象</q-tooltip>
+                      </q-btn>
+                    </q-item-section>
+                  </q-item>
+                </q-list>
+
+                <q-linear-progress
+                  v-if="samVideoState.running || samVideoState.progress > 0"
+                  :value="samVideoState.progress"
+                  color="primary"
+                  rounded
+                  class="sam-video-progress"
+                />
+
+                <div
+                  v-if="samVideoState.message"
+                  class="sam-video-message"
+                  :class="{ 'sam-video-message--error': samVideoState.error }"
+                >
+                  {{ samVideoState.message }}
+                </div>
+
+                <div class="sam-video-actions">
+                  <q-btn
+                    color="primary"
+                    icon="auto_fix_high"
+                    label="运行并创建轨道"
+                    no-caps
+                    unelevated
+                    :loading="samVideoState.running"
+                    :disable="!canRunSamVideoPropagation"
+                    @click="runSamVideoPropagation"
+                  />
+                  <q-btn
+                    outline
+                    color="primary"
+                    icon="layers"
+                    label="创建轨道"
+                    no-caps
+                    :disable="!canCreateSamVideoTrack"
+                    @click="createSamVideoTrackFromLastResult"
+                  />
+                </div>
+              </div>
+            </q-expansion-item>
+
             <VideoMaskEditor
               :disabled="!videoStore.hasVideoFile || isProcessing"
               :current-model="currentModel"
@@ -418,7 +574,7 @@
             </div>
           </div>
         </q-card-section>
-        <q-card-section class="timeline-wrap" :class="{ 'timeline-disabled': isProcessing }">
+        <q-card-section class="timeline-wrap" :class="{ 'timeline-disabled': isProcessing || samVideoState.running }">
           <div ref="timelineViewportRef" class="timeline-editor-host">
           <TimelineEditor
             ref="timelineRef"
@@ -457,7 +613,7 @@
 </template>
 
 <script setup>
-import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, inject, nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useQuasar } from "quasar";
 import { onBeforeRouteLeave } from "vue-router";
 import TimelineEditor from "vue-timeline-editor";
@@ -476,6 +632,7 @@ import { useConfiguredShortcuts } from "src/composables/useConfiguredShortcuts";
 import { useModelRegistryStore } from "src/stores/modelRegistry";
 import { useVideoManagerStore } from "src/stores/videoManager";
 import { submitVideoBatchInpaint } from "src/services/VideoProcessingService";
+import { propagateSamVideo } from "src/services/SamPredictionService";
 import { MASK_TOOL_MODES } from "src/utils/maskTool";
 import {
   formatSeconds,
@@ -562,6 +719,23 @@ const videoEditorSections = ref({
   range: false,
   keyframes: true,
   processingRange: true,
+});
+const samVideoState = reactive({
+  panelOpen: false,
+  running: false,
+  progress: 0,
+  message: "",
+  error: "",
+  frameIndex: 0,
+  maxFrames: 24,
+  objects: [],
+  lastResult: null,
+  lastTrackId: "",
+});
+const samVideoDraft = reactive({
+  objectId: 1,
+  x: 0,
+  y: 0,
 });
 const sourceFps = ref(30);
 const timelineRows = ref([]);
@@ -675,6 +849,9 @@ const canOpenOutput = computed(
     (processingSucceeded.value ||
       (Boolean(videoStore.currentSourceIsReplacement) && videoStore.videoHistory.length > 0))
 );
+const defaultSamVideoModelId = computed(
+  () => configStore.config.masking?.defaultSam2Model || "sam2_1_hiera_large"
+);
 
 const proxyDimensions = computed(() => {
   const width = videoStore.videoWidth || 0;
@@ -734,12 +911,22 @@ const timelineControlsDisabled = computed(
   () => !videoStore.hasVideoFile || isProcessing.value
 );
 const isLamaModel = computed(() => currentModel.value === "lama");
+const isEditableStandardMask = (mask) =>
+  Boolean(mask && mask.type !== "samVideo" && mask.editable !== false);
+const hasEditableStandardMaskTrack = computed(() =>
+  videoStore.masks.some((mask) => isEditableStandardMask(mask))
+);
+const selectedMaskIsEditableStandard = computed(() =>
+  isEditableStandardMask(videoStore.selectedMask)
+);
 const isFullscreenLamaViewportMode = computed(
   () =>
     Boolean(
       isPreviewFullscreen.value &&
         isLamaModel.value &&
         videoStore.hasVideoFile &&
+        selectedMaskIsEditableStandard.value &&
+        !samVideoState.running &&
         !isProcessing.value
     )
 );
@@ -762,17 +949,26 @@ const fullscreenToolbarToggleIcon = computed(() =>
   showFullscreenDrawingToolbar.value ? "visibility_off" : "visibility"
 );
 const fullscreenControlsDisabled = computed(
-  () => !videoStore.hasVideoFile || isProcessing.value
+  () => !videoStore.hasVideoFile || isProcessing.value || samVideoState.running
 );
 const fullscreenToolbarToggleTooltip = computed(() => {
   if (!currentModelRequiresMask.value) {
     return "当前模型无需绘制蒙版";
   }
+  if (!hasEditableStandardMaskTrack.value) {
+    return "请先新建蒙版";
+  }
+  if (!selectedMaskIsEditableStandard.value) {
+    return "请先选择可编辑的蒙版轨道";
+  }
   return showFullscreenDrawingToolbar.value ? "隐藏绘制工具栏" : "显示绘制工具栏";
 });
 const fullscreenToolbarToggleTooltipText = computed(() => fullscreenToolbarToggleTooltip.value);
 const fullscreenDrawingToolbarToggleDisabled = computed(
-  () => fullscreenControlsDisabled.value || !currentModelRequiresMask.value
+  () =>
+    fullscreenControlsDisabled.value ||
+    !currentModelRequiresMask.value ||
+    !selectedMaskIsEditableStandard.value
 );
 
 const maxZoomVisibleDuration = computed(() => {
@@ -823,12 +1019,27 @@ const isSupportedVideoFile = (file) => {
   return Boolean(extension && getSupportedVideoExtensions().includes(extension));
 };
 
+const getVideoFileLocalPath = (file) => {
+  if (!file) return "";
+  try {
+    return (
+      window.electron?.ipcRenderer?.getPathForFile?.(file) ||
+      file.path ||
+      ""
+    );
+  } catch (error) {
+    console.warn("读取视频本地路径失败，后续将使用临时文件兜底:", error);
+    return file.path || "";
+  }
+};
+
 const loadDroppedVideoFile = async (file) => {
+  const sourcePath = getVideoFileLocalPath(file);
   await videoStore.setVideoFile(file, {
     resetEditor: true,
     resetHistory: true,
     isReplacementSource: false,
-    sourcePath: file.path || "",
+    sourcePath,
     sourceName: file.name || "",
   });
 };
@@ -1051,13 +1262,231 @@ const canRun = computed(
 const isVideoDrawingShortcutReady = computed(
   () =>
     Boolean(
-      videoStore.hasVideoFile &&
+        videoStore.hasVideoFile &&
         currentModelRequiresMask.value &&
-        videoStore.selectedMaskId &&
+        selectedMaskIsEditableStandard.value &&
         !isProcessing.value &&
         videoOverlayRef.value?.isReady?.()
-    )
+      )
 );
+
+const normalizeSamVideoFrameIndex = (value = samVideoState.frameIndex) =>
+  Math.max(0, Math.floor(Number(value || 0)));
+
+const normalizeSamVideoMaxFrames = (value = samVideoState.maxFrames) => {
+  const normalized = Math.floor(Number(value || 0));
+  return Number.isFinite(normalized) && normalized > 0 ? normalized : null;
+};
+
+const getSamVideoSourcePath = () =>
+  String(videoStore.currentSourcePath || videoStore.videoFile?.path || "").trim();
+
+const checkLocalFileExists = async (filePath) => {
+  const normalizedPath = String(filePath || "").trim();
+  if (!normalizedPath) return false;
+  if (!window.electron?.ipcRenderer?.invoke) {
+    return true;
+  }
+  try {
+    const result = await window.electron.ipcRenderer.invoke("get-file-stats", normalizedPath);
+    return Boolean(result?.success);
+  } catch (error) {
+    console.warn("检查视频本地路径失败，将尝试临时缓存视频:", error);
+    return false;
+  }
+};
+
+const samVideoMissingLocalPathMessage =
+  "当前视频没有后端可读取的本地文件路径。请通过“选择视频文件”重新导入本地视频，避免使用仅浏览器临时可见的 blob/会话文件后再运行 SAM2 智能选区。";
+
+const samVideoSummaryText = computed(() => {
+  if (!videoStore.hasVideoFile) return "导入视频后可用";
+  if (!getSamVideoSourcePath()) return "已导入视频，运行时会先缓存为本地临时文件";
+  return `对象 ${samVideoState.objects.length} 个，模型 ${defaultSamVideoModelId.value}`;
+});
+
+const samVideoResultSummaryText = computed(() => {
+  const result = samVideoState.lastResult;
+  if (!result) return "";
+  const frameCount = Array.isArray(result.frames) ? result.frames.length : 0;
+  return `已返回 ${frameCount}/${result.frameCount || 0} 帧`;
+});
+
+const canRunSamVideoPropagation = computed(
+  () =>
+    videoStore.hasVideoFile &&
+    Boolean(videoStore.videoFile) &&
+    !isProcessing.value &&
+    !samVideoState.running &&
+    samVideoState.objects.length > 0
+);
+
+const samVideoSelectionActionTooltip = computed(() => {
+  if (!videoStore.hasVideoFile) return "请先打开视频文件";
+  if (isProcessing.value) return "视频处理中暂不能创建 SAM 智能选区";
+  if (samVideoState.running) return "SAM2 视频传播正在运行";
+  if (!getSamVideoSourcePath()) return "当前视频可预览但未暴露原始本地路径，运行时会先缓存为本地临时文件";
+  if (samVideoState.objects.length === 0) return "请先在右侧 SAM2 视频选区设置中添加对象点提示";
+  return "使用 SAM2 为当前视频创建智能蒙版轨道";
+});
+
+const canRunSamVideoSelectionFromMaskList = computed(() => canRunSamVideoPropagation.value);
+
+const canCreateSamVideoTrack = computed(() => {
+  const frames = samVideoState.lastResult?.frames;
+  if (!Array.isArray(frames) || frames.length === 0) {
+    return false;
+  }
+  return frames.some((frame) => Array.isArray(frame.masks) && frame.masks.length > 0);
+});
+
+const resetSamVideoDraftToCenter = () => {
+  samVideoDraft.x = Math.round(Math.max(1, Number(videoStore.videoWidth || 1)) / 2);
+  samVideoDraft.y = Math.round(Math.max(1, Number(videoStore.videoHeight || 1)) / 2);
+};
+
+watch(
+  () => [videoStore.videoWidth, videoStore.videoHeight],
+  () => resetSamVideoDraftToCenter(),
+  { immediate: true }
+);
+
+const addSamVideoObjectFromDraft = () => {
+  const objectId = Math.max(1, Math.floor(Number(samVideoDraft.objectId || 1)));
+  const x = Math.max(0, Number(samVideoDraft.x || 0));
+  const y = Math.max(0, Number(samVideoDraft.y || 0));
+  const nextPrompt = {
+    objectId,
+    points: [{ x, y, label: 1 }],
+  };
+  const existingIndex = samVideoState.objects.findIndex((item) => item.objectId === objectId);
+  if (existingIndex >= 0) {
+    samVideoState.objects[existingIndex] = nextPrompt;
+  } else {
+    samVideoState.objects.push(nextPrompt);
+  }
+  samVideoDraft.objectId = Math.max(objectId + 1, samVideoState.objects.length + 1);
+  resetSamVideoDraftToCenter();
+};
+
+const removeSamVideoObject = (objectId) => {
+  const index = samVideoState.objects.findIndex((item) => item.objectId === objectId);
+  if (index >= 0) {
+    samVideoState.objects.splice(index, 1);
+  }
+};
+
+const runSamVideoSelectionFromMaskList = async () => {
+  samVideoState.panelOpen = true;
+  return runSamVideoPropagation();
+};
+
+const ensureSamVideoSourcePath = async () => {
+  const existingPath = getSamVideoSourcePath();
+  if (existingPath) {
+    if (await checkLocalFileExists(existingPath)) {
+      return existingPath;
+    }
+    samVideoState.message = "原视频路径已失效，正在缓存当前视频到本地临时文件";
+    videoStore.setCurrentSourceMeta({
+      sourcePath: "",
+      sourceName: videoStore.currentSourceName || videoStore.videoFile?.name || "",
+    });
+  }
+
+  if (!videoStore.videoFile) {
+    throw new Error("请先导入视频");
+  }
+
+  const sourceInfo = await resolveVideoSourcePath(videoStore.videoFile, {
+    preferExistingPath: !existingPath,
+  });
+  const sourcePath = sourceInfo?.sourcePath || "";
+  if (!sourcePath) {
+    throw new Error(samVideoMissingLocalPathMessage);
+  }
+
+  videoStore.setCurrentSourceMeta({
+    sourcePath,
+    sourceName: videoStore.currentSourceName || videoStore.videoFile.name || "",
+  });
+  return sourcePath;
+};
+
+const runSamVideoPropagation = async () => {
+  if (!canRunSamVideoPropagation.value) {
+    samVideoState.message = !videoStore.hasVideoFile
+      ? "请先导入视频"
+      : samVideoState.objects.length === 0
+      ? "请先添加至少一个对象点提示"
+      : "当前无法运行 SAM2 视频智能选区";
+    samVideoState.error = samVideoState.message;
+    return null;
+  }
+
+  samVideoState.running = true;
+  samVideoState.progress = 0.12;
+  samVideoState.error = "";
+  samVideoState.message = "正在准备 SAM2 视频传播";
+  samVideoState.lastResult = null;
+  samVideoState.lastTrackId = "";
+  updateGlobalLoadingOverlay("正在运行 SAM2 视频智能选区", samVideoState.progress);
+
+  try {
+    const sourcePath = await ensureSamVideoSourcePath();
+    const response = await propagateSamVideo({
+      inputType: "videoPath",
+      videoPath: sourcePath,
+      modelId: defaultSamVideoModelId.value,
+      frameIndex: normalizeSamVideoFrameIndex(),
+      maxFrames: normalizeSamVideoMaxFrames(),
+      objects: samVideoState.objects.map((item) => ({
+        objectId: item.objectId,
+        points: item.points,
+      })),
+    });
+    const result = response?.data || response;
+    samVideoState.lastResult = result;
+    samVideoState.progress = 1;
+    updateGlobalLoadingOverlay("SAM2 视频智能选区已完成，正在创建蒙版轨道", 1);
+    const track = createSamVideoTrackFromResult(result);
+    samVideoState.lastTrackId = track?.id || "";
+    samVideoState.message = track
+      ? `SAM2 已创建 ${track.name}，共 ${result?.frames?.length || 0} 帧`
+      : `SAM2 已返回 ${result?.frames?.length || 0} 帧，但没有可用蒙版`;
+    return result;
+  } catch (error) {
+    samVideoState.progress = 0;
+    samVideoState.error = error?.message || String(error);
+    samVideoState.message = samVideoState.error;
+    $q.notify({
+      type: "negative",
+      message: samVideoState.error,
+      timeout: 5000,
+    });
+    return null;
+  } finally {
+    samVideoState.running = false;
+    hideGlobalLoadingOverlay();
+  }
+};
+
+const createSamVideoTrackFromResult = (result = samVideoState.lastResult) => {
+  if (!result || !Array.isArray(result.frames)) return null;
+  const track = videoStore.createSamVideoMaskTrack({ result });
+  if (track) {
+    syncTimelineRowsFromStore();
+  }
+  return track;
+};
+
+const createSamVideoTrackFromLastResult = () => {
+  if (!canCreateSamVideoTrack.value) return null;
+  const track = createSamVideoTrackFromResult();
+  samVideoState.lastTrackId = track?.id || "";
+  samVideoState.message = track ? `已创建 ${track.name}` : "没有可创建的 SAM 视频轨道";
+  return track;
+};
 const canUndoVideoMaskShortcut = computed(
   () => Boolean(isVideoDrawingShortcutReady.value && videoStore.canUndoSelectedMaskDraw)
 );
@@ -1487,13 +1916,7 @@ const confirmHistoryTrim = () =>
       .onDismiss(() => resolve(false));
   });
 
-const ensureFileExists = async (filePath) => {
-  if (!filePath || !window.electron?.ipcRenderer?.invoke) {
-    return true;
-  }
-  const result = await window.electron.ipcRenderer.invoke("get-file-stats", filePath);
-  return Boolean(result?.success);
-};
+const ensureFileExists = async (filePath) => checkLocalFileExists(filePath);
 
 const getFailureSnapshotHint = (failureSnapshotDir) =>
   typeof failureSnapshotDir === "string" && failureSnapshotDir.trim()
@@ -1687,9 +2110,12 @@ const buildTimelineRows = () => {
 
   const markerDuration = keyframeMarkerDuration.value;
   return videoStore.masks.flatMap((mask) => {
-    const userKeyframes = sortMaskKeyframes(mask.keyframes).filter(
-      (keyframe) => keyframe.type === MASK_KEYFRAME_TYPES.USER
-    );
+    const isSamVideoTrack = mask.type === "samVideo";
+    const userKeyframes = isSamVideoTrack
+      ? []
+      : sortMaskKeyframes(mask.keyframes).filter(
+          (keyframe) => keyframe.type === MASK_KEYFRAME_TYPES.USER
+        );
 
     const rangeRow = {
       id: `range-row-${mask.id}`,
@@ -1702,8 +2128,8 @@ const buildTimelineRows = () => {
           start: mask.startTime,
           end: mask.endTime,
           effectId: "effect-mask-range",
-          movable: true,
-          flexible: true,
+          movable: !isSamVideoTrack,
+          flexible: !isSamVideoTrack,
           minStart: 0,
           maxEnd: Math.max(videoStore.videoDuration || 0, 0),
           selected: mask.id === videoStore.selectedMaskId,
@@ -1712,6 +2138,7 @@ const buildTimelineRows = () => {
             maskId: mask.id,
             label: mask.name,
             color: mask.displayColor,
+            locked: isSamVideoTrack,
           },
         },
       ],
@@ -5368,16 +5795,30 @@ const prepareTaskPaths = async ({
   };
 };
 
-const resolveVideoSourcePath = async (file) => {
-  if (file?.path) {
+const resolveVideoSourcePath = async (file, options = {}) => {
+  const { preferExistingPath = true } = options;
+  const filePath = String(file?.path || "").trim();
+  if (preferExistingPath && filePath && (await checkLocalFileExists(filePath))) {
     return {
-      sourcePath: file.path,
+      sourcePath: filePath,
       temporarySourcePath: "",
     };
   }
   if (!window.electron) throw new Error("无法解析视频文件路径");
+  if (filePath && preferExistingPath) {
+    console.warn("视频原始路径已不可用，正在保存临时视频副本:", filePath);
+  }
+  if (typeof file?.arrayBuffer !== "function") {
+    throw new Error("原视频路径不可用，且当前会话无法读取视频内容，请重新选择视频文件");
+  }
 
-  const buffer = await file.arrayBuffer();
+  let buffer;
+  try {
+    buffer = await file.arrayBuffer();
+  } catch (error) {
+    console.warn("读取视频文件内容失败:", error);
+    throw new Error("原视频路径已失效，无法从当前会话缓存视频，请重新选择视频文件");
+  }
   const sourcePath = await window.electron.ipcRenderer.invoke("save-temp-video", {
     fileName: file.name,
     buffer: new Uint8Array(buffer),
@@ -5575,15 +6016,45 @@ const createCombinedMaskRenderer = async ({ masks, width, height }) => {
   const ctx = canvas.getContext("2d");
   const anchor = getVideoCenterAnchor(width, height);
 
+  const loadSamFrameImages = async (mask) => {
+    const entries = [];
+    for (const frame of mask.samFrames || []) {
+      const frameEntries = [];
+      for (const item of frame.masks || []) {
+        if (!item.mask) continue;
+        frameEntries.push({
+          objectId: item.objectId,
+          image: await loadImageElement(item.mask),
+        });
+      }
+      if (frameEntries.length > 0) {
+        entries.push({
+          frameIndex: Number(frame.frameIndex || 0),
+          time: Number(frame.time ?? 0),
+          masks: frameEntries,
+        });
+      }
+    }
+    return entries.sort((a, b) => a.frameIndex - b.frameIndex);
+  };
+
   const assets = await Promise.all(
     masks.map(async (mask) => {
+      if (mask.type === "samVideo") {
+        return {
+          mask,
+          image: null,
+          samFrames: await loadSamFrameImages(mask),
+        };
+      }
       if (!mask.baseMaskDataUrl) {
-        return { mask, image: null };
+        return { mask, image: null, samFrames: [] };
       }
 
       return {
         mask,
         image: await loadImageElement(mask.baseMaskDataUrl),
+        samFrames: [],
       };
     })
   );
@@ -5593,6 +6064,30 @@ const createCombinedMaskRenderer = async ({ masks, width, height }) => {
       ctx.clearRect(0, 0, width, height);
 
       assets.forEach((asset) => {
+        if (asset.mask.type === "samVideo") {
+          if (!asset.mask.enabled) return;
+          const state = getInterpolatedMaskTransform(asset.mask, time);
+          if (!state || !asset.samFrames?.length) return;
+          const enabledObjects = new Set(
+            (asset.mask.samObjects || [])
+              .filter((item) => item.enabled !== false)
+              .map((item) => Number(item.objectId))
+          );
+          if (enabledObjects.size === 0) return;
+          const nearestFrame = asset.samFrames.reduce((best, frame) => {
+            if (!best) return frame;
+            const bestDistance = Math.abs(Number(best.time || 0) - Number(time || 0));
+            const nextDistance = Math.abs(Number(frame.time || 0) - Number(time || 0));
+            return nextDistance < bestDistance ? frame : best;
+          }, null);
+          if (!nearestFrame) return;
+
+          nearestFrame.masks.forEach((item) => {
+            if (!enabledObjects.has(Number(item.objectId))) return;
+            ctx.drawImage(item.image, 0, 0, width, height);
+          });
+          return;
+        }
         if (!asset.image) return;
 
         const state = getInterpolatedMaskTransform(asset.mask, time);
@@ -5880,6 +6375,18 @@ const createVideoE2ESnapshot = () => {
     timelineRowCount: timelineRows.value.length,
     currentSourceName: videoStore.currentSourceName || "",
     currentSourceIsReplacement: videoStore.currentSourceIsReplacement,
+    samVideo: {
+      panelOpen: samVideoState.panelOpen,
+      running: samVideoState.running,
+      objectCount: samVideoState.objects.length,
+      canRun: canRunSamVideoPropagation.value,
+      canCreateTrack: canCreateSamVideoTrack.value,
+      message: samVideoState.message,
+      hasResult: Boolean(samVideoState.lastResult),
+      resultFrameCount: samVideoState.lastResult?.frames?.length || 0,
+      lastTrackId: samVideoState.lastTrackId,
+      trackCount: videoStore.masks.filter((mask) => mask.type === "samVideo").length,
+    },
   };
 };
 
@@ -5930,6 +6437,26 @@ const registerVideoE2ETestBridge = () => {
     },
     commitSelectedMaskBaseMask: (baseMaskDataUrl) => {
       const mask = videoStore.commitSelectedMaskBaseMask(baseMaskDataUrl);
+      return {
+        maskId: mask?.id || "",
+        snapshot: createVideoE2ESnapshot(),
+      };
+    },
+    addSamVideoObject: (objectPrompt = {}) => {
+      samVideoDraft.objectId = objectPrompt.objectId ?? objectPrompt.object_id ?? 1;
+      samVideoDraft.x = objectPrompt.x ?? videoStore.videoWidth / 2;
+      samVideoDraft.y = objectPrompt.y ?? videoStore.videoHeight / 2;
+      addSamVideoObjectFromDraft();
+      return createVideoE2ESnapshot();
+    },
+    setSamVideoResult: (result = {}) => {
+      samVideoState.lastResult = result;
+      samVideoState.message = "E2E SAM2 视频结果已注入";
+      samVideoState.error = "";
+      return createVideoE2ESnapshot();
+    },
+    createSamVideoTrack: () => {
+      const mask = createSamVideoTrackFromLastResult();
       return {
         maskId: mask?.id || "",
         snapshot: createVideoE2ESnapshot(),
@@ -6086,6 +6613,9 @@ onBeforeRouteLeave(() => {
 
 onUnmounted(() => {
   clearActiveProcessingTask(VIDEO_PROCESSING_TASK_ID);
+  if (samVideoState.running) {
+    hideGlobalLoadingOverlay();
+  }
   unregisterVideoE2ETestBridge();
   canPersistVideoUiState = false;
   preserveVideoPagePlaybackState();
@@ -6159,6 +6689,86 @@ onUnmounted(() => {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+}
+
+.sam-video-panel {
+  margin-bottom: 12px;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.sam-video-panel__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px 12px;
+}
+
+.sam-video-panel__summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: rgba(17, 24, 39, 0.72);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.sam-video-controls,
+.sam-video-object-row,
+.sam-video-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.sam-video-controls {
+  grid-template-columns: 1fr 1fr;
+}
+
+.sam-video-object-row {
+  grid-template-columns: minmax(62px, 0.7fr) 1fr 1fr auto;
+  align-items: center;
+}
+
+.sam-video-object-list {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.sam-video-progress {
+  margin-top: 2px;
+}
+
+.sam-video-message {
+  min-height: 20px;
+  color: rgba(15, 92, 58, 0.96);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.sam-video-message--error {
+  color: var(--q-negative);
+}
+
+.sam-video-actions {
+  grid-template-columns: 1fr 1fr;
+}
+
+:global(body.body--dark) .sam-video-panel {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+:global(body.body--dark) .sam-video-panel__summary {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+:global(body.body--dark) .sam-video-message {
+  color: rgba(129, 230, 217, 0.96);
+}
+
+:global(body.body--dark) .sam-video-message--error {
+  color: #ff8a80;
 }
 
 .player-section {

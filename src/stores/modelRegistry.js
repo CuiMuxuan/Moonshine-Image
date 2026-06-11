@@ -2,14 +2,17 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 
 import ModelRegistryService from "src/services/ModelRegistryService";
+import { useConfigStore } from "src/stores/config";
 
 const POLL_INTERVAL_MS = 900;
 
 export const useModelRegistryStore = defineStore("modelRegistry", () => {
+  const configStore = useConfigStore();
   const models = ref([]);
   const currentModel = ref("lama");
   const modelDir = ref("");
   const cuda = ref({});
+  const runtime = ref({});
   const loading = ref(false);
   const error = ref("");
   const usingFallback = ref(false);
@@ -20,20 +23,34 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
   const installedImageModels = computed(() =>
     imageModels.value.filter((model) => model.installed)
   );
+  const maskModels = computed(() => models.value.filter((model) => model.type === "mask"));
+  const installedMaskModels = computed(() =>
+    maskModels.value.filter((model) => model.installed)
+  );
 
   const setRegistryPayload = (payload = {}) => {
     models.value = Array.isArray(payload.models) ? payload.models : [];
     currentModel.value = payload.currentModel || currentModel.value || "lama";
     modelDir.value = payload.modelDir || "";
     cuda.value = payload.cuda || {};
+    runtime.value = payload.runtime || {};
     usingFallback.value = Boolean(payload.usingFallback);
     error.value = payload.error?.message || "";
   };
 
-  const loadModels = async () => {
+  const withConfiguredModelDir = (options = {}) => {
+    if (options.modelDir) return options;
+    const generalConfig = configStore.config?.general || {};
+    return {
+      ...options,
+      modelDir: generalConfig.modelDir || "",
+    };
+  };
+
+  const loadModels = async (options = {}) => {
     loading.value = true;
     try {
-      const payload = await ModelRegistryService.getModels();
+      const payload = await ModelRegistryService.getModels(withConfiguredModelDir(options));
       setRegistryPayload(payload);
       return payload;
     } catch (loadError) {
@@ -44,10 +61,10 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
     }
   };
 
-  const refreshModels = async () => {
+  const refreshModels = async (options = {}) => {
     loading.value = true;
     try {
-      const payload = await ModelRegistryService.refreshModels();
+      const payload = await ModelRegistryService.refreshModels(withConfiguredModelDir(options));
       setRegistryPayload(payload);
       return payload;
     } catch (refreshError) {
@@ -58,8 +75,11 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
     }
   };
 
-  const verifyModel = async (modelId) => {
-    const response = await ModelRegistryService.verifyModel(modelId);
+  const verifyModel = async (modelId, options = {}) => {
+    const response = await ModelRegistryService.verifyModel(
+      modelId,
+      withConfiguredModelDir(options)
+    );
     if (response?.model?.id) {
       models.value = models.value.map((model) =>
         model.id === response.model.id ? response.model : model
@@ -113,8 +133,11 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
     }
   };
 
-  const startDownload = async (modelId) => {
-    const response = await ModelRegistryService.startModelDownload(modelId);
+  const startDownload = async (modelId, options = {}) => {
+    const response = await ModelRegistryService.startModelDownload(
+      modelId,
+      withConfiguredModelDir(options)
+    );
     const task = response?.task;
     if (!task?.id) {
       throw new Error("下载任务创建失败");
@@ -139,12 +162,15 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
     currentModel,
     modelDir,
     cuda,
+    runtime,
     loading,
     error,
     usingFallback,
     tasks,
     imageModels,
     installedImageModels,
+    maskModels,
+    installedMaskModels,
     loadModels,
     refreshModels,
     verifyModel,

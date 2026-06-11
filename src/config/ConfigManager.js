@@ -10,6 +10,7 @@ import {
   DEFAULT_BRAND_COLORS,
   DEFAULT_IMAGE_BRUSH,
   DEFAULT_IMAGE_OUTPUT_QUALITY,
+  DEFAULT_MASKING_CONFIG,
   DEFAULT_TEMP_CLEANUP,
   DEFAULT_THEME_MODE,
   DEFAULT_UI_BUTTON_SIZE,
@@ -54,7 +55,7 @@ const normalizeButtonSize = (value) =>
 const normalizeBoolean = (value, fallback = true) =>
   typeof value === "boolean" ? value : fallback;
 
-const normalizeModelPath = (value) => {
+const normalizeModelDir = (value) => {
   const normalized = String(value || "").trim().replace(/\\/g, "/");
   if (!normalized || normalized.endsWith("/.cache/torch/hub/checkpoints")) {
     return "";
@@ -77,6 +78,7 @@ export {
   DEFAULT_VIDEO_BRUSH,
   DEFAULT_TEMP_CLEANUP,
   DEFAULT_IMAGE_OUTPUT_QUALITY,
+  DEFAULT_MASKING_CONFIG,
   IMAGE_PROCESSING_METHOD_OPTIONS,
   IMAGE_OUTPUT_FORMAT_OPTIONS,
   IMAGE_OUTPUT_NAMING_MODES,
@@ -112,6 +114,23 @@ export class ConfigManager {
     ) {
       errors.push("后端项目路径必须是字符串。");
     }
+
+    if (config.general?.modelDir && typeof config.general.modelDir !== "string") {
+      errors.push("模型目录必须是字符串。");
+    }
+
+    if (
+      config.masking?.defaultSamModel &&
+      typeof config.masking.defaultSamModel !== "string"
+    ) {
+      errors.push("默认 SAM 模型必须是字符串。");
+    }
+
+    ["defaultSam1Model", "defaultSam2Model", "defaultSam3Model"].forEach((key) => {
+      if (config.masking?.[key] && typeof config.masking[key] !== "string") {
+        errors.push("默认 SAM 模型必须是字符串。");
+      }
+    });
 
     const numberFields = [
       {
@@ -330,7 +349,7 @@ export class ConfigManager {
       launchMode: ["cuda", "cpu"].includes(merged.general?.launchMode)
         ? merged.general.launchMode
         : "cuda",
-      modelPath: normalizeModelPath(merged.general?.modelPath) || this.defaultConfig.general.modelPath,
+      modelDir: normalizeModelDir(merged.general?.modelDir) || this.defaultConfig.general.modelDir,
       autoStart: normalizeBoolean(merged.general?.autoStart, true),
     };
 
@@ -414,6 +433,22 @@ export class ConfigManager {
       ),
     };
 
+    merged.masking = {
+      ...merged.masking,
+      defaultSamModel:
+        String(merged.masking?.defaultSamModel || "").trim() ||
+        DEFAULT_MASKING_CONFIG.defaultSamModel,
+      defaultSam1Model:
+        String(merged.masking?.defaultSam1Model || merged.masking?.defaultSamModel || "").trim() ||
+        DEFAULT_MASKING_CONFIG.defaultSam1Model,
+      defaultSam2Model:
+        String(merged.masking?.defaultSam2Model || "").trim() ||
+        DEFAULT_MASKING_CONFIG.defaultSam2Model,
+      defaultSam3Model:
+        String(merged.masking?.defaultSam3Model || "").trim() ||
+        DEFAULT_MASKING_CONFIG.defaultSam3Model,
+    };
+
     merged.video = {
       ...merged.video,
       historyLimit: normalizeInteger(merged.video?.historyLimit, 5, 1, 50),
@@ -460,6 +495,12 @@ export class ConfigManager {
       merged.fileManagement = {
         ...merged.fileManagement,
         ...userConfig.fileManagement,
+      };
+    }
+    if (this.isPlainObject(userConfig?.masking)) {
+      merged.masking = {
+        ...merged.masking,
+        ...userConfig.masking,
       };
     }
     return merged;

@@ -558,9 +558,7 @@ const controlPanelClass = computed(() =>
   $q.dark.isActive ? "control-panel--dark" : "control-panel--light"
 );
 const backendModelLocation = computed(() =>
-  isBundledBackendMode.value
-    ? backendConfig.modelPath || "resources/models"
-    : backendConfig.modelDir || ""
+  backendConfig.modelDir || (isBundledBackendMode.value ? "resources/models" : "")
 );
 const showDialog = ref(false);
 const currentStep = ref(1);
@@ -607,7 +605,6 @@ const backendConfig = reactive({
   port: configStore.config.general.backendPort || 8080,
   device: configStore.config.general.launchMode || "cuda",
   model: configStore.config.general.defaultModel || "lama",
-  modelPath: configStore.config.general.modelPath || "",
   projectPath: configStore.config.general.backendProjectPath || "",
   modelDir: configStore.config.general.modelDir || ""
 });
@@ -1282,7 +1279,6 @@ watch(
     backendConfig.port = newConfig.general.backendPort || 8080;
     backendConfig.device = newConfig.general.launchMode || "cuda";
     backendConfig.model = newConfig.general.defaultModel || "lama";
-    backendConfig.modelPath = newConfig.general.modelPath || "";
     backendConfig.projectPath = newConfig.general.backendProjectPath || "";
     backendConfig.modelDir = newConfig.general.modelDir || "";
   },
@@ -1515,6 +1511,46 @@ const persistConfig = async (nextConfig) => {
   }
 };
 
+const syncRuntimeBackendPort = async (port) => {
+  const normalizedPort = Number(port);
+  if (
+    !Number.isInteger(normalizedPort) ||
+    normalizedPort < 1024 ||
+    normalizedPort > 65535
+  ) {
+    return false;
+  }
+
+  backendConfig.port = normalizedPort;
+  api.updateConfig({
+    general: {
+      backendPort: normalizedPort
+    }
+  });
+
+  if (configStore.config.general?.backendPort === normalizedPort) {
+    return true;
+  }
+
+  const result = await configStore.saveConfig({
+    ...configStore.config,
+    general: {
+      ...(configStore.config.general || {}),
+      backendPort: normalizedPort
+    }
+  });
+
+  if (!result?.success) {
+    addTerminalLog(
+      `运行时端口已切换到 ${normalizedPort}，但当前会话配置同步失败。`,
+      "warning"
+    );
+    return false;
+  }
+
+  return true;
+};
+
 const syncBackendMode = (mode = "external") => {
   backendMode.value = mode === "bundled" ? "bundled" : "external";
 };
@@ -1585,7 +1621,6 @@ const startServiceProcessPolling = () => {
 const ensureBackendPathsValid = async ({
   backendProjectPath = backendConfig.projectPath || projectPath.value || "",
   modelDir = backendConfig.modelDir || "",
-  modelPath = backendConfig.modelPath || "",
   notify = true,
   log = true,
   blockedMessageBuilder = null,
@@ -1593,7 +1628,6 @@ const ensureBackendPathsValid = async ({
   const validation = await validateBackendPaths({
     backendProjectPath,
     modelDir,
-    modelPath,
   });
   if (validation.valid) {
     return true;
@@ -1628,7 +1662,7 @@ const applyPreparedEnvironment = (prepareResult = {}) => {
   }
 
   if (prepareResult.modelDir !== undefined) {
-    backendConfig.modelPath = prepareResult.modelDir || backendConfig.modelPath;
+    backendConfig.modelDir = prepareResult.modelDir || backendConfig.modelDir;
   }
 
   pythonVersion.value = prepareResult.pythonVersion
@@ -1853,13 +1887,11 @@ const selectProjectPath = async () => {
       const pathsValid = await ensureBackendPathsValid({
         backendProjectPath: selectedPath,
         modelDir: backendConfig.modelDir || "",
-        modelPath: backendConfig.modelPath || "",
         blockedMessageBuilder: (validation) =>
           buildBackendPathSelectionBlockedMessage(validation, {
             currentBackendProjectPath:
               backendConfig.projectPath || projectPath.value || configStore.config.general?.backendProjectPath || "",
             currentModelDir: backendConfig.modelDir || configStore.config.general?.modelDir || "",
-            currentModelPath: backendConfig.modelPath || configStore.config.general?.modelPath || "",
             selectedBackendProjectPath: selectedPath,
           }),
       });
@@ -1916,13 +1948,11 @@ const selectModelDir = async () => {
       const pathsValid = await ensureBackendPathsValid({
         backendProjectPath: backendConfig.projectPath || projectPath.value || "",
         modelDir: selectedPath,
-        modelPath: backendConfig.modelPath || "",
         blockedMessageBuilder: (validation) =>
           buildBackendPathSelectionBlockedMessage(validation, {
             currentBackendProjectPath:
               backendConfig.projectPath || projectPath.value || configStore.config.general?.backendProjectPath || "",
             currentModelDir: backendConfig.modelDir || configStore.config.general?.modelDir || "",
-            currentModelPath: backendConfig.modelPath || configStore.config.general?.modelPath || "",
             selectedModelDir: selectedPath,
           }),
       });
@@ -2036,7 +2066,6 @@ const startService = async () => {
   const pathsValid = await ensureBackendPathsValid({
     backendProjectPath: backendConfig.projectPath || projectPath.value || "",
     modelDir: backendConfig.modelDir || "",
-    modelPath: backendConfig.modelPath || "",
   });
   if (!pathsValid) {
     serviceStatus.value = "stopped";
@@ -2059,29 +2088,25 @@ const startService = async () => {
         port: backendConfig.port,
         device: backendConfig.device,
         model: backendConfig.model,
-        modelDir: backendConfig.modelDir || backendConfig.modelPath,
+        modelDir: backendConfig.modelDir || "",
       }
     );
 
     if (result.success) {
+      const actualPort = Number(result.port || backendConfig.port);
+      await syncRuntimeBackendPort(actualPort);
       serviceStatus.value = "running";
       serviceStatusText.value = "运行中";
       addTerminalLog(
-        `后端服务启动成功，端口: ${backendConfig.port}`,
-        "success"
-      );
-      // 更新 axios 的端口配置
-      api.updateConfig({
-        general: {
-          backendPort: backendConfig.port
-        }
-      });
-      addTerminalLog(
-        `已更新前端 API 端口配置为: ${backendConfig.port}`,
+        `后端服务启动成功，端口: ${actualPort}`,
         "success"
       );
       addTerminalLog(
-        `请耐心等待直到本页面出现以下内容：INFO: Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)`,
+        `已更新前端 API 端口配置为: ${actualPort}`,
+        "success"
+      );
+      addTerminalLog(
+        `请耐心等待直到本页面出现以下内容：INFO: Uvicorn running on http://127.0.0.1:${actualPort} (Press CTRL+C to quit)`,
         "success"
       );
     } else {

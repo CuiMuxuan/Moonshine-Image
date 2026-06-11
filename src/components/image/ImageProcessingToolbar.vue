@@ -24,7 +24,7 @@
           v-model="localFiles"
           :accept="fileAccept"
           :multiple="true"
-          label="选择文件"
+          :label="toolbarTextVisible ? '选择文件' : ''"
           list-mode="selection"
           color="primary"
           class="full-width"
@@ -39,16 +39,38 @@
       >
         <div class="toolbar-button-row">
           <span class="toolbar-button-wrap">
-            <q-btn
-              flat
-              :icon="showMaskTools ? 'edit_off' : 'edit'"
-              :color="showMaskTools ? 'primary' : 'white'"
-              :label="$q.screen.gt.sm ? maskToggleLabel : ''"
-              class="full-width"
-              :disable="maskToggleDisabled"
-              @click="$emit('toggle-mask-tools')"
-            />
-            <q-tooltip>{{ maskToggleTooltip }}</q-tooltip>
+            <div
+              class="mask-mode-toggle"
+              role="group"
+              aria-label="蒙版模式"
+            >
+              <span
+                v-for="button in visibleMaskModeButtons"
+                :key="button.value"
+                class="mask-mode-button-target"
+                :class="{
+                  'mask-mode-button-target--active': maskMode === button.value,
+                  'mask-mode-button-target--labeled': Boolean(maskModeButtonLabel(button)),
+                }"
+                @click="handleMaskModeTargetClick(button)"
+              >
+                <q-btn
+                  no-caps
+                  unelevated
+                  :icon="button.icon"
+                  :label="maskModeButtonLabel(button)"
+                  :aria-label="button.label"
+                  :data-testid="`image-mask-mode-${button.value}`"
+                  class="mask-mode-button"
+                  :class="{ 'mask-mode-button--active': maskMode === button.value }"
+                  :color="maskModeButtonColor(button)"
+                  :text-color="maskModeButtonTextColor(button)"
+                  :disable="maskModeButtonDisabled(button)"
+                  @click.stop="handleMaskModeButtonClick(button)"
+                />
+                <q-tooltip>{{ maskModeButtonTooltip(button) }}</q-tooltip>
+              </span>
+            </div>
           </span>
 
           <span class="toolbar-button-wrap">
@@ -149,6 +171,18 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  maskMode: {
+    type: String,
+    default: "off",
+  },
+  smartSelectionAvailable: {
+    type: Boolean,
+    default: false,
+  },
+  backendReady: {
+    type: Boolean,
+    default: false,
+  },
   hasProcessedImages: {
     type: Boolean,
     default: false,
@@ -180,11 +214,14 @@ const emit = defineEmits([
   "rejected-files",
   "update:files",
   "toggle-mask-tools",
+  "update:mask-mode",
+  "cycle-mask-mode",
   "show-original",
   "show-processed",
   "undo-processing",
   "run-model",
   "open-diagnostics",
+  "smart-selection-blocked",
   "download",
   "toggle-settings",
 ]);
@@ -195,21 +232,79 @@ const fileAccept = computed(() =>
   props.type === "video" ? ".mp4,.avi,.mov,.mkv" : ".png,.jpg,.jpeg,.webp"
 );
 
-const maskToggleDisabled = computed(
-  () => !props.selectedFile || !props.currentModelRequiresMask
+const toolbarTextVisible = computed(() => $q.screen.gt.sm);
+
+const smartSelectionDisabledReason = computed(() => {
+  if (!props.backendReady) return "后端服务启动成功后可用";
+  if (!props.smartSelectionAvailable) {
+    return "智能选区需要先安装 SAM1/SAM2 点选模型或 SAM3 文本模型";
+  }
+  return "";
+});
+
+const maskModeButtons = computed(() => [
+  {
+    label: "关闭",
+    value: "off",
+    icon: "visibility_off",
+    tooltip: "关闭蒙版编辑",
+  },
+  {
+    label: "手动",
+    value: "manual",
+    icon: "edit",
+    tooltip: "手动绘制蒙版",
+  },
+  {
+    label: "智能",
+    value: "smart",
+    icon: "center_focus_strong",
+    tooltip: "智能选区：单击点选，拖拽框选",
+  },
+]);
+
+const currentMaskModeButton = computed(
+  () =>
+    maskModeButtons.value.find((button) => button.value === props.maskMode) ||
+    maskModeButtons.value[0]
 );
 
-const maskToggleLabel = computed(() =>
-  props.showMaskTools ? "停止绘制" : "开始绘制"
+const visibleMaskModeButtons = computed(() =>
+  $q.screen.gt.xs ? maskModeButtons.value : [currentMaskModeButton.value]
 );
 
-const maskToggleTooltip = computed(() => {
+const maskModeButtonLabel = (button) =>
+  toolbarTextVisible.value && props.maskMode === button.value ? button.label : "";
+
+const baseMaskModeDisabledReason = computed(() => {
   if (!props.selectedFile) return "请先选择图片";
   if (!props.currentModelRequiresMask) {
-    return "当前模型不需要蒙版，绘制工具暂不可用";
+    return "当前模型不需要蒙版，蒙版工具暂不可用";
   }
-  return props.showMaskTools ? "隐藏绘制工具" : "显示绘制工具";
+  return "";
 });
+
+const maskModeButtonDisabledReason = (button) => {
+  if (baseMaskModeDisabledReason.value) return baseMaskModeDisabledReason.value;
+  if (button.value === "smart") return smartSelectionDisabledReason.value;
+  return "";
+};
+
+const maskModeButtonDisabled = (button) =>
+  Boolean(maskModeButtonDisabledReason(button));
+
+const maskModeButtonTooltip = (button) =>
+  maskModeButtonDisabledReason(button) || button.tooltip;
+
+const maskModeButtonColor = (button) => {
+  if (props.maskMode === button.value) return "primary";
+  return $q.dark.isActive ? "grey-9" : "grey-3";
+};
+
+const maskModeButtonTextColor = (button) => {
+  if (props.maskMode === button.value) return "white";
+  return $q.dark.isActive ? "grey-3" : "primary";
+};
 
 const compareDisabled = computed(() => !props.selectedFile || !props.hasProcessedImages);
 
@@ -263,6 +358,28 @@ const handleRunWrapperClick = () => {
   if (props.engineFailed) {
     emit("open-diagnostics");
   }
+};
+
+const emitBlockedSmartSelection = (button, reason) => {
+  if (button.value !== "smart" || !reason) {
+    return;
+  }
+  emit("smart-selection-blocked", reason);
+};
+
+const handleMaskModeButtonClick = (button) => {
+  const disabledReason = maskModeButtonDisabledReason(button);
+  emitBlockedSmartSelection(button, disabledReason);
+  if (disabledReason) return;
+  if (!$q.screen.gt.xs) {
+    emit("cycle-mask-mode");
+    return;
+  }
+  emit("update:mask-mode", button.value);
+};
+
+const handleMaskModeTargetClick = (button) => {
+  emitBlockedSmartSelection(button, maskModeButtonDisabledReason(button));
 };
 
 watch(
@@ -343,6 +460,10 @@ const handleFilesUpdate = (newFiles) => {
   min-width: 104px;
 }
 
+.toolbar-button-wrap:has(.mask-mode-toggle) {
+  min-width: 148px;
+}
+
 .toolbar-button {
   width: 44px;
 }
@@ -360,6 +481,55 @@ const handleFilesUpdate = (newFiles) => {
   gap: 8px;
 }
 
+.mask-mode-toggle {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: stretch;
+  width: auto;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.mask-mode-button-target {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.mask-mode-button {
+  width: 42px;
+  min-width: 42px;
+  min-height: 42px;
+  padding-inline: 0;
+  border-radius: 0;
+}
+
+.mask-mode-button-target:first-child .mask-mode-button {
+  border-top-left-radius: 8px;
+  border-bottom-left-radius: 8px;
+}
+
+.mask-mode-button-target:last-child .mask-mode-button {
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+
+.mask-mode-button-target--labeled .mask-mode-button {
+  width: auto;
+  min-width: 0;
+  padding-inline: 10px 12px;
+}
+
+.mask-mode-button :deep(.q-btn__content) {
+  min-width: 0;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  gap: 0;
+}
+
+.mask-mode-button :deep(.q-icon.on-left) {
+  margin-right: 4px;
+}
+
 :global(body.body--dark) .image-processing-toolbar {
   border-top-color: rgba(255, 255, 255, 0.08);
 }
@@ -375,6 +545,68 @@ const handleFilesUpdate = (newFiles) => {
 
   .toolbar-button-wrap {
     min-width: 44px;
+  }
+
+  .toolbar-button-wrap:has(.mask-mode-toggle) {
+    min-width: 128px;
+  }
+}
+
+@media (max-width: 599px) {
+  .toolbar-file-area {
+    flex: 0 0 96px;
+    width: 96px;
+    min-width: 96px;
+    padding-inline: 4px;
+  }
+
+  .toolbar-file-area > .q-btn {
+    margin-right: 4px;
+    width: 40px;
+    min-width: 40px;
+  }
+
+  .toolbar-file-area :deep(.moonshine-file-wrapper) {
+    width: 44px;
+    min-width: 44px;
+    flex: 0 0 44px;
+  }
+
+  .toolbar-actions {
+    flex: 1 1 0;
+    padding-inline: 4px;
+  }
+
+  .toolbar-button-row {
+    justify-content: flex-end;
+    gap: 2px;
+  }
+
+  .toolbar-button-wrap,
+  .toolbar-button-wrap :deep(.q-btn),
+  .toolbar-button {
+    width: 40px;
+    min-width: 40px;
+  }
+
+  .toolbar-button-wrap :deep(.q-btn),
+  .toolbar-button {
+    padding-inline: 0;
+  }
+
+  .toolbar-button-wrap:has(.mask-mode-toggle) {
+    min-width: 40px;
+  }
+
+  .mask-mode-button {
+    width: 40px;
+    min-width: 40px;
+    padding-inline: 0;
+    border-radius: 8px;
+  }
+
+  .mask-mode-button-target--labeled .mask-mode-button {
+    min-width: 40px;
   }
 }
 </style>

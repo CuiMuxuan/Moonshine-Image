@@ -28,6 +28,45 @@ MANUAL_MODEL_INSTALL_HINT = (
     "如果 Hugging Face 主源下载不可用，请从夸克网盘副源手动下载对应模型文件，"
     "并放入当前模型目录。也可以私信作者或者加入交流群获取模型文件或百度网盘链接。"
 )
+SAM_MODEL_INSTALL_HINT = (
+    "SAM 模型推荐按版本分目录放置：SAM1 放入 sam/，SAM2/SAM2.1 放入 sam2/，"
+    "SAM3/SAM3.1 放入 sam3/。同一版本的不同型号按各自 checkpoint 文件名并列管理；"
+    "根目录 checkpoint 不再作为 SAM 模型安装位置识别。"
+)
+SAM3_LICENSE_HINT = (
+    "SAM3/SAM3.1 权重由 Moonshine-Image 模型库提供下载时，仍需保留来源、版本、"
+    "hash 与 Meta SAM License 确认记录；运行时只使用本项目模型目录下的本地 checkpoint。"
+)
+LAMA_LICENSE = {
+    "name": "Apache-2.0",
+    "url": "https://github.com/advimman/lama/blob/main/LICENSE",
+    "note": "LaMa 上游项目许可证；模型下载仍按本项目模型库元数据校验。",
+}
+SLBR_LICENSE = {
+    "name": "SLBR upstream research checkpoint",
+    "url": "",
+    "note": "SLBR 权重来自上游研究发布，发布前需保留来源和本项目模型库校验记录。",
+}
+SAM1_LICENSE = {
+    "name": "Apache-2.0",
+    "url": "https://github.com/facebookresearch/segment-anything/blob/main/LICENSE",
+    "note": "SAM1 代码和公开 checkpoint 按上游 Segment Anything 许可证记录。",
+}
+SAM2_LICENSE = {
+    "name": "Apache-2.0",
+    "url": "https://github.com/facebookresearch/sam2/blob/main/LICENSE",
+    "note": "SAM2/SAM2.1 代码和公开 checkpoint 按上游 SAM2 许可证记录。",
+}
+SAM3_LICENSE = {
+    "name": "SAM License",
+    "url": "https://github.com/facebookresearch/sam3/blob/main/LICENSE",
+    "note": "SAM3/SAM3.1 属于 Meta SAM License；本项目只从项目自有模型库提供已记录来源、hash 和许可证说明的文件。",
+}
+UNKNOWN_LICENSE = {
+    "name": "Manual review required",
+    "url": "",
+    "note": "该模型缺少可自动确认的许可证元数据，进入发布包前必须人工补齐。",
+}
 
 
 MODEL_MANIFEST = (
@@ -163,6 +202,671 @@ MODEL_MANIFEST = (
             "stability": 6.0,
         },
     },
+    {
+        "id": "sam_vit_b",
+        "family": "sam",
+        "familyLabel": "SAM1",
+        "modelVersion": "SAM1",
+        "variant": "ViT-B",
+        "category": "mask_generator",
+        "label": "SAM1 ViT-B 智能选区模型",
+        "description": "SAM1 入门型号，用于图片蒙版编辑中的点选和框选智能选区。第一阶段推荐默认型号。",
+        "type": "mask",
+        "requiresMask": False,
+        "downloadable": True,
+        "sourceLinks": [
+            {
+                "label": "Hugging Face 主源",
+                "type": "huggingface",
+                "url": f"{HF_MODEL_REPO_BASE_URL}/sam/sam_vit_b_01ec64.pth",
+            }
+        ],
+        "manualSources": [],
+        "manualHint": (
+            "请将 sam_vit_b_01ec64.pth 放入当前模型目录的 sam/ 子目录。"
+            + SAM_MODEL_INSTALL_HINT
+        ),
+        "files": [
+            {
+                "path": "sam/sam_vit_b_01ec64.pth",
+                "label": "sam_vit_b_01ec64.pth",
+                "size": 375042383,
+                "sha256": "ec2df62732614e57411cdcf32a23ffdf28910380d03139ee0f4fcbe91eb8c912",
+                "legacyPaths": [],
+            }
+        ],
+        "size": 375042383,
+        "sha256": "ec2df62732614e57411cdcf32a23ffdf28910380d03139ee0f4fcbe91eb8c912",
+        "recommendedDevice": "cuda",
+        "minimumVram": 4096,
+        "runCapabilities": {
+            "scopes": ["currentImage"],
+            "maskPrompts": ["point", "box"],
+            "outputRequired": False,
+        },
+        "parameters": {},
+        "parameterHelp": "SAM1 ViT-B 支持点选和框选提示，不直接支持自然语言文本提示词。",
+        "capabilities": {
+            "speed": 8.0,
+            "realImageQuality": 7.0,
+            "cartoonImageQuality": 7.0,
+            "simpleSceneQuality": 8.0,
+            "complexSceneQuality": 6.0,
+            "textWatermarkAbility": 2.0,
+            "lowVramFriendly": 7.0,
+            "stability": 8.0,
+        },
+    },
+    {
+        "id": "sam_vit_l",
+        "family": "sam",
+        "familyLabel": "SAM1",
+        "modelVersion": "SAM1",
+        "variant": "ViT-L",
+        "category": "mask_generator",
+        "label": "SAM1 ViT-L 智能选区模型",
+        "description": "SAM1 中等规模型号，用于更高质量的点选和框选智能选区，资源消耗高于 ViT-B。",
+        "type": "mask",
+        "requiresMask": False,
+        "downloadable": False,
+        "sourceLinks": [],
+        "manualSources": [],
+        "manualHint": (
+            "请将 sam_vit_l_0b3195.pth 放入当前模型目录的 sam/ 子目录。"
+            + SAM_MODEL_INSTALL_HINT
+        ),
+        "files": [
+            {
+                "path": "sam/sam_vit_l_0b3195.pth",
+                "label": "sam_vit_l_0b3195.pth",
+                "size": 1249524607,
+                "sha256": "",
+                "legacyPaths": [],
+            }
+        ],
+        "size": 1249524607,
+        "sha256": "",
+        "recommendedDevice": "cuda",
+        "minimumVram": 8192,
+        "runCapabilities": {
+            "scopes": ["currentImage"],
+            "maskPrompts": ["point", "box"],
+            "outputRequired": False,
+        },
+        "parameters": {},
+        "parameterHelp": "SAM1 ViT-L 支持点选和框选提示，不直接支持自然语言文本提示词。",
+        "capabilities": {
+            "speed": 6.0,
+            "realImageQuality": 8.0,
+            "cartoonImageQuality": 8.0,
+            "simpleSceneQuality": 8.0,
+            "complexSceneQuality": 7.0,
+            "textWatermarkAbility": 2.0,
+            "lowVramFriendly": 5.0,
+            "stability": 8.0,
+        },
+    },
+    {
+        "id": "sam_vit_h",
+        "family": "sam",
+        "familyLabel": "SAM1",
+        "modelVersion": "SAM1",
+        "variant": "ViT-H",
+        "category": "mask_generator",
+        "label": "SAM1 ViT-H 智能选区模型",
+        "description": "SAM1 高端型号，适合显存更充足的设备，质量优先但加载和推理成本最高。",
+        "type": "mask",
+        "requiresMask": False,
+        "downloadable": False,
+        "sourceLinks": [],
+        "manualSources": [],
+        "manualHint": (
+            "请将 sam_vit_h_4b8939.pth 放入当前模型目录的 sam/ 子目录。"
+            + SAM_MODEL_INSTALL_HINT
+        ),
+        "files": [
+            {
+                "path": "sam/sam_vit_h_4b8939.pth",
+                "label": "sam_vit_h_4b8939.pth",
+                "size": 2564550879,
+                "sha256": "",
+                "legacyPaths": [],
+            }
+        ],
+        "size": 2564550879,
+        "sha256": "",
+        "recommendedDevice": "cuda",
+        "minimumVram": 12000,
+        "runCapabilities": {
+            "scopes": ["currentImage"],
+            "maskPrompts": ["point", "box"],
+            "outputRequired": False,
+        },
+        "parameters": {},
+        "parameterHelp": "SAM1 ViT-H 支持点选和框选提示，不直接支持自然语言文本提示词。",
+        "capabilities": {
+            "speed": 4.0,
+            "realImageQuality": 9.0,
+            "cartoonImageQuality": 8.0,
+            "simpleSceneQuality": 9.0,
+            "complexSceneQuality": 8.0,
+            "textWatermarkAbility": 2.0,
+            "lowVramFriendly": 3.0,
+            "stability": 8.0,
+        },
+    },
+    {
+        "id": "sam2_hiera_tiny",
+        "family": "sam2",
+        "familyLabel": "SAM2",
+        "modelVersion": "SAM2",
+        "variant": "Hiera Tiny",
+        "category": "mask_generator",
+        "label": "SAM2 Hiera Tiny",
+        "description": "SAM2 旧版最小型号，适合兼容已有 SAM2 checkpoint 和轻量视频蒙版流程验证。",
+        "type": "mask",
+        "requiresMask": False,
+        "downloadable": False,
+        "sourceLinks": [],
+        "manualSources": [],
+        "manualHint": (
+            "请将 sam2_hiera_tiny.pt 放入当前模型目录的 sam2/ 子目录。"
+            + SAM_MODEL_INSTALL_HINT
+        ),
+        "files": [
+            {
+                "path": "sam2/sam2_hiera_tiny.pt",
+                "label": "sam2_hiera_tiny.pt",
+                "size": None,
+                "sha256": "",
+                "legacyPaths": [],
+            }
+        ],
+        "size": None,
+        "sha256": "",
+        "recommendedDevice": "cuda",
+        "minimumVram": 4096,
+        "runCapabilities": {
+            "scopes": ["currentImage", "videoFrames"],
+            "maskPrompts": ["point", "box", "mask"],
+            "outputRequired": False,
+        },
+        "parameters": {"config": "sam2/configs/sam2/sam2_hiera_t.yaml"},
+        "parameterHelp": "SAM2 旧版 checkpoint 作为兼容变体管理；新安装优先使用 SAM2.1。",
+        "capabilities": {
+            "speed": 8.0,
+            "realImageQuality": 7.0,
+            "cartoonImageQuality": 7.0,
+            "simpleSceneQuality": 8.0,
+            "complexSceneQuality": 7.0,
+            "textWatermarkAbility": 2.0,
+            "lowVramFriendly": 7.0,
+            "stability": 6.0,
+        },
+    },
+    {
+        "id": "sam2_hiera_small",
+        "family": "sam2",
+        "familyLabel": "SAM2",
+        "modelVersion": "SAM2",
+        "variant": "Hiera Small",
+        "category": "mask_generator",
+        "label": "SAM2 Hiera Small",
+        "description": "SAM2 旧版小型型号，适合兼容已有 SAM2 checkpoint 和轻量视频蒙版流程验证。",
+        "type": "mask",
+        "requiresMask": False,
+        "downloadable": False,
+        "sourceLinks": [],
+        "manualSources": [],
+        "manualHint": (
+            "请将 sam2_hiera_small.pt 放入当前模型目录的 sam2/ 子目录。"
+            + SAM_MODEL_INSTALL_HINT
+        ),
+        "files": [
+            {
+                "path": "sam2/sam2_hiera_small.pt",
+                "label": "sam2_hiera_small.pt",
+                "size": None,
+                "sha256": "",
+                "legacyPaths": [],
+            }
+        ],
+        "size": None,
+        "sha256": "",
+        "recommendedDevice": "cuda",
+        "minimumVram": 6144,
+        "runCapabilities": {
+            "scopes": ["currentImage", "videoFrames"],
+            "maskPrompts": ["point", "box", "mask"],
+            "outputRequired": False,
+        },
+        "parameters": {"config": "sam2/configs/sam2/sam2_hiera_s.yaml"},
+        "parameterHelp": "SAM2 旧版 checkpoint 作为兼容变体管理；新安装优先使用 SAM2.1。",
+        "capabilities": {
+            "speed": 7.0,
+            "realImageQuality": 7.0,
+            "cartoonImageQuality": 7.0,
+            "simpleSceneQuality": 8.0,
+            "complexSceneQuality": 7.0,
+            "textWatermarkAbility": 2.0,
+            "lowVramFriendly": 6.0,
+            "stability": 6.0,
+        },
+    },
+    {
+        "id": "sam2_hiera_base_plus",
+        "family": "sam2",
+        "familyLabel": "SAM2",
+        "modelVersion": "SAM2",
+        "variant": "Hiera Base+",
+        "category": "mask_generator",
+        "label": "SAM2 Hiera Base+",
+        "description": "SAM2 旧版 Base+ 型号，适合兼容已有 SAM2 checkpoint 和质量优先的视频蒙版流程验证。",
+        "type": "mask",
+        "requiresMask": False,
+        "downloadable": False,
+        "sourceLinks": [],
+        "manualSources": [],
+        "manualHint": (
+            "请将 sam2_hiera_base_plus.pt 放入当前模型目录的 sam2/ 子目录。"
+            + SAM_MODEL_INSTALL_HINT
+        ),
+        "files": [
+            {
+                "path": "sam2/sam2_hiera_base_plus.pt",
+                "label": "sam2_hiera_base_plus.pt",
+                "size": None,
+                "sha256": "",
+                "legacyPaths": [],
+            }
+        ],
+        "size": None,
+        "sha256": "",
+        "recommendedDevice": "cuda",
+        "minimumVram": 8192,
+        "runCapabilities": {
+            "scopes": ["currentImage", "videoFrames"],
+            "maskPrompts": ["point", "box", "mask"],
+            "outputRequired": False,
+        },
+        "parameters": {"config": "sam2/configs/sam2/sam2_hiera_b+.yaml"},
+        "parameterHelp": "SAM2 旧版 checkpoint 作为兼容变体管理；新安装优先使用 SAM2.1。",
+        "capabilities": {
+            "speed": 6.0,
+            "realImageQuality": 8.0,
+            "cartoonImageQuality": 8.0,
+            "simpleSceneQuality": 8.0,
+            "complexSceneQuality": 8.0,
+            "textWatermarkAbility": 2.0,
+            "lowVramFriendly": 5.0,
+            "stability": 6.0,
+        },
+    },
+    {
+        "id": "sam2_hiera_large",
+        "family": "sam2",
+        "familyLabel": "SAM2",
+        "modelVersion": "SAM2",
+        "variant": "Hiera Large",
+        "category": "mask_generator",
+        "label": "SAM2 Hiera Large",
+        "description": "SAM2 旧版 Large 型号，适合兼容已有 SAM2 checkpoint 和质量优先的视频蒙版流程验证。",
+        "type": "mask",
+        "requiresMask": False,
+        "downloadable": False,
+        "sourceLinks": [],
+        "manualSources": [],
+        "manualHint": (
+            "请将 sam2_hiera_large.pt 放入当前模型目录的 sam2/ 子目录。"
+            + SAM_MODEL_INSTALL_HINT
+        ),
+        "files": [
+            {
+                "path": "sam2/sam2_hiera_large.pt",
+                "label": "sam2_hiera_large.pt",
+                "size": None,
+                "sha256": "",
+                "legacyPaths": [],
+            }
+        ],
+        "size": None,
+        "sha256": "",
+        "recommendedDevice": "cuda",
+        "minimumVram": 12000,
+        "runCapabilities": {
+            "scopes": ["currentImage", "videoFrames"],
+            "maskPrompts": ["point", "box", "mask"],
+            "outputRequired": False,
+        },
+        "parameters": {"config": "sam2/configs/sam2/sam2_hiera_l.yaml"},
+        "parameterHelp": "SAM2 旧版 checkpoint 作为兼容变体管理；新安装优先使用 SAM2.1。",
+        "capabilities": {
+            "speed": 4.0,
+            "realImageQuality": 9.0,
+            "cartoonImageQuality": 8.0,
+            "simpleSceneQuality": 9.0,
+            "complexSceneQuality": 9.0,
+            "textWatermarkAbility": 2.0,
+            "lowVramFriendly": 3.0,
+            "stability": 6.0,
+        },
+    },
+    {
+        "id": "sam2_1_hiera_tiny",
+        "family": "sam2",
+        "familyLabel": "SAM2.1",
+        "modelVersion": "SAM2.1",
+        "variant": "Hiera Tiny",
+        "category": "mask_generator",
+        "label": "SAM2.1 Hiera Tiny",
+        "description": "SAM2.1 最小型号，适合优先验证图像增强分割、视频蒙版和跨帧传播流程。",
+        "type": "mask",
+        "requiresMask": False,
+        "downloadable": False,
+        "sourceLinks": [],
+        "manualSources": [],
+        "manualHint": (
+            "请将 sam2.1_hiera_tiny.pt 放入当前模型目录的 sam2/ 子目录。"
+            + SAM_MODEL_INSTALL_HINT
+        ),
+        "files": [
+            {
+                "path": "sam2/sam2.1_hiera_tiny.pt",
+                "label": "sam2.1_hiera_tiny.pt",
+                "size": None,
+                "sha256": "",
+                "legacyPaths": [],
+            }
+        ],
+        "size": None,
+        "sha256": "",
+        "recommendedDevice": "cuda",
+        "minimumVram": 4096,
+        "runCapabilities": {
+            "scopes": ["currentImage", "videoFrames"],
+            "maskPrompts": ["point", "box", "mask"],
+            "outputRequired": False,
+        },
+        "parameters": {"config": "sam2/configs/sam2.1/sam2.1_hiera_t.yaml"},
+        "parameterHelp": "SAM2.1 支持图像和视频 predictor，当前作为后续增强能力管理。",
+        "capabilities": {
+            "speed": 8.0,
+            "realImageQuality": 7.0,
+            "cartoonImageQuality": 7.0,
+            "simpleSceneQuality": 8.0,
+            "complexSceneQuality": 7.0,
+            "textWatermarkAbility": 2.0,
+            "lowVramFriendly": 7.0,
+            "stability": 6.0,
+        },
+    },
+    {
+        "id": "sam2_1_hiera_small",
+        "family": "sam2",
+        "familyLabel": "SAM2.1",
+        "modelVersion": "SAM2.1",
+        "variant": "Hiera Small",
+        "category": "mask_generator",
+        "label": "SAM2.1 Hiera Small",
+        "description": "SAM2.1 小型型号，质量和速度平衡，适合后续视频蒙版流程评估。",
+        "type": "mask",
+        "requiresMask": False,
+        "downloadable": False,
+        "sourceLinks": [],
+        "manualSources": [],
+        "manualHint": (
+            "请将 sam2.1_hiera_small.pt 放入当前模型目录的 sam2/ 子目录。"
+            + SAM_MODEL_INSTALL_HINT
+        ),
+        "files": [
+            {
+                "path": "sam2/sam2.1_hiera_small.pt",
+                "label": "sam2.1_hiera_small.pt",
+                "size": None,
+                "sha256": "",
+                "legacyPaths": [],
+            }
+        ],
+        "size": None,
+        "sha256": "",
+        "recommendedDevice": "cuda",
+        "minimumVram": 6144,
+        "runCapabilities": {
+            "scopes": ["currentImage", "videoFrames"],
+            "maskPrompts": ["point", "box", "mask"],
+            "outputRequired": False,
+        },
+        "parameters": {"config": "sam2/configs/sam2.1/sam2.1_hiera_s.yaml"},
+        "parameterHelp": "SAM2.1 支持图像和视频 predictor，当前作为后续增强能力管理。",
+        "capabilities": {
+            "speed": 7.0,
+            "realImageQuality": 7.0,
+            "cartoonImageQuality": 7.0,
+            "simpleSceneQuality": 8.0,
+            "complexSceneQuality": 7.0,
+            "textWatermarkAbility": 2.0,
+            "lowVramFriendly": 6.0,
+            "stability": 6.0,
+        },
+    },
+    {
+        "id": "sam2_1_hiera_base_plus",
+        "family": "sam2",
+        "familyLabel": "SAM2.1",
+        "modelVersion": "SAM2.1",
+        "variant": "Hiera Base+",
+        "category": "mask_generator",
+        "label": "SAM2.1 Hiera Base+",
+        "description": "SAM2.1 Base+ 型号，适合质量优先的图像增强分割和视频蒙版评估。",
+        "type": "mask",
+        "requiresMask": False,
+        "downloadable": False,
+        "sourceLinks": [],
+        "manualSources": [],
+        "manualHint": (
+            "请将 sam2.1_hiera_base_plus.pt 放入当前模型目录的 sam2/ 子目录。"
+            + SAM_MODEL_INSTALL_HINT
+        ),
+        "files": [
+            {
+                "path": "sam2/sam2.1_hiera_base_plus.pt",
+                "label": "sam2.1_hiera_base_plus.pt",
+                "size": None,
+                "sha256": "",
+                "legacyPaths": [],
+            }
+        ],
+        "size": None,
+        "sha256": "",
+        "recommendedDevice": "cuda",
+        "minimumVram": 8192,
+        "runCapabilities": {
+            "scopes": ["currentImage", "videoFrames"],
+            "maskPrompts": ["point", "box", "mask"],
+            "outputRequired": False,
+        },
+        "parameters": {"config": "sam2/configs/sam2.1/sam2.1_hiera_b+.yaml"},
+        "parameterHelp": "SAM2.1 支持图像和视频 predictor，当前作为后续增强能力管理。",
+        "capabilities": {
+            "speed": 6.0,
+            "realImageQuality": 8.0,
+            "cartoonImageQuality": 8.0,
+            "simpleSceneQuality": 8.0,
+            "complexSceneQuality": 8.0,
+            "textWatermarkAbility": 2.0,
+            "lowVramFriendly": 5.0,
+            "stability": 6.0,
+        },
+    },
+    {
+        "id": "sam2_1_hiera_large",
+        "family": "sam2",
+        "familyLabel": "SAM2.1",
+        "modelVersion": "SAM2.1",
+        "variant": "Hiera Large",
+        "category": "mask_generator",
+        "label": "SAM2.1 Hiera Large",
+        "description": "SAM2.1 默认评估型号，适合后续高质量图像增强分割、视频蒙版和跨帧传播。",
+        "type": "mask",
+        "requiresMask": False,
+        "downloadable": True,
+        "sourceLinks": [
+            {
+                "label": "Hugging Face 主源",
+                "type": "huggingface",
+                "url": f"{HF_MODEL_REPO_BASE_URL}/sam2/sam2.1_hiera_large.pt",
+            }
+        ],
+        "manualSources": [],
+        "manualHint": (
+            "请将 sam2.1_hiera_large.pt 放入当前模型目录的 sam2/ 子目录。"
+            + SAM_MODEL_INSTALL_HINT
+        ),
+        "files": [
+            {
+                "path": "sam2/sam2.1_hiera_large.pt",
+                "label": "sam2.1_hiera_large.pt",
+                "size": 898083611,
+                "sha256": "2647878d5dfa5098f2f8649825738a9345572bae2d4350a2468587ece47dd318",
+                "legacyPaths": [],
+            }
+        ],
+        "size": 898083611,
+        "sha256": "2647878d5dfa5098f2f8649825738a9345572bae2d4350a2468587ece47dd318",
+        "recommendedDevice": "cuda",
+        "minimumVram": 12000,
+        "runCapabilities": {
+            "scopes": ["currentImage", "videoFrames"],
+            "maskPrompts": ["point", "box", "mask"],
+            "outputRequired": False,
+        },
+        "parameters": {"config": "sam2/configs/sam2.1/sam2.1_hiera_l.yaml"},
+        "parameterHelp": "SAM2.1 Hiera Large 是本项目 SAM2 默认评估型号。",
+        "capabilities": {
+            "speed": 4.0,
+            "realImageQuality": 9.0,
+            "cartoonImageQuality": 8.0,
+            "simpleSceneQuality": 9.0,
+            "complexSceneQuality": 9.0,
+            "textWatermarkAbility": 2.0,
+            "lowVramFriendly": 3.0,
+            "stability": 6.0,
+        },
+    },
+    {
+        "id": "sam3",
+        "family": "sam3",
+        "familyLabel": "SAM3",
+        "modelVersion": "SAM3",
+        "variant": "Base",
+        "category": "text_smart_selection",
+        "label": "SAM3 文本智能选区模型",
+        "description": "SAM3 原始文本智能选区 checkpoint，用于后续中文和英文文本提示词智能选区评估。",
+        "type": "mask",
+        "requiresMask": False,
+        "downloadable": True,
+        "sourceLinks": [
+            {
+                "label": "Hugging Face 主源",
+                "type": "huggingface",
+                "url": f"{HF_MODEL_REPO_BASE_URL}/sam3/sam3.pt",
+            }
+        ],
+        "manualSources": [],
+        "manualHint": (
+            "请将 sam3.pt 放入当前模型目录的 sam3/ 子目录。"
+            + SAM_MODEL_INSTALL_HINT
+            + SAM3_LICENSE_HINT
+        ),
+        "files": [
+            {
+                "path": "sam3/sam3.pt",
+                "label": "sam3.pt",
+                "size": 3450062241,
+                "sha256": "9999e2341ceef5e136daa386eecb55cb414446a00ac2b55eb2dfd2f7c3cf8c9e",
+                "legacyPaths": [],
+            }
+        ],
+        "size": 3450062241,
+        "sha256": "9999e2341ceef5e136daa386eecb55cb414446a00ac2b55eb2dfd2f7c3cf8c9e",
+        "recommendedDevice": "cuda",
+        "minimumVram": 12000,
+        "runCapabilities": {
+            "scopes": ["currentImage", "selectedImages"],
+            "maskPrompts": ["text"],
+            "languages": ["zh-CN", "en"],
+            "outputRequired": False,
+        },
+        "parameters": {},
+        "parameterHelp": "SAM3 作为后续文本智能选区能力管理，当前不会替代 SAM1 点选/框选。",
+        "capabilities": {
+            "speed": 4.0,
+            "realImageQuality": 8.0,
+            "cartoonImageQuality": 7.0,
+            "simpleSceneQuality": 8.0,
+            "complexSceneQuality": 8.0,
+            "textWatermarkAbility": 8.0,
+            "lowVramFriendly": 2.0,
+            "stability": 5.0,
+        },
+    },
+    {
+        "id": "sam3_1_multiplex",
+        "family": "sam3",
+        "familyLabel": "SAM3.1",
+        "modelVersion": "SAM3.1",
+        "variant": "Multiplex",
+        "category": "text_smart_selection",
+        "label": "SAM3.1 Multiplex 文本智能选区模型",
+        "description": "SAM3.1 默认评估型号，包含 Object Multiplex 优化，用于后续文本提示词图像/视频智能选区。",
+        "type": "mask",
+        "requiresMask": False,
+        "downloadable": True,
+        "sourceLinks": [
+            {
+                "label": "Hugging Face 主源",
+                "type": "huggingface",
+                "url": f"{HF_MODEL_REPO_BASE_URL}/sam3/sam3.1_multiplex.pt",
+            }
+        ],
+        "manualSources": [],
+        "manualHint": (
+            "请将 sam3.1_multiplex.pt 放入当前模型目录的 sam3/ 子目录。"
+            + SAM_MODEL_INSTALL_HINT
+            + SAM3_LICENSE_HINT
+        ),
+        "files": [
+            {
+                "path": "sam3/sam3.1_multiplex.pt",
+                "label": "sam3.1_multiplex.pt",
+                "size": 3502755717,
+                "sha256": "0567debeec80ba4ac6369540c6c248025283cb3ff2b92827509e57e2b3541cb6",
+                "legacyPaths": [],
+            }
+        ],
+        "size": 3502755717,
+        "sha256": "0567debeec80ba4ac6369540c6c248025283cb3ff2b92827509e57e2b3541cb6",
+        "recommendedDevice": "cuda",
+        "minimumVram": 12000,
+        "runCapabilities": {
+            "scopes": ["currentImage", "selectedImages", "videoFrames"],
+            "maskPrompts": ["text", "point"],
+            "languages": ["zh-CN", "en"],
+            "outputRequired": False,
+        },
+        "parameters": {},
+        "parameterHelp": "SAM3.1 Multiplex 是本项目 SAM3 默认评估型号，下载必须遵守 Meta SAM License 和 gated 访问要求。",
+        "capabilities": {
+            "speed": 5.0,
+            "realImageQuality": 8.0,
+            "cartoonImageQuality": 7.0,
+            "simpleSceneQuality": 8.0,
+            "complexSceneQuality": 8.0,
+            "textWatermarkAbility": 9.0,
+            "lowVramFriendly": 2.0,
+            "stability": 6.0,
+        },
+    },
 )
 
 
@@ -197,22 +901,75 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _model_license_metadata(model: dict) -> dict:
+    model_id = str(model.get("id") or "").lower()
+    family = str(model.get("family") or "").lower()
+    if model_id == "lama":
+        return LAMA_LICENSE
+    if model_id == "slbr":
+        return SLBR_LICENSE
+    if family == "sam":
+        return SAM1_LICENSE
+    if family == "sam2":
+        return SAM2_LICENSE
+    if family == "sam3":
+        return SAM3_LICENSE
+    return UNKNOWN_LICENSE
+
+
 def _file_status(model_dir: Path, file_spec: dict) -> dict:
     relative_path = _safe_relative_path(file_spec.get("path", ""))
     expected_sha256 = str(file_spec.get("sha256") or "").strip().lower()
+    canonical_path = model_dir / relative_path
     candidate_paths = [
-        model_dir / relative_path,
-        model_dir.parent / relative_path,
+        {
+            "path": canonical_path,
+            "kind": "canonical",
+            "legacyPath": "",
+        },
+        {
+            "path": model_dir.parent / relative_path,
+            "kind": "alternate",
+            "legacyPath": "",
+        },
     ]
+    legacy_candidates = []
     for legacy_path in file_spec.get("legacyPaths") or []:
-        candidate_paths.append(model_dir / _safe_relative_path(legacy_path))
+        safe_legacy_path = _safe_relative_path(legacy_path)
+        legacy_candidates.append(
+            {
+                "path": model_dir / safe_legacy_path,
+                "kind": "legacy",
+                "legacyPath": str(safe_legacy_path).replace("\\", "/"),
+            }
+        )
+    candidate_paths.extend(legacy_candidates)
 
-    existing_path = next((path for path in candidate_paths if path.is_file()), None)
+    existing_candidate = next(
+        (candidate for candidate in candidate_paths if candidate["path"].is_file()),
+        None,
+    )
+    existing_path = existing_candidate["path"] if existing_candidate else None
+    legacy_existing_paths = [
+        candidate["path"]
+        for candidate in legacy_candidates
+        if candidate["path"].is_file()
+    ]
     status = {
         "path": str(relative_path).replace("\\", "/"),
         "label": file_spec.get("label") or relative_path.name,
         "size": file_spec.get("size"),
         "sha256": expected_sha256,
+        "canonicalPath": str(canonical_path),
+        "legacyPaths": [
+            str(_safe_relative_path(path)).replace("\\", "/")
+            for path in file_spec.get("legacyPaths") or []
+        ],
+        "legacyExists": bool(legacy_existing_paths),
+        "legacyDetected": bool(existing_candidate and existing_candidate["kind"] == "legacy"),
+        "legacyPathUsed": existing_candidate["legacyPath"] if existing_candidate else "",
+        "resolvedPathKind": existing_candidate["kind"] if existing_candidate else "",
+        "migrationTarget": str(canonical_path),
         "exists": existing_path is not None,
         "valid": False,
         "actualSize": None,
@@ -276,6 +1033,7 @@ def build_model_status(model_dir: Path, cuda_info: Optional[dict] = None) -> lis
 
         item = {
             **manifest_item,
+            "license": manifest_item.get("license") or _model_license_metadata(manifest_item),
             "files": file_statuses,
             "installed": installed,
             "available": installed and device_compatible,

@@ -28,6 +28,18 @@
             :selected-file="currentFile.originalFile"
             :show-masker="showMaskTools && currentModelRequiresMask"
             :drawing-mode="isMaskDrawingMode"
+            :smart-selection-mode="isSmartSelectionMode"
+            :current-model="currentModel"
+            :sam-model-id="defaultSamModelId"
+            :sam-model-options="samModelOptions"
+            :sam-available="samPointBoxAvailable"
+            :sam-text-available="samTextAvailable"
+            :sam-text-model-id="defaultSamTextModelId"
+            :sam-text-batch-target-count="selectedSamTextBatchFiles.length"
+            :sam-text-batch-state="samTextBatchState"
+            :sam-image="samImagePayload.image"
+            :sam-image-type="samImagePayload.imageType"
+            :sam-context-id="currentFile.id"
             :tool-state="imageMaskToolState"
             :mask="currentFile.mask"
             :image-url="currentDisplayUrl"
@@ -36,6 +48,9 @@
             @update:mask="handleMaskUpdate"
             @update:drawing-mode="setMaskDrawingMode"
             @update:tool-state="updateImageMaskToolState"
+            @sam-processing-state="handleSamProcessingState"
+            @sam-text-batch-request="runSamTextBatchPrediction"
+            @sam-text-batch-cancel="cancelSamTextBatchPrediction"
           />
         </workspace>
       </div>
@@ -76,6 +91,10 @@ import {
   buildBackendPathBlockedMessage,
   validateBackendPathsForConfig,
 } from "src/utils/backendPathValidation";
+import {
+  getSamCapabilities,
+  predictSamText,
+} from "src/services/SamPredictionService";
 import ImageEditor from "../components/image/ImageEditor.vue";
 import FileExplorer from "../components/common/FileExplorer.vue";
 import Workspace from "../components/common/Workspace.vue";
@@ -127,6 +146,7 @@ const imageModelOptions = ref([
 const showMaskTools = ref(true);
 const maskToolsPreferredVisible = ref(true);
 const isMaskDrawingMode = ref(runtimeUiStore.imageMaskDrawingEnabled);
+const maskMode = ref(runtimeUiStore.imageMaskDrawingEnabled ? "manual" : "off");
 const imageMaskToolState = computed(() => runtimeUiStore.imageMaskToolState);
 const actionScope = ref({ label: "仅选中文件", value: "selected" });
 const selectAll = ref(false);
@@ -285,12 +305,29 @@ const layoutFooter = inject("layoutFooter", null);
 const layoutDrawers = inject("layoutDrawers", null);
 const globalSettings = inject("globalSettings", null);
 const isPageDisabled = ref(false);
+const samSmartSelectionProcessingState = ref({
+  running: false,
+  message: "",
+  progress: null,
+});
+const samSmartSelectionOverlayActive = ref(false);
 const IMAGE_PROCESSING_TASK_ID = "image-processing";
 const imagePageFooterOwner = Symbol("image-page-footer");
 const imagePageLeftDrawerOwner = Symbol("image-page-left-drawer");
 const imagePageRightDrawerOwner = Symbol("image-page-right-drawer");
 const currentFile = computed(() => fileManagerStore.currentFile);
 const selectedFiles = computed(() => fileManagerStore.selectedFiles);
+const samCapabilities = ref(null);
+const samCapabilitiesLoadFailed = ref(false);
+const samTextBatchState = ref({
+  running: false,
+  total: 0,
+  completed: 0,
+  success: 0,
+  failed: 0,
+  cancelled: false,
+});
+const samTextBatchCancelRequested = ref(false);
 const backendEngineValue = computed(() => {
   const value = backendEngine?.value || {};
   const engineIsRunning = Boolean(value.isRunning?.value ?? value.isRunning);
@@ -319,6 +356,38 @@ const setImageProcessingGuard = (active, label = "图片任务正在处理中") 
 
   clearActiveProcessingTask(IMAGE_PROCESSING_TASK_ID);
 };
+const normalizeSamSmartSelectionProcessingState = (state = {}) => ({
+  running: Boolean(state.running),
+  message: String(state.message || "").trim(),
+  progress: typeof state.progress === "number" ? state.progress : null,
+});
+const clearSamSmartSelectionOverlay = () => {
+  if (!samSmartSelectionOverlayActive.value) {
+    return;
+  }
+  samSmartSelectionOverlayActive.value = false;
+  loadingControl?.hide?.();
+  isPageDisabled.value = false;
+};
+const handleSamProcessingState = (state = {}) => {
+  const normalized = normalizeSamSmartSelectionProcessingState(state);
+  samSmartSelectionProcessingState.value = normalized;
+  if (normalized.running) {
+    samSmartSelectionOverlayActive.value = true;
+    isPageDisabled.value = true;
+    loadingControl?.show?.({
+      message: normalized.message || "正在运行 SAM 智能选区",
+      progress: normalized.progress,
+    });
+    return;
+  }
+
+  if (!samSmartSelectionOverlayActive.value) {
+    return;
+  }
+
+  clearSamSmartSelectionOverlay();
+};
 const currentDisplayUrl = computed(() => {
   const file = fileManagerStore.currentFile;
   if (!file || !file.history?.length) {
@@ -332,6 +401,20 @@ const currentDisplayUrl = computed(() => {
   const displayImage = fileManagerStore.getCurrentDisplayImage;
   return displayImage?.displayUrl || null;
 });
+const samImagePayload = computed(() => {
+  const displayImage = fileManagerStore.getCurrentDisplayImage;
+  if (displayImage?.type === "path" && displayImage.data) {
+    return {
+      image: displayImage.data,
+      imageType: "path",
+    };
+  }
+
+  return {
+    image: currentDisplayUrl.value || "",
+    imageType: "base64",
+  };
+});
 const currentMask = computed(() => {
   return currentFile.value?.mask || null;
 });
@@ -344,6 +427,54 @@ const imageModelMetadata = computed(() =>
 const currentModelRequiresMask = computed(() =>
   imageModelMetadata.value.requiresMask !== false
 );
+const isSmartSelectionMode = computed(
+  () => Boolean(showMaskTools.value && currentModelRequiresMask.value && maskMode.value === "smart")
+);
+const samModelOptions = computed(() =>
+  modelRegistryStore.installedMaskModels
+    .filter((model) => ["sam", "sam2"].includes(model.family))
+    .map((model) => ({
+      label: model.family === "sam2" ? `${model.label || model.id}（SAM2）` : model.label || model.id,
+      value: model.id,
+    }))
+);
+const samPointBoxAvailable = computed(() => samModelOptions.value.length > 0);
+const samTextAvailable = computed(() =>
+  samCapabilities.value?.text?.enabled ??
+  modelRegistryStore.installedMaskModels.some(
+    (model) =>
+      model.family === "sam3" &&
+      ["sam3_1_multiplex", "sam3"].includes(model.id)
+  )
+);
+const selectedSamTextBatchFiles = computed(() =>
+  fileManagerStore.selectedFiles.filter((file) =>
+    file.originalFile?.type?.startsWith("image/")
+  )
+);
+const defaultSamTextModelId = computed(() => {
+  const capabilityDefault = samCapabilities.value?.text?.defaultModelId;
+  if (capabilityDefault) return capabilityDefault;
+  const installedIds = modelRegistryStore.installedMaskModels
+    .filter((model) => model.family === "sam3")
+    .map((model) => model.id);
+  if (installedIds.includes("sam3_1_multiplex")) return "sam3_1_multiplex";
+  if (installedIds.includes("sam3")) return "sam3";
+  return "sam3";
+});
+const samSmartSelectionAvailable = computed(
+  () => backendEngineValue.value.isRunning && (samPointBoxAvailable.value || samTextAvailable.value)
+);
+const defaultSamModelId = computed(() => {
+  const configured =
+    configStore.config.masking?.defaultSam1Model ||
+    configStore.config.masking?.defaultSamModel ||
+    "sam_vit_b";
+  if (samModelOptions.value.some((option) => option.value === configured)) {
+    return configured;
+  }
+  return samModelOptions.value[0]?.value || configured;
+});
 const currentModelRunCapabilities = computed(() =>
   imageModelMetadata.value.runCapabilities || {}
 );
@@ -358,7 +489,7 @@ const isImageMaskerReady = computed(
   () =>
     Boolean(
       currentFile.value &&
-        currentModel.value === "lama" &&
+        currentModelRequiresMask.value &&
         showMaskTools.value &&
         editorRef.value?.isMaskerReady?.()
     )
@@ -490,18 +621,29 @@ const setMaskToolsVisible = (
     maskToolsPreferredVisible.value = nextValue;
   }
   showMaskTools.value = currentModelRequiresMask.value ? nextValue : false;
+  if (!showMaskTools.value) {
+    setMaskMode("off", { persist: false });
+  } else if (maskMode.value === "off") {
+    setMaskMode(resolvePreferredMaskMode(), {
+      persist: false,
+      notifyUnavailable: false,
+    });
+  }
 };
 
 const applyModelRuntimeState = (metadata = imageModelMetadata.value) => {
   ensureModelParameterDefaults(metadata);
   if (!modelSupportsMaskTools(metadata)) {
     showMaskTools.value = false;
-    setMaskDrawingMode(false, { persist: false });
+    setMaskMode("off", { persist: false });
     return;
   }
 
   showMaskTools.value = maskToolsPreferredVisible.value;
-  setMaskDrawingMode(runtimeUiStore.imageMaskDrawingEnabled, { persist: false });
+  setMaskMode(
+    showMaskTools.value ? resolvePreferredMaskMode() : "off",
+    { persist: false, notifyUnavailable: false }
+  );
 };
 
 // 处理全选
@@ -547,12 +689,234 @@ const handleMaskUpdate = (maskData) => {
   }
 };
 
+const loadSamCapabilities = async () => {
+  try {
+    const response = await getSamCapabilities();
+    samCapabilities.value = response || null;
+    samCapabilitiesLoadFailed.value = false;
+  } catch (error) {
+    samCapabilities.value = null;
+    samCapabilitiesLoadFailed.value = true;
+    console.warn("读取 SAM 能力失败，已回退到本地模型注册状态:", error);
+  }
+};
+
+const resetSamTextBatchState = (patch = {}) => {
+  samTextBatchState.value = {
+    running: false,
+    total: 0,
+    completed: 0,
+    success: 0,
+    failed: 0,
+    cancelled: false,
+    ...patch,
+  };
+};
+
+const cancelSamTextBatchPrediction = () => {
+  if (!samTextBatchState.value.running) return;
+  samTextBatchCancelRequested.value = true;
+  samTextBatchState.value = {
+    ...samTextBatchState.value,
+    cancelled: true,
+  };
+};
+
+const getFilesForSamTextBatch = () => {
+  return selectedSamTextBatchFiles.value;
+};
+
+const getFileCurrentMaskDataUrl = (file) => {
+  const mask = file?.mask;
+  if (!mask) return "";
+  if (typeof mask.displayUrl === "string" && mask.displayUrl) return mask.displayUrl;
+  if (typeof mask.data === "string" && mask.data) {
+    return mask.data.startsWith("data:")
+      ? mask.data
+      : `data:image/png;base64,${mask.data}`;
+  }
+  return "";
+};
+
+const resolveSamTextImageInput = async (file, context) => {
+  const imageType = fileManagerStore.resolveProcessingTransport([file]);
+  const imageData = await fileManagerStore.resolveLatestImageInput(file, imageType, context);
+  return {
+    image: imageData,
+    imageType,
+  };
+};
+
+const applySamTextResultToFile = async ({
+  file,
+  result,
+  prompt,
+  sessionModelId,
+} = {}) => {
+  const payload = {
+    contextId: file?.id || "",
+    modelId: sessionModelId,
+    result,
+    prompt,
+    baseMask: getFileCurrentMaskDataUrl(file),
+  };
+  const applied = await editorRef.value?.appendExternalSamTextResult?.(payload);
+  if (applied?.mask) {
+    fileManagerStore.updateFileMask(file.id, applied.mask);
+  }
+  return applied || { candidates: [] };
+};
+
+const runSamTextBatchPrediction = async ({
+  text = "",
+  language = "auto",
+  modelId = defaultSamTextModelId.value,
+  promptSource = "manual",
+  promptColor = null,
+  promptNoun = null,
+} = {}) => {
+  const prompt = String(text || "").trim();
+  if (!prompt) {
+    $q.notify({
+      type: "warning",
+      message: "请先输入文本提示",
+      position: "top",
+    });
+    return;
+  }
+  if (!samTextAvailable.value) {
+    $q.notify({
+      type: "warning",
+      message: "请先在模型管理中安装 SAM3 文本模型",
+      position: "top",
+    });
+    return;
+  }
+
+  const filesToProcess = getFilesForSamTextBatch();
+  if (!filesToProcess.length) {
+    $q.notify({
+      type: "warning",
+      message: "请先选择要检索的图片",
+      position: "top",
+    });
+    return;
+  }
+
+  samTextBatchCancelRequested.value = false;
+  resetSamTextBatchState({
+    running: true,
+    total: filesToProcess.length,
+  });
+
+  const context = fileManagerStore.createProcessingInputContext(
+    configStore.config,
+    fileManagerStore.resolveProcessingTransport(filesToProcess)
+  );
+  let success = 0;
+  let failed = 0;
+
+  try {
+    for (const file of filesToProcess) {
+      if (samTextBatchCancelRequested.value) break;
+      try {
+        const imageInput = await resolveSamTextImageInput(file, context);
+        const result = await predictSamText({
+          image: imageInput.image,
+          imageType: imageInput.imageType,
+          modelId: modelId || defaultSamTextModelId.value,
+          text: prompt,
+          language,
+          promptSource,
+          promptColor,
+          promptNoun,
+        });
+        const applied = await applySamTextResultToFile({
+          file,
+          result,
+          prompt,
+          sessionModelId: defaultSamModelId.value,
+        });
+        if ((applied.candidates || []).length > 0) {
+          success += 1;
+        } else {
+          failed += 1;
+        }
+      } catch (error) {
+        failed += 1;
+        console.warn(`SAM3 文本批量检索失败: ${file?.name || file?.id}`, error);
+      } finally {
+        samTextBatchState.value = {
+          ...samTextBatchState.value,
+          completed: samTextBatchState.value.completed + 1,
+          success,
+          failed,
+        };
+      }
+    }
+
+    const cancelled = samTextBatchCancelRequested.value;
+    samTextBatchState.value = {
+      ...samTextBatchState.value,
+      running: false,
+      success,
+      failed,
+      cancelled,
+    };
+    const type = cancelled ? "warning" : failed > 0 ? "warning" : "positive";
+    const message = cancelled
+      ? `已取消批量文本检索，成功 ${success} 张，失败 ${failed} 张`
+      : `批量文本检索完成，成功 ${success} 张，失败 ${failed} 张`;
+    $q.notify({
+      type,
+      message,
+      position: "top",
+    });
+  } finally {
+    samTextBatchCancelRequested.value = false;
+  }
+};
+
 const setMaskDrawingMode = (value, { persist = true } = {}) => {
   const nextValue = Boolean(value);
   isMaskDrawingMode.value = nextValue;
   if (persist) {
     runtimeUiStore.setImageMaskDrawingEnabled(nextValue);
   }
+};
+
+const resolvePreferredMaskMode = () => {
+  if (runtimeUiStore.imageMaskDrawingEnabled) return "manual";
+  return samSmartSelectionAvailable.value ? "smart" : "manual";
+};
+
+const setMaskMode = (value, { persist = true, notifyUnavailable = true } = {}) => {
+  const nextMode = ["off", "manual", "smart"].includes(value) ? value : "off";
+  if (nextMode === "smart" && !samSmartSelectionAvailable.value) {
+    if (notifyUnavailable) {
+      const unavailableMessage = backendEngineValue.value.isRunning
+        ? "请先在模型管理中安装 SAM1/SAM2 点选模型或 SAM3 文本模型"
+        : "后端服务启动成功后可用";
+      $q.notify({
+        type: "warning",
+        message: unavailableMessage,
+        position: "top",
+      });
+    }
+    return;
+  }
+  maskMode.value = currentModelRequiresMask.value ? nextMode : "off";
+  showMaskTools.value = maskMode.value !== "off" && currentModelRequiresMask.value;
+  setMaskDrawingMode(maskMode.value === "manual", { persist });
+  if (persist && currentModelRequiresMask.value) {
+    maskToolsPreferredVisible.value = showMaskTools.value;
+  }
+};
+
+const cycleMaskMode = () => {
+  const order = ["off", "manual", "smart"];
+  const currentIndex = order.indexOf(maskMode.value);
+  setMaskMode(order[(currentIndex + 1) % order.length], { persist: true });
 };
 
 const updateImageMaskToolState = (value = {}) => {
@@ -1797,6 +2161,10 @@ const registerImageE2ETestBridge = () => {
       setMaskToolsVisible(value, { persist: true });
       return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
     },
+    setMaskMode: (value) => {
+      setMaskMode(value, { persist: true });
+      return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
+    },
     addProcessingResult: (fileId, resultData, metadata = {}) =>
       fileManagerStore.addProcessingResult(fileId, resultData, metadata),
     finalizeSuccessfulMaskRun: async (fileIds = []) => {
@@ -1839,7 +2207,15 @@ const registerImageE2ETestBridge = () => {
     getSnapshot: () => ({
       currentModel: currentModel.value,
       availableModels: imageModelOptions.value.map((option) => option.value),
+      samModelOptions: samModelOptions.value.map((option) => option.value),
+      defaultSamModelId: defaultSamModelId.value,
+      samTextAvailable: samTextAvailable.value,
+      defaultSamTextModelId: defaultSamTextModelId.value,
+      selectedSamTextBatchCount: selectedSamTextBatchFiles.value.length,
+      samTextBatchState: { ...samTextBatchState.value },
       showMaskTools: showMaskTools.value,
+      maskMode: maskMode.value,
+      smartSelectionMode: isSmartSelectionMode.value,
       maskToolsPreferredVisible: maskToolsPreferredVisible.value,
       currentModelRequiresMask: currentModelRequiresMask.value,
       imageDrawingEnabled: isMaskDrawingMode.value,
@@ -2126,7 +2502,10 @@ const syncLayoutFooter = () => {
       engineRunTooltip: backendEngineValue.value.runDisabledTooltip,
       engineFailed: backendEngineValue.value.hasFailed,
       showMaskTools: showMaskTools.value,
+      maskMode: maskMode.value,
       currentModelRequiresMask: currentModelRequiresMask.value,
+      smartSelectionAvailable: samSmartSelectionAvailable.value,
+      backendReady: backendEngineValue.value.isRunning,
       hasProcessedImages: hasProcessedImages.value,
       actionScope: actionScope.value,
       type: "image",
@@ -2140,7 +2519,16 @@ const syncLayoutFooter = () => {
         if (!currentModelRequiresMask.value) {
           return;
         }
-        setMaskToolsVisible(!showMaskTools.value, { persist: true });
+        setMaskMode(showMaskTools.value ? "off" : "manual", { persist: true });
+      },
+      "update:mask-mode": (value) => setMaskMode(value, { persist: true }),
+      "cycle-mask-mode": cycleMaskMode,
+      "smart-selection-blocked": (message) => {
+        $q.notify({
+          type: "warning",
+          message: message || "后端服务启动成功后可用",
+          position: "top",
+        });
       },
       "show-original": showOriginalImage,
       "show-processed": showProcessedImage,
@@ -2275,6 +2663,7 @@ const loadImageModelOptions = async ({ preferredModel = currentModel.value } = {
   const metadata =
     modelRegistryStore.imageModels.find((model) => model.id === currentModel.value) || {};
   applyModelRuntimeState(metadata);
+  await loadSamCapabilities();
 };
 
 const syncLayoutDrawers = () => {
@@ -2592,7 +2981,10 @@ const restorePageState = async () => {
         showMaskTools.value = currentModelRequiresMask.value
           ? maskToolsPreferredVisible.value
           : false;
-        setMaskDrawingMode(runtimeUiStore.imageMaskDrawingEnabled, { persist: false });
+        setMaskMode(showMaskTools.value ? resolvePreferredMaskMode() : "off", {
+          persist: false,
+          notifyUnavailable: false,
+        });
         actionScope.value =
           savedUIState.actionScope?.value === "folder"
             ? { label: "整个文件夹", value: "folder" }
@@ -2688,6 +3080,7 @@ onBeforeRouteLeave(async (to, from, next) => {
 // 在组件卸载时清理资源
 onUnmounted(async () => {
   setImageProcessingGuard(false);
+  clearSamSmartSelectionOverlay();
   unregisterImageE2ETestBridge();
   layoutFooter?.clearPageFooter?.(imagePageFooterOwner);
   layoutDrawers?.clearPageDrawer?.("left", imagePageLeftDrawerOwner);

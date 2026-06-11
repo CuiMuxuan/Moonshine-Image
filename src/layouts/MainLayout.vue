@@ -482,6 +482,42 @@ const getSkippedAutoStartMessage = () =>
     ? "开发环境已跳过自动启动 Moonshine AI 引擎；需要时请打开后端管理手动启动。"
     : "当前环境未自动启动 Moonshine AI 引擎";
 
+const syncBackendRuntimePort = async (port) => {
+  const normalizedPort = Number(port);
+  if (
+    !Number.isInteger(normalizedPort) ||
+    normalizedPort < 1024 ||
+    normalizedPort > 65535
+  ) {
+    return false;
+  }
+
+  api.updateConfig({
+    general: {
+      backendPort: normalizedPort,
+    },
+  });
+
+  if (configStore.config.general?.backendPort === normalizedPort) {
+    return true;
+  }
+
+  const result = await configStore.saveConfig({
+    ...configStore.config,
+    general: {
+      ...(configStore.config.general || {}),
+      backendPort: normalizedPort,
+    },
+  });
+
+  if (!result?.success) {
+    console.warn("Failed to sync runtime backend port:", result?.error || result?.errors);
+    return false;
+  }
+
+  return true;
+};
+
 const prepareBackendEngine = async () => {
   const invoke = getElectronInvoke();
   if (!invoke || import.meta.env.DEV || configStore.config.general?.autoStart === false) {
@@ -509,6 +545,7 @@ const prepareBackendEngine = async () => {
 
     const processStatus = await invoke("check-backend-status");
     if (processStatus?.success && processStatus.running) {
+      await syncBackendRuntimePort(processStatus.port);
       backendEngineStore.setPhase("verifying");
       const reachable = await checkBackendStatus({ notifyOnFailure: false });
       if (!reachable) {
@@ -549,10 +586,20 @@ const prepareBackendEngine = async () => {
       port: generalConfig.backendPort || 8080,
       device: generalConfig.launchMode || "cuda",
       model: generalConfig.defaultModel || "lama",
-      modelDir: generalConfig.modelDir || generalConfig.modelPath || "",
+      modelDir: generalConfig.modelDir || "",
     });
     if (!startResult?.success) {
       throw new Error(startResult?.error || "AI 引擎启动失败");
+    }
+
+    await syncBackendRuntimePort(startResult.port || generalConfig.backendPort || 8080);
+    if (startResult.portChanged) {
+      $q.notify({
+        type: "warning",
+        message: `配置端口 ${startResult.requestedPort} 被占用，已自动切换到 ${startResult.port}`,
+        position: "top",
+        timeout: 5000,
+      });
     }
 
     backendEngineStore.setPhase("verifying");

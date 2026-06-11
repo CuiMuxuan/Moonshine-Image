@@ -45,22 +45,20 @@ export const buildBackendPathSelectionBlockedMessage = (
   {
     currentBackendProjectPath = "",
     currentModelDir = "",
-    currentModelPath = "",
     selectedBackendProjectPath = "",
     selectedModelDir = "",
-    selectedModelPath = "",
   } = {}
 ) => {
   const lines = [buildBackendPathBlockedMessage(validationResult, { includePathList: false })];
   lines.push(`当前后端项目路径：${normalizePathText(currentBackendProjectPath)}`);
-  lines.push(`当前模型目录路径：${normalizePathText(currentModelDir || currentModelPath)}`);
+  lines.push(`当前模型目录路径：${normalizePathText(currentModelDir)}`);
 
   const selectedProject = String(selectedBackendProjectPath || "").trim();
   if (selectedProject) {
     lines.push(`尝试选择的后端项目路径：${selectedProject}`);
   }
 
-  const selectedModel = String(selectedModelDir || selectedModelPath || "").trim();
+  const selectedModel = String(selectedModelDir || "").trim();
   if (selectedModel) {
     lines.push(`尝试选择的模型目录路径：${selectedModel}`);
   }
@@ -71,7 +69,6 @@ export const buildBackendPathSelectionBlockedMessage = (
 export const validateBackendPaths = async ({
   backendProjectPath = "",
   modelDir = "",
-  modelPath = "",
 } = {}) => {
   if (!window.electron?.ipcRenderer?.invoke) {
     return {
@@ -87,7 +84,6 @@ export const validateBackendPaths = async ({
     const result = await window.electron.ipcRenderer.invoke("validate-backend-paths", {
       backendProjectPath,
       modelDir,
-      modelPath,
     });
     return normalizeValidationResult(result);
   } catch (error) {
@@ -105,5 +101,4 @@ export const validateBackendPathsForConfig = (generalConfig = {}) =>
   validateBackendPaths({
     backendProjectPath: generalConfig?.backendProjectPath || "",
     modelDir: generalConfig?.modelDir || "",
-    modelPath: generalConfig?.modelPath || "",
   });

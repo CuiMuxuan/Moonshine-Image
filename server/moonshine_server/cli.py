@@ -11,7 +11,7 @@ from typer_config import use_json_config
 
 from moonshine_server.const import *
 from moonshine_server.runtime import setup_model_dir, dump_environment_info, check_device
-from moonshine_server.schema import InteractiveSegModel, Device, RealESRGANModel, RemoveBGModel
+from moonshine_server.schema import Device, RealESRGANModel, RemoveBGModel
 
 typer_app = typer.Typer(pretty_exceptions_show_locals=False, add_completion=False)
 
@@ -126,11 +126,6 @@ def start(
         None, help=OUTPUT_DIR_HELP, dir_okay=True, file_okay=False
     ),
     quality: int = Option(95, help=QUALITY_HELP),
-    enable_interactive_seg: bool = Option(False, help=INTERACTIVE_SEG_HELP),
-    interactive_seg_model: InteractiveSegModel = Option(
-        InteractiveSegModel.sam2_1_tiny, help=INTERACTIVE_SEG_MODEL_HELP
-    ),
-    interactive_seg_device: Device = Option(Device.cpu),
     enable_remove_bg: bool = Option(False, help=REMOVE_BG_HELP),
     remove_bg_device: Device = Option(Device.cpu, help=REMOVE_BG_DEVICE_HELP),
     remove_bg_model: RemoveBGModel = Option(RemoveBGModel.briaai_rmbg_1_4),
@@ -214,9 +209,6 @@ def start(
         mask_dir=mask_dir,
         output_dir=output_dir,
         quality=quality,
-        enable_interactive_seg=enable_interactive_seg,
-        interactive_seg_model=interactive_seg_model,
-        interactive_seg_device=interactive_seg_device,
         enable_remove_bg=enable_remove_bg,
         remove_bg_device=remove_bg_device,
         remove_bg_model=remove_bg_model,

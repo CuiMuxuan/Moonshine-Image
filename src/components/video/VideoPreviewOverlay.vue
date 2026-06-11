@@ -154,6 +154,7 @@ const getFallbackBounds = () => {
 const getRenderableBounds = (bounds) => bounds || getFallbackBounds();
 
 const selectedSourceRect = computed(() => {
+  if (videoStore.selectedMask?.type === "samVideo") return null;
   if (!selectedAsset.value || !selectedState.value) return null;
 
   const bounds = getRenderableBounds(selectedAsset.value.bounds);
@@ -217,7 +218,11 @@ const overlayRootStyle = computed(() => ({
 }));
 
 const drawingEnabled = computed(
-  () => videoStore.maskTool.drawingEnabled && selectedState.value && !props.disabled
+  () =>
+    videoStore.maskTool.drawingEnabled &&
+    selectedState.value &&
+    videoStore.selectedMask?.type !== "samVideo" &&
+    !props.disabled
 );
 
 const overlayCanvasStyle = computed(() => ({
@@ -258,7 +263,10 @@ const selectionBoxStyle = computed(() => {
     width: `${selectedDisplayBox.value.width}px`,
     height: `${selectedDisplayBox.value.height}px`,
     pointerEvents:
-      props.disabled || videoStore.maskTool.drawingEnabled || !props.allowMaskTransform
+      props.disabled ||
+      videoStore.selectedMask?.type === "samVideo" ||
+      videoStore.maskTool.drawingEnabled ||
+      !props.allowMaskTransform
         ? "none"
         : "auto",
   };
@@ -295,11 +303,38 @@ const ensureEditableCanvas = async () => {
 const refreshAssets = async () => {
   const nextAssets = await Promise.all(
     videoStore.masks.map(async (mask) => {
+      if (mask.type === "samVideo") {
+        const frames = [];
+        for (const frame of mask.samFrames || []) {
+          const frameMasks = [];
+          for (const item of frame.masks || []) {
+            if (!item.mask) continue;
+            frameMasks.push({
+              objectId: item.objectId,
+              image: await loadImageElement(item.mask),
+            });
+          }
+          if (frameMasks.length > 0) {
+            frames.push({
+              frameIndex: Number(frame.frameIndex || 0),
+              time: Number(frame.time ?? 0),
+              masks: frameMasks,
+            });
+          }
+        }
+        return {
+          maskId: mask.id,
+          image: null,
+          bounds: null,
+          samFrames: frames.sort((a, b) => a.frameIndex - b.frameIndex),
+        };
+      }
       if (!mask.baseMaskDataUrl) {
         return {
           maskId: mask.id,
           image: null,
           bounds: null,
+          samFrames: [],
         };
       }
 
@@ -309,6 +344,7 @@ const refreshAssets = async () => {
         maskId: mask.id,
         image,
         bounds,
+        samFrames: [],
       };
     })
   );
@@ -379,10 +415,37 @@ const renderOverlay = () => {
 
   videoStore.masks.forEach((mask) => {
     const asset = assets.value.find((item) => item.maskId === mask.id);
-    if (!asset?.image) return;
+    if (!asset) return;
 
     const state = videoStore.getMaskStateAtTime(mask.id, videoStore.currentTime);
     if (!state) return;
+
+    if (mask.type === "samVideo") {
+      const enabledObjects = new Set(
+        (mask.samObjects || [])
+          .filter((item) => item.enabled !== false)
+          .map((item) => Number(item.objectId))
+      );
+      if (enabledObjects.size === 0 || !asset.samFrames?.length) return;
+      const nearestFrame = asset.samFrames.reduce((best, frame) => {
+        if (!best) return frame;
+        const bestDistance = Math.abs(Number(best.time || 0) - Number(videoStore.currentTime || 0));
+        const nextDistance = Math.abs(Number(frame.time || 0) - Number(videoStore.currentTime || 0));
+        return nextDistance < bestDistance ? frame : best;
+      }, null);
+      if (!nearestFrame) return;
+
+      ctx.save();
+      ctx.globalAlpha = getMaskPreviewOpacity(mask.id);
+      nearestFrame.masks.forEach((item) => {
+        if (!enabledObjects.has(Number(item.objectId))) return;
+        ctx.drawImage(item.image, 0, 0, safeSourceWidth.value, safeSourceHeight.value);
+      });
+      ctx.restore();
+      return;
+    }
+
+    if (!asset.image) return;
 
     const imageSource =
       mask.id === editableMaskId.value && editableCanvasRef.value ? editableCanvasRef.value : asset.image;
@@ -689,7 +752,22 @@ const finishInteraction = () => {
 
 watch(
   () => [
-    videoStore.masks.map((mask) => `${mask.id}:${mask.baseMaskDataUrl}`).join("|"),
+    videoStore.masks
+      .map((mask) =>
+        [
+          mask.id,
+          mask.type,
+          mask.baseMaskDataUrl,
+          ...(mask.samObjects || []).map((item) => `${item.objectId}:${item.enabled !== false}`),
+          ...(mask.samFrames || []).map(
+            (frame) =>
+              `${frame.frameIndex}:${(frame.masks || [])
+                .map((item) => `${item.objectId}:${item.mask}`)
+                .join(",")}`
+          ),
+        ].join("|")
+      )
+      .join("||"),
     safeSourceWidth.value,
     safeSourceHeight.value,
   ],
@@ -725,6 +803,8 @@ watch(
           mask.endTime,
           mask.interpolation,
           mask.enabled,
+          mask.type,
+          ...(mask.samObjects || []).map((item) => `${item.objectId}:${item.enabled !== false}`),
           ...(mask.keyframes || []).map(
             (keyframe) =>
               [

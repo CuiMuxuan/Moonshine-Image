@@ -119,7 +119,7 @@
                 <q-input v-model="localConfig.general.backendProjectPath" label="后端项目路径" readonly>
                   <template #append><q-btn round dense flat icon="folder" @click="selectBackendProjectPath" /></template>
                 </q-input>
-                <q-input v-model="localConfig.general.modelPath" label="模型目录" readonly>
+                <q-input v-model="localConfig.general.modelDir" label="模型目录" readonly>
                   <template #append><q-btn round dense flat icon="folder" @click="selectModelPath" /></template>
                 </q-input>
                 <q-select v-model="localConfig.general.defaultModel" label="默认模型" :options="['lama']" />
@@ -133,6 +133,7 @@
                 @update:selected-model-id="selectedModelId = $event"
                 @open-backend-manager="$emit('open-backend-manager')"
                 @model-downloaded="handleModelDownloaded"
+                @default-sam-model-updated="handleDefaultSamModelUpdated"
               />
             </q-tab-panel>
 
@@ -649,8 +650,7 @@ const selectModelPath = async () => {
     if (!value) return;
     const validation = await validateBackendPaths({
       backendProjectPath: localConfig.value.general.backendProjectPath || "",
-      modelDir: localConfig.value.general.modelDir || "",
-      modelPath: value,
+      modelDir: value,
     });
     if (!validation.valid) {
       $q.notify({
@@ -658,15 +658,14 @@ const selectModelPath = async () => {
         message: buildBackendPathSelectionBlockedMessage(validation, {
           currentBackendProjectPath: localConfig.value.general.backendProjectPath || "",
           currentModelDir: localConfig.value.general.modelDir || "",
-          currentModelPath: localConfig.value.general.modelPath || "",
-          selectedModelPath: value,
+          selectedModelDir: value,
         }),
         position: "top",
         timeout: 6000,
       });
       return;
     }
-    localConfig.value.general.modelPath = value;
+    localConfig.value.general.modelDir = value;
   } catch (error) {
     $q.notify({ type: "negative", message: `选择模型目录失败：${error.message}` });
   }
@@ -679,7 +678,6 @@ const selectBackendProjectPath = async () => {
     const validation = await validateBackendPaths({
       backendProjectPath: value,
       modelDir: localConfig.value.general.modelDir || "",
-      modelPath: localConfig.value.general.modelPath || "",
     });
     if (!validation.valid) {
       $q.notify({
@@ -687,7 +685,6 @@ const selectBackendProjectPath = async () => {
         message: buildBackendPathSelectionBlockedMessage(validation, {
           currentBackendProjectPath: localConfig.value.general.backendProjectPath || "",
           currentModelDir: localConfig.value.general.modelDir || "",
-          currentModelPath: localConfig.value.general.modelPath || "",
           selectedBackendProjectPath: value,
         }),
         position: "top",
@@ -755,7 +752,6 @@ const doSaveSettings = async () => {
     const backendPathValidation = await validateBackendPaths({
       backendProjectPath: serializableConfig.general?.backendProjectPath || "",
       modelDir: serializableConfig.general?.modelDir || "",
-      modelPath: serializableConfig.general?.modelPath || "",
     });
     if (!backendPathValidation.valid) {
       $q.notify({
@@ -811,6 +807,18 @@ const applyInitialTarget = () => {
 };
 const handleModelDownloaded = (modelId) => {
   emit("model-downloaded", modelId);
+};
+const handleDefaultSamModelUpdated = (payload) => {
+  if (!localConfig.value.masking) {
+    localConfig.value.masking = {};
+  }
+  const modelId = typeof payload === "string" ? payload : payload?.modelId;
+  const configKey = typeof payload === "object" ? payload?.configKey : "defaultSamModel";
+  if (!modelId || !configKey) return;
+  localConfig.value.masking[configKey] = modelId;
+  if (configKey === "defaultSam1Model") {
+    localConfig.value.masking.defaultSamModel = modelId;
+  }
 };
 
 watch(() => props.modelValue, (opened) => {

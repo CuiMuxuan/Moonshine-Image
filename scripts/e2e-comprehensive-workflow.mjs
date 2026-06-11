@@ -214,7 +214,6 @@ function createMockConfig() {
     general: {
       backendPort: 8091,
       launchMode: "cpu",
-      modelPath: "",
       modelDir: "",
       backendProjectPath: "C:\\Moonshine-E2E",
       defaultModel: "lama",
@@ -377,7 +376,7 @@ async function installElectronMock(context) {
         case "check-backend-status":
           return { success: true, running: false };
         case "check-python":
-          return { success: true, version: "Python 3.11.5 (E2E)" };
+          return { success: true, version: "Python 3.12.11 (E2E)" };
         case "check-project":
           return { success: true, path: payload || savedConfig.general.backendProjectPath };
         case "check-venv":

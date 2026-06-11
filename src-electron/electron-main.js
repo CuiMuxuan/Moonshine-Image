@@ -11,6 +11,7 @@ import {
 } from "electron";
 import path from "node:path";
 import os from "node:os";
+import nodeNet from "node:net";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import crypto from "node:crypto";
 import fs from "fs";
@@ -40,6 +41,7 @@ import {
   createDefaultAppConfig,
   DEFAULT_APP_CONFIG,
   DEFAULT_IMAGE_OUTPUT_QUALITY,
+  DEFAULT_MASKING_CONFIG,
   DEFAULT_TEMP_CLEANUP,
   IMAGE_PROCESSING_METHOD_OPTIONS,
   IMAGE_OUTPUT_FORMAT_OPTIONS,
@@ -53,6 +55,7 @@ import {
   normalizeShortcutConfig,
   validateShortcutConfig as validateShortcutConfigShape,
 } from "../src/utils/shortcutConfig.js";
+import { createDefaultSam3Lexicon } from "../src/shared/samLexiconDefaults.js";
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const APP_DISPLAY_NAME = "Moonshine-Image";
@@ -63,6 +66,7 @@ app.setPath("userData", path.join(app.getPath("appData"), APP_DISPLAY_NAME));
 
 // Backend service process
 let backendProcess = null;
+let backendServicePort = null;
 global.projectPath = "";
 const activeFfmpegTasks = new Map();
 const activeProcessingTasks = new Map();
@@ -82,7 +86,7 @@ protocol.registerSchemesAsPrivileged([
 // Global configuration object
 let globalConfig = cloneConfig(DEFAULT_APP_CONFIG);
 
-const TARGET_PYTHON_VERSION = "3.11.5";
+const TARGET_PYTHON_VERSION = "3.12.11";
 const MIN_SYSTEM_PYTHON_MINOR = 10;
 const MAX_SYSTEM_PYTHON_MINOR = 12;
 const BUNDLED_RUNTIME_STATE_FILE = "runtime-state.json";
@@ -94,6 +98,8 @@ const QUICK_FINGERPRINT_SAMPLE_SIZE = 64 * 1024;
 const BACKEND_PATH_CJK_BLOCK_MESSAGE =
   "项目路径中存在中文，可能导致项目运行失败，本次静默启动停止，请在全局配置后端配置中记录当前的项目路径和模型路径，然后将其移动到不含中文的路径下，并选择该路径。";
 const CJK_PATH_PATTERN = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u;
+const BACKEND_PORT_HOST = "127.0.0.1";
+const BACKEND_PORT_RETRY_LIMIT = 20;
 let packagedIntegrityStatus = null;
 
 function validateShortcutConfig(shortcuts = {}) {
@@ -134,6 +140,12 @@ function mergeConfigForStrictValidation(config = {}) {
     merged.fileManagement = {
       ...merged.fileManagement,
       ...config.fileManagement,
+    };
+  }
+  if (isPlainObject(config?.masking)) {
+    merged.masking = {
+      ...merged.masking,
+      ...config.masking,
     };
   }
   return merged;
@@ -193,8 +205,8 @@ function getDefaultModelDir() {
     : path.join(process.cwd(), PACKAGED_MODELS_RESOURCE_DIR);
 }
 
-function isLegacyDefaultModelPath(modelPath) {
-  const normalized = path.normalize(String(modelPath || ""));
+function isLegacyDefaultModelDir(modelDir) {
+  const normalized = path.normalize(String(modelDir || ""));
   if (!normalized) {
     return true;
   }
@@ -623,22 +635,18 @@ function normalizeBackendPathValidationInput(input = {}) {
       ? input.backendProjectPath
       : globalConfig.general?.backendProjectPath || global.projectPath || "";
   const modelDirInput =
-    input.modelDir !== undefined ? input.modelDir : globalConfig.general?.modelDir || "";
-  const modelPathInput =
-    input.modelPath !== undefined ? input.modelPath : globalConfig.general?.modelPath || "";
+    input.modelDir !== undefined
+      ? input.modelDir
+      : globalConfig.general?.modelDir || "";
 
   const backendProjectPath = normalizeStoredBackendProjectPath(backendProjectPathInput);
   const modelDir = String(modelDirInput || "").trim();
-  const modelPath = String(modelPathInput || "").trim();
   const bundledMode = isBundledBackendMode(backendProjectPath || getDefaultBackendProjectPath());
-  const effectiveModelDir = bundledMode
-    ? getEffectiveBundledModelDir()
-    : modelDir || modelPath || "";
+  const effectiveModelDir = modelDir || (bundledMode ? getEffectiveBundledModelDir() : "");
 
   return {
     backendProjectPath,
     modelDir,
-    modelPath,
     bundledMode,
     effectiveModelDir,
   };
@@ -661,14 +669,6 @@ function buildBackendPathValidationResult(input = {}) {
       field: "modelDir",
       label: "模型目录路径",
       path: normalized.modelDir,
-    });
-  }
-
-  if (normalized.modelPath && containsCjkCharacter(normalized.modelPath)) {
-    invalidPaths.push({
-      field: "modelPath",
-      label: "模型目录路径",
-      path: normalized.modelPath,
     });
   }
 
@@ -730,6 +730,66 @@ function sleep(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function isBackendPortAvailable(port, host = BACKEND_PORT_HOST) {
+  return new Promise((resolve) => {
+    const probe = nodeNet.createServer();
+
+    const cleanup = () => {
+      probe.removeAllListeners();
+    };
+
+    probe.once("error", () => {
+      cleanup();
+      resolve(false);
+    });
+
+    probe.once("listening", () => {
+      probe.close(() => {
+        cleanup();
+        resolve(true);
+      });
+    });
+
+    probe.listen(port, host);
+  });
+}
+
+async function resolveAvailableBackendPort(preferredPort, options = {}) {
+  const retryLimit = normalizeInteger(
+    options.retryLimit,
+    BACKEND_PORT_RETRY_LIMIT,
+    1,
+    100
+  );
+  const basePort = normalizeInteger(preferredPort, 8080, 1024, 65535);
+  const attemptedPorts = [];
+
+  for (let offset = 0; offset < retryLimit; offset += 1) {
+    const port = basePort + offset;
+    if (port > 65535) {
+      break;
+    }
+
+    attemptedPorts.push(port);
+    if (await isBackendPortAvailable(port)) {
+      return {
+        success: true,
+        port,
+        requestedPort: basePort,
+        portChanged: port !== basePort,
+        attemptedPorts,
+      };
+    }
+  }
+
+  return {
+    success: false,
+    requestedPort: basePort,
+    attemptedPorts,
+    error: `后端端口 ${attemptedPorts.join(", ")} 均已被占用，请释放其中一个端口或在全局设置中指定其他端口。`,
+  };
 }
 
 function verifyPackagedManifestEntry(entry, resourcesRoot) {
@@ -916,10 +976,27 @@ function isBackendProjectStructureComplete(projectPath) {
   );
 }
 
+function getPackagedRuntimeMetadata() {
+  const metadataPath = getPackagedRuntimeMetadataPath();
+  if (!fs.existsSync(metadataPath)) {
+    return {};
+  }
+  try {
+    return readJsonFile(metadataPath);
+  } catch (error) {
+    console.warn("Failed to read packaged runtime metadata:", error);
+    return {};
+  }
+}
+
 function getBundledRuntimeCommandEnv(overrides = {}) {
   const modelDir = getPackagedModelsPath();
+  const runtimeMetadata = getPackagedRuntimeMetadata();
   return {
     ...process.env,
+    MOONSHINE_PACKAGED_RUNTIME: "1",
+    MOONSHINE_RUNTIME_FLAVOR: runtimeMetadata.runtimeFlavor || "external",
+    MOONSHINE_MODEL_BUNDLE: runtimeMetadata.modelBundle || "external-models",
     ...overrides,
     TORCH_HOME: modelDir,
     XDG_CACHE_HOME: modelDir,
@@ -933,6 +1010,13 @@ function getBundledRuntimeCommandEnv(overrides = {}) {
 
 function getEffectiveBundledModelDir() {
   return getPackagedModelsPath();
+}
+
+function resolveEffectiveModelDir(input = {}) {
+  const modelDir =
+    input.modelDir !== undefined ? input.modelDir : globalConfig.general?.modelDir || "";
+  const configuredModelDir = String(modelDir || "").trim();
+  return configuredModelDir || getEffectiveBundledModelDir();
 }
 
 async function runProcess(command, args = [], options = {}) {
@@ -1152,7 +1236,7 @@ async function ensureBundledRuntimeReady(sendLog) {
       runtimeEnvPath: getBundledRuntimeEnvPath(),
       backendPath: getPackagedBackendRuntimeProjectPath(),
       pythonPath: bundledPython,
-      modelPath: getBundledDefaultModelPath(),
+      defaultModelFilePath: getBundledDefaultModelPath(),
     });
   });
 
@@ -1288,8 +1372,10 @@ async function detectSystemPython() {
   if (os.platform() === "win32") {
     const userName = os.userInfo().username;
     const pathCandidates = [
+      "C:\\Python312\\python.exe",
       "C:\\Python311\\python.exe",
       "C:\\Python310\\python.exe",
+      `C:\\Users\\${userName}\\AppData\\Local\\Programs\\Python\\Python312\\python.exe`,
       `C:\\Users\\${userName}\\AppData\\Local\\Programs\\Python\\Python311\\python.exe`,
       `C:\\Users\\${userName}\\AppData\\Local\\Programs\\Python\\Python310\\python.exe`,
     ];
@@ -1394,10 +1480,10 @@ function buildManualVenvGuide(projectPath) {
   const safeProjectPath = projectPath || "<backend project path>";
   return {
     downloadUrl:
-      "https://www.python.org/ftp/python/3.11.5/python-3.11.5-amd64.exe",
+      "https://www.python.org/ftp/python/3.12.11/python-3.12.11-amd64.exe",
     commands: [
       `cd /d "${safeProjectPath}"`,
-      "py -3.11 -m venv .venv",
+      "py -3.12 -m venv .venv",
       ".\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple",
     ],
   };
@@ -1479,15 +1565,76 @@ function getConfigPath() {
   return path.join(configDir, "config.json");
 }
 
+function getConfigDirectory() {
+  const configPath = getConfigPath();
+  return path.dirname(configPath);
+}
+
+function getSam3LexiconPath() {
+  return path.join(getConfigDirectory(), "sam3-lexicon.json");
+}
+
+function normalizeSam3LexiconEntry(entry = {}, fallbackCategory = "") {
+  const zh = String(entry.zh || "").trim();
+  const en = String(entry.en || "").trim();
+  if (!zh || !en) return null;
+  const normalized = { zh, en };
+  const category = String(entry.category || fallbackCategory || "").trim();
+  if (category) normalized.category = category;
+  return normalized;
+}
+
+function normalizeSam3LexiconPayload(payload = {}) {
+  const defaults = createDefaultSam3Lexicon();
+  const colors = Array.isArray(payload.colors)
+    ? payload.colors.map((entry) => normalizeSam3LexiconEntry(entry)).filter(Boolean)
+    : defaults.colors;
+  const nouns = Array.isArray(payload.nouns)
+    ? payload.nouns.map((entry) => normalizeSam3LexiconEntry(entry, "自定义")).filter(Boolean)
+    : defaults.nouns;
+
+  return {
+    version: Number(payload.version || defaults.version) || defaults.version,
+    colors: colors.length ? colors : defaults.colors,
+    nouns: nouns.length ? nouns : defaults.nouns,
+  };
+}
+
+function loadSam3Lexicon() {
+  const lexiconPath = getSam3LexiconPath();
+  if (!fs.existsSync(lexiconPath)) {
+    const defaultLexicon = createDefaultSam3Lexicon();
+    fs.writeFileSync(lexiconPath, JSON.stringify(defaultLexicon, null, 2), "utf8");
+    return { ...defaultLexicon, path: lexiconPath, created: true };
+  }
+
+  const parsed = JSON.parse(fs.readFileSync(lexiconPath, "utf8"));
+  const normalized = normalizeSam3LexiconPayload(parsed);
+  if (JSON.stringify(parsed) !== JSON.stringify(normalized)) {
+    fs.writeFileSync(lexiconPath, JSON.stringify(normalized, null, 2), "utf8");
+  }
+  return { ...normalized, path: lexiconPath, created: false };
+}
+
+function saveSam3Lexicon(payload = {}) {
+  const lexiconPath = getSam3LexiconPath();
+  const normalized = normalizeSam3LexiconPayload(payload);
+  fs.writeFileSync(lexiconPath, JSON.stringify(normalized, null, 2), "utf8");
+  return { ...normalized, path: lexiconPath, saved: true };
+}
+
 function createRuntimeDefaultConfig() {
   const userDataPath = app.getPath("userData");
   const nextConfig = createDefaultAppConfig();
   nextConfig.fileManagement.downloadPath = path.join(userDataPath, "downloads");
   nextConfig.fileManagement.tempPath = path.join(userDataPath, "temp");
-  nextConfig.general.modelPath = getDefaultModelDir();
-  nextConfig.general.modelDir = "";
+  nextConfig.general.modelDir = getDefaultModelDir();
   nextConfig.general.backendProjectPath = getDefaultBackendProjectPath();
   nextConfig.general.defaultModel = "lama";
+  nextConfig.masking.defaultSamModel = DEFAULT_MASKING_CONFIG.defaultSamModel;
+  nextConfig.masking.defaultSam1Model = DEFAULT_MASKING_CONFIG.defaultSam1Model;
+  nextConfig.masking.defaultSam2Model = DEFAULT_MASKING_CONFIG.defaultSam2Model;
+  nextConfig.masking.defaultSam3Model = DEFAULT_MASKING_CONFIG.defaultSam3Model;
   nextConfig.video.tempFramesPath = path.join(userDataPath, "temp", "video_frames");
   return nextConfig;
 }
@@ -1622,14 +1769,26 @@ function sanitizeAppConfig(config = {}) {
   )
     ? merged.advanced.videoProcessingEngine
     : "auto";
+  merged.masking.defaultSamModel =
+    String(merged.masking?.defaultSamModel || "").trim() ||
+    DEFAULT_MASKING_CONFIG.defaultSamModel;
+  merged.masking.defaultSam1Model =
+    String(merged.masking?.defaultSam1Model || merged.masking?.defaultSamModel || "").trim() ||
+    DEFAULT_MASKING_CONFIG.defaultSam1Model;
+  merged.masking.defaultSam2Model =
+    String(merged.masking?.defaultSam2Model || "").trim() ||
+    DEFAULT_MASKING_CONFIG.defaultSam2Model;
+  merged.masking.defaultSam3Model =
+    String(merged.masking?.defaultSam3Model || "").trim() ||
+    DEFAULT_MASKING_CONFIG.defaultSam3Model;
   merged.shortcuts = normalizeShortcutConfig(merged.shortcuts);
-  if (isLegacyDefaultModelPath(merged.general.modelPath)) {
-    merged.general.modelPath = getDefaultModelDir();
+  if (isLegacyDefaultModelDir(merged.general.modelDir)) {
+    merged.general.modelDir = getDefaultModelDir();
   }
   if (app.isPackaged && isBundledBackendMode(merged.general.backendProjectPath)) {
-    merged.general.modelPath = getDefaultModelDir();
-    merged.general.modelDir = "";
+    merged.general.modelDir = merged.general.modelDir || getDefaultModelDir();
   }
+  delete merged.general.modelPath;
   if (merged?.video && Object.prototype.hasOwnProperty.call(merged.video, "outputPath")) {
     delete merged.video.outputPath;
   }
@@ -1665,6 +1824,7 @@ function validateConfig(config) {
       !config.general ||
       !config.fileManagement ||
       !config.advanced ||
+      !config.masking ||
       !config.ui ||
       !config.shortcuts ||
       !config.video
@@ -1679,6 +1839,15 @@ function validateConfig(config) {
 
     // Validate launch mode
     if (!["cuda", "cpu"].includes(config.general.launchMode)) {
+      return false;
+    }
+
+    if (
+      typeof config.masking.defaultSamModel !== "string" ||
+      typeof config.masking.defaultSam1Model !== "string" ||
+      typeof config.masking.defaultSam2Model !== "string" ||
+      typeof config.masking.defaultSam3Model !== "string"
+    ) {
       return false;
     }
 
@@ -1930,6 +2099,24 @@ ipcMain.handle("get-app-config", async () => {
   return global.appConfig || globalConfig;
 });
 
+ipcMain.handle("get-sam3-lexicon", async () => {
+  try {
+    return { success: true, data: loadSam3Lexicon() };
+  } catch (error) {
+    console.error("Failed to load SAM3 lexicon:", error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("save-sam3-lexicon", async (event, payload) => {
+  try {
+    return { success: true, data: saveSam3Lexicon(payload) };
+  } catch (error) {
+    console.error("Failed to save SAM3 lexicon:", error);
+    return { success: false, error: error.message };
+  }
+});
+
 // IPC handler - save app config
 ipcMain.handle("save-app-config", async (event, newConfig) => {
   try {
@@ -1950,7 +2137,6 @@ ipcMain.handle("save-app-config", async (event, newConfig) => {
     const backendPathValidation = buildBackendPathValidationResult({
       backendProjectPath: sanitizedConfig.general?.backendProjectPath || "",
       modelDir: sanitizedConfig.general?.modelDir || "",
-      modelPath: sanitizedConfig.general?.modelPath || "",
     });
     if (!backendPathValidation.valid) {
       return {
@@ -2832,9 +3018,13 @@ ipcMain.handle("check-python", async (event) => {
 
       // Fall back to common installation paths
       const commonPaths = [
+        "C:\\Python312\\python.exe",
         "C:\\Python311\\python.exe",
         "C:\\Python310\\python.exe",
         "C:\\Python39\\python.exe",
+        "C:\\Users\\" +
+          os.userInfo().username +
+          "\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
         "C:\\Users\\" +
           os.userInfo().username +
           "\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
@@ -2943,7 +3133,7 @@ ipcMain.handle("check-python", async (event) => {
             // Create the moonshine-image environment if needed
             sendLog("Creating moonshine-image conda environment...", "info");
             await execCondaCommand(
-              ["create", "-n", "moonshine-image", "python=3.11.5", "-y"],
+              ["create", "-n", "moonshine-image", `python=${TARGET_PYTHON_VERSION}`, "-y"],
               {
                 env: systemEnv,
                 timeout: 300000,
@@ -3067,7 +3257,6 @@ ipcMain.handle("check-project", async (event, selectPath) => {
     const backendPathValidation = buildBackendPathValidationResult({
       backendProjectPath: selectPath || global.projectPath || "",
       modelDir: globalConfig.general?.modelDir || "",
-      modelPath: globalConfig.general?.modelPath || "",
     });
     if (!backendPathValidation.valid) {
       return {
@@ -3216,7 +3405,7 @@ ipcMain.handle("prepare-project-python", async (event, selectPath) => {
       `No system Python or conda was detected. Trying to install Python ${TARGET_PYTHON_VERSION} automatically...`,
       "warning"
     );
-    const installResult = await installPython3115(sendLog);
+    const installResult = await installTargetPython(sendLog);
     if (installResult.success) {
       const detectedAfterInstall = await detectSystemPython();
       if (
@@ -3268,7 +3457,6 @@ ipcMain.handle("set-project-path", async (event, selectPath) => {
     const backendPathValidation = buildBackendPathValidationResult({
       backendProjectPath: normalizedPath,
       modelDir: globalConfig.general?.modelDir || "",
-      modelPath: globalConfig.general?.modelPath || "",
     });
     if (!backendPathValidation.valid) {
       return {
@@ -3406,14 +3594,14 @@ ipcMain.handle("check-dependencies", async () => {
   }
 });
 
-// Helper - install Python 3.11.5
-async function installPython3115(sendLog) {
+// Helper - install the target Python runtime.
+async function installTargetPython(sendLog) {
   try {
     const pythonUrls = {
-      win32: "https://www.python.org/ftp/python/3.11.5/python-3.11.5-amd64.exe",
+      win32: "https://www.python.org/ftp/python/3.12.11/python-3.12.11-amd64.exe",
       darwin:
-        "https://www.python.org/ftp/python/3.11.5/python-3.11.5-macos11.pkg",
-      linux: "https://www.python.org/ftp/python/3.11.5/Python-3.11.5.tgz",
+        "https://www.python.org/ftp/python/3.12.11/python-3.12.11-macos11.pkg",
+      linux: "https://www.python.org/ftp/python/3.12.11/Python-3.12.11.tgz",
     };
     const platform = os.platform();
     const downloadUrl = pythonUrls[platform];
@@ -3483,7 +3671,7 @@ async function installPython3115(sendLog) {
 }
 
 ipcMain.handle("install-python", async () => {
-  return installPython3115();
+  return installTargetPython();
 });
 
 // IPC create venv
@@ -3593,7 +3781,7 @@ ipcMain.handle("create-conda-venv", async (event) => {
 
     if (!envListStdout.includes("moonshine-image")) {
       sendLog("Creating moonshine-image conda environment...", "info");
-      await execCondaCommand(["create", "-n", "moonshine-image", "python=3.11.5", "-y"], {
+      await execCondaCommand(["create", "-n", "moonshine-image", `python=${TARGET_PYTHON_VERSION}`, "-y"], {
         env: systemEnv,
         timeout: 300000,
       });
@@ -3888,7 +4076,6 @@ ipcMain.handle("start-backend-service", async (event, config) => {
     const backendPathValidation = buildBackendPathValidationResult({
       backendProjectPath: global.projectPath,
       modelDir: config?.modelDir || "",
-      modelPath: globalConfig.general?.modelPath || "",
     });
     if (!backendPathValidation.valid) {
       return {
@@ -3915,12 +4102,31 @@ ipcMain.handle("start-backend-service", async (event, config) => {
     global.projectPath = projectResult.path;
     let backendPython = "";
     let backendEnv = getUtf8ProcessEnv();
+    const portResolution = await resolveAvailableBackendPort(config?.port);
+    if (!portResolution.success) {
+      return {
+        success: false,
+        error: portResolution.error,
+        requestedPort: portResolution.requestedPort,
+        attemptedPorts: portResolution.attemptedPorts,
+      };
+    }
+
+    if (portResolution.portChanged) {
+      event.sender.send("backend-output", {
+        type: "warning",
+        message:
+          `配置端口 ${portResolution.requestedPort} 已被占用，` +
+          `已自动切换到可用端口 ${portResolution.port}。`,
+      });
+    }
+
     const args = [
       "main.py",
       "start",
       `--model=${config.model}`,
       `--device=${config.device}`,
-      `--port=${config.port}`,
+      `--port=${portResolution.port}`,
     ];
 
     if (isBundledBackendMode(global.projectPath)) {
@@ -3931,9 +4137,17 @@ ipcMain.handle("start-backend-service", async (event, config) => {
         return bundledResult;
       }
 
+      const effectiveModelDir = resolveEffectiveModelDir({
+        modelDir: config?.modelDir || "",
+      });
       backendPython = bundledResult.pythonPath;
-      backendEnv = getUtf8ProcessEnv(getBundledRuntimeCommandEnv());
-      args.push(`--model-dir=${getEffectiveBundledModelDir()}`);
+      backendEnv = getUtf8ProcessEnv(getBundledRuntimeCommandEnv({
+        TORCH_HOME: effectiveModelDir,
+        XDG_CACHE_HOME: effectiveModelDir,
+        U2NET_HOME: effectiveModelDir,
+        HF_HOME: path.join(effectiveModelDir, "huggingface"),
+      }));
+      args.push(`--model-dir=${effectiveModelDir}`);
     } else {
       const venvInfo = await getUsableProjectVenvInfo(global.projectPath);
       if (!venvInfo.exists || !venvInfo.valid) {
@@ -3984,6 +4198,7 @@ ipcMain.handle("start-backend-service", async (event, config) => {
       stdio: "pipe",
       env: backendEnv,
     });
+    backendServicePort = portResolution.port;
 
     backendProcess.stdout.on("data", (data) => {
       mainWindow.webContents.send("backend-output", {
@@ -4004,13 +4219,20 @@ ipcMain.handle("start-backend-service", async (event, config) => {
         ? `Signal: ${signal}`
         : `Exit code: ${code !== null ? code : "Normal exit"}`;
       backendProcess = null;
+      backendServicePort = null;
       mainWindow.webContents.send("backend-output", {
         type: "info",
         message: `Service stopped, ${exitInfo}`,
       });
     });
 
-    return { success: true };
+    return {
+      success: true,
+      port: portResolution.port,
+      requestedPort: portResolution.requestedPort,
+      portChanged: portResolution.portChanged,
+      attemptedPorts: portResolution.attemptedPorts,
+    };
   } catch (error) {
     return {
       success: false,
@@ -4039,6 +4261,7 @@ ipcMain.handle("stop-backend-service", async () => {
           message: `Service stopped, ${exitInfo}`,
         });
         backendProcess = null;
+        backendServicePort = null;
         resolve({ success: true });
       });
 
@@ -4052,6 +4275,7 @@ ipcMain.handle("stop-backend-service", async () => {
             message: "Service process was forcefully terminated",
           });
           backendProcess = null;
+          backendServicePort = null;
           resolve({ success: true });
         }
       }, 5000);
@@ -4069,6 +4293,7 @@ ipcMain.handle("check-backend-status", async () => {
       success: true,
       running: backendProcess !== null,
       pid: backendProcess ? backendProcess.pid : null,
+      port: backendServicePort,
     };
   } catch (error) {
     return {

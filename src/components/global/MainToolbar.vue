@@ -39,7 +39,14 @@
 
     <q-space />
 
-    <q-btn flat round dense class="q-mr-sm" @click="emit('toggle-theme')">
+    <q-btn
+      flat
+      round
+      dense
+      class="q-mr-sm"
+      data-testid="toggle-theme-button"
+      @click="emit('toggle-theme')"
+    >
       <q-icon :name="themeMode === 'dark' ? 'light_mode' : 'dark_mode'" />
       <q-tooltip class="toolbar-tooltip">
         {{ themeMode === "dark" ? "切换到明亮模式" : "切换到暗黑模式" }}
