@@ -793,8 +793,6 @@ const samVideoState = reactive({
   error: "",
   frameIndex: 0,
   maxFrames: 24,
-  objects: [],
-  lastResult: null,
   lastResultSummary: null,
   lastTrackId: "",
 });
@@ -808,11 +806,6 @@ const VIDEO_DISK_ESTIMATE_FACTORS = Object.freeze({
   segmentBytesPerPixel: 0.18,
   finalVideoMultiplier: 1.2,
   samMaskBytesPerPixel: 0.18,
-});
-const samVideoDraft = reactive({
-  objectId: 1,
-  x: 0,
-  y: 0,
 });
 const sourceFps = ref(30);
 const timelineRows = ref([]);
@@ -1431,8 +1424,6 @@ const canRunSamVideoSelectionFromMaskList = computed(
   () => videoStore.hasVideoFile && !isProcessing.value && !samVideoState.running
 );
 
-const canCreateSamVideoTrack = computed(() => Boolean(samVideoState.lastResult));
-
 const summarizeSamVideoResult = (result = {}) => {
   const frames = Array.isArray(result.frames) ? result.frames : [];
   const maskCount = frames.reduce(
@@ -1448,42 +1439,6 @@ const summarizeSamVideoResult = (result = {}) => {
     failedCount: Number(result.assets?.samVideoMasks?.failedCount || 0),
     modelId: result.modelId || "",
   };
-};
-
-const resetSamVideoDraftToCenter = () => {
-  samVideoDraft.x = Math.round(Math.max(1, Number(videoStore.videoWidth || 1)) / 2);
-  samVideoDraft.y = Math.round(Math.max(1, Number(videoStore.videoHeight || 1)) / 2);
-};
-
-watch(
-  () => [videoStore.videoWidth, videoStore.videoHeight],
-  () => resetSamVideoDraftToCenter(),
-  { immediate: true }
-);
-
-const addSamVideoObjectFromDraft = () => {
-  if (!selectedMaskIsSamVideo.value) {
-    runSamVideoSelectionFromMaskList();
-  }
-  const targetMaskId = videoStore.selectedMaskId;
-  if (!targetMaskId) return;
-  const objectId = Math.max(1, Math.floor(Number(samVideoDraft.objectId || 1)));
-  const x = Math.max(0, Number(samVideoDraft.x || 0));
-  const y = Math.max(0, Number(samVideoDraft.y || 0));
-  const nextPrompt = {
-    objectId,
-    frameIndex: getCurrentSamVideoFrameIndex(),
-    points: [{ x, y, label: 1 }],
-  };
-  videoStore.addSamVideoPromptObject(targetMaskId, nextPrompt);
-  const existingIndex = samVideoState.objects.findIndex((item) => item.objectId === objectId);
-  if (existingIndex >= 0) {
-    samVideoState.objects[existingIndex] = nextPrompt;
-  } else {
-    samVideoState.objects.push(nextPrompt);
-  }
-  samVideoDraft.objectId = Math.max(objectId + 1, samVideoState.objects.length + 1);
-  resetSamVideoDraftToCenter();
 };
 
 const runSamVideoSelectionFromMaskList = async () => {
@@ -1581,7 +1536,6 @@ const clearSelectedSamVideoResult = async () => {
   const assetPaths = collectSamVideoMaskAssetPaths(videoStore.selectedMask);
   const track = videoStore.clearSamVideoResult(videoStore.selectedMaskId);
   await cleanupSamVideoMaskAssetPaths(assetPaths);
-  samVideoState.lastResult = null;
   samVideoState.lastResultSummary = null;
   samVideoState.lastTrackId = "";
   samVideoState.progress = 0;
@@ -1886,7 +1840,6 @@ const runSamVideoPropagation = async () => {
   samVideoState.progress = 0;
   samVideoState.error = "";
   samVideoState.message = "正在准备 SAM2 视频传播";
-  samVideoState.lastResult = null;
   samVideoState.lastResultSummary = null;
   samVideoState.lastTrackId = "";
   updateSamVideoGlobalLoadingOverlay("准备阶段：正在启动 SAM2 视频智能选区任务", samVideoState.progress);
@@ -1966,7 +1919,6 @@ const runSamVideoPropagation = async () => {
     samVideoState.progress = 1;
     updateSamVideoGlobalLoadingOverlay("完成阶段：正在写入智能选区轨道", 1);
     const updateResult = videoStore.updateSamVideoMaskTrackResult(targetMaskId, result);
-    samVideoState.lastResult = null;
     const track = updateResult.mask || null;
     if (track) {
       await cleanupSamVideoMaskAssetPaths(previousAssetPaths);
@@ -1995,22 +1947,6 @@ const runSamVideoPropagation = async () => {
   }
 };
 
-const createSamVideoTrackFromResult = (result = samVideoState.lastResult) => {
-  if (!result || !Array.isArray(result.frames)) return null;
-  const track = videoStore.createSamVideoMaskTrack({ result });
-  if (track) {
-    syncTimelineRowsFromStore();
-  }
-  return track;
-};
-
-const createSamVideoTrackFromLastResult = () => {
-  if (!canCreateSamVideoTrack.value) return null;
-  const track = createSamVideoTrackFromResult();
-  samVideoState.lastTrackId = track?.id || "";
-  samVideoState.message = track ? `已创建 ${track.name}` : "没有可创建的 SAM 视频轨道";
-  return track;
-};
 const canUndoVideoMaskShortcut = computed(
   () => Boolean(isVideoDrawingShortcutReady.value && videoStore.canUndoSelectedMaskDraw)
 );
@@ -7364,11 +7300,8 @@ const createVideoE2ESnapshot = () => {
     samVideo: {
       panelOpen: samVideoState.panelOpen,
       running: samVideoState.running,
-      objectCount: samVideoState.objects.length,
       canRun: canRunSamVideoPropagation.value,
-      canCreateTrack: canCreateSamVideoTrack.value,
       message: samVideoState.message,
-      hasResult: Boolean(samVideoState.lastResult),
       resultFrameCount: samVideoState.lastResultSummary?.frameCount || 0,
       lastTrackId: samVideoState.lastTrackId,
       trackCount: videoStore.masks.filter((mask) => mask.type === "samVideo").length,
@@ -7438,35 +7371,15 @@ const registerVideoE2ETestBridge = () => {
         snapshot: createVideoE2ESnapshot(),
       };
     },
-    addSamVideoObject: (objectPrompt = {}) => {
-      samVideoDraft.objectId = objectPrompt.objectId ?? objectPrompt.object_id ?? 1;
-      samVideoDraft.x = objectPrompt.x ?? videoStore.videoWidth / 2;
-      samVideoDraft.y = objectPrompt.y ?? videoStore.videoHeight / 2;
-      addSamVideoObjectFromDraft();
-      return createVideoE2ESnapshot();
-    },
-    setSamVideoResult: (result = {}) => {
-      samVideoState.lastResult = result;
-      samVideoState.lastResultSummary = summarizeSamVideoResult(result);
-      samVideoState.message = "E2E SAM2 视频结果已注入";
-      samVideoState.error = "";
-      return createVideoE2ESnapshot();
-    },
     updateSelectedSamVideoResult: (result = {}) => {
       const maskId = videoStore.selectedMaskId;
       const updateResult = videoStore.updateSamVideoMaskTrackResult(maskId, result);
+      samVideoState.lastResultSummary = summarizeSamVideoResult(result);
       syncTimelineRowsFromStore();
       return {
         success: Boolean(updateResult?.ok),
         error: updateResult?.error || "",
         maskId: updateResult?.mask?.id || "",
-        snapshot: createVideoE2ESnapshot(),
-      };
-    },
-    createSamVideoTrack: () => {
-      const mask = createSamVideoTrackFromLastResult();
-      return {
-        maskId: mask?.id || "",
         snapshot: createVideoE2ESnapshot(),
       };
     },

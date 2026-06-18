@@ -552,7 +552,7 @@ async function runSmoke(page) {
   assert(writeback.update.snapshot.selectedSamFirstFrameMaskCount === 1, "The first propagated frame should expose one object mask.");
   assert(writeback.update.snapshot.selectedSamHasPreviewMask, "SAM video frames should keep path-backed preview masks.");
   assert(writeback.update.snapshot.selectedSamInlineMaskCount === 0, "SAM video writeback should not keep inline base64 masks in state.");
-  assert(!writeback.update.snapshot.samVideo.hasResult, "SAM video state should not retain the full result after writeback.");
+  assert(writeback.update.snapshot.samVideo.resultFrameCount === 241, "SAM video state should keep only the writeback summary.");
 
   await page.waitForTimeout(500);
   const pageStillVisible = await page.locator('[data-testid="video-page"]').isVisible();

@@ -333,7 +333,7 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "Video page creates empty SAM smart-selection tracks and writes bidirectional job results back into the selected track",
-    pattern: /(?=[\s\S]*sam-video-action-disabled)(?=[\s\S]*samVideoSelectionActionTooltip)(?=[\s\S]*run-sam-video-selection)(?=[\s\S]*runSamVideoSelectionFromMaskList[\s\S]*createEmptySamVideoMaskTrack)(?=[\s\S]*selectedMaskIsSamVideo)(?=[\s\S]*selectedSamVideoPromptObjects)(?=[\s\S]*canRunSamVideoPropagation[\s\S]*selectedSamVideoPromptObjects\.value\.length > 0)(?=[\s\S]*handleSamVideoPromptFromOverlay)(?=[\s\S]*runSamVideoPropagationJob)(?=[\s\S]*getSamVideoPropagationJobResult)(?=[\s\S]*mergeSamVideoPropagationResults)(?=[\s\S]*propagation: "bidirectional")(?=[\s\S]*reverse: true)(?=[\s\S]*updateSamVideoMaskTrackResult\(targetMaskId, result\))(?=[\s\S]*正在写入智能选区轨道)(?=[\s\S]*addSamVideoObject)(?=[\s\S]*setSamVideoResult)[\s\S]*/,
+    pattern: /(?=[\s\S]*sam-video-action-disabled)(?=[\s\S]*samVideoSelectionActionTooltip)(?=[\s\S]*run-sam-video-selection)(?=[\s\S]*runSamVideoSelectionFromMaskList[\s\S]*createEmptySamVideoMaskTrack)(?=[\s\S]*selectedMaskIsSamVideo)(?=[\s\S]*selectedSamVideoPromptObjects)(?=[\s\S]*canRunSamVideoPropagation[\s\S]*selectedSamVideoPromptObjects\.value\.length > 0)(?=[\s\S]*handleSamVideoPromptFromOverlay)(?=[\s\S]*runSamVideoPropagationJob)(?=[\s\S]*getSamVideoPropagationJobResult)(?=[\s\S]*mergeSamVideoPropagationResults)(?=[\s\S]*propagation: "bidirectional")(?=[\s\S]*reverse: true)(?=[\s\S]*updateSamVideoMaskTrackResult\(targetMaskId, result\))(?=[\s\S]*正在写入智能选区轨道)[\s\S]*/,
   });
   assertAbsentPattern({
     file: "src/pages/VideoPage.vue",
@@ -438,7 +438,7 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "SAM video propagation keeps only a summary in reactive page state after writing the track",
-    pattern: /(?=[\s\S]*lastResultSummary: null)(?=[\s\S]*const summarizeSamVideoResult = \(result = \{\}\) =>)(?=[\s\S]*samVideoState\.lastResultSummary = summarizeSamVideoResult\(result\))(?=[\s\S]*videoStore\.updateSamVideoMaskTrackResult\(targetMaskId, result\))(?=[\s\S]*samVideoState\.lastResult = null)(?=[\s\S]*resultFrameCount: samVideoState\.lastResultSummary\?\.frameCount \|\| 0)[\s\S]*/,
+    pattern: /(?=[\s\S]*lastResultSummary: null)(?=[\s\S]*const summarizeSamVideoResult = \(result = \{\}\) =>)(?=[\s\S]*samVideoState\.lastResultSummary = summarizeSamVideoResult\(result\))(?=[\s\S]*videoStore\.updateSamVideoMaskTrackResult\(targetMaskId, result\))(?=[\s\S]*resultFrameCount: samVideoState\.lastResultSummary\?\.frameCount \|\| 0)(?![\s\S]*samVideoState\.lastResult(?!Summary))[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
