@@ -126,7 +126,7 @@ const normalizeSamVideoPromptObject = (object = {}, fallbackObjectId = 1, fallba
   };
 };
 
-const normalizeSamVideoFrame = (frame = {}, options = {}) => ({
+const normalizeSamVideoFrame = (frame = {}) => ({
   frameIndex: Math.max(0, Math.floor(Number(frame.frameIndex ?? frame.frame_index ?? 0))),
   time: Number(frame.time ?? 0),
   masks: (frame.masks || [])
@@ -135,18 +135,15 @@ const normalizeSamVideoFrame = (frame = {}, options = {}) => ({
       const maskAssetId = typeof item.maskAssetId === "string" ? item.maskAssetId : "";
       const maskSignature = typeof item.maskSignature === "string" ? item.maskSignature : "";
       const maskSize = Math.max(0, Number(item.maskSize || 0));
-      const inlineMask =
-        !options.dropInlineMask && typeof item.mask === "string" ? item.mask : "";
       return {
         objectId: Math.max(1, Math.floor(Number((item.objectId ?? item.object_id ?? item.id) || 1))),
-        mask: inlineMask,
         maskPath,
         maskAssetId,
         maskSignature,
         maskSize,
       };
     })
-    .filter((item) => item.objectId > 0 && (item.maskPath || item.mask)),
+    .filter((item) => item.objectId > 0 && item.maskPath),
 });
 
 const createTransparentMaskDataUrl = (width, height) => {
@@ -178,24 +175,12 @@ const normalizeKeyframe = (
   };
 };
 
-const getLegacyKeyframeGroups = (keyframes = []) => {
+const getTypedKeyframeGroups = (keyframes = []) => {
   const safeKeyframes = Array.isArray(keyframes) ? keyframes.map(cloneKeyframe) : [];
-  const hasTypedKeyframe = safeKeyframes.some((item) =>
-    Object.values(MASK_KEYFRAME_TYPES).includes(item?.type)
-  );
-
-  if (hasTypedKeyframe) {
-    const start = safeKeyframes.find((item) => item.type === MASK_KEYFRAME_TYPES.START) || null;
-    const end = safeKeyframes.find((item) => item.type === MASK_KEYFRAME_TYPES.END) || null;
-    const users = safeKeyframes.filter((item) => item.type === MASK_KEYFRAME_TYPES.USER);
-    return { start, end, users };
-  }
-
-  const ordered = [...safeKeyframes].sort((a, b) => Number(a.time || 0) - Number(b.time || 0));
   return {
-    start: ordered[0] || null,
-    end: ordered.length > 1 ? ordered[ordered.length - 1] : ordered[0] || null,
-    users: ordered.slice(1, -1),
+    start: safeKeyframes.find((item) => item.type === MASK_KEYFRAME_TYPES.START) || null,
+    end: safeKeyframes.find((item) => item.type === MASK_KEYFRAME_TYPES.END) || null,
+    users: safeKeyframes.filter((item) => item.type === MASK_KEYFRAME_TYPES.USER),
   };
 };
 
@@ -269,7 +254,7 @@ const syncInheritedEndKeyframe = (mask) => {
   return nextMask;
 };
 
-const reconcileMask = (mask = {}, duration = 0, options = {}) => {
+const reconcileMask = (mask = {}, duration = 0) => {
   const safeDuration = Math.max(0, Number(duration || 0));
   const startTime = clamp(Number(mask.startTime ?? 0), 0, safeDuration);
   const endTime = clamp(Number(mask.endTime ?? safeDuration), startTime, safeDuration);
@@ -277,7 +262,7 @@ const reconcileMask = (mask = {}, duration = 0, options = {}) => {
     mask.type === MASK_TRACK_TYPES.SAM_VIDEO ? MASK_TRACK_TYPES.SAM_VIDEO : MASK_TRACK_TYPES.STANDARD;
 
   const { start: startCandidate, end: endCandidate, users: userCandidates } =
-    getLegacyKeyframeGroups(mask.keyframes);
+    getTypedKeyframeGroups(mask.keyframes);
 
   const startTransform = getMaskKeyframeTransform(startCandidate, DEFAULT_TRANSFORM);
   const startKeyframe = normalizeKeyframe(
@@ -330,7 +315,7 @@ const reconcileMask = (mask = {}, duration = 0, options = {}) => {
         array.findIndex((candidate) => candidate.objectId === item.objectId) === index
       );
     normalizedMask.samFrames = (mask.samFrames || mask.frames || [])
-      .map((frame) => normalizeSamVideoFrame(frame, options.samVideoFrameOptions || {}))
+      .map((frame) => normalizeSamVideoFrame(frame))
       .filter((frame) => frame.masks.length > 0)
       .sort((a, b) => a.frameIndex - b.frameIndex);
     normalizedMask.samPromptObjects = (mask.samPromptObjects || mask.promptObjects || []).map((item) => ({
@@ -508,11 +493,11 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     }
   };
 
-  const commitMask = (maskId, nextMaskInput, options = {}) => {
+  const commitMask = (maskId, nextMaskInput) => {
     const index = getMaskIndexById(maskId);
     if (index === -1) return null;
 
-    const nextMask = reconcileMask(nextMaskInput, videoDuration.value, options);
+    const nextMask = reconcileMask(nextMaskInput, videoDuration.value);
     const nextMasks = [...masks.value];
     nextMasks[index] = nextMask;
     masks.value = nextMasks;
@@ -1118,15 +1103,10 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
         error: "SAM2 已返回结果，但没有可用蒙版。",
       });
     }
-    const shouldDropInlineMasks = result.dropInlineMasks === true;
     const nextMask = commitMask(maskId, {
       id: mask.id,
       keyframes: mask.keyframes,
       ...patch,
-    }, {
-      samVideoFrameOptions: {
-        dropInlineMask: shouldDropInlineMasks,
-      },
     });
     return createResult(Boolean(nextMask), { mask: nextMask });
   };

@@ -473,7 +473,6 @@ function buildPathBackedSamResult({ frameCount = 241, fps = 24 } = {}) {
     height: 960,
     frameCount,
     objectCount: 1,
-    dropInlineMasks: true,
     input: {
       type: "videoPath",
       videoPath: testVideoPath,
@@ -502,7 +501,6 @@ function buildPathBackedSamResult({ frameCount = 241, fps = 24 } = {}) {
       masks: [
         {
           objectId: 1,
-          mask: "",
           maskPath: `C:\\Moonshine-E2E\\temp\\moonshine-sam-video-masks\\track\\run\\mask_f${String(frameIndex).padStart(6, "0")}_o001.jpg`,
           maskAssetId: `e2e:${frameIndex}:1`,
           maskSignature: `sig-${frameIndex}`,
@@ -551,7 +549,10 @@ async function runSmoke(page) {
   assert(writeback.update.snapshot.selectedSamObjectCount === 1, "The selected SAM track should expose one candidate object.");
   assert(writeback.update.snapshot.selectedSamFirstFrameMaskCount === 1, "The first propagated frame should expose one object mask.");
   assert(writeback.update.snapshot.selectedSamHasPreviewMask, "SAM video frames should keep path-backed preview masks.");
-  assert(writeback.update.snapshot.selectedSamInlineMaskCount === 0, "SAM video writeback should not keep inline base64 masks in state.");
+  assert(
+    !("selectedSamInlineMaskCount" in writeback.update.snapshot),
+    "SAM video E2E snapshot should not expose inline mask compatibility counters."
+  );
   assert(writeback.update.snapshot.samVideo.resultFrameCount === 241, "SAM video state should keep only the writeback summary.");
 
   await page.waitForTimeout(500);
@@ -560,7 +561,10 @@ async function runSmoke(page) {
 
   const afterIdleSnapshot = await page.evaluate(() => window.__MOONSHINE_VIDEO_TEST__.getSnapshot());
   assert(afterIdleSnapshot.selectedMaskId, "The smoke should keep a selected SAM video mask.");
-  assert(afterIdleSnapshot.selectedSamInlineMaskCount === 0, "SAM video state should remain path-backed after the preview settles.");
+  assert(
+    !("selectedSamInlineMaskCount" in afterIdleSnapshot),
+    "SAM video state should remain path-backed without inline mask counters after the preview settles."
+  );
 }
 
 async function main() {

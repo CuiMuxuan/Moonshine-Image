@@ -1013,7 +1013,6 @@ class Api:
                         "id": item_id,
                         "index": index,
                         "result": result_data,
-                        "image": result_data,
                         "success": True,
                         **self._build_result_meta(output_spec),
                     }
@@ -1129,8 +1128,6 @@ class Api:
                         "id": item_id,
                         "index": i,
                         "result": result_data,
-                        # Backward compatibility for older frontend response parsing.
-                        "image": result_data,
                         "success": True,
                         **self._build_result_meta(output_spec),
                     }

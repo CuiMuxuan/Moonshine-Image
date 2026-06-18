@@ -29,7 +29,6 @@ const getRequestItemId = (requestData, index) => {
   return undefined;
 };
 
-// Single-file wrapper (kept for compatibility).
 const performInpainting = async (fileId) => {
   try {
     const fileManagerStore = useFileManagerStore();
@@ -132,7 +131,7 @@ const processBatchResults = async (response, requestData = {}) => {
       const result = response.results[i] || {};
       const resultIndex = Number.isInteger(result.index) ? result.index : i;
       const resultId = result.id || getRequestItemId(requestData, resultIndex);
-      const resultPayload = result.result || result.image;
+      const resultPayload = result.result;
 
       if (result.success && resultPayload) {
         try {

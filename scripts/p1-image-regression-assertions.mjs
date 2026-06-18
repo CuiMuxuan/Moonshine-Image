@@ -141,6 +141,11 @@ function runAssertions() {
     description: "Backend batch APIs resolve output spec and return format metadata",
     pattern: /_resolve_result_spec[\s\S]*_build_result_meta\(output_spec\)/,
   });
+  assertAbsentPattern({
+    file: "server/moonshine_server/api.py",
+    description: "Image processing APIs no longer return the old image result alias",
+    pattern: /"image": result_data|Backward compatibility for older frontend response parsing/,
+  });
   assertPattern({
     file: "server/moonshine_server/moonshine/model_registry.py",
     description: "Model registry includes downloadable SAM1, SAM2.1, SAM3, and SAM3.1 mask models from the project model repo",
@@ -336,6 +341,11 @@ function runAssertions() {
     file: "src/services/ImageProcessingService.js",
     description: "Processing results preserve backend format metadata",
     pattern: /addProcessingResult\(resultId,\s*resultPayload,\s*\{[\s\S]*mimeType:\s*result\.mime_type[\s\S]*extension:\s*result\.extension/,
+  });
+  assertAbsentPattern({
+    file: "src/services/ImageProcessingService.js",
+    description: "Image processing service no longer falls back to old result.image payloads",
+    pattern: /result\.result \|\| result\.image|result\.image/,
   });
   assertPattern({
     file: "src/pages/IndexPage.vue",

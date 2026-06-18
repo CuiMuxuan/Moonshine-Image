@@ -1435,8 +1435,7 @@ const summarizeSamVideoResult = (result = {}) => {
     maskCount,
     objectCount: Array.isArray(result.objects) ? result.objects.length : 0,
     persistedCount: Number(result.assets?.samVideoMasks?.persistedCount || 0),
-    droppedCount: Number(result.assets?.samVideoMasks?.droppedCount || 0),
-    failedCount: Number(result.assets?.samVideoMasks?.failedCount || 0),
+    skippedCount: Number(result.assets?.samVideoMasks?.skippedCount || 0),
     modelId: result.modelId || "",
   };
 };
@@ -1559,10 +1558,9 @@ const mergeSamVideoPropagationResults = ({ forward = {}, backward = {}, promptOb
         const objectId = Number(item.objectId ?? item.object_id ?? 0);
         const maskPath = typeof item.maskPath === "string" ? item.maskPath : "";
         const maskSignature = typeof item.maskSignature === "string" ? item.maskSignature : "";
-        if (objectId > 0 && (item.mask || maskPath)) {
+        if (objectId > 0 && maskPath) {
           objectMap.set(objectId, {
             objectId,
-            mask: item.mask || "",
             maskPath,
             maskAssetId: item.maskAssetId || "",
             maskSignature,
@@ -1647,27 +1645,8 @@ const persistSamVideoMaskAssets = async ({
     }
   }
 
-  const estimatedMaskCount = frames.reduce(
-    (total, frame) =>
-      total + (Array.isArray(frame?.masks) ? frame.masks.filter((item) => item?.mask).length : 0),
-    0
-  );
-  if (estimatedMaskCount > 0) {
-    await ensureVideoDiskSpace({
-      targetPath: assetRoot,
-      requiredBytes:
-        Math.max(1, Number(result?.width || videoStore.videoWidth || 1)) *
-        Math.max(1, Number(result?.height || videoStore.videoHeight || 1)) *
-        estimatedMaskCount *
-        VIDEO_DISK_ESTIMATE_FACTORS.samMaskBytesPerPixel,
-      safetyBytes: DISK_SPACE_SAFETY_BYTES,
-      operation: "保存 SAM 视频蒙版资产",
-    });
-  }
-
-  let persistedCount = 0;
-  let droppedCount = 0;
-  let failedCount = 0;
+  let pathBackedCount = 0;
+  let skippedCount = 0;
   const persistedFrames = [];
   const totalFrames = frames.length;
   onProgress?.({ current: 0, total: totalFrames });
@@ -1679,32 +1658,19 @@ const persistSamVideoMaskAssets = async ({
         1,
         Math.floor(Number((item.objectId ?? item.object_id ?? item.id) || 1))
       );
-      const maskData = item.mask || "";
-      if (!maskData) {
-        if (item.maskPath) {
-          persistedMasks.push({ ...item, objectId });
-        }
+      const maskPath = String(item.maskPath || "").trim();
+      if (!maskPath) {
+        skippedCount += 1;
         continue;
       }
-
-      try {
-        const maskBlob = await dataUrlToMaskJpegBlob(maskData);
-        const fileName = `mask_f${String(frameIndex).padStart(6, "0")}_o${String(objectId).padStart(3, "0")}.jpg`;
-        const maskPath = window.electron.ipcRenderer.joinPath(assetRoot, fileName);
-        await saveBlobToPath(maskBlob, maskPath);
-        persistedCount += 1;
-        persistedMasks.push({
-          objectId,
-          maskPath,
-          maskAssetId: `${runId}:${frameIndex}:${objectId}`,
-          maskSize: maskBlob.size,
-          maskSignature: getMaskDataSignature(maskData),
-        });
-      } catch (error) {
-        failedCount += 1;
-        droppedCount += 1;
-        console.warn("保存 SAM 视频蒙版资产失败，已跳过该对象以避免前端内存峰值:", error);
-      }
+      pathBackedCount += 1;
+      persistedMasks.push({
+        objectId,
+        maskPath,
+        maskAssetId: item.maskAssetId || `${runId}:${frameIndex}:${objectId}`,
+        maskSize: Number(item.maskSize || 0),
+        maskSignature: item.maskSignature || "",
+      });
     }
 
     if (persistedMasks.length > 0) {
@@ -1719,7 +1685,6 @@ const persistSamVideoMaskAssets = async ({
 
   return {
     ...result,
-    dropInlineMasks: true,
     frames: persistedFrames,
     assets: {
       ...(result.assets || {}),
@@ -1727,9 +1692,8 @@ const persistSamVideoMaskAssets = async ({
         type: "local-files",
         root: assetRoot,
         runId,
-        persistedCount,
-        droppedCount,
-        failedCount,
+        persistedCount: pathBackedCount,
+        skippedCount,
       },
     },
   };
@@ -1887,7 +1851,6 @@ const runSamVideoPropagation = async () => {
         ...frame,
         masks: (frame.masks || []).map((item) => ({
           objectId: item.objectId,
-          mask: item.maskPath ? "" : item.mask || "",
           maskPath: item.maskPath || "",
           maskAssetId: item.maskAssetId || "",
           maskSignature: item.maskSignature || "",
@@ -2095,39 +2058,6 @@ const getLocalFileUrl = (filePath) => {
     : `file://${encodeURI(normalizedPath)}`;
 };
 
-const getMaskDataSignature = (mask = "") => {
-  const value = String(mask || "");
-  if (!value) return "";
-  return `${value.length}:${value.slice(0, 32)}:${value.slice(-32)}`;
-};
-
-const imageBlobToElement = async (blob) => {
-  const objectUrl = URL.createObjectURL(blob);
-  try {
-    return await loadImageElement(objectUrl);
-  } finally {
-    URL.revokeObjectURL(objectUrl);
-  }
-};
-
-const dataUrlToBlob = (dataUrl = "") => {
-  const value = String(dataUrl || "");
-  const match = value.match(/^data:([^;,]+)?(;base64)?,(.*)$/);
-  if (!match) {
-    throw new Error("无效的蒙版图片数据");
-  }
-
-  const mimeType = match[1] || "image/png";
-  const isBase64 = Boolean(match[2]);
-  const payload = match[3] || "";
-  const binary = isBase64 ? atob(payload) : decodeURIComponent(payload);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return new Blob([bytes], { type: mimeType });
-};
-
 const encodeMaskImageAsJpegBlob = async (imageSource, width, height) => {
   const canvas =
     typeof OffscreenCanvas !== "undefined"
@@ -2185,16 +2115,6 @@ const createBinaryAlphaMaskBitmap = async (image, width, height, { expandForLama
     return await createImageBitmap(canvas);
   }
   return await loadImageElement(canvas.toDataURL("image/png"));
-};
-
-const dataUrlToMaskJpegBlob = async (dataUrl = "") => {
-  const sourceBlob = dataUrlToBlob(dataUrl);
-  const image = await imageBlobToElement(sourceBlob);
-  return encodeMaskImageAsJpegBlob(
-    image,
-    image.naturalWidth || image.width,
-    image.naturalHeight || image.height
-  );
 };
 
 const readLocalFileResponseViaIpc = async (filePath) => {
@@ -6811,7 +6731,6 @@ const createCombinedMaskRenderer = async ({ masks, width, height, modelId = curr
     maskId,
     frameIndex,
     objectId,
-    mask = "",
     maskPath = "",
     maskSignature = "",
   } = {}) =>
@@ -6820,7 +6739,7 @@ const createCombinedMaskRenderer = async ({ masks, width, height, modelId = curr
       frameIndex,
       objectId,
       shouldAutoExpandSamVideoMasks ? "lama-expanded" : "original",
-      maskPath || maskSignature || getMaskDataSignature(mask),
+      maskPath || maskSignature,
     ].join(":");
 
   const rememberSamFrameImage = (key, image) => {
@@ -6840,16 +6759,14 @@ const createCombinedMaskRenderer = async ({ masks, width, height, modelId = curr
     maskId,
     frameIndex,
     objectId,
-    mask,
     maskPath,
     maskSignature,
   }) => {
-    if (!maskPath && !mask) return null;
+    if (!maskPath) return null;
     const cacheKey = getSamFrameCacheKey({
       maskId,
       frameIndex,
       objectId,
-      mask,
       maskPath,
       maskSignature,
     });
@@ -6860,7 +6777,7 @@ const createCombinedMaskRenderer = async ({ masks, width, height, modelId = curr
       return cached;
     }
     try {
-      const image = await loadImageElement(maskPath ? getLocalFileUrl(maskPath) : mask);
+      const image = await loadImageElement(getLocalFileUrl(maskPath));
       return rememberSamFrameImage(
         cacheKey,
         await createBinaryAlphaMaskBitmap(image, width, height, {
@@ -6881,11 +6798,10 @@ const createCombinedMaskRenderer = async ({ masks, width, height, modelId = curr
         masks: (frame.masks || [])
           .map((item) => ({
             objectId: Number(item.objectId || 0),
-            mask: item.mask || "",
             maskPath: item.maskPath || "",
             maskSignature: item.maskSignature || "",
           }))
-          .filter((item) => item.objectId > 0 && (item.maskPath || item.mask)),
+          .filter((item) => item.objectId > 0 && item.maskPath),
       }))
       .filter((frame) => frame.masks.length > 0)
       .sort((a, b) => a.frameIndex - b.frameIndex);
@@ -6977,7 +6893,6 @@ const createCombinedMaskRenderer = async ({ masks, width, height, modelId = curr
               maskId: asset.mask.id,
               frameIndex: nearestFrame.frameIndex,
               objectId: item.objectId,
-              mask: item.mask,
               maskPath: item.maskPath,
               maskSignature: item.maskSignature,
             });
@@ -7283,14 +7198,8 @@ const createVideoE2ESnapshot = () => {
     selectedSamFrameCount: selectedSamFrames.length,
     selectedSamObjectCount: selectedSamObjects.length,
     selectedSamFirstFrameMaskCount: selectedSamFrames[0]?.masks?.length || 0,
-    selectedSamInlineMaskCount: selectedSamFrames.reduce(
-      (total, frame) =>
-        total +
-        (frame.masks || []).filter((item) => typeof item.mask === "string" && item.mask).length,
-      0
-    ),
     selectedSamHasPreviewMask: selectedSamFrames.some((frame) =>
-      (frame.masks || []).some((item) => item.maskPath || item.mask)
+      (frame.masks || []).some((item) => item.maskPath)
     ),
     canUndoMaskDraw: videoStore.canUndoSelectedMaskDraw,
     historyLength: videoStore.videoHistory.length,

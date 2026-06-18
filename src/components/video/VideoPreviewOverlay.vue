@@ -377,12 +377,6 @@ const ensureEditableCanvas = async () => {
   editableMaskId.value = selectedMask.id;
 };
 
-const getMaskDataSignature = (mask = "") => {
-  const value = String(mask || "");
-  if (!value) return "";
-  return `${value.length}:${value.slice(0, 32)}:${value.slice(-32)}`;
-};
-
 const getSamFrameListSignature = (samFrames = []) => {
   const frames = Array.isArray(samFrames) ? samFrames : [];
   const firstFrame = frames[0] || null;
@@ -398,7 +392,7 @@ const getSamFrameListSignature = (samFrames = []) => {
             item.objectId || "",
             item.maskPath || "",
             item.maskAssetId || "",
-            item.maskSignature || getMaskDataSignature(item.mask),
+            item.maskSignature || "",
           ].join(":")
         : "";
     return [
@@ -425,7 +419,6 @@ const getSamFrameCacheKey = ({
   maskId,
   frameIndex,
   objectId,
-  mask = "",
   maskPath = "",
   maskSignature = "",
   modelId = "",
@@ -437,7 +430,7 @@ const getSamFrameCacheKey = ({
     frameIndex,
     objectId,
     String(modelId || "").toLowerCase() === "lama" ? "lama-expanded" : "original",
-    maskPath || maskSignature || getMaskDataSignature(mask),
+    maskPath || maskSignature,
     previewColor,
     Number(previewAlpha || 0).toFixed(3),
   ].join(":");
@@ -564,11 +557,10 @@ const loadSamFrameMaskImage = async ({
   maskId,
   frameIndex,
   objectId,
-  mask,
   maskPath,
   maskSignature,
 }) => {
-  if (!maskPath && !mask) return null;
+  if (!maskPath) return null;
   const previewColor = videoStore.maskTool.brushColor;
   const previewAlpha = videoStore.maskTool.brushAlpha;
   const modelId = props.currentModel;
@@ -576,7 +568,6 @@ const loadSamFrameMaskImage = async ({
     maskId,
     frameIndex,
     objectId,
-    mask,
     maskPath,
     maskSignature,
     modelId,
@@ -591,7 +582,7 @@ const loadSamFrameMaskImage = async ({
   }
 
   try {
-    const image = await loadImageElement(maskPath ? getLocalMaskImageUrl(maskPath) : mask);
+    const image = await loadImageElement(getLocalMaskImageUrl(maskPath));
     return rememberSamFrameImage(
       cacheKey,
       await createPreviewMaskImage(image, {
@@ -647,7 +638,6 @@ const preloadSamFrameMasks = async ({ mask, asset, nearestFrame } = {}) => {
             maskId: mask.id,
             frameIndex: frame.frameIndex,
             objectId: item.objectId,
-            mask: item.mask,
             maskPath: item.maskPath,
             maskSignature: item.maskSignature,
           })
@@ -667,11 +657,10 @@ const refreshAssets = async () => {
             masks: (frame.masks || [])
               .map((item) => ({
                 objectId: Number(item.objectId || 0),
-                mask: item.mask || "",
                 maskPath: item.maskPath || "",
                 maskSignature: item.maskSignature || "",
               }))
-              .filter((item) => item.objectId > 0 && (item.maskPath || item.mask)),
+              .filter((item) => item.objectId > 0 && item.maskPath),
           }))
           .filter((frame) => frame.masks.length > 0)
           .sort((a, b) => a.frameIndex - b.frameIndex);
@@ -808,7 +797,6 @@ const renderOverlay = async () => {
               maskId: mask.id,
               frameIndex: nearestFrame.frameIndex,
               objectId: item.objectId,
-              mask: item.mask,
               maskPath: item.maskPath,
               maskSignature: item.maskSignature,
             });

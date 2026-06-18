@@ -387,8 +387,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
-    description: "SAM video propagation persists frame masks as local assets before writing track state",
-    pattern: /(?=[\s\S]*SAM_VIDEO_MASK_ASSET_DIRECTORY = "moonshine-sam-video-masks")(?=[\s\S]*dataUrlToMaskJpegBlob)(?=[\s\S]*persistSamVideoMaskAssets)(?=[\s\S]*maskPath)(?=[\s\S]*maskAssetId)(?=[\s\S]*maskSize)(?=[\s\S]*maskSignature)(?=[\s\S]*\.jpg`)(?=[\s\S]*await saveBlobToPath\(maskBlob, maskPath\))(?=[\s\S]*dropInlineMasks: true)(?=[\s\S]*const result = await persistSamVideoMaskAssets)(?=[\s\S]*videoStore\.updateSamVideoMaskTrackResult\(targetMaskId, result\))(?=[\s\S]*collectSamVideoMaskAssetPaths)(?=[\s\S]*cleanupSamVideoMaskAssetPaths)(?=[\s\S]*removeVideoMaskTrack)(?=[\s\S]*cleanup-temp-file)[\s\S]*/,
+    description: "SAM video propagation keeps only backend path-backed mask assets before writing track state",
+    pattern: /(?=[\s\S]*SAM_VIDEO_MASK_ASSET_DIRECTORY = "moonshine-sam-video-masks")(?=[\s\S]*buildSamVideoMaskAssetRoot)(?=[\s\S]*persistSamVideoMaskAssets)(?=[\s\S]*const maskPath = String\(item\.maskPath \|\| ""\)\.trim\(\))(?=[\s\S]*persistedMasks\.push\(\{[\s\S]*objectId,[\s\S]*maskPath,[\s\S]*maskAssetId:[\s\S]*maskSize:[\s\S]*maskSignature:)(?=[\s\S]*skippedCount)(?=[\s\S]*const result = await persistSamVideoMaskAssets)(?=[\s\S]*videoStore\.updateSamVideoMaskTrackResult\(targetMaskId, result\))(?=[\s\S]*collectSamVideoMaskAssetPaths)(?=[\s\S]*cleanupSamVideoMaskAssetPaths)(?=[\s\S]*removeVideoMaskTrack)(?=[\s\S]*cleanup-temp-file)[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -430,10 +430,10 @@ function runAssertions() {
     description: "SAM2 video client forwards path response options to the backend",
     pattern: /(?=[\s\S]*response_type: request\.response_type \|\| request\.responseType \|\| "base64")(?=[\s\S]*mask_output_dir: request\.mask_output_dir \|\| request\.maskOutputDir \|\| null)[\s\S]*/,
   });
-  assertPattern({
+  assertAbsentPattern({
     file: "src/pages/VideoPage.vue",
-    description: "SAM video asset persistence skips failed object masks instead of writing base64 back into track state",
-    pattern: /(?=[\s\S]*let droppedCount = 0)(?=[\s\S]*let failedCount = 0)(?=[\s\S]*保存 SAM 视频蒙版资产失败，已跳过该对象以避免前端内存峰值)(?=[\s\S]*droppedCount \+= 1)(?=[\s\S]*failedCount \+= 1)(?=[\s\S]*droppedCount,)(?=[\s\S]*failedCount,)[\s\S]*/,
+    description: "SAM video asset persistence must not accept inline/base64 mask writeback",
+    pattern: /dataUrlToMaskJpegBlob|dataUrlToBlob|imageBlobToElement|item\?\.mask|const maskData = item\.mask|maskSignature: getMaskDataSignature|保存 SAM 视频蒙版资产失败/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -441,9 +441,14 @@ function runAssertions() {
     pattern: /(?=[\s\S]*lastResultSummary: null)(?=[\s\S]*const summarizeSamVideoResult = \(result = \{\}\) =>)(?=[\s\S]*samVideoState\.lastResultSummary = summarizeSamVideoResult\(result\))(?=[\s\S]*videoStore\.updateSamVideoMaskTrackResult\(targetMaskId, result\))(?=[\s\S]*resultFrameCount: samVideoState\.lastResultSummary\?\.frameCount \|\| 0)(?![\s\S]*samVideoState\.lastResult(?!Summary))[\s\S]*/,
   });
   assertPattern({
+    file: "server/moonshine_server/moonshine/sam_service.py",
+    description: "SAM video mask asset writes happen in the backend with disk-space preflight",
+    pattern: /(?=[\s\S]*def _ensure_video_mask_disk_space)(?=[\s\S]*operation="SAM2 视频蒙版临时文件写入")(?=[\s\S]*operation="SAM2 视频蒙版写入")(?=[\s\S]*def _save_video_mask)(?=[\s\S]*mask_path\.write_bytes\(mask_bytes\))(?=[\s\S]*"maskPath": str\(mask_path\))[\s\S]*/,
+  });
+  assertAbsentPattern({
     file: "src/pages/VideoPage.vue",
-    description: "SAM video mask asset writes avoid renderer-to-main IPC ArrayBuffer copies and preflight disk space",
-    pattern: /(?=[\s\S]*const saveBlobToPath = async \(blob, filePath\) =>)(?=[\s\S]*new Uint8Array\(buffer\))(?=[\s\S]*window\.electron\.ipcRenderer\.writeFile\(filePath, new Uint8Array\(buffer\)\))(?=[\s\S]*const estimatedMaskCount = frames\.reduce)(?=[\s\S]*operation: "保存 SAM 视频蒙版资产")(?=[\s\S]*ipcRenderer\.invoke\("save-file")[\s\S]*/,
+    description: "SAM video mask asset writes must not happen through renderer base64-to-file conversion",
+    pattern: /const persistSamVideoMaskAssets = async[\s\S]*?saveBlobToPath\(maskBlob, maskPath\)[\s\S]*?const ensureSamVideoSourcePath|operation: "保存 SAM 视频蒙版资产"/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -497,8 +502,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/components/video/VideoPreviewOverlay.vue",
-    description: "Video preview lazily loads only the nearest SAM video frame and prefers local mask assets",
-    pattern: /(?=[\s\S]*videoStore\.selectedMask\?\.type === "samVideo")(?=[\s\S]*const samFrameImageCache = new Map\(\))(?=[\s\S]*getLocalMaskImageUrl)(?=[\s\S]*getSamFrameListSignature)(?=[\s\S]*loadSamFrameMaskImage)(?=[\s\S]*buildSamFrameIndex)(?=[\s\S]*findNearestSamFrame)(?=[\s\S]*while \(left <= right\))(?=[\s\S]*mask\.type === "samVideo")(?=[\s\S]*maskPath: item\.maskPath \|\| "")(?=[\s\S]*samFrameIndex: buildSamFrameIndex\(samFrames\))(?=[\s\S]*enabledObjects)(?=[\s\S]*const nearestFrame = findNearestSamFrame\(asset, videoStore\.currentTime\))(?=[\s\S]*await loadSamFrameMaskImage)(?=[\s\S]*maskPath: item\.maskPath)(?=[\s\S]*ctx\.drawImage\(image, 0, 0, safeSourceWidth\.value, safeSourceHeight\.value\))[\s\S]*/,
+    description: "Video preview lazily loads only path-backed nearest SAM video frame masks",
+    pattern: /(?=[\s\S]*videoStore\.selectedMask\?\.type === "samVideo")(?=[\s\S]*const samFrameImageCache = new Map\(\))(?=[\s\S]*getLocalMaskImageUrl)(?=[\s\S]*getSamFrameListSignature)(?=[\s\S]*loadSamFrameMaskImage)(?=[\s\S]*buildSamFrameIndex)(?=[\s\S]*findNearestSamFrame)(?=[\s\S]*while \(left <= right\))(?=[\s\S]*mask\.type === "samVideo")(?=[\s\S]*maskPath: item\.maskPath \|\| "")(?=[\s\S]*\.filter\(\(item\) => item\.objectId > 0 && item\.maskPath\))(?=[\s\S]*samFrameIndex: buildSamFrameIndex\(samFrames\))(?=[\s\S]*enabledObjects)(?=[\s\S]*const nearestFrame = findNearestSamFrame\(asset, videoStore\.currentTime\))(?=[\s\S]*await loadSamFrameMaskImage)(?=[\s\S]*maskPath: item\.maskPath)(?=[\s\S]*ctx\.drawImage\(image, 0, 0, safeSourceWidth\.value, safeSourceHeight\.value\))[\s\S]*/,
   });
   assertPattern({
     file: "src/components/video/VideoPreviewOverlay.vue",
@@ -507,23 +512,28 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/stores/videoManager.js",
-    description: "SAM video result writeback can drop inline base64 masks while preserving legacy inline-mask compatibility",
-    pattern: /(?=[\s\S]*const normalizeSamVideoFrame = \(frame = \{\}, options = \{\}\) =>)(?=[\s\S]*!options\.dropInlineMask && typeof item\.mask === "string")(?=[\s\S]*const shouldDropInlineMasks = result\.dropInlineMasks === true)(?=[\s\S]*id: mask\.id,[\s\S]*keyframes: mask\.keyframes,[\s\S]*\.\.\.patch)(?=[\s\S]*samVideoFrameOptions: \{[\s\S]*dropInlineMask: shouldDropInlineMasks)[\s\S]*/,
+    description: "SAM video result writeback stores only path-backed frame masks",
+    pattern: /(?=[\s\S]*const normalizeSamVideoFrame = \(frame = \{\}\) =>)(?=[\s\S]*const maskPath = typeof item\.maskPath === "string" \? item\.maskPath : "")(?=[\s\S]*maskPath,)(?=[\s\S]*\.filter\(\(item\) => item\.objectId > 0 && item\.maskPath\))(?=[\s\S]*updateSamVideoMaskTrackResult)[\s\S]*/,
+  });
+  assertAbsentPattern({
+    file: "src/stores/videoManager.js",
+    description: "SAM video result writeback must not keep inline-mask compatibility options",
+    pattern: /dropInlineMask|shouldDropInlineMasks|samVideoFrameOptions|typeof item\.mask(?!Path|AssetId|Signature|Size)|\bmask:\s*inlineMask/,
   });
   assertAbsentPattern({
     file: "src/components/video/VideoPreviewOverlay.vue",
-    description: "Video preview overlay must not eagerly decode every SAM frame mask",
-    pattern: /image:\s*await loadImageElement\(item\.mask\)/,
+    description: "Video preview overlay must not load inline SAM frame masks",
+    pattern: /item\.mask(?!Id|Path|AssetId|Signature|Size)|getMaskDataSignature|loadImageElement\(mask\)|loadImageElement\(item\.mask\)/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
-    description: "Final video mask renderer lazily loads nearest SAM video frame masks and prefers local mask assets",
-    pattern: /(?=[\s\S]*const createCombinedMaskRenderer)(?=[\s\S]*const samFrameImageCache = new Map\(\))(?=[\s\S]*loadSamFrameMaskImage)(?=[\s\S]*getSamFrameEntries)(?=[\s\S]*buildSamFrameIndex)(?=[\s\S]*findNearestSamFrame)(?=[\s\S]*maskPath: item\.maskPath \|\| "")(?=[\s\S]*\.filter\(\(item\) => item\.objectId > 0 && \(item\.maskPath \|\| item\.mask\)\))(?=[\s\S]*samFrameIndex: buildSamFrameIndex\(samFrames\))(?=[\s\S]*const nearestFrame = findNearestSamFrame\(asset, time\))(?=[\s\S]*await loadSamFrameMaskImage)(?=[\s\S]*maskPath: item\.maskPath)(?=[\s\S]*ctx\.drawImage\(image, 0, 0, width, height\))[\s\S]*/,
+    description: "Final video mask renderer lazily loads only path-backed nearest SAM video frame masks",
+    pattern: /(?=[\s\S]*const createCombinedMaskRenderer)(?=[\s\S]*const samFrameImageCache = new Map\(\))(?=[\s\S]*loadSamFrameMaskImage)(?=[\s\S]*getSamFrameEntries)(?=[\s\S]*buildSamFrameIndex)(?=[\s\S]*findNearestSamFrame)(?=[\s\S]*maskPath: item\.maskPath \|\| "")(?=[\s\S]*\.filter\(\(item\) => item\.objectId > 0 && item\.maskPath\))(?=[\s\S]*samFrameIndex: buildSamFrameIndex\(samFrames\))(?=[\s\S]*const nearestFrame = findNearestSamFrame\(asset, time\))(?=[\s\S]*await loadSamFrameMaskImage)(?=[\s\S]*maskPath: item\.maskPath)(?=[\s\S]*ctx\.drawImage\(image, 0, 0, width, height\))[\s\S]*/,
   });
   assertAbsentPattern({
     file: "src/pages/VideoPage.vue",
-    description: "Final video mask renderer must not eagerly decode every SAM frame mask",
-    pattern: /loadSamFrameImages|image:\s*await loadImageElement\(item\.mask\)|ctx\.drawImage\(item\.image/,
+    description: "Final video mask renderer must not read inline SAM frame masks",
+    pattern: /loadSamFrameImages|image:\s*await loadImageElement\(item\.mask\)|ctx\.drawImage\(item\.image|maskPath \|\| item\.mask|item\.maskPath \|\| item\.mask/,
   });
   assertPattern({
     file: "src/components/video/VideoMaskEditor.vue",
