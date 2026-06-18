@@ -20,6 +20,8 @@ const npmCommand = isWindows ? "npm.cmd" : "npm";
 
 const distDir = path.join(repoRoot, "dist", "spa");
 const indexHtmlPath = path.join(distDir, "index.html");
+const solidMaskPngBase64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4f5phFwAHHAKFhD+0FQAAAABJRU5ErkJggg==";
 
 const browserExecutableCandidatesByPlatform = {
   win32: [
@@ -523,6 +525,36 @@ async function installApiMocks(page) {
             },
           },
         ],
+      }),
+    });
+  });
+  await page.route("**/api/v1/moonshine/sam/capabilities**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        device: "cpu",
+        pointBox: {
+          enabled: false,
+          defaultModelId: "",
+          promptTypes: [],
+          models: [],
+          unavailableReason: "E2E workflow does not start the SAM backend.",
+        },
+        text: {
+          enabled: false,
+          defaultModelId: "",
+          implementedModelIds: [],
+          pendingModels: [],
+          promptTypes: [],
+          unavailableReason: "E2E workflow does not start the SAM backend.",
+        },
+        video: {
+          enabled: false,
+          defaultModelId: "",
+          modelIds: [],
+          unavailableReason: "E2E workflow does not start the SAM backend.",
+        },
       }),
     });
   });
@@ -1139,6 +1171,72 @@ async function testVideoWorkflow(page) {
     window.__MOONSHINE_VIDEO_TEST__.removeSelectedMask()
   );
   assert(afterMaskDelete.maskCount === 0, "Video mask deletion should remove the selected mask.");
+
+  const samVideoWriteback = await page.evaluate((maskBase64) => {
+    const bridge = window.__MOONSHINE_VIDEO_TEST__;
+    const emptyTrack = bridge.createEmptySamVideoTrack({
+      name: "E2E SAM 智能选区",
+    });
+    const writeback = bridge.updateSelectedSamVideoResult({
+      modelId: "sam2_1_hiera_large",
+      input: {
+        frameIndex: 2,
+        fps: 30,
+        propagation: "bidirectional",
+      },
+      objects: [
+        {
+          objectId: 1,
+          enabled: true,
+        },
+      ],
+      frames: [
+        {
+          frameIndex: 2,
+          masks: [
+            {
+              objectId: 1,
+              mask: `data:image/png;base64,${maskBase64}`,
+            },
+          ],
+        },
+      ],
+    });
+    return { emptyTrack, writeback };
+  }, solidMaskPngBase64);
+
+  assert(
+    samVideoWriteback.emptyTrack.maskId,
+    "Video smart selection should create an empty SAM video track."
+  );
+  assert(
+    samVideoWriteback.emptyTrack.snapshot.selectedMaskType === "samVideo",
+    "Empty SAM video track should remain selected for subsequent propagation."
+  );
+  assert(
+    samVideoWriteback.writeback.success,
+    samVideoWriteback.writeback.error || "SAM video propagation result should write back to the selected track."
+  );
+  assert(
+    samVideoWriteback.writeback.snapshot.selectedMaskId === samVideoWriteback.emptyTrack.maskId,
+    "SAM video result writeback should keep the same selected smart-selection track."
+  );
+  assert(
+    samVideoWriteback.writeback.snapshot.selectedSamObjectCount === 1,
+    "SAM video result writeback should expose one candidate object on the selected track."
+  );
+  assert(
+    samVideoWriteback.writeback.snapshot.selectedSamFrameCount === 1,
+    "SAM video result writeback should expose propagated frames on the selected track."
+  );
+  assert(
+    samVideoWriteback.writeback.snapshot.selectedSamFirstFrameMaskCount === 1,
+    "SAM video result writeback should expose frame masks for preview rendering."
+  );
+  assert(
+    samVideoWriteback.writeback.snapshot.selectedSamHasPreviewMask,
+    "SAM video result writeback should leave a mask path or data URL for the preview layer."
+  );
 }
 
 async function testBackendTerminalRefresh(page) {

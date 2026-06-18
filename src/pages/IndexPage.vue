@@ -339,7 +339,6 @@ const backendEngineValue = computed(() => {
     runDisabled: Boolean(value.runDisabled?.value ?? value.runDisabled),
     runDisabledTooltip: String((value.runDisabledTooltip?.value ?? value.runDisabledTooltip) || ""),
     hasFailed: Boolean(value.hasFailed?.value ?? value.hasFailed),
-    isPreparing: Boolean(value.isPreparing?.value ?? value.isPreparing),
     openDiagnostics:
       typeof value.openDiagnostics === "function" ? value.openDiagnostics : () => {},
   };

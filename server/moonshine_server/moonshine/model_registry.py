@@ -10,6 +10,8 @@ from urllib.request import Request, urlopen
 
 from loguru import logger
 
+from moonshine_server.disk_space import DEFAULT_DISK_SPACE_SAFETY_BYTES, ensure_disk_space
+
 
 MODEL_CAPABILITY_KEYS = (
     "speed",
@@ -1162,6 +1164,13 @@ class ModelDownloadTaskManager:
         target_path = model_dir / relative_path
         part_path = target_path.with_name(f"{target_path.name}.part")
         target_path.parent.mkdir(parents=True, exist_ok=True)
+        estimated_size = int(file_spec.get("size") or 0)
+        ensure_disk_space(
+            target_path,
+            estimated_size,
+            safety_bytes=DEFAULT_DISK_SPACE_SAFETY_BYTES,
+            operation="下载模型文件",
+        )
 
         last_error = None
         for source in source_links:
@@ -1201,6 +1210,12 @@ class ModelDownloadTaskManager:
                     chunk = response.read(1024 * 1024)
                     if not chunk:
                         break
+                    ensure_disk_space(
+                        part_path,
+                        len(chunk),
+                        safety_bytes=DEFAULT_DISK_SPACE_SAFETY_BYTES,
+                        operation="下载模型文件",
+                    )
                     output.write(chunk)
                     downloaded += len(chunk)
                     progress = downloaded / total_bytes if total_bytes else 0

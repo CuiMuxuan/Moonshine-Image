@@ -70,7 +70,7 @@
           </div>
           <q-tree
             v-else
-            :selected="selectedModelId"
+            :selected="selectedModelTreeNodeId"
             v-model:expanded="expandedModelTreeNodes"
             :nodes="modelTreeNodes"
             node-key="id"
@@ -392,7 +392,7 @@
                   </div>
                 </div>
 
-                <div class="mini-block q-mt-md">
+                <div v-if="shouldShowModelCapabilityRadar(model)" class="mini-block q-mt-md">
                   <div class="text-subtitle2 text-weight-medium q-mb-md">模型能力</div>
                   <model-capability-radar
                     :model-label="model.label || model.id"
@@ -763,6 +763,10 @@ const modelRegistryRequestOptions = computed(() => ({
   modelDir: currentConfiguredModelDir.value,
 }));
 
+const selectedModelTreeNodeId = computed(() =>
+  selectedModelId.value ? `model-${selectedModelId.value}` : ""
+);
+
 const createModelLeafNode = (model) => ({
   id: `model-${model.id}`,
   label:
@@ -884,6 +888,9 @@ const runtimeNotice = computed(() => {
 
 const isSamModel = (model) =>
   model?.type === "mask" && ["sam", "sam2", "sam3"].includes(model?.family);
+
+const shouldShowModelCapabilityRadar = (model) =>
+  model?.type === "image" && Object.keys(model?.capabilities || {}).length > 0;
 
 const getSamDefaultConfigKey = (model) => {
   if (model?.family === "sam2") return "defaultSam2Model";

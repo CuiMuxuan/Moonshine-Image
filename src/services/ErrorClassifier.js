@@ -65,6 +65,21 @@ export const classifyMoonshineError = (error, fallback = "操作失败") => {
   }
 
   if (
+    status === 507 ||
+    lowerDetail.includes("insufficient storage") ||
+    detail.includes("磁盘空间不足") ||
+    detail.includes("空间不足")
+  ) {
+    return {
+      code: "insufficient-disk-space",
+      title: "磁盘空间不足",
+      message: detail || "磁盘空间不足，请清理磁盘空间或更换输出/临时目录后重试。",
+      detail,
+      action: "",
+    };
+  }
+
+  if (
     status === 404 ||
     lowerDetail.includes("model") && (
       lowerDetail.includes("not found") ||

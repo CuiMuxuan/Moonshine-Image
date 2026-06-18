@@ -18,6 +18,7 @@ from rich.progress import (
 )
 
 from moonshine_server.helper import concat_alpha_channel
+from moonshine_server.disk_space import DEFAULT_DISK_SPACE_SAFETY_BYTES, ensure_disk_space
 from moonshine_server.image_output import (
     encode_pil_image,
     image_format_from_path,
@@ -176,6 +177,12 @@ def batch_inpaint(
                 infos,
             )
             save_p = output / f"{stem}{output_spec['extension']}"
+            ensure_disk_space(
+                save_p,
+                len(img_bytes),
+                safety_bytes=DEFAULT_DISK_SPACE_SAFETY_BYTES,
+                operation="保存文件夹批处理结果",
+            )
             with open(save_p, "wb") as fw:
                 fw.write(img_bytes)
             processed_count += 1

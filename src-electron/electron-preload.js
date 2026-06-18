@@ -31,6 +31,15 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 const fs = require('fs').promises
 const path = require('path')
 
+const getByteLength = (value) => {
+  if (!value) return 0;
+  if (Buffer.isBuffer(value)) return value.byteLength;
+  if (value instanceof ArrayBuffer) return value.byteLength;
+  if (ArrayBuffer.isView(value)) return value.byteLength;
+  if (typeof value === "string") return Buffer.byteLength(value);
+  return 0;
+};
+
 // 暴露 Electron API 给渲染进程
 contextBridge.exposeInMainWorld("electron", {
   ipcRenderer: {
@@ -72,12 +81,30 @@ contextBridge.exposeInMainWorld("electron", {
       return await fs.readdir(dirPath);
     },
 
-    writeFile: async (filePath, data) => {
+    writeFile: async (filePath, data, options = {}) => {
+      const checkResult = await ipcRenderer.invoke("ensure-disk-space", {
+        targetPath: filePath,
+        requiredBytes: options.requiredBytes ?? getByteLength(data),
+        safetyBytes: options.safetyBytes,
+        operation: options.operation || "写入文件",
+      });
+      if (!checkResult?.success) {
+        throw new Error(checkResult?.error || "磁盘空间不足，无法写入文件。");
+      }
       return await fs.writeFile(filePath, data);
     },
 
-    writeFileBase64: async (filePath, base64Content) => {
+    writeFileBase64: async (filePath, base64Content, options = {}) => {
       const buffer = Buffer.from(base64Content, "base64");
+      const checkResult = await ipcRenderer.invoke("ensure-disk-space", {
+        targetPath: filePath,
+        requiredBytes: options.requiredBytes ?? buffer.byteLength,
+        safetyBytes: options.safetyBytes,
+        operation: options.operation || "写入文件",
+      });
+      if (!checkResult?.success) {
+        throw new Error(checkResult?.error || "磁盘空间不足，无法写入文件。");
+      }
       return await fs.writeFile(filePath, buffer);
     },
 

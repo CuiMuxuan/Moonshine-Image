@@ -129,6 +129,31 @@ function runAssertions() {
     pattern: /getConfiguredVideoProcessingEngine[\s\S]*runWithVideoProcessingEngine[\s\S]*WebAV 失败，正在切换 FFmpeg 兜底[\s\S]*exportProcessedBatchSegmentWithFfmpeg[\s\S]*finalizeProcessedVideoWithFfmpeg/,
   });
   assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Electron exposes a shared disk-space guard before large local writes",
+    pattern: /(?=[\s\S]*DEFAULT_DISK_SPACE_SAFETY_BYTES)(?=[\s\S]*function ensureDiskSpace\(targetPath, payload = \{\}\))(?=[\s\S]*ipcMain\.handle\("ensure-disk-space")(?=[\s\S]*ipcMain\.handle\("check-disk-space")(?=[\s\S]*saveFileHandler[\s\S]*ensureDiskSpace)(?=[\s\S]*open-file-write-stream[\s\S]*ensureDiskSpace)(?=[\s\S]*save-temp-video[\s\S]*ensureDiskSpace)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src-electron/electron-preload.js",
+    description: "Preload direct file writes preflight disk space through the main process",
+    pattern: /(?=[\s\S]*const getByteLength = \(value\) =>)(?=[\s\S]*writeFile: async \(filePath, data, options = \{\}\) =>)(?=[\s\S]*ipcRenderer\.invoke\("ensure-disk-space")(?=[\s\S]*writeFileBase64: async \(filePath, base64Content, options = \{\}\) =>)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/services/ErrorClassifier.js",
+    description: "Frontend classifies disk-space failures as user-facing disk-space errors",
+    pattern: /(?=[\s\S]*status === 507)(?=[\s\S]*磁盘空间不足)(?=[\s\S]*insufficient-disk-space)[\s\S]*/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/disk_space.py",
+    description: "Backend exposes a shared disk-space guard for large writes",
+    pattern: /(?=[\s\S]*DEFAULT_DISK_SPACE_SAFETY_BYTES)(?=[\s\S]*class DiskSpaceError)(?=[\s\S]*def ensure_disk_space\()(?=[\s\S]*shutil\.disk_usage)(?=[\s\S]*磁盘空间不足)[\s\S]*/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/moonshine/model_registry.py",
+    description: "Model downloads preflight disk space before and during large model writes",
+    pattern: /(?=[\s\S]*from moonshine_server\.disk_space import DEFAULT_DISK_SPACE_SAFETY_BYTES, ensure_disk_space)(?=[\s\S]*estimated_size = int\(file_spec\.get\("size"\) or 0\))(?=[\s\S]*operation="下载模型文件")(?=[\s\S]*part_path\.open\("wb"\))(?=[\s\S]*output\.write\(chunk\))[\s\S]*/,
+  });
+  assertPattern({
     file: "src/stores/videoManager.js",
     description: "Video store has a dedicated SAM video mask track type",
     pattern: /SAM_VIDEO:\s*"samVideo"[\s\S]*createSamVideoMaskTrack[\s\S]*setSamVideoObjectEnabled[\s\S]*removeSamVideoObject/,
@@ -140,13 +165,13 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
-    description: "SAM2 propagation creates a SAM video track instead of applying first frame to a manual mask",
-    pattern: /(?=[\s\S]*createSamVideoTrackFromResult)(?=[\s\S]*videoStore\.createSamVideoMaskTrack)(?=[\s\S]*SAM2 已创建)/,
+    description: "SAM2 propagation polls real-progress jobs and writes bidirectional results back into the selected SAM video track",
+    pattern: /(?=[\s\S]*runSamVideoSelectionFromMaskList[\s\S]*createEmptySamVideoMaskTrack)(?=[\s\S]*const targetMaskId = videoStore\.selectedMaskId)(?=[\s\S]*runSamVideoPropagationJob[\s\S]*reverse: false)(?=[\s\S]*runSamVideoPropagationJob[\s\S]*reverse: true)(?=[\s\S]*getSamVideoPropagationJobResult)(?=[\s\S]*updateSamVideoMaskTrackResult\(targetMaskId, result\))(?=[\s\S]*SAM2 已更新)/,
   });
   assertPattern({
     file: "src/components/video/ResourceManage.vue",
     description: "Video resource list exposes SAM object checkbox and object delete controls",
-    pattern: /mask\.type === 'samVideo'[\s\S]*q-checkbox[\s\S]*setSamVideoObjectEnabled[\s\S]*removeSamVideoObject/,
+    pattern: /mask\.type === 'samVideo'[\s\S]*q-checkbox[\s\S]*setSamVideoObjectEnabled[\s\S]*remove-sam-video-object/,
   });
 
   logSection("Image Workflow");
@@ -429,6 +454,16 @@ function runAssertions() {
     file: "src-electron/electron-main.js",
     description: "Packaged backend startup honors the configured model directory before falling back to bundled models",
     pattern: /function resolveEffectiveModelDir\(input = \{\}\)[\s\S]*const configuredModelDir = String\(modelDir \|\| ""\)\.trim\(\);[\s\S]*return configuredModelDir \|\| getEffectiveBundledModelDir\(\);[\s\S]*if \(isBundledBackendMode\(global\.projectPath\)\)[\s\S]*const effectiveModelDir = resolveEffectiveModelDir\(\{[\s\S]*modelDir: config\?\.modelDir \|\| "",[\s\S]*args\.push\(`--model-dir=\$\{effectiveModelDir\}`\)/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Bundled runtime preparation skips relocation only after Python and backend dependencies are usable",
+    pattern: /async function verifyBundledPythonRuntime\(options = \{\}\)[\s\S]*const checkDependencies = options\.checkDependencies === true;[\s\S]*import fastapi,uvicorn,numpy,PIL,torch,transformers[\s\S]*const existingRuntime = await verifyBundledPythonRuntime\(\{[\s\S]*checkDependencies: true,[\s\S]*Bundled Python runtime is already usable\. Refreshing runtime state/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Bundled runtime relocation warnings are downgraded only when the verified runtime is still usable",
+    pattern: /catch \(error\) \{[\s\S]*const fallbackRuntime = await verifyBundledPythonRuntime\(\{[\s\S]*checkDependencies: true,[\s\S]*Bundled runtime relocation reported a warning, but Python is usable/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",

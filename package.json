@@ -19,6 +19,7 @@
     "test:regression:e2e:smoke": "node scripts/e2e-smoke-image-settings.mjs",
     "test:regression:e2e:image-toolbar": "node scripts/e2e-image-toolbar-responsive.mjs",
     "test:regression:e2e:sam-ui": "node scripts/e2e-sam-smart-selection-ui.mjs",
+    "test:regression:e2e:sam-video-writeback": "node scripts/e2e-sam-video-writeback-smoke.mjs",
     "test:regression:e2e:workflow": "node scripts/e2e-comprehensive-workflow.mjs",
     "test:regression:p0:full": "npm run test:regression:p0 && npm run test:regression:e2e:smoke && npm run test:regression:e2e:workflow",
     "dev": "quasar dev",

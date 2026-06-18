@@ -482,7 +482,7 @@ async function waitForImageBridge(page) {
 async function collectSamPanelState(page) {
   return page.evaluate(() => {
     const panel = document.querySelector(".sam-toolbar");
-    const textPanel = document.querySelector(".sam-text-panel");
+    const textPanel = document.querySelector('[data-testid="sam-text-settings-section"]');
     const prompt = textPanel?.querySelector(".sam-text-prompt");
     const input = prompt?.querySelector("input");
     const buttons = Array.from(textPanel?.querySelectorAll(".sam-text-actions .q-btn") || []);
@@ -523,11 +523,11 @@ async function collectSamPanelState(page) {
 }
 
 async function openSamTextMenu(page) {
-  const prompt = page.locator(".sam-text-panel .sam-text-prompt");
+  const prompt = page.locator('[data-testid="sam-text-settings-section"] .sam-text-prompt');
   if (!(await prompt.isVisible().catch(() => false))) {
-    await page.locator('[data-testid="sam-text-menu-button"]').click();
+    await page.locator('[data-testid="sam-settings-button"]').click();
   }
-  await page.waitForSelector(".sam-text-panel .sam-text-prompt", {
+  await page.waitForSelector('[data-testid="sam-text-settings-section"] .sam-text-prompt', {
     state: "visible",
     timeout: 10000,
   });
@@ -589,7 +589,7 @@ async function runSamSmartSelectionUiTest(page) {
 
   await page.waitForSelector(".sam-toolbar", { state: "visible", timeout: 20000 });
   await openSamTextMenu(page);
-  await page.fill(".sam-text-panel .sam-text-prompt input", "red rectangle");
+  await page.fill('[data-testid="sam-text-settings-section"] .sam-text-prompt input', "red rectangle");
 
   const themeButton = page.locator('[data-testid="toggle-theme-button"]');
   if (await page.evaluate(() => document.body.classList.contains("body--dark"))) {
@@ -615,7 +615,7 @@ async function runSamSmartSelectionUiTest(page) {
     "Current-image and selected-images text search should be enabled when SAM3 text is available and an image is selected."
   );
 
-  await page.locator(".sam-text-actions .q-btn").nth(1).click();
+  await page.locator('[data-testid="sam-text-settings-section"] .sam-text-actions .q-btn').nth(1).click();
   await page.waitForFunction(
     () => {
       const snapshot = window.__MOONSHINE_IMAGE_TEST__?.getSnapshot?.();

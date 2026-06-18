@@ -42,6 +42,7 @@
       </q-btn-group>
 
       <q-btn
+        v-if="!secondaryActionsInMenu"
         color="primary"
         text-color="white"
         icon="tune"
@@ -120,7 +121,126 @@
       </q-btn>
     </div>
 
-    <q-btn-group flat class="rounded-pill overflow-hidden control-group">
+    <q-btn
+      v-if="secondaryActionsInMenu"
+      color="primary"
+      text-color="white"
+      icon="more_vert"
+      :disable="disabled"
+      :size="resolvedButtonSize"
+      class="control-button control-button-more"
+      data-testid="mask-brush-more-menu-button"
+    >
+      <q-tooltip>更多画笔操作</q-tooltip>
+
+      <q-menu
+        :anchor="popupAnchor"
+        :self="popupSelf"
+        :offset="popupOffset"
+        :content-class="menuContentClass"
+        :transition-show="transitionShow"
+        :transition-hide="transitionHide"
+      >
+        <q-list dense class="brush-more-menu">
+          <q-item clickable :disable="disabled">
+            <q-item-section avatar>
+              <q-icon name="tune" color="primary" />
+            </q-item-section>
+            <q-item-section>
+              <q-item-label>画笔设置</q-item-label>
+            </q-item-section>
+            <q-menu
+              anchor="top end"
+              self="top start"
+              :offset="[8, 0]"
+              :content-class="menuContentClass"
+              :transition-show="transitionShow"
+              :transition-hide="transitionHide"
+            >
+              <div class="brush-settings-panel q-pa-md">
+                <div class="brush-preview-wrap">
+                  <div class="brush-preview-surface">
+                    <div
+                      class="brush-preview-shape"
+                      :class="{
+                        'is-rect': mode === MASK_TOOL_MODES.RECT,
+                        'is-erase': mode === MASK_TOOL_MODES.ERASE,
+                      }"
+                      :style="brushPreviewStyle"
+                    ></div>
+                  </div>
+                  <div class="brush-preview-caption text-caption text-center q-mt-sm">
+                    {{ modeLabel }}预览
+                  </div>
+                </div>
+
+                <div class="brush-settings-fields">
+                  <div class="brush-color-field">
+                    <div class="brush-field-label text-caption q-mb-xs">画笔颜色</div>
+                    <label class="brush-color-input">
+                      <input
+                        :value="brushColor"
+                        :disabled="disabled"
+                        type="color"
+                        @input="$emit('update:brush-color', $event.target.value)"
+                      />
+                    </label>
+                  </div>
+
+                  <q-slider
+                    :model-value="brushSize"
+                    :disable="disabled"
+                    :min="1"
+                    :max="120"
+                    :step="1"
+                    label
+                    label-always
+                    @update:model-value="$emit('update:brush-size', $event)"
+                  >
+                    <template #prepend>画笔大小</template>
+                  </q-slider>
+
+                  <q-slider
+                    :model-value="brushAlpha"
+                    :disable="disabled"
+                    :min="0.05"
+                    :max="1"
+                    :step="0.05"
+                    label
+                    label-always
+                    @update:model-value="$emit('update:brush-alpha', $event)"
+                  >
+                    <template #prepend>画笔透明度</template>
+                  </q-slider>
+                </div>
+              </div>
+            </q-menu>
+          </q-item>
+          <q-item clickable :disable="disabled || !canUndo" @click="$emit('undo')">
+            <q-item-section avatar>
+              <q-icon name="undo" />
+            </q-item-section>
+            <q-item-section>
+              <q-item-label>撤回</q-item-label>
+            </q-item-section>
+          </q-item>
+          <q-item clickable :disable="disabled || !canClear" @click="$emit('clear')">
+            <q-item-section avatar>
+              <q-icon name="clear" />
+            </q-item-section>
+            <q-item-section>
+              <q-item-label>清空蒙版</q-item-label>
+            </q-item-section>
+          </q-item>
+        </q-list>
+      </q-menu>
+    </q-btn>
+
+    <q-btn-group
+      v-if="!secondaryActionsInMenu"
+      flat
+      class="rounded-pill overflow-hidden control-group"
+    >
       <q-btn
         icon="undo"
         :disable="disabled || !canUndo"
@@ -265,6 +385,8 @@ const controlsStyle = computed(() => {
   };
 });
 
+const secondaryActionsInMenu = computed(() => props.layout === "video-sidebar");
+
 const modeLabel = computed(() => {
   const matched = MASK_TOOL_MODE_OPTIONS.find((option) => option.value === props.mode);
   return matched?.label || "画笔";
@@ -305,6 +427,7 @@ const brushPreviewStyle = computed(() => {
   max-width: 100%;
   min-width: 0;
   container-type: inline-size;
+  flex-wrap: nowrap;
 }
 
 .slot-before,
@@ -390,15 +513,18 @@ const brushPreviewStyle = computed(() => {
 @container (max-width: 560px) {
   .mask-brush-controls.layout-video-sidebar {
     gap: 6px;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
   }
 
   .mask-brush-controls.layout-video-sidebar .tool-main-group {
-    flex: 1 1 100%;
-    width: 100%;
+    flex: 0 1 auto;
+    width: auto;
+    max-width: 100%;
+    flex-wrap: nowrap;
+    overflow: visible;
   }
 
-  .mask-brush-controls.layout-video-sidebar .control-group,
+  .mask-brush-controls.layout-video-sidebar .control-button-more,
   .mask-brush-controls.layout-video-sidebar .slot-after,
   .mask-brush-controls.layout-video-sidebar .slot-before {
     margin-left: auto;
@@ -406,6 +532,7 @@ const brushPreviewStyle = computed(() => {
 
   .mask-brush-controls.layout-video-sidebar .mode-toggle {
     min-width: 0;
+    flex-wrap: nowrap;
   }
 
   .mask-brush-controls.layout-video-sidebar .control-group,
@@ -444,6 +571,11 @@ const brushPreviewStyle = computed(() => {
     padding-left: 8px;
     padding-right: 8px;
   }
+}
+
+.brush-more-menu {
+  min-width: 168px;
+  padding: 6px;
 }
 
 :global(.mask-brush-settings-popup) {

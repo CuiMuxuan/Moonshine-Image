@@ -255,6 +255,9 @@
                   <div v-if="samPerformanceText" class="sam-performance-state">
                     {{ samPerformanceText }}
                   </div>
+                  <div v-if="samCudaUsageHint" class="sam-cuda-usage-hint">
+                    {{ samCudaUsageHint }}
+                  </div>
 
                   <div
                     v-if="props.samTextAvailable"
@@ -517,6 +520,7 @@ import {
   computeAnchoredPlacement,
   resolveViewportRect,
 } from "src/utils/viewportPlacement";
+import { expandSamMaskImageDataForLama } from "src/utils/samMaskAutoExpand";
 import { useEditorStore } from "src/stores/editor";
 
 const editor = inject("image-editor", { value: null });
@@ -917,6 +921,24 @@ const samPerformanceText = computed(() => {
   return `${device} · ${cacheText} · ${imageText} · ${totalText}`;
 });
 
+const samCudaUsageHint = computed(() => {
+  const performance = samLastPerformance.value;
+  if (!performance || String(performance.device || "").toLowerCase() !== "cpu") return "";
+  return "当前 SAM 在 CPU 上运行。如需使用 CUDA，请在全局设置或后端管理中将启动设备改为 CUDA，确认 CUDA 版运行时与 PyTorch 可用，然后重启后端。";
+});
+
+const samToolToggleIcon = computed(() =>
+  samToolMode.value === SAM_TOOL_MODES.ERASE ? "auto_fix_off" : "ads_click"
+);
+
+const samToolToggleTooltip = computed(() => {
+  if (samToolMode.value === SAM_TOOL_MODES.ERASE) {
+    return "当前为擦除智能选区，点击切回点选/框选";
+  }
+  if (!canUseSamEraseTool.value) return `当前为点选/框选；${samEraseTooltip.value}`;
+  return "当前为点选/框选，点击切换为擦除智能选区蒙版";
+});
+
 const hoveredSamCandidate = computed(() =>
   samCandidates.value.find((candidate) => candidate.localId === hoveredSamCandidateId.value) || null
 );
@@ -962,16 +984,13 @@ const samBoxPreviewStyle = computed(() => {
 
 const getSamContextId = () => {
   const explicitId = String(props.samContextId || "").trim();
-  const modelId = selectedSamModelId.value || props.samModelId || "sam_vit_b";
-  if (explicitId) return `${explicitId}:${modelId}`;
-  return `${modelId}:${props.samImageType || "base64"}:${props.samImage || ""}`;
+  if (explicitId) return explicitId;
+  return `${props.samImageType || "base64"}:${props.samImage || ""}`;
 };
 
-const buildSamContextId = (contextId, modelId) => {
+const buildSamContextId = (contextId) => {
   const explicitId = String(contextId || "").trim();
-  const normalizedModelId = String(modelId || effectiveSamModelId.value || props.samModelId || "sam_vit_b").trim();
-  if (explicitId) return `${explicitId}:${normalizedModelId}`;
-  return "";
+  return explicitId;
 };
 
 const normalizeSamModelOptions = (items = []) =>
@@ -1073,6 +1092,7 @@ const buildSamTextCandidate = (candidate, index, result = {}, prompt = samTextPr
   label: `文本候选 ${index + 1}`,
   enabled: index === 0,
   source: "text",
+  modelId: getTextModelId(),
   prompt: candidate.prompt || result.prompt || { type: "text", text: prompt },
   createdAt: new Date().toISOString(),
 });
@@ -1266,120 +1286,6 @@ const drawImageUrlToContext = (dataUrl) =>
     image.src = dataUrl;
   });
 
-const clampNumber = (value, min, max) => Math.min(max, Math.max(min, value));
-
-const resolveSamAutoExpandRadius = ({ bboxWidth, bboxHeight, imageWidth, imageHeight } = {}) => {
-  if (!bboxWidth || !bboxHeight || !imageWidth || !imageHeight) return 0;
-  const maskShortSide = Math.max(1, Math.min(bboxWidth, bboxHeight));
-  const imageShortSide = Math.max(1, Math.min(imageWidth, imageHeight));
-  const scaleFactor = clampNumber(imageShortSide / 1080, 0.75, 2);
-  const normalizedShortSide = maskShortSide / scaleFactor;
-  let baseRadius = 16;
-
-  if (normalizedShortSide <= 32) {
-    baseRadius = 4;
-  } else if (normalizedShortSide <= 96) {
-    baseRadius = 6;
-  } else if (normalizedShortSide <= 240) {
-    baseRadius = 8;
-  } else if (normalizedShortSide <= 480) {
-    baseRadius = 12;
-  }
-
-  const aspectRatio = Math.max(bboxWidth, bboxHeight) / maskShortSide;
-  let radius = Math.round(baseRadius * scaleFactor);
-  if (aspectRatio >= 4 && normalizedShortSide <= 120) {
-    radius += Math.round(2 * scaleFactor);
-  }
-
-  return clampNumber(radius, 3, 32);
-};
-
-const inspectSamMaskPixels = (imageData) => {
-  const { data, width, height } = imageData;
-  let minX = width;
-  let minY = height;
-  let maxX = -1;
-  let maxY = -1;
-  let fillRed = 255;
-  let fillGreen = 214;
-  let fillBlue = 64;
-  let fillAlpha = 0;
-
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const index = (y * width + x) * 4;
-      const alpha = data[index + 3];
-      if (alpha <= 0) continue;
-
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x > maxX) maxX = x;
-      if (y > maxY) maxY = y;
-      if (alpha >= fillAlpha) {
-        fillRed = data[index];
-        fillGreen = data[index + 1];
-        fillBlue = data[index + 2];
-        fillAlpha = alpha;
-      }
-    }
-  }
-
-  if (maxX < minX || maxY < minY) return null;
-  return {
-    bboxWidth: maxX - minX + 1,
-    bboxHeight: maxY - minY + 1,
-    fillRed,
-    fillGreen,
-    fillBlue,
-    fillAlpha,
-  };
-};
-
-const dilateBinaryAlphaMask = ({ data, width, height, radius } = {}) => {
-  const pixelCount = width * height;
-  const source = new Uint8Array(pixelCount);
-  const horizontal = new Uint8Array(pixelCount);
-  const expanded = new Uint8Array(pixelCount);
-
-  for (let pixel = 0, index = 3; pixel < pixelCount; pixel += 1, index += 4) {
-    source[pixel] = data[index] > 0 ? 1 : 0;
-  }
-
-  for (let y = 0; y < height; y += 1) {
-    const row = y * width;
-    let count = 0;
-    const initialRight = Math.min(width - 1, radius);
-    for (let x = 0; x <= initialRight; x += 1) {
-      count += source[row + x];
-    }
-    for (let x = 0; x < width; x += 1) {
-      horizontal[row + x] = count > 0 ? 1 : 0;
-      const removeX = x - radius;
-      const addX = x + radius + 1;
-      if (removeX >= 0) count -= source[row + removeX];
-      if (addX < width) count += source[row + addX];
-    }
-  }
-
-  for (let x = 0; x < width; x += 1) {
-    let count = 0;
-    const initialBottom = Math.min(height - 1, radius);
-    for (let y = 0; y <= initialBottom; y += 1) {
-      count += horizontal[y * width + x];
-    }
-    for (let y = 0; y < height; y += 1) {
-      expanded[y * width + x] = count > 0 ? 1 : 0;
-      const removeY = y - radius;
-      const addY = y + radius + 1;
-      if (removeY >= 0) count -= horizontal[removeY * width + x];
-      if (addY < height) count += horizontal[addY * width + x];
-    }
-  }
-
-  return expanded;
-};
-
 const expandSamMaskForLama = async (maskDataUrl, width, height) => {
   if (!maskDataUrl || !width || !height) return maskDataUrl || "";
   const image = await drawImageUrlToContext(maskDataUrl);
@@ -1392,37 +1298,13 @@ const expandSamMaskForLama = async (maskDataUrl, width, height) => {
   canvasContext.clearRect(0, 0, width, height);
   canvasContext.drawImage(image, 0, 0, width, height);
   const imageData = canvasContext.getImageData(0, 0, width, height);
-  const maskInfo = inspectSamMaskPixels(imageData);
-  if (!maskInfo) return maskDataUrl;
-
-  const radius = resolveSamAutoExpandRadius({
-    bboxWidth: maskInfo.bboxWidth,
-    bboxHeight: maskInfo.bboxHeight,
+  const result = expandSamMaskImageDataForLama(imageData, {
     imageWidth: width,
     imageHeight: height,
   });
-  if (!radius) return maskDataUrl;
+  if (!result.expanded) return maskDataUrl;
 
-  const expandedMask = dilateBinaryAlphaMask({
-    data: imageData.data,
-    width,
-    height,
-    radius,
-  });
-  const expandedData = new Uint8ClampedArray(imageData.data);
-  for (let pixel = 0, index = 0; pixel < expandedMask.length; pixel += 1, index += 4) {
-    if (!expandedMask[pixel]) {
-      expandedData[index + 3] = 0;
-      continue;
-    }
-    if (imageData.data[index + 3] > 0) continue;
-    expandedData[index] = maskInfo.fillRed;
-    expandedData[index + 1] = maskInfo.fillGreen;
-    expandedData[index + 2] = maskInfo.fillBlue;
-    expandedData[index + 3] = maskInfo.fillAlpha;
-  }
-
-  canvasContext.putImageData(new ImageData(expandedData, width, height), 0, 0);
+  canvasContext.putImageData(result.imageData, 0, 0);
   return canvas.toDataURL("image/png");
 };
 
@@ -1554,7 +1436,7 @@ const applyRasterOperationToImageData = (baseImageData, operation = {}) => {
       operation.dirtyRect.y
     );
     if (mode !== MASK_TOOL_MODES.ERASE) {
-      canvasContext.globalAlpha = clampNumber(Number(tool.brushAlpha ?? 1), 0.05, 1);
+      canvasContext.globalAlpha = Math.min(1, Math.max(0.05, Number(tool.brushAlpha ?? 1)));
     }
     canvasContext.drawImage(operationCanvas, 0, 0);
   } else {
@@ -1739,6 +1621,7 @@ const runSamPrediction = async ({ point = null, box = null } = {}) => {
       label: box ? `框选候选 ${index + 1}` : `点选候选 ${index + 1}`,
       enabled: index === 0,
       source: box ? "box" : "point",
+      modelId: effectiveSamModelId.value,
       prompt: box ? { box } : { point },
       createdAt: new Date().toISOString(),
     }));
@@ -1864,7 +1747,7 @@ const appendExternalSamTextResult = async ({
   prompt = "",
   baseMask = "",
 } = {}) => {
-  const sessionKey = buildSamContextId(contextId, modelId);
+  const sessionKey = buildSamContextId(contextId);
   if (!sessionKey) return { candidates: [], mask: "", performance: result.performance || null };
 
   const previousSession = samSessionByContext.get(sessionKey) || {};
@@ -1878,6 +1761,7 @@ const appendExternalSamTextResult = async ({
     label: `文本候选 ${previousCandidates.length + index + 1}`,
     enabled: index === 0,
     source: "text",
+    modelId: modelId || getTextModelId(),
     prompt: candidate.prompt || result.prompt || { type: "text", text: prompt },
     createdAt: new Date().toISOString(),
   }));
@@ -1931,12 +1815,17 @@ const removeSamCandidate = async (localId) => {
   if (hoveredSamCandidateId.value === localId) {
     hoveredSamCandidateId.value = "";
   }
+  if (samCandidates.value.length === 0) {
+    samCandidateMenuOpen.value = false;
+    hoveredSamCandidateId.value = "";
+  }
   await renderSamCandidates({ pushHistory: true });
 };
 
 const clearSamCandidates = async () => {
   samCandidates.value = [];
   hoveredSamCandidateId.value = "";
+  samCandidateMenuOpen.value = false;
   samLastPerformance.value = null;
   await renderSamCandidates({ pushHistory: true, saveSession: false });
   samBaseSnapshot.value = null;
@@ -2288,6 +2177,14 @@ const setSamToolMode = (value) => {
     cancelCurrentOperation();
   }
   samToolMode.value = nextMode;
+};
+
+const toggleSamToolMode = () => {
+  if (samToolMode.value === SAM_TOOL_MODES.ERASE) {
+    setSamToolMode(SAM_TOOL_MODES.SELECT);
+    return;
+  }
+  setSamToolMode(SAM_TOOL_MODES.ERASE);
 };
 
 const updateToolMode = (value) => {
@@ -2721,7 +2618,7 @@ watch(
 );
 
 watch(
-  () => [props.samContextId, props.samImage, props.samImageType, effectiveSamModelId.value],
+  () => [props.samContextId, props.samImage, props.samImageType],
   async () => {
     saveSamContextSession();
     restoreSamContextSession();
@@ -2987,6 +2884,18 @@ defineExpose({
   line-height: 1.3;
 }
 
+.sam-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 32px;
+}
+
+.sam-popup-header--compact {
+  min-height: 28px;
+}
+
 .sam-settings-hint {
   margin-top: 8px;
   padding: 7px 9px;
@@ -3005,6 +2914,16 @@ defineExpose({
   line-height: 1.4;
   color: rgba(75, 85, 99, 0.9);
   background: rgba(25, 118, 210, 0.08);
+}
+
+.sam-cuda-usage-hint {
+  margin-top: 8px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: rgba(5, 95, 70, 0.96);
+  background: rgba(16, 185, 129, 0.12);
 }
 
 .sam-auto-expand-notice {
@@ -3142,6 +3061,12 @@ defineExpose({
 :global(body.body--dark .sam-performance-state) {
   color: rgba(228, 228, 231, 0.86);
   background: rgba(59, 130, 246, 0.16);
+}
+
+.masker-dark .sam-cuda-usage-hint,
+:global(body.body--dark .sam-cuda-usage-hint) {
+  color: rgba(167, 243, 208, 0.96);
+  background: rgba(16, 185, 129, 0.16);
 }
 
 .masker-dark .sam-auto-expand-notice,

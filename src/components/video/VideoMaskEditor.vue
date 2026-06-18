@@ -98,22 +98,222 @@
       class="sam-track-hint"
       :class="$q.dark.isActive ? 'text-amber-2' : 'text-grey-9'"
     >
-      SAM 视频轨道由 SAM2 传播结果生成，时间范围固定，只能在左侧按对象勾选隐藏或删除对象。
+      智能选区轨道使用 SAM2 点选/框选传播生成，默认占满全部视频时长，范围和关键帧不可编辑。
     </q-banner>
 
-    <q-list bordered separator class="sam-track-object-list q-mt-sm">
-      <q-item
-        v-for="objectItem in videoStore.selectedMask.samObjects || []"
-        :key="objectItem.objectId"
-      >
-        <q-item-section>
-          <q-item-label>对象 {{ objectItem.objectId }}</q-item-label>
-          <q-item-label caption>
-            {{ objectItem.enabled === false ? "已隐藏" : "已启用" }}
-          </q-item-label>
-        </q-item-section>
-      </q-item>
-    </q-list>
+    <q-expansion-item
+      v-model="sections.brush"
+      dense
+      dense-toggle
+      expand-separator
+      label="智能选区工具"
+      icon="auto_awesome_motion"
+      class="editor-section sam-smart-tool-section"
+      data-testid="video-sam-smart-tool-section"
+    >
+      <div class="section-body sam-smart-tool-body">
+        <div class="sam-tool-row sam-tool-row--compact">
+          <q-btn-group flat class="sam-video-tool-group rounded-pill overflow-hidden">
+            <q-btn
+              color="primary"
+              text-color="white"
+              icon="tune"
+              :disable="disabled || samVideoRunning"
+              data-testid="video-sam-settings-button"
+            >
+              <q-tooltip>智能选区设置</q-tooltip>
+              <q-menu
+                anchor="bottom middle"
+                self="top middle"
+                :offset="[0, 10]"
+                content-class="video-sam-settings-popup"
+              >
+                <div class="video-sam-settings-panel q-pa-md">
+                  <div class="video-sam-popup-header">
+                    <div class="video-sam-settings-title">智能选区设置</div>
+                    <q-btn
+                      flat
+                      round
+                      dense
+                      icon="close"
+                      v-close-popup
+                      data-testid="video-sam-settings-close-button"
+                    >
+                      <q-tooltip>关闭</q-tooltip>
+                    </q-btn>
+                  </div>
+                  <div class="video-sam-settings-item">
+                    <div class="text-caption text-grey-7">当前点选/框选模型</div>
+                    <div class="text-body2">SAM2 / SAM2.1 视频传播</div>
+                  </div>
+                  <q-separator />
+                  <div class="video-sam-settings-item is-disabled">
+                    <div class="text-caption text-grey-7">SAM3 文本视频智选</div>
+                    <div class="text-body2">后续支持：文本找目标后自动进行视频传播。</div>
+                    <q-chip dense square color="grey-5" text-color="white">暂未启用</q-chip>
+                  </div>
+                </div>
+              </q-menu>
+            </q-btn>
+            <q-btn
+              color="primary"
+              text-color="white"
+              icon="ads_click"
+              data-testid="video-sam-select-tool-button"
+              :disable="disabled || samVideoRunning"
+            >
+              <q-tooltip>点选/框选对象：单击点选，拖拽框选</q-tooltip>
+            </q-btn>
+            <q-btn
+              icon="clear"
+              :disable="disabled || samVideoRunning || !hasSamVideoResult"
+              :text-color="$q.dark.isActive ? 'grey-2' : 'grey-8'"
+              data-testid="video-sam-clear-result-button"
+              @click="emit('clear-sam-video-result')"
+            >
+              <q-tooltip>清空提示、候选对象和传播结果</q-tooltip>
+            </q-btn>
+          </q-btn-group>
+        </div>
+
+        <div class="sam-tool-row">
+          <q-btn
+            color="primary"
+            icon="auto_fix_high"
+            label="运行智能选区"
+            no-caps
+            unelevated
+            class="sam-run-button"
+            :loading="samVideoRunning"
+            :disable="disabled || !canRunSamVideo"
+            @click="emit('run-sam-video-selection')"
+          />
+        </div>
+
+        <div class="sam-smart-hint text-caption">
+          {{ samSmartToolHint }}
+        </div>
+
+        <q-list
+          v-if="samPromptObjects.length"
+          dense
+          bordered
+          separator
+          class="sam-prompt-list"
+          data-testid="video-sam-prompt-list"
+        >
+          <q-item
+            v-for="prompt in samPromptObjects"
+            :key="`prompt-${prompt.objectId}`"
+            clickable
+            :disable="disabled || samVideoRunning"
+            @click="seekToSamPromptFrame(prompt)"
+          >
+            <q-item-section>
+              <q-item-label>对象 {{ prompt.objectId }}</q-item-label>
+              <q-item-label caption>
+                帧 {{ prompt.frameIndex }} · {{ prompt.box ? "框选" : "点选" }}
+              </q-item-label>
+            </q-item-section>
+            <q-item-section side>
+              <q-btn
+                flat
+                round
+                dense
+                color="negative"
+                icon="delete"
+                :disable="disabled || samVideoRunning"
+                @click.stop="videoStore.removeSamVideoPromptObject(videoStore.selectedMaskId, prompt.objectId)"
+              >
+                <q-tooltip>删除待选对象</q-tooltip>
+              </q-btn>
+            </q-item-section>
+          </q-item>
+        </q-list>
+
+        <q-linear-progress
+          v-if="samVideoRunning || samVideoProgress > 0"
+          :value="samVideoProgress"
+          color="primary"
+          rounded
+        />
+
+        <div
+          v-if="samVideoMessage"
+          class="sam-video-message"
+          :class="{ 'sam-video-message--error': samVideoError }"
+        >
+          {{ samVideoMessage }}
+        </div>
+
+      </div>
+    </q-expansion-item>
+
+    <q-expansion-item
+      v-model="sections.keyframes"
+      dense
+      dense-toggle
+      expand-separator
+      label="候选蒙版列表"
+      icon="format_list_bulleted"
+      class="editor-section"
+      data-testid="video-sam-candidate-list-section"
+    >
+      <div class="section-body">
+        <q-list bordered separator class="sam-track-object-list">
+          <q-item
+            v-for="objectItem in samObjects"
+            :key="objectItem.objectId"
+            clickable
+            :disable="disabled || samVideoRunning || !getSamPromptForObject(objectItem.objectId)"
+            @click="seekToSamPromptFrame(objectItem.objectId)"
+          >
+            <q-item-section>
+              <q-item-label>对象 {{ objectItem.objectId }}</q-item-label>
+              <q-item-label caption>
+                {{ objectItem.enabled === false ? "已隐藏" : "已启用" }} ·
+                {{ objectItem.hasBox ? "框选传播" : "点选传播" }}
+              </q-item-label>
+            </q-item-section>
+            <q-item-section side>
+              <div class="row items-center no-wrap q-gutter-xs">
+                <q-toggle
+                  dense
+                  :model-value="objectItem.enabled !== false"
+                  :disable="disabled || samVideoRunning"
+                  @update:model-value="
+                    (value) =>
+                      videoStore.setSamVideoObjectEnabled(
+                        videoStore.selectedMaskId,
+                        objectItem.objectId,
+                        value
+                      )
+                  "
+                  @click.stop
+                />
+                <q-btn
+                  flat
+                  round
+                  dense
+                  color="negative"
+                  icon="delete"
+                  :disable="disabled || samVideoRunning"
+                  @click.stop="emit('remove-sam-video-object', objectItem.objectId)"
+                >
+                  <q-tooltip>删除候选对象</q-tooltip>
+                </q-btn>
+              </div>
+            </q-item-section>
+          </q-item>
+
+          <q-item v-if="samObjects.length === 0">
+            <q-item-section class="text-grey-6">
+              还没有候选对象。先在画面上点选/框选目标，再运行智能选区。
+            </q-item-section>
+          </q-item>
+        </q-list>
+      </div>
+    </q-expansion-item>
   </div>
 
   <div v-else-if="videoStore.selectedMask" class="mask-editor">
@@ -392,8 +592,37 @@ const props = defineProps({
     type: Object,
     default: () => ({}),
   },
+  samVideoRunning: {
+    type: Boolean,
+    default: false,
+  },
+  samVideoProgress: {
+    type: Number,
+    default: 0,
+  },
+  samVideoMessage: {
+    type: String,
+    default: "",
+  },
+  samVideoError: {
+    type: String,
+    default: "",
+  },
+  hasSamVideoResult: {
+    type: Boolean,
+    default: false,
+  },
+  canRunSamVideo: {
+    type: Boolean,
+    default: false,
+  },
 });
-const emit = defineEmits(["update:sectionState"]);
+const emit = defineEmits([
+  "update:sectionState",
+  "run-sam-video-selection",
+  "clear-sam-video-result",
+  "remove-sam-video-object",
+]);
 
 const $q = useQuasar();
 const configStore = useConfigStore();
@@ -402,7 +631,6 @@ const controlButtonSize = computed(() =>
   normalizeButtonSize(configStore.config.ui?.buttonSize)
 );
 const isSlbrModel = computed(() => props.currentModel === "slbr");
-
 const DEFAULT_SECTION_STATE = Object.freeze({
   brush: true,
   range: false,
@@ -447,6 +675,33 @@ watch(
 );
 
 const orderedKeyframes = computed(() => videoStore.selectedMaskOrderedKeyframes);
+const samPromptObjects = computed(() => videoStore.selectedMask?.samPromptObjects || []);
+const samObjects = computed(() => videoStore.selectedMask?.samObjects || []);
+const samSmartToolHint = computed(() => {
+  const promptCount = samPromptObjects.value.length;
+  const frameIndex = videoStore.selectedMask?.samPromptFrameIndex;
+  if (!promptCount) return "在预览画面中点击添加点选对象，拖拽添加框选对象。";
+  return `已添加 ${promptCount} 个对象提示${Number.isInteger(frameIndex) ? `，提示帧 ${frameIndex}` : ""}。运行后会双向传播覆盖整段视频。`;
+});
+
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+const getSamPromptForObject = (promptOrObjectId) => {
+  if (typeof promptOrObjectId === "object" && promptOrObjectId !== null) {
+    return promptOrObjectId;
+  }
+  const objectId = Number(promptOrObjectId);
+  return samPromptObjects.value.find((item) => Number(item.objectId) === objectId) || null;
+};
+
+const seekToSamPromptFrame = (promptOrObjectId) => {
+  const prompt = getSamPromptForObject(promptOrObjectId);
+  if (!prompt) return;
+  const fps = Math.max(1, Number(videoStore.selectedMask?.sourceFrameRate || videoStore.sourceFrameRate || 30));
+  const frameIndex = Math.max(0, Math.floor(Number(prompt.frameIndex || 0)));
+  const duration = Math.max(0, Number(videoStore.videoDuration || 0));
+  videoStore.setCurrentTime(clamp(frameIndex / fps, 0, duration));
+};
 
 const getFallbackBounds = () => {
   const width = Math.max(1, Number(videoStore.videoWidth || 1));
@@ -840,9 +1095,71 @@ const setProcessingRangeEndFromCurrentTime = () => {
   background: rgba(245, 158, 11, 0.05);
 }
 
+.sam-smart-tool-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sam-tool-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sam-video-tool-group {
+  flex: 1 1 150px;
+  min-width: 0;
+}
+
+.sam-video-tool-group :deep(.q-btn) {
+  min-height: 38px;
+}
+
+.video-sam-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.sam-run-button {
+  flex: 1 1 150px;
+  min-height: 38px;
+}
+
+.sam-smart-hint,
+.sam-video-message {
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: rgba(25, 118, 210, 0.08);
+  line-height: 1.4;
+}
+
+.sam-video-message--error {
+  color: #b91c1c;
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.sam-prompt-list {
+  background: rgba(25, 118, 210, 0.04);
+}
+
 :global(body.body--dark) .sam-track-hint {
   background: rgba(245, 158, 11, 0.16);
   border-color: rgba(251, 191, 36, 0.34);
+}
+
+:global(body.body--dark) .sam-smart-hint,
+:global(body.body--dark) .sam-video-message {
+  background: rgba(59, 130, 246, 0.14);
+}
+
+:global(body.body--dark) .sam-video-message--error {
+  color: rgba(252, 165, 165, 0.98);
+  background: rgba(239, 68, 68, 0.18);
 }
 
 .keyframe-toolbar {

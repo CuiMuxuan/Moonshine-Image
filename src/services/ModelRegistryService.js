@@ -93,7 +93,7 @@ const getModels = async (options = {}) => {
     const directoryPayload = buildModelDirectoryPayload(options);
     const response = await api.get(
       "/api/v1/moonshine/models",
-      directoryPayload.model_dir ? { params: { model_dir: directoryPayload.model_dir } } : {}
+      directoryPayload.model_dir ? { model_dir: directoryPayload.model_dir } : {}
     );
     const models = Array.isArray(response?.models)
       ? response.models.map(normalizeModel).filter((model) => model.id)

@@ -119,6 +119,7 @@ class AsyncVideoFrameLoader:
         img_mean,
         img_std,
         compute_device,
+        progress_callback=None,
     ):
         self.img_paths = img_paths
         self.image_size = image_size
@@ -133,6 +134,7 @@ class AsyncVideoFrameLoader:
         self.video_height = None
         self.video_width = None
         self.compute_device = compute_device
+        self.progress_callback = progress_callback
 
         # load the first frame to fill video_height and video_width and also
         # to cache it (since it's most likely where the user will click)
@@ -141,8 +143,11 @@ class AsyncVideoFrameLoader:
         # load the rest of frames asynchronously without blocking the session start
         def _load_frames():
             try:
-                for n in tqdm(range(len(self.images)), desc="frame loading (JPEG)"):
+                total = len(self.images)
+                for n in tqdm(range(total), desc="frame loading (JPEG)"):
                     self.__getitem__(n)
+                    if self.progress_callback:
+                        self.progress_callback(n + 1, total)
             except Exception as e:
                 self.exception = e
 
@@ -182,6 +187,7 @@ def load_video_frames(
     img_std=(0.229, 0.224, 0.225),
     async_loading_frames=False,
     compute_device=torch.device("cuda"),
+    progress_callback=None,
 ):
     """
     Load the video frames from video_path. The frames are resized to image_size as in
@@ -198,6 +204,7 @@ def load_video_frames(
             img_mean=img_mean,
             img_std=img_std,
             compute_device=compute_device,
+            progress_callback=progress_callback,
         )
     elif is_str and os.path.isdir(video_path):
         return load_video_frames_from_jpg_images(
@@ -208,6 +215,7 @@ def load_video_frames(
             img_std=img_std,
             async_loading_frames=async_loading_frames,
             compute_device=compute_device,
+            progress_callback=progress_callback,
         )
     else:
         raise NotImplementedError(
@@ -223,6 +231,7 @@ def load_video_frames_from_jpg_images(
     img_std=(0.229, 0.224, 0.225),
     async_loading_frames=False,
     compute_device=torch.device("cuda"),
+    progress_callback=None,
 ):
     """
     Load the video frames from a directory of JPEG files ("<frame_index>.jpg" format).
@@ -266,12 +275,15 @@ def load_video_frames_from_jpg_images(
             img_mean,
             img_std,
             compute_device,
+            progress_callback,
         )
         return lazy_images, lazy_images.video_height, lazy_images.video_width
 
     images = torch.zeros(num_frames, 3, image_size, image_size, dtype=torch.float32)
     for n, img_path in enumerate(tqdm(img_paths, desc="frame loading (JPEG)")):
         images[n], video_height, video_width = _load_img_as_tensor(img_path, image_size)
+        if progress_callback:
+            progress_callback(n + 1, num_frames)
     if not offload_video_to_cpu:
         images = images.to(compute_device)
         img_mean = img_mean.to(compute_device)
@@ -289,6 +301,7 @@ def load_video_frames_from_video_file(
     img_mean=(0.485, 0.456, 0.406),
     img_std=(0.229, 0.224, 0.225),
     compute_device=torch.device("cuda"),
+    progress_callback=None,
 ):
     """Load the video frames from a video file."""
     import decord
@@ -300,8 +313,12 @@ def load_video_frames_from_video_file(
     video_height, video_width, _ = decord.VideoReader(video_path).next().shape
     # Iterate over all frames in the video
     images = []
-    for frame in decord.VideoReader(video_path, width=image_size, height=image_size):
+    reader = decord.VideoReader(video_path, width=image_size, height=image_size)
+    total = len(reader)
+    for index, frame in enumerate(reader):
         images.append(frame.permute(2, 0, 1))
+        if progress_callback:
+            progress_callback(index + 1, total)
 
     images = torch.stack(images, dim=0).float() / 255.0
     if not offload_video_to_cpu:

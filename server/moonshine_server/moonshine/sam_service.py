@@ -11,7 +11,7 @@ import tempfile
 import time
 from pathlib import Path
 from threading import RLock
-from typing import Optional
+from typing import Callable, Optional
 
 import cv2
 import numpy as np
@@ -20,6 +20,7 @@ import torch.nn.functional as F
 from PIL import Image
 
 from moonshine_server.helper import decode_base64_to_image, numpy_to_bytes
+from moonshine_server.disk_space import DEFAULT_DISK_SPACE_SAFETY_BYTES, ensure_disk_space
 from moonshine_server.moonshine.model_registry import build_model_status
 from moonshine_server.plugins.segment_anything import SamPredictor, sam_model_registry
 from moonshine_server.plugins.segment_anything2.build_sam import (
@@ -49,6 +50,8 @@ SAM2_MODEL_TYPES = {
 
 POINT_BOX_FAMILIES = {"sam", "sam2"}
 TEXT_FAMILIES = {"sam3"}
+SAM_VIDEO_MASK_JPEG_QUALITY = 88
+SAM_VIDEO_MASK_BYTES_PER_PIXEL_ESTIMATE = 0.18
 
 SAM3_REQUIRED_MODULES = {
     "sam3": "sam3",
@@ -600,6 +603,72 @@ class SamService:
         return f"data:image/png;base64,{encoded}"
 
     @staticmethod
+    def _save_video_mask(mask: np.ndarray, output_dir: Path, frame_index: int, object_id: int) -> dict:
+        mask_binary = np.where(mask > 128, 255, 0).astype(np.uint8)
+        file_name = f"mask_f{frame_index:06d}_o{object_id:03d}.jpg"
+        mask_path = output_dir / file_name
+        ok, encoded = cv2.imencode(
+            ".jpg",
+            mask_binary,
+            [int(cv2.IMWRITE_JPEG_QUALITY), SAM_VIDEO_MASK_JPEG_QUALITY],
+        )
+        if not ok:
+            raise SamServiceError(f"Failed to encode SAM2 video mask: {mask_path}")
+        mask_bytes = encoded.tobytes()
+        ensure_disk_space(
+            mask_path,
+            len(mask_bytes),
+            safety_bytes=DEFAULT_DISK_SPACE_SAFETY_BYTES,
+            operation="SAM2 视频蒙版写入",
+        )
+        mask_path.write_bytes(mask_bytes)
+        mask_signature = hashlib.sha256(mask_bytes).hexdigest()
+        return {
+            "objectId": int(object_id),
+            "maskPath": str(mask_path),
+            "maskAssetId": f"{mask_signature[:12]}:{frame_index}:{object_id}",
+            "maskSize": len(mask_bytes),
+            "maskSignature": mask_signature,
+        }
+
+    @staticmethod
+    def _estimate_video_mask_disk_bytes(
+        *,
+        width: int,
+        height: int,
+        remaining_frames: int,
+        object_count: int,
+    ) -> int:
+        pixel_count = max(1, int(width or 1) * int(height or 1))
+        estimated_mask_bytes = int(pixel_count * SAM_VIDEO_MASK_BYTES_PER_PIXEL_ESTIMATE)
+        return max(1, remaining_frames) * max(1, object_count) * estimated_mask_bytes
+
+    @classmethod
+    def _ensure_video_mask_disk_space(
+        cls,
+        *,
+        output_dir: Path,
+        width: int,
+        height: int,
+        remaining_frames: int,
+        object_count: int,
+    ) -> None:
+        if remaining_frames <= 0 or object_count <= 0:
+            return
+        required_bytes = cls._estimate_video_mask_disk_bytes(
+            width=width,
+            height=height,
+            remaining_frames=remaining_frames,
+            object_count=object_count,
+        )
+        ensure_disk_space(
+            output_dir,
+            required_bytes,
+            safety_bytes=DEFAULT_DISK_SPACE_SAFETY_BYTES,
+            operation="SAM2 视频蒙版临时文件写入",
+        )
+
+    @staticmethod
     def _frame_dir_hash(frame_dir: Path) -> str:
         frame_names = sorted(
             item.name
@@ -621,7 +690,33 @@ class SamService:
         return digest.hexdigest()
 
     @staticmethod
-    def _stage_video_to_jpeg_frames(video_path: Path, output_dir: Path) -> dict:
+    def _emit_progress(
+        progress_callback: Optional[Callable[..., None]],
+        *,
+        status: str,
+        phase: Optional[str] = None,
+        message: str = "",
+        current: int = 0,
+        total: int = 0,
+        progress: Optional[float] = None,
+    ) -> None:
+        if not progress_callback:
+            return
+        progress_callback(
+            status=status,
+            phase=phase or status,
+            message=message,
+            current=current,
+            total=total,
+            progress=progress,
+        )
+
+    @staticmethod
+    def _stage_video_to_jpeg_frames(
+        video_path: Path,
+        output_dir: Path,
+        progress_callback: Optional[Callable[..., None]] = None,
+    ) -> dict:
         if not video_path.is_file():
             raise SamServiceError(f"SAM2 video file not found: {video_path}")
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -632,9 +727,19 @@ class SamService:
 
         frame_count = 0
         fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        expected_frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
         height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
         try:
+            SamService._emit_progress(
+                progress_callback,
+                status="frame_loading",
+                phase="staging_frames",
+                message="正在抽取视频帧",
+                current=0,
+                total=expected_frame_count,
+                progress=0,
+            )
             while True:
                 ok, frame = capture.read()
                 if not ok:
@@ -643,6 +748,15 @@ class SamService:
                 if not cv2.imwrite(str(frame_path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95]):
                     raise SamServiceError(f"Failed to stage SAM2 video frame: {frame_path}")
                 frame_count += 1
+                if frame_count == 1 or frame_count % 10 == 0:
+                    SamService._emit_progress(
+                        progress_callback,
+                        status="frame_loading",
+                        phase="staging_frames",
+                        message=f"正在抽取视频帧 {frame_count}/{expected_frame_count or '?'}",
+                        current=frame_count,
+                        total=expected_frame_count,
+                    )
         finally:
             capture.release()
 
@@ -879,7 +993,19 @@ class SamService:
         reverse: bool,
         offload_video_to_cpu: bool,
         offload_state_to_cpu: bool,
+        response_type: str = "base64",
+        mask_output_dir: Optional[str] = None,
+        progress_callback: Optional[Callable[..., None]] = None,
     ) -> dict:
+        self._emit_progress(
+            progress_callback,
+            status="queued",
+            phase="queued",
+            message="SAM2 视频传播任务已开始",
+            current=0,
+            total=0,
+            progress=0,
+        )
         normalized_objects = self._normalize_video_objects(
             objects=objects,
             object_id=object_id,
@@ -893,6 +1019,13 @@ class SamService:
         source_video_path = None
         source_video_hash = None
         staged_video_info = None
+        normalized_response_type = "path" if str(response_type or "").strip() == "path" else "base64"
+        mask_output_path = None
+        if normalized_response_type == "path":
+            if not mask_output_dir:
+                raise SamServiceError("mask_output_dir is required when SAM2 response_type is path.")
+            mask_output_path = Path(mask_output_dir).expanduser().resolve()
+            mask_output_path.mkdir(parents=True, exist_ok=True)
 
         if normalized_input_type == "videoPath":
             if not video_path:
@@ -904,7 +1037,11 @@ class SamService:
             staging_root = Path(tempfile.mkdtemp(prefix="moonshine_sam2_video_"))
             frame_path = staging_root / "frames"
             try:
-                staged_video_info = self._stage_video_to_jpeg_frames(source_video_path, frame_path)
+                staged_video_info = self._stage_video_to_jpeg_frames(
+                    source_video_path,
+                    frame_path,
+                    progress_callback=progress_callback,
+                )
             except Exception:
                 shutil.rmtree(staging_root, ignore_errors=True)
                 staging_root = None
@@ -928,17 +1065,63 @@ class SamService:
             if normalized_input_type == "videoPath" and source_video_hash
             else self._frame_dir_hash(frame_path)
         )
+        estimated_output_frame_count = max(
+            1,
+            min(
+                len(frame_names),
+                int(max_frames) if max_frames is not None else len(frame_names),
+            ),
+        )
 
         total_started_at = time.perf_counter()
         try:
             with self._lock:
                 predictor = self._get_video_predictor(model_id)
+                self._emit_progress(
+                    progress_callback,
+                    status="frame_loading",
+                    phase="frame_loading",
+                    message=f"正在加载 SAM2 视频帧 0/{len(frame_names)}",
+                    current=0,
+                    total=len(frame_names),
+                    progress=0,
+                )
+
+                def emit_frame_loading_progress(current: int, total: int) -> None:
+                    self._emit_progress(
+                        progress_callback,
+                        status="frame_loading",
+                        phase="frame_loading",
+                        message=f"正在加载 SAM2 视频帧 {current}/{total}",
+                        current=current,
+                        total=total,
+                    )
+
                 state = predictor.init_state(
                     str(frame_path),
                     offload_video_to_cpu=offload_video_to_cpu,
                     offload_state_to_cpu=offload_state_to_cpu,
+                    progress_callback=emit_frame_loading_progress,
                 )
-                for prompt in normalized_objects:
+                self._emit_progress(
+                    progress_callback,
+                    status="frame_loading",
+                    phase="frame_loading",
+                    message=f"SAM2 视频帧加载完成 {len(frame_names)}/{len(frame_names)}",
+                    current=len(frame_names),
+                    total=len(frame_names),
+                    progress=1,
+                )
+                self._emit_progress(
+                    progress_callback,
+                    status="prompt_encoding",
+                    phase="prompt_encoding",
+                    message=f"正在注册 {len(normalized_objects)} 个对象提示",
+                    current=0,
+                    total=len(normalized_objects),
+                    progress=0,
+                )
+                for prompt_index, prompt in enumerate(normalized_objects, start=1):
                     point_coords, point_labels = self._normalize_points(prompt["points"])
                     box_array = self._normalize_box(prompt["box"])
                     predictor.add_new_points_or_box(
@@ -949,8 +1132,33 @@ class SamService:
                         labels=point_labels,
                         box=box_array,
                     )
+                    self._emit_progress(
+                        progress_callback,
+                        status="prompt_encoding",
+                        phase="prompt_encoding",
+                        message=f"已注册对象 {prompt['objectId']} 的点选/框选提示",
+                        current=prompt_index,
+                        total=len(normalized_objects),
+                    )
 
                 frames = []
+                if normalized_response_type == "path":
+                    self._ensure_video_mask_disk_space(
+                        output_dir=mask_output_path,
+                        width=int(state["video_width"]),
+                        height=int(state["video_height"]),
+                        remaining_frames=estimated_output_frame_count,
+                        object_count=len(normalized_objects),
+                    )
+                self._emit_progress(
+                    progress_callback,
+                    status="propagating",
+                    phase="propagating",
+                    message=f"正在传播 SAM2 视频蒙版 0/{estimated_output_frame_count}",
+                    current=0,
+                    total=estimated_output_frame_count,
+                    progress=0,
+                )
                 for out_frame_index, object_ids, masks in predictor.propagate_in_video(
                     state,
                     start_frame_idx=frame_index,
@@ -958,24 +1166,59 @@ class SamService:
                     reverse=reverse,
                 ):
                     frame_masks = []
+                    if normalized_response_type == "path":
+                        self._ensure_video_mask_disk_space(
+                            output_dir=mask_output_path,
+                            width=int(state["video_width"]),
+                            height=int(state["video_height"]),
+                            remaining_frames=max(1, estimated_output_frame_count - len(frames)),
+                            object_count=max(1, len(object_ids)),
+                        )
                     for mask_index, obj_id in enumerate(object_ids):
                         mask_np = self._tensor_mask_to_numpy(
                             masks[mask_index],
                             state["video_height"],
                             state["video_width"],
                         )
-                        frame_masks.append(
-                            {
-                                "objectId": int(obj_id),
-                                "mask": self._mask_to_data_url(mask_np),
-                            }
-                        )
+                        if normalized_response_type == "path":
+                            frame_masks.append(
+                                self._save_video_mask(
+                                    mask_np,
+                                    mask_output_path,
+                                    int(out_frame_index),
+                                    int(obj_id),
+                                )
+                            )
+                        else:
+                            frame_masks.append(
+                                {
+                                    "objectId": int(obj_id),
+                                    "mask": self._mask_to_data_url(mask_np),
+                                }
+                            )
                     frames.append(
                         {
                             "frameIndex": int(out_frame_index),
                             "masks": frame_masks,
                         }
                     )
+                    self._emit_progress(
+                        progress_callback,
+                        status="propagating",
+                        phase="propagating",
+                        message=f"正在传播 SAM2 视频蒙版 {len(frames)}/{estimated_output_frame_count}",
+                        current=len(frames),
+                        total=estimated_output_frame_count,
+                    )
+                self._emit_progress(
+                    progress_callback,
+                    status="writing_masks",
+                    phase="writing_masks",
+                    message=f"SAM2 蒙版写入完成 {len(frames)}/{estimated_output_frame_count}",
+                    current=len(frames),
+                    total=estimated_output_frame_count,
+                    progress=1,
+                )
         except RuntimeError as error:
             raise SamServiceError(self._format_runtime_error(error)) from error
         finally:
@@ -1009,6 +1252,8 @@ class SamService:
                 if staged_video_info
                 else None,
                 "fps": staged_video_info.get("fps") if staged_video_info else None,
+                "responseType": normalized_response_type,
+                "maskOutputDir": str(mask_output_path) if mask_output_path is not None else None,
             },
             "performance": {
                 "device": self.device,

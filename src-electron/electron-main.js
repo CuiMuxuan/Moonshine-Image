@@ -100,6 +100,7 @@ const BACKEND_PATH_CJK_BLOCK_MESSAGE =
 const CJK_PATH_PATTERN = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u;
 const BACKEND_PORT_HOST = "127.0.0.1";
 const BACKEND_PORT_RETRY_LIMIT = 20;
+const DEFAULT_DISK_SPACE_SAFETY_BYTES = 64 * 1024 * 1024;
 let packagedIntegrityStatus = null;
 
 function validateShortcutConfig(shortcuts = {}) {
@@ -257,6 +258,108 @@ function ensureParentDirectory(filePath) {
   if (!fs.existsSync(parentDirectory)) {
     fs.mkdirSync(parentDirectory, { recursive: true });
   }
+}
+
+function normalizeByteCount(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return fallback;
+  }
+  return Math.ceil(numeric);
+}
+
+function formatBytes(value) {
+  let size = normalizeByteCount(value);
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+  return index === 0 ? `${Math.round(size)} ${units[index]}` : `${size.toFixed(1)} ${units[index]}`;
+}
+
+function resolveDiskSpaceCheckPath(targetPath) {
+  const rawPath = String(targetPath || "").trim() || app.getPath("userData");
+  const normalizedPath = path.resolve(path.normalize(rawPath));
+  const hasExtension = Boolean(path.extname(normalizedPath));
+  const directory = hasExtension ? path.dirname(normalizedPath) : normalizedPath;
+  if (!fs.existsSync(directory)) {
+    fs.mkdirSync(directory, { recursive: true });
+  }
+  return directory;
+}
+
+function getAvailableDiskSpace(targetPath) {
+  const checkPath = resolveDiskSpaceCheckPath(targetPath);
+  if (typeof fs.statfsSync !== "function") {
+    return {
+      success: false,
+      path: checkPath,
+      error: "当前运行时不支持磁盘空间检测。",
+    };
+  }
+  const stats = fs.statfsSync(checkPath, { bigint: false });
+  const blockSize = normalizeByteCount(stats.bsize || stats.frsize || 0, 0);
+  const availableBlocks = normalizeByteCount(stats.bavail || stats.bfree || 0, 0);
+  return {
+    success: true,
+    path: checkPath,
+    freeBytes: blockSize * availableBlocks,
+  };
+}
+
+function ensureDiskSpace(targetPath, payload = {}) {
+  const requiredBytes = normalizeByteCount(payload.requiredBytes ?? payload.bytes ?? 0);
+  const safetyBytes = normalizeByteCount(
+    payload.safetyBytes,
+    DEFAULT_DISK_SPACE_SAFETY_BYTES
+  );
+  const operation = String(payload.operation || "写入文件");
+  const totalRequiredBytes = requiredBytes + safetyBytes;
+  const info = getAvailableDiskSpace(targetPath);
+  if (!info.success) {
+    throw new Error(info.error || "磁盘空间检测失败。");
+  }
+  if (info.freeBytes < totalRequiredBytes) {
+    throw new Error(
+      `${operation}磁盘空间不足。预计至少需要 ${formatBytes(totalRequiredBytes)}，` +
+        `当前可用 ${formatBytes(info.freeBytes)}。请清理磁盘空间或在全局设置中更换输出/临时目录后重试。`
+    );
+  }
+  return {
+    success: true,
+    ok: true,
+    path: info.path,
+    freeBytes: info.freeBytes,
+    requiredBytes,
+    safetyBytes,
+    totalRequiredBytes,
+  };
+}
+
+function getBufferByteLength(value) {
+  if (!value) return 0;
+  if (Buffer.isBuffer(value)) return value.byteLength;
+  if (value instanceof ArrayBuffer) return value.byteLength;
+  if (ArrayBuffer.isView(value)) return value.byteLength;
+  if (typeof value === "string") return Buffer.byteLength(value);
+  return 0;
+}
+
+function getFileSize(filePath) {
+  try {
+    return fs.statSync(filePath).size;
+  } catch {
+    return 0;
+  }
+}
+
+function sumExistingFileSizes(filePaths = []) {
+  return (Array.isArray(filePaths) ? filePaths : []).reduce(
+    (total, filePath) => total + getFileSize(filePath),
+    0
+  );
 }
 
 function readJsonFileSafe(filePath, fallbackValue = null) {
@@ -950,6 +1053,10 @@ async function ensurePackagedBackendIntegrity(projectPath) {
     }
 
     if (shouldCopy) {
+      ensureDiskSpace(targetPath, {
+        requiredBytes: Number(entry.size || getFileSize(sourcePath)),
+        operation: "复制后端运行资源",
+      });
       fs.copyFileSync(sourcePath, targetPath);
     }
   }
@@ -1174,6 +1281,65 @@ function hasBundledRuntimeStateChanged(runtimeMetadata) {
   );
 }
 
+function writeBundledRuntimeState(runtimeMetadata, bundledPython = getBundledPythonPath()) {
+  writeJsonFile(getBundledRuntimeStatePath(), {
+    schemaVersion: 2,
+    preparedAt: new Date().toISOString(),
+    runtimeBuiltAt: runtimeMetadata.builtAt,
+    resourcesRootPath: getResourcesRootPath(),
+    runtimeEnvPath: getBundledRuntimeEnvPath(),
+    backendPath: getPackagedBackendRuntimeProjectPath(),
+    pythonPath: bundledPython,
+    defaultModelFilePath: getBundledDefaultModelPath(),
+  });
+}
+
+async function verifyBundledPythonRuntime(options = {}) {
+  const checkDependencies = options.checkDependencies === true;
+  const bundledPython = getBundledPythonPath();
+  if (!fs.existsSync(bundledPython)) {
+    return {
+      success: false,
+      error: `Bundled Python executable is missing: ${bundledPython}`,
+    };
+  }
+
+  const versionResult = await getPythonVersionFromCommand(bundledPython, [], {
+    cwd: getPackagedBackendRuntimeProjectPath(),
+    env: getBundledRuntimeCommandEnv(),
+  });
+  if (!versionResult.success) {
+    return versionResult;
+  }
+
+  if (checkDependencies) {
+    try {
+      await execFileCommand(
+        bundledPython,
+        ["-c", "import fastapi,uvicorn,numpy,PIL,torch,transformers"],
+        {
+          cwd: getPackagedBackendRuntimeProjectPath(),
+          timeout: 30000,
+          env: getBundledRuntimeCommandEnv(),
+        }
+      );
+    } catch (error) {
+      return {
+        success: false,
+        error:
+          error.message ||
+          "Bundled Python executable is present, but backend dependencies are not usable.",
+      };
+    }
+  }
+
+  return {
+    success: true,
+    pythonPath: bundledPython,
+    pythonVersion: versionResult.version?.text || "",
+  };
+}
+
 async function ensureBundledRuntimeReady(sendLog) {
   const integrityResult = await ensurePackagedBackendIntegrity(
     getPackagedBackendRuntimeProjectPath()
@@ -1204,6 +1370,18 @@ async function ensureBundledRuntimeReady(sendLog) {
       return;
     }
 
+    const existingRuntime = await verifyBundledPythonRuntime({
+      checkDependencies: true,
+    });
+    if (existingRuntime.success && fs.existsSync(getPackagedBackendRuntimeProjectPath())) {
+      sendLog?.(
+        "Bundled Python runtime is already usable. Refreshing runtime state...",
+        "info"
+      );
+      writeBundledRuntimeState(runtimeMetadata, existingRuntime.pythonPath);
+      return;
+    }
+
     const appMoved =
       !!state?.runtimeEnvPath && state.runtimeEnvPath !== getBundledRuntimeEnvPath();
     if (appMoved) {
@@ -1216,6 +1394,18 @@ async function ensureBundledRuntimeReady(sendLog) {
     try {
       await runBundledCondaUnpack(sendLog);
     } catch (error) {
+      const fallbackRuntime = await verifyBundledPythonRuntime({
+        checkDependencies: true,
+      });
+      if (fallbackRuntime.success) {
+        sendLog?.(
+          `Bundled runtime relocation reported a warning, but Python is usable: ${error.message}`,
+          "warning"
+        );
+        writeBundledRuntimeState(runtimeMetadata, fallbackRuntime.pythonPath);
+        return;
+      }
+
       if (appMoved) {
         clearBundledRuntimeState();
         error.message = `${error.message} The app appears to have been moved after the bundled runtime was prepared. Please re-extract the packaged app to a fresh directory and try again.`;
@@ -1223,34 +1413,24 @@ async function ensureBundledRuntimeReady(sendLog) {
       throw error;
     }
 
-    const bundledPython = getBundledPythonPath();
-    if (!fs.existsSync(bundledPython)) {
-      throw new Error(`Bundled Python executable is missing: ${bundledPython}`);
+    const preparedRuntime = await verifyBundledPythonRuntime();
+    if (!preparedRuntime.success) {
+      throw new Error(preparedRuntime.error || "Bundled Python runtime verification failed.");
     }
 
-    writeJsonFile(getBundledRuntimeStatePath(), {
-      schemaVersion: 2,
-      preparedAt: new Date().toISOString(),
-      runtimeBuiltAt: runtimeMetadata.builtAt,
-      resourcesRootPath: getResourcesRootPath(),
-      runtimeEnvPath: getBundledRuntimeEnvPath(),
-      backendPath: getPackagedBackendRuntimeProjectPath(),
-      pythonPath: bundledPython,
-      defaultModelFilePath: getBundledDefaultModelPath(),
-    });
+    writeBundledRuntimeState(runtimeMetadata, preparedRuntime.pythonPath);
   });
 
-  const bundledPython = getBundledPythonPath();
-  const versionResult = await getPythonVersionFromCommand(bundledPython, [], {
-    cwd: getPackagedBackendRuntimeProjectPath(),
-    env: getBundledRuntimeCommandEnv(),
-  });
+  const runtimeResult = await verifyBundledPythonRuntime();
+  if (!runtimeResult.success) {
+    return runtimeResult;
+  }
 
   return {
     success: true,
     path: getPackagedBackendRuntimeProjectPath(),
-    pythonPath: bundledPython,
-    pythonVersion: versionResult.success ? versionResult.version.text : "",
+    pythonPath: runtimeResult.pythonPath,
+    pythonVersion: runtimeResult.pythonVersion,
     pythonSource: "bundled offline runtime",
     venvName: "bundled-runtime",
     venvPath: getBundledRuntimeEnvPath(),
@@ -2332,8 +2512,12 @@ const finishWriteStream = (stream) =>
 const saveFileHandler = async (event, { filePath, blob }) => {
   try {
     filePath = resolveWritableFilePath(filePath);
-
-    fs.writeFileSync(filePath, Buffer.from(blob));
+    const buffer = Buffer.from(blob);
+    ensureDiskSpace(filePath, {
+      requiredBytes: buffer.byteLength,
+      operation: "保存文件",
+    });
+    fs.writeFileSync(filePath, buffer);
 
     return filePath;
   } catch (error) {
@@ -2343,9 +2527,33 @@ const saveFileHandler = async (event, { filePath, blob }) => {
 };
 ipcMain.handle("save-file", saveFileHandler);
 ipcMain.handle("saveFile", saveFileHandler);
-ipcMain.handle("open-file-write-stream", async (event, filePath) => {
+ipcMain.handle("check-disk-space", async (event, targetPath) => {
   try {
+    return getAvailableDiskSpace(targetPath);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+ipcMain.handle("ensure-disk-space", async (event, payload = {}) => {
+  try {
+    return ensureDiskSpace(payload.targetPath || payload.path, payload);
+  } catch (error) {
+    return {
+      success: false,
+      ok: false,
+      error: error.message,
+    };
+  }
+});
+ipcMain.handle("open-file-write-stream", async (event, payload = {}) => {
+  try {
+    const filePath = typeof payload === "string" ? payload : payload.filePath;
     const resolvedFilePath = resolveWritableFilePath(filePath);
+    ensureDiskSpace(resolvedFilePath, {
+      requiredBytes: payload.estimatedBytes || payload.requiredBytes || 0,
+      safetyBytes: payload.safetyBytes,
+      operation: payload.operation || "创建输出文件",
+    });
     const stream = fs.createWriteStream(resolvedFilePath);
     await waitForWriteStreamOpen(stream);
 
@@ -2353,6 +2561,7 @@ ipcMain.handle("open-file-write-stream", async (event, filePath) => {
     activeFileWriteStreams.set(streamId, {
       stream,
       filePath: resolvedFilePath,
+      operation: payload.operation || "写入输出文件",
     });
 
     return {
@@ -2373,6 +2582,10 @@ ipcMain.handle("write-file-stream-chunk", async (event, { streamId, chunk }) => 
 
   try {
     if (chunk) {
+      ensureDiskSpace(session.filePath, {
+        requiredBytes: getBufferByteLength(chunk),
+        operation: session.operation || "写入输出文件",
+      });
       await writeChunkToStream(session.stream, chunk);
     }
     return { success: true };
@@ -2754,6 +2967,12 @@ ipcMain.handle("ffmpeg-encode-frame-sequence", async (event, payload = {}) => {
     validateExistingFiles(framePaths, "frame");
 
     const outputPath = resolveWritableFilePath(payload.outputPath);
+    ensureDiskSpace(outputPath, {
+      requiredBytes:
+        normalizeByteCount(payload.estimatedOutputBytes) ||
+        sumExistingFileSizes(framePaths),
+      operation: "编码临时视频分段",
+    });
     const fps = normalizeFfmpegFps(payload.fps);
     listPath = createFrameSequenceConcatFile(framePaths, outputPath, fps);
 
@@ -2816,11 +3035,21 @@ ipcMain.handle("ffmpeg-concat-segments", async (event, payload = {}) => {
         return { success: true, filePath: sourcePath };
       }
       const resolvedOutputPath = resolveWritableFilePath(outputPath);
+      ensureDiskSpace(resolvedOutputPath, {
+        requiredBytes: getFileSize(sourcePath),
+        operation: "复制视频分段",
+      });
       fs.copyFileSync(sourcePath, resolvedOutputPath);
       return { success: true, filePath: resolvedOutputPath };
     }
 
     const outputPath = resolveWritableFilePath(payload.outputPath);
+    ensureDiskSpace(outputPath, {
+      requiredBytes:
+        normalizeByteCount(payload.estimatedOutputBytes) ||
+        sumExistingFileSizes(segmentPaths),
+      operation: "拼接视频分段",
+    });
     listPath = createSegmentConcatFile(segmentPaths, outputPath);
     await runFfmpeg(
       [
@@ -2859,6 +3088,12 @@ ipcMain.handle("ffmpeg-mux-audio", async (event, payload = {}) => {
     const { videoPath, sourcePath } = payload;
     validateExistingFiles([videoPath, sourcePath], "media");
     const outputPath = resolveWritableFilePath(payload.outputPath);
+    ensureDiskSpace(outputPath, {
+      requiredBytes:
+        normalizeByteCount(payload.estimatedOutputBytes) ||
+        getFileSize(videoPath) + Math.min(getFileSize(sourcePath), getFileSize(videoPath)),
+      operation: "混合原视频音频",
+    });
     await runFfmpeg(
       [
         "-y",
@@ -2942,6 +3177,10 @@ ipcMain.handle("copy-file", async (event, { source, target }) => {
     }
 
     // Copy file
+    ensureDiskSpace(finalTarget, {
+      requiredBytes: getFileSize(source),
+      operation: "复制文件",
+    });
     fs.copyFileSync(source, finalTarget);
 
     console.log(`File copied successfully: ${source} -> ${finalTarget}`);
@@ -3621,22 +3860,59 @@ async function installTargetPython(sendLog) {
 
     sendLog?.(`Downloading Python installer: ${downloadUrl}`, "info");
     await new Promise((resolve, reject) => {
+      let checkedByContentLength = false;
+      let settled = false;
       const file = fs.createWriteStream(filePath);
-      https
+      const failDownload = (error) => {
+        if (settled) return;
+        settled = true;
+        file.destroy();
+        fs.unlink(filePath, () => {});
+        reject(error);
+      };
+      const request = https
         .get(downloadUrl, (response) => {
+          const contentLength = Number(response.headers["content-length"] || 0);
+          if (Number.isFinite(contentLength) && contentLength > 0) {
+            try {
+              ensureDiskSpace(filePath, {
+                requiredBytes: contentLength,
+                operation: "下载 Python 安装包",
+              });
+            } catch (error) {
+              response.destroy();
+              failDownload(error);
+              return;
+            }
+            checkedByContentLength = true;
+          }
+          response.on("data", (chunk) => {
+            if (!checkedByContentLength && !settled) {
+              try {
+                ensureDiskSpace(filePath, {
+                  requiredBytes: getBufferByteLength(chunk),
+                  operation: "下载 Python 安装包",
+                });
+              } catch (error) {
+                response.destroy();
+                failDownload(error);
+              }
+            }
+          });
+          response.on("error", failDownload);
           response.pipe(file);
           file.on("finish", () => {
+            if (settled) return;
+            settled = true;
             file.close();
             if (mainWindow && !mainWindow.isDestroyed()) {
               mainWindow.webContents.send("python-install-path", filePath);
             }
             resolve();
           });
-        })
-        .on("error", (err) => {
-          fs.unlink(filePath, () => {});
-          reject(err);
+          file.on("error", failDownload);
         });
+      request.on("error", failDownload);
     });
 
     sendLog?.("Python installer downloaded. Starting installation...", "info");
@@ -4580,7 +4856,12 @@ ipcMain.handle("save-temp-video", async (event, { fileName, buffer }) => {
     }
 
     const tempPath = path.join(tempDir, `${Date.now()}_${fileName}`);
-    fs.writeFileSync(tempPath, Buffer.from(buffer));
+    const fileBuffer = Buffer.from(buffer);
+    ensureDiskSpace(tempPath, {
+      requiredBytes: fileBuffer.byteLength,
+      operation: "保存临时视频",
+    });
+    fs.writeFileSync(tempPath, fileBuffer);
 
     return tempPath;
   } catch (error) {
@@ -4639,7 +4920,8 @@ function buildTempCleanupTargets(tempRoot, cleanupOptions = {}) {
     targets.push(
       globalConfig.fileManagement?.videoFolderName || "videos",
       "video_frames",
-      "moonshine-videos"
+      "moonshine-videos",
+      "moonshine-sam-video-masks"
     );
   }
 

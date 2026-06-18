@@ -41,6 +41,36 @@ const validateSamRequest = (request = {}) => {
   }
 };
 
+const buildSamVideoPayload = (request = {}) => {
+  const inputType = request.input_type || request.inputType || "jpegFrameDirectory";
+  const objects = Array.isArray(request.objects)
+    ? request.objects.map((item, index) => ({
+        object_id: Number(item.object_id ?? item.objectId ?? index + 1),
+        points: normalizePoints(item.points),
+        box: normalizeBox(item.box),
+      }))
+    : [];
+  return {
+    input_type: inputType,
+    frame_dir: request.frame_dir || request.frameDir,
+    video_path: request.video_path || request.videoPath,
+    model_id: request.model_id || request.modelId || "sam2_1_hiera_large",
+    frame_index: Number(request.frame_index ?? request.frameIndex ?? 0),
+    object_id: Number(request.object_id ?? request.objectId ?? 1),
+    points: normalizePoints(request.points),
+    box: normalizeBox(request.box),
+    objects,
+    max_frames: request.max_frames ?? request.maxFrames ?? null,
+    reverse: Boolean(request.reverse),
+    offload_video_to_cpu:
+      request.offload_video_to_cpu ?? request.offloadVideoToCpu ?? true,
+    offload_state_to_cpu:
+      request.offload_state_to_cpu ?? request.offloadStateToCpu ?? true,
+    response_type: request.response_type || request.responseType || "base64",
+    mask_output_dir: request.mask_output_dir || request.maskOutputDir || null,
+  };
+};
+
 export const predictSamMask = async (request = {}) => {
   try {
     validateSamRequest(request);
@@ -80,31 +110,7 @@ export const getSamCapabilities = async () => {
 
 export const propagateSamVideo = async (request = {}) => {
   try {
-    const inputType = request.input_type || request.inputType || "jpegFrameDirectory";
-    const objects = Array.isArray(request.objects)
-      ? request.objects.map((item, index) => ({
-          object_id: Number(item.object_id ?? item.objectId ?? index + 1),
-          points: normalizePoints(item.points),
-          box: normalizeBox(item.box),
-        }))
-      : [];
-    const payload = {
-      input_type: inputType,
-      frame_dir: request.frame_dir || request.frameDir,
-      video_path: request.video_path || request.videoPath,
-      model_id: request.model_id || request.modelId || "sam2_1_hiera_large",
-      frame_index: Number(request.frame_index ?? request.frameIndex ?? 0),
-      object_id: Number(request.object_id ?? request.objectId ?? 1),
-      points: normalizePoints(request.points),
-      box: normalizeBox(request.box),
-      objects,
-      max_frames: request.max_frames ?? request.maxFrames ?? null,
-      reverse: Boolean(request.reverse),
-      offload_video_to_cpu:
-        request.offload_video_to_cpu ?? request.offloadVideoToCpu ?? true,
-      offload_state_to_cpu:
-        request.offload_state_to_cpu ?? request.offloadStateToCpu ?? true,
-    };
+    const payload = buildSamVideoPayload(request);
     return await api.post("/api/v1/moonshine/sam/video/propagate", payload, {
       headers: {
         "Content-Type": "application/json",
@@ -113,6 +119,62 @@ export const propagateSamVideo = async (request = {}) => {
   } catch (error) {
     if (error.response || error.request) {
       throw new Error(classifyMoonshineError(error, "SAM2 视频传播失败").message);
+    }
+    throw error;
+  }
+};
+
+export const createSamVideoPropagationJob = async (request = {}) => {
+  try {
+    return await api.post(
+      "/api/v1/moonshine/sam/video/propagate/jobs",
+      buildSamVideoPayload(request),
+      {
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }
+    );
+  } catch (error) {
+    if (error.response || error.request) {
+      throw new Error(classifyMoonshineError(error, "启动 SAM2 视频传播任务失败").message);
+    }
+    throw error;
+  }
+};
+
+export const getSamVideoPropagationJob = async (taskId) => {
+  try {
+    return await api.get(`/api/v1/moonshine/sam/video/propagate/jobs/${encodeURIComponent(taskId)}`);
+  } catch (error) {
+    if (error.response || error.request) {
+      throw new Error(classifyMoonshineError(error, "读取 SAM2 视频传播进度失败").message);
+    }
+    throw error;
+  }
+};
+
+export const getSamVideoPropagationJobResult = async (taskId) => {
+  try {
+    return await api.get(
+      `/api/v1/moonshine/sam/video/propagate/jobs/${encodeURIComponent(taskId)}/result`
+    );
+  } catch (error) {
+    if (error.response || error.request) {
+      throw new Error(classifyMoonshineError(error, "读取 SAM2 视频传播结果失败").message);
+    }
+    throw error;
+  }
+};
+
+export const cancelSamVideoPropagationJob = async (taskId) => {
+  try {
+    return await api.post(
+      `/api/v1/moonshine/sam/video/propagate/jobs/${encodeURIComponent(taskId)}/cancel`
+    );
+  } catch (error) {
+    if (error.response || error.request) {
+      throw new Error(classifyMoonshineError(error, "取消 SAM2 视频传播任务失败").message);
     }
     throw error;
   }
@@ -149,4 +211,8 @@ export default {
   predictSamText,
   predictSamMask,
   propagateSamVideo,
+  createSamVideoPropagationJob,
+  getSamVideoPropagationJob,
+  getSamVideoPropagationJobResult,
+  cancelSamVideoPropagationJob,
 };

@@ -57,6 +57,9 @@ const cloneMask = (mask) => ({
     masks: (frame?.masks || []).map((item) => ({ ...item })),
   })),
   samPromptObjects: (mask?.samPromptObjects || []).map((item) => ({ ...item })),
+  samPromptFrameIndex: Number.isInteger(mask?.samPromptFrameIndex)
+    ? mask.samPromptFrameIndex
+    : null,
 });
 
 const cloneProcessingRange = (range) => ({
@@ -87,15 +90,63 @@ const normalizeSamVideoObject = (object = {}) => {
   };
 };
 
-const normalizeSamVideoFrame = (frame = {}) => ({
+const normalizeSamVideoPromptObject = (object = {}, fallbackObjectId = 1, fallbackFrameIndex = 0) => {
+  const objectId = Math.max(
+    1,
+    Math.floor(Number((object.objectId ?? object.object_id ?? object.id ?? fallbackObjectId) || 1))
+  );
+  const frameIndex = Math.max(
+    0,
+    Math.floor(Number((object.frameIndex ?? object.frame_index ?? fallbackFrameIndex) || 0))
+  );
+  const points = (object.points || [])
+    .map((point) => ({
+      x: Math.max(0, Number(point.x || 0)),
+      y: Math.max(0, Number(point.y || 0)),
+      label: Number(point.label ?? 1) === 0 ? 0 : 1,
+    }))
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+  const rawBox = object.box || null;
+  const box = rawBox
+    ? {
+        x: Math.max(0, Number(rawBox.x || 0)),
+        y: Math.max(0, Number(rawBox.y || 0)),
+        width: Math.max(0, Number(rawBox.width || 0)),
+        height: Math.max(0, Number(rawBox.height || 0)),
+      }
+    : null;
+
+  return {
+    objectId,
+    frameIndex,
+    points,
+    box,
+    source: box ? "box" : "point",
+    createdAt: object.createdAt || new Date().toISOString(),
+  };
+};
+
+const normalizeSamVideoFrame = (frame = {}, options = {}) => ({
   frameIndex: Math.max(0, Math.floor(Number(frame.frameIndex ?? frame.frame_index ?? 0))),
   time: Number(frame.time ?? 0),
   masks: (frame.masks || [])
-    .map((item) => ({
-      objectId: Math.max(1, Math.floor(Number((item.objectId ?? item.object_id ?? item.id) || 1))),
-      mask: item.mask || "",
-    }))
-    .filter((item) => item.objectId > 0 && item.mask),
+    .map((item) => {
+      const maskPath = typeof item.maskPath === "string" ? item.maskPath : "";
+      const maskAssetId = typeof item.maskAssetId === "string" ? item.maskAssetId : "";
+      const maskSignature = typeof item.maskSignature === "string" ? item.maskSignature : "";
+      const maskSize = Math.max(0, Number(item.maskSize || 0));
+      const inlineMask =
+        !options.dropInlineMask && typeof item.mask === "string" ? item.mask : "";
+      return {
+        objectId: Math.max(1, Math.floor(Number((item.objectId ?? item.object_id ?? item.id) || 1))),
+        mask: inlineMask,
+        maskPath,
+        maskAssetId,
+        maskSignature,
+        maskSize,
+      };
+    })
+    .filter((item) => item.objectId > 0 && (item.maskPath || item.mask)),
 });
 
 const createTransparentMaskDataUrl = (width, height) => {
@@ -218,7 +269,7 @@ const syncInheritedEndKeyframe = (mask) => {
   return nextMask;
 };
 
-const reconcileMask = (mask = {}, duration = 0) => {
+const reconcileMask = (mask = {}, duration = 0, options = {}) => {
   const safeDuration = Math.max(0, Number(duration || 0));
   const startTime = clamp(Number(mask.startTime ?? 0), 0, safeDuration);
   const endTime = clamp(Number(mask.endTime ?? safeDuration), startTime, safeDuration);
@@ -279,12 +330,15 @@ const reconcileMask = (mask = {}, duration = 0) => {
         array.findIndex((candidate) => candidate.objectId === item.objectId) === index
       );
     normalizedMask.samFrames = (mask.samFrames || mask.frames || [])
-      .map(normalizeSamVideoFrame)
+      .map((frame) => normalizeSamVideoFrame(frame, options.samVideoFrameOptions || {}))
       .filter((frame) => frame.masks.length > 0)
       .sort((a, b) => a.frameIndex - b.frameIndex);
     normalizedMask.samPromptObjects = (mask.samPromptObjects || mask.promptObjects || []).map((item) => ({
-      ...item,
+      ...normalizeSamVideoPromptObject(item, item.objectId ?? item.object_id ?? 1, item.frameIndex ?? item.frame_index ?? 0),
     }));
+    normalizedMask.samPromptFrameIndex = Number.isInteger(mask.samPromptFrameIndex)
+      ? mask.samPromptFrameIndex
+      : normalizedMask.samPromptObjects[0]?.frameIndex ?? null;
     normalizedMask.samModelId = mask.samModelId || mask.modelId || "";
     normalizedMask.samInput = mask.samInput ? { ...mask.samInput } : null;
     normalizedMask.sourceFrameRate = Number(mask.sourceFrameRate || 0);
@@ -454,11 +508,11 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     }
   };
 
-  const commitMask = (maskId, nextMaskInput) => {
+  const commitMask = (maskId, nextMaskInput, options = {}) => {
     const index = getMaskIndexById(maskId);
     if (index === -1) return null;
 
-    const nextMask = reconcileMask(nextMaskInput, videoDuration.value);
+    const nextMask = reconcileMask(nextMaskInput, videoDuration.value, options);
     const nextMasks = [...masks.value];
     nextMasks[index] = nextMask;
     masks.value = nextMasks;
@@ -912,35 +966,31 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     return `SAM 轨道 ${count}`;
   };
 
-  const createSamVideoMaskTrack = ({ result = {}, name } = {}) => {
-    const frames = (result.frames || []).map(normalizeSamVideoFrame).filter((frame) => frame.masks.length > 0);
-    if (!frames.length) return null;
-
-    const fps = Math.max(
-      1,
-      Number(result?.input?.fps || result?.performance?.fps || sourceFrameRate.value || 30)
-    );
-    const frameIndexes = frames.map((frame) => frame.frameIndex);
-    const startFrame = Math.min(...frameIndexes);
-    const endFrame = Math.max(...frameIndexes);
-    const duration = Math.max(0, videoDuration.value || 0);
-    const startTime = clamp(startFrame / fps, 0, duration);
-    const endTime = clamp((endFrame + 1) / fps, startTime, duration);
-
-    const objectMap = new Map();
-    (result.objects || []).forEach((item) => {
-      const normalized = normalizeSamVideoObject(item);
-      objectMap.set(normalized.objectId, normalized);
-    });
-    frames.forEach((frame) => {
-      frame.masks.forEach((item) => {
-        if (!objectMap.has(item.objectId)) {
-          objectMap.set(item.objectId, normalizeSamVideoObject({ objectId: item.objectId }));
-        }
-      });
-    });
-
+  const createSamVideoKeyframes = ({ startTime = 0, endTime = videoDuration.value } = {}) => {
     const identityTransform = getMaskKeyframeTransform(DEFAULT_TRANSFORM, DEFAULT_TRANSFORM);
+    return [
+      {
+        id: uuidv4(),
+        type: MASK_KEYFRAME_TYPES.START,
+        time: startTime,
+        ...identityTransform,
+      },
+      {
+        id: uuidv4(),
+        type: MASK_KEYFRAME_TYPES.END,
+        time: endTime,
+        ...identityTransform,
+      },
+    ];
+  };
+
+  const getSamVideoFullRange = () => ({
+    startTime: 0,
+    endTime: Math.max(0, videoDuration.value || 0),
+  });
+
+  const createEmptySamVideoMaskTrack = ({ name } = {}) => {
+    const { startTime, endTime } = getSamVideoFullRange();
     const mask = reconcileMask(
       {
         id: uuidv4(),
@@ -953,31 +1003,16 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
         endTime,
         fixedTimeRange: true,
         editable: false,
-        samObjects: [...objectMap.values()].sort((a, b) => a.objectId - b.objectId),
-        samFrames: frames.map((frame) => ({
-          ...frame,
-          time: frame.frameIndex / fps,
-        })),
-        samPromptObjects: (result.objects || []).map((item) => ({ ...item })),
-        samModelId: result.modelId || "",
-        samInput: result.input ? { ...result.input } : null,
-        sourceFrameRate: fps,
-        keyframes: [
-          {
-            id: uuidv4(),
-            type: MASK_KEYFRAME_TYPES.START,
-            time: startTime,
-            ...identityTransform,
-          },
-          {
-            id: uuidv4(),
-            type: MASK_KEYFRAME_TYPES.END,
-            time: endTime,
-            ...identityTransform,
-          },
-        ],
+        samObjects: [],
+        samFrames: [],
+        samPromptObjects: [],
+        samPromptFrameIndex: null,
+        samModelId: "",
+        samInput: null,
+        sourceFrameRate: sourceFrameRate.value || 30,
+        keyframes: createSamVideoKeyframes({ startTime, endTime }),
       },
-      duration
+      videoDuration.value
     );
 
     masks.value = [...masks.value, mask];
@@ -987,6 +1022,162 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
       mode: MASK_TOOL_MODES.DRAW,
     });
     return mask;
+  };
+
+  const buildSamVideoResultPatch = ({ result = {}, fallbackMask = null, name } = {}) => {
+    const frames = (result.frames || [])
+      .map(normalizeSamVideoFrame)
+      .filter((frame) => frame.masks.length > 0);
+    if (!frames.length) return null;
+
+    const fps = Math.max(
+      1,
+      Number(result?.input?.fps || result?.performance?.fps || sourceFrameRate.value || 30)
+    );
+    const { startTime, endTime } = getSamVideoFullRange();
+    const objectMap = new Map();
+    (result.objects || fallbackMask?.samObjects || []).forEach((item) => {
+      const normalized = normalizeSamVideoObject(item);
+      objectMap.set(normalized.objectId, normalized);
+    });
+    frames.forEach((frame) => {
+      frame.masks.forEach((item) => {
+        if (!objectMap.has(item.objectId)) {
+          objectMap.set(item.objectId, normalizeSamVideoObject({ objectId: item.objectId }));
+        }
+      });
+    });
+
+    const promptObjects = (result.promptObjects || fallbackMask?.samPromptObjects || []).map(
+      (item, index) =>
+        normalizeSamVideoPromptObject(
+          item,
+          item.objectId ?? item.object_id ?? index + 1,
+          item.frameIndex ?? item.frame_index ?? result.input?.frameIndex ?? 0
+        )
+    );
+
+    return {
+      name: name || fallbackMask?.name || getSamVideoTrackName(),
+      type: MASK_TRACK_TYPES.SAM_VIDEO,
+      enabled: fallbackMask?.enabled !== false,
+      displayColor: fallbackMask?.displayColor || SAM_VIDEO_TRACK_COLOR,
+      baseMaskDataUrl: "",
+      startTime,
+      endTime,
+      fixedTimeRange: true,
+      editable: false,
+      samObjects: [...objectMap.values()].sort((a, b) => a.objectId - b.objectId),
+      samFrames: frames.map((frame) => ({
+        ...frame,
+        time: frame.frameIndex / fps,
+      })),
+      samPromptObjects: promptObjects,
+      samPromptFrameIndex: Number.isInteger(result.input?.frameIndex)
+        ? result.input.frameIndex
+        : promptObjects[0]?.frameIndex ?? fallbackMask?.samPromptFrameIndex ?? null,
+      samModelId: result.modelId || fallbackMask?.samModelId || "",
+      samInput: result.input ? { ...result.input } : fallbackMask?.samInput || null,
+      sourceFrameRate: fps,
+      keyframes: createSamVideoKeyframes({ startTime, endTime }),
+    };
+  };
+
+  const createSamVideoMaskTrack = ({ result = {}, name } = {}) => {
+    const patch = buildSamVideoResultPatch({ result, name });
+    if (!patch) return null;
+    const mask = reconcileMask(
+      {
+        id: uuidv4(),
+        ...patch,
+      },
+      videoDuration.value
+    );
+
+    masks.value = [...masks.value, mask];
+    selectMask(mask.id, null);
+    updateMaskTool({
+      drawingEnabled: false,
+      mode: MASK_TOOL_MODES.DRAW,
+    });
+    return mask;
+  };
+
+  const updateSamVideoMaskTrackResult = (maskId, result = {}) => {
+    const mask = getMaskById(maskId);
+    if (!isSamVideoMask(mask)) {
+      return createResult(false, {
+        code: "sam-video-track-not-found",
+        error: "未找到智能选区轨道。",
+      });
+    }
+    const patch = buildSamVideoResultPatch({ result, fallbackMask: mask, name: mask.name });
+    if (!patch) {
+      return createResult(false, {
+        code: "sam-video-empty-result",
+        error: "SAM2 已返回结果，但没有可用蒙版。",
+      });
+    }
+    const shouldDropInlineMasks = result.dropInlineMasks === true;
+    const nextMask = commitMask(maskId, {
+      id: mask.id,
+      keyframes: mask.keyframes,
+      ...patch,
+    }, {
+      samVideoFrameOptions: {
+        dropInlineMask: shouldDropInlineMasks,
+      },
+    });
+    return createResult(Boolean(nextMask), { mask: nextMask });
+  };
+
+  const addSamVideoPromptObject = (maskId, prompt = {}) => {
+    const mask = getMaskById(maskId);
+    if (!isSamVideoMask(mask)) return null;
+    const existingPromptFrameIndex = Number.isInteger(mask.samPromptFrameIndex)
+      ? mask.samPromptFrameIndex
+      : prompt.frameIndex ?? prompt.frame_index ?? 0;
+    const normalizedPrompt = normalizeSamVideoPromptObject(
+      prompt,
+      (mask.samPromptObjects || []).length + 1,
+      existingPromptFrameIndex
+    );
+    const nextPromptObjects = [
+      ...(mask.samPromptObjects || []).filter(
+        (item) => Number(item.objectId) !== Number(normalizedPrompt.objectId)
+      ),
+      normalizedPrompt,
+    ].sort((a, b) => a.objectId - b.objectId);
+
+    return commitMask(maskId, {
+      ...cloneMask(mask),
+      samPromptObjects: nextPromptObjects,
+      samPromptFrameIndex: existingPromptFrameIndex,
+    });
+  };
+
+  const removeSamVideoPromptObject = (maskId, objectId) => {
+    const mask = getMaskById(maskId);
+    if (!isSamVideoMask(mask)) return null;
+    const normalizedObjectId = Math.max(1, Math.floor(Number(objectId || 1)));
+    const nextPromptObjects = (mask.samPromptObjects || []).filter(
+      (item) => Number(item.objectId) !== normalizedObjectId
+    );
+    return commitMask(maskId, {
+      ...cloneMask(mask),
+      samPromptObjects: nextPromptObjects,
+      samPromptFrameIndex: nextPromptObjects[0]?.frameIndex ?? null,
+    });
+  };
+
+  const clearSamVideoPromptObjects = (maskId) => {
+    const mask = getMaskById(maskId);
+    if (!isSamVideoMask(mask)) return null;
+    return commitMask(maskId, {
+      ...cloneMask(mask),
+      samPromptObjects: [],
+      samPromptFrameIndex: null,
+    });
   };
 
   const setSamVideoObjectEnabled = (maskId, objectId, enabled) => {
@@ -1014,6 +1205,23 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
           masks: (frame.masks || []).filter((item) => item.objectId !== normalizedObjectId),
         }))
         .filter((frame) => frame.masks.length > 0),
+      samPromptObjects: (mask.samPromptObjects || []).filter(
+        (item) => Number(item.objectId) !== normalizedObjectId
+      ),
+    });
+  };
+
+  const clearSamVideoResult = (maskId) => {
+    const mask = getMaskById(maskId);
+    if (!isSamVideoMask(mask)) return null;
+    return commitMask(maskId, {
+      ...cloneMask(mask),
+      samObjects: [],
+      samFrames: [],
+      samPromptObjects: [],
+      samPromptFrameIndex: null,
+      samModelId: "",
+      samInput: null,
     });
   };
 
@@ -1590,7 +1798,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     if (isSamVideoMask(mask)) {
       return createResult(false, {
         code: "sam-video-track-locked",
-        error: "SAM 视频轨道的时间范围由 SAM2 传播结果决定，不能手动调整。",
+        error: "SAM 视频轨道的时间范围由 SAM2 传播结果决定，不能手动调整范围。",
       });
     }
 
@@ -1643,7 +1851,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     if (isSamVideoMask(mask)) {
       return createResult(false, {
         code: "sam-video-track-locked",
-        error: "SAM 视频轨道的时间范围由 SAM2 传播结果决定，不能手动调整。",
+        error: "SAM 视频轨道的时间范围由 SAM2 传播结果决定，不能手动调整范围。",
       });
     }
 
@@ -1787,7 +1995,9 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     clearVideoInfo,
     calculateDisplaySize,
     createMask,
+    createEmptySamVideoMaskTrack,
     createSamVideoMaskTrack,
+    updateSamVideoMaskTrackResult,
     createProcessingRange,
     removeMask,
     removeProcessingRange,
@@ -1818,6 +2028,10 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     renameProcessingRange,
     setSamVideoObjectEnabled,
     removeSamVideoObject,
+    clearSamVideoResult,
+    addSamVideoPromptObject,
+    removeSamVideoPromptObject,
+    clearSamVideoPromptObjects,
     updateMaskTool,
     setMaskToolDefaults,
     deferKeyframeDeformationUi,

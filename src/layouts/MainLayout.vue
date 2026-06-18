@@ -72,6 +72,16 @@
               size="10px"
               class="global-loading-progress"
             />
+            <q-btn
+              v-if="loadingState.actionLabel"
+              outline
+              color="primary"
+              icon="terminal"
+              :label="loadingState.actionLabel"
+              no-caps
+              class="global-loading-action"
+              @click="loadingState.onAction?.()"
+            />
           </div>
         </q-inner-loading>
       </div>
@@ -282,12 +292,17 @@ const normalizeLoadingPayload = (messageOrOptions, progressArg = null) => {
       message: messageOrOptions.message || "加载中...",
       progress:
         typeof messageOrOptions.progress === "number" ? messageOrOptions.progress : null,
+      actionLabel: String(messageOrOptions.actionLabel || "").trim(),
+      onAction:
+        typeof messageOrOptions.onAction === "function" ? messageOrOptions.onAction : null,
     };
   }
 
   return {
     message: messageOrOptions || "加载中...",
     progress: typeof progressArg === "number" ? progressArg : null,
+    actionLabel: "",
+    onAction: null,
   };
 };
 
@@ -369,6 +384,8 @@ provide("loadingControl", {
       showing: true,
       message: normalizeBackendHintBreak(payload.message),
       progress: payload.progress,
+      actionLabel: payload.actionLabel,
+      onAction: payload.onAction,
     };
   },
   update: (messageOrOptions, progress) => {
@@ -377,6 +394,8 @@ provide("loadingControl", {
       showing: true,
       message: normalizeBackendHintBreak(payload.message),
       progress: payload.progress,
+      actionLabel: payload.actionLabel,
+      onAction: payload.onAction,
     };
   },
   hide: () => {
@@ -384,6 +403,8 @@ provide("loadingControl", {
       showing: false,
       message: "",
       progress: null,
+      actionLabel: "",
+      onAction: null,
     };
   },
 });
@@ -395,6 +416,8 @@ const handleLoadingUpdate = (state) => {
       showing: true,
       message: normalizeBackendHintBreak(payload.message),
       progress: payload.progress,
+      actionLabel: payload.actionLabel,
+      onAction: payload.onAction,
     };
     return;
   }
@@ -403,6 +426,8 @@ const handleLoadingUpdate = (state) => {
     showing: false,
     message: "",
     progress: null,
+    actionLabel: "",
+    onAction: null,
   };
 };
 
@@ -767,7 +792,7 @@ router.beforeEach(async (to, from) => {
 
 .global-loading {
   z-index: 4000 !important;
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 .global-loading-content {
@@ -799,6 +824,10 @@ router.beforeEach(async (to, from) => {
 
 .global-loading-progress {
   width: 100%;
+}
+
+.global-loading-action {
+  min-width: 156px;
 }
 
 .global-loading-message {

@@ -221,7 +221,7 @@
                       icon="delete"
                       color="negative"
                       :disable="isProcessing"
-                      @click.stop="videoStore.removeSamVideoObject(mask.id, objectItem.objectId)"
+                      @click.stop="emit('remove-sam-video-object', { maskId: mask.id, objectId: objectItem.objectId })"
                     >
                       <q-tooltip>删除对象</q-tooltip>
                     </q-btn>
@@ -237,7 +237,7 @@
                   icon="delete"
                   color="negative"
                   :disable="isProcessing"
-                  @click.stop="videoStore.removeMask(mask.id)"
+                  @click.stop="emit('remove-mask', mask.id)"
                 />
               </q-item-section>
             </q-item>
@@ -640,6 +640,8 @@ const emit = defineEmits([
   "video-uploaded",
   "video-cleared",
   "run-sam-video-selection",
+  "remove-sam-video-object",
+  "remove-mask",
 ]);
 
 const $q = useQuasar();

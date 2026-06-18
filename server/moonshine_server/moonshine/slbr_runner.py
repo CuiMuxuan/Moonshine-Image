@@ -16,6 +16,7 @@ from loguru import logger
 from PIL import Image
 
 from moonshine_server.helper import concat_alpha_channel
+from moonshine_server.disk_space import DEFAULT_DISK_SPACE_SAFETY_BYTES, ensure_disk_space
 from moonshine_server.image_output import (
     encode_pil_image,
     image_format_from_path,
@@ -256,6 +257,12 @@ def write_output_image(path: Path, image_bgr: np.ndarray, alpha_channel, output_
         output_spec["format"],
         output_spec["quality"],
         infos,
+    )
+    ensure_disk_space(
+        path,
+        len(encoded),
+        safety_bytes=DEFAULT_DISK_SPACE_SAFETY_BYTES,
+        operation="保存 SLBR 文件夹处理结果",
     )
     path.write_bytes(encoded)
 

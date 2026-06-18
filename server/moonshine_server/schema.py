@@ -404,6 +404,14 @@ class MoonshineSamVideoPropagateRequest(BaseModel):
     reverse: bool = Field(False)
     offload_video_to_cpu: bool = Field(True)
     offload_state_to_cpu: bool = Field(True)
+    response_type: Literal["base64", "path"] = Field(
+        "base64",
+        description="Return SAM2 masks as base64 data URLs or local file paths",
+    )
+    mask_output_dir: Optional[str] = Field(
+        None,
+        description="Directory used when response_type is path",
+    )
 
     @model_validator(mode="after")
     def validate_prompt(cls, values: "MoonshineSamVideoPropagateRequest"):
@@ -411,6 +419,8 @@ class MoonshineSamVideoPropagateRequest(BaseModel):
             raise ValueError("frame_dir is required when input_type is jpegFrameDirectory")
         if values.input_type == "videoPath" and not values.video_path:
             raise ValueError("video_path is required when input_type is videoPath")
+        if values.response_type == "path" and not values.mask_output_dir:
+            raise ValueError("mask_output_dir is required when response_type is path")
         if not values.objects and not values.points and values.box is None:
             raise ValueError("At least one point or box prompt is required")
         return values

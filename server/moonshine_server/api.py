@@ -35,6 +35,12 @@ from loguru import logger
 from socketio import AsyncServer
 
 from moonshine_server.file_manager import FileManager
+from moonshine_server.disk_space import (
+    DEFAULT_DISK_SPACE_SAFETY_BYTES,
+    DiskSpaceError,
+    ensure_disk_space,
+    file_size_or_zero,
+)
 from moonshine_server.helper import (
     load_img,
     decode_base64_to_image,
@@ -93,6 +99,7 @@ from moonshine_server.moonshine.model_registry import (
     get_model_manifest,
 )
 from moonshine_server.moonshine.sam_service import SamService, SamServiceError
+from moonshine_server.moonshine.sam_video_tasks import sam_video_task_manager
 
 CURRENT_DIR = Path(__file__).parent.absolute().resolve()
 WEB_APP_DIR = CURRENT_DIR / "web_app"
@@ -112,6 +119,9 @@ def api_middleware(app: FastAPI):
         pass
 
     def handle_exception(request: Request, e: Exception):
+        status_code = vars(e).get("status_code", 500)
+        if isinstance(e, DiskSpaceError):
+            status_code = 507
         err = {
             "error": type(e).__name__,
             "detail": vars(e).get("detail", ""),
@@ -135,7 +145,7 @@ def api_middleware(app: FastAPI):
             else:
                 traceback.print_exc()
         return JSONResponse(
-            status_code=vars(e).get("status_code", 500), content=jsonable_encoder(err)
+            status_code=status_code, content=jsonable_encoder(err)
         )
 
     @app.middleware("http")
@@ -207,6 +217,10 @@ class Api:
         self.add_api_route("/api/v1/moonshine/sam/capabilities", self.api_moonshine_sam_capabilities, methods=["GET"])
         self.add_api_route("/api/v1/moonshine/sam/predict", self.api_moonshine_sam_predict, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/sam/video/propagate", self.api_moonshine_sam_video_propagate, methods=["POST"])
+        self.add_api_route("/api/v1/moonshine/sam/video/propagate/jobs", self.api_moonshine_sam_video_propagate_job_create, methods=["POST"])
+        self.add_api_route("/api/v1/moonshine/sam/video/propagate/jobs/{task_id}", self.api_moonshine_sam_video_propagate_job, methods=["GET"])
+        self.add_api_route("/api/v1/moonshine/sam/video/propagate/jobs/{task_id}/result", self.api_moonshine_sam_video_propagate_job_result, methods=["GET"])
+        self.add_api_route("/api/v1/moonshine/sam/video/propagate/jobs/{task_id}/cancel", self.api_moonshine_sam_video_propagate_job_cancel, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/sam/text/predict", self.api_moonshine_sam_text_predict, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/image/process", self.api_moonshine_image_process, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/image/process_folder", self.api_moonshine_image_process_folder, methods=["POST"])
@@ -239,6 +253,12 @@ class Api:
 
         # Read and write the file
         origin_image_bytes = file.file.read()
+        ensure_disk_space(
+            output_path,
+            len(origin_image_bytes),
+            safety_bytes=DEFAULT_DISK_SPACE_SAFETY_BYTES,
+            operation="保存上传图片",
+        )
         with open(output_path, "wb") as fw:
             fw.write(origin_image_bytes)
 
@@ -435,12 +455,85 @@ class Api:
                 reverse=req.reverse,
                 offload_video_to_cpu=req.offload_video_to_cpu,
                 offload_state_to_cpu=req.offload_state_to_cpu,
+                response_type=req.response_type,
+                mask_output_dir=req.mask_output_dir,
             )
         except SamServiceError as error:
             raise HTTPException(status_code=422, detail=str(error))
         finally:
             torch_gc()
         return JSONResponse(content=jsonable_encoder(result))
+
+    def _run_sam_video_propagate_task(self, task_id: str):
+        task = sam_video_task_manager.get_task(task_id)
+        if not task:
+            return
+        req = task.request
+        try:
+            result = self._get_sam_service().propagate_video(
+                frame_dir=req.frame_dir,
+                video_path=req.video_path,
+                input_type=req.input_type,
+                model_id=req.model_id,
+                frame_index=req.frame_index,
+                object_id=req.object_id,
+                points=req.points,
+                box=req.box,
+                objects=req.objects,
+                max_frames=req.max_frames,
+                reverse=req.reverse,
+                offload_video_to_cpu=req.offload_video_to_cpu,
+                offload_state_to_cpu=req.offload_state_to_cpu,
+                response_type=req.response_type,
+                mask_output_dir=req.mask_output_dir,
+                progress_callback=sam_video_task_manager.make_progress_callback(task_id),
+            )
+            sam_video_task_manager.finish_task(task_id, result)
+        except RuntimeError as error:
+            sam_video_task_manager.fail_task(task_id, str(error))
+        except SamServiceError as error:
+            sam_video_task_manager.fail_task(task_id, str(error))
+        except Exception as error:
+            logger.exception("SAM2 video propagation task failed")
+            sam_video_task_manager.fail_task(task_id, str(error))
+        finally:
+            torch_gc()
+
+    def api_moonshine_sam_video_propagate_job_create(self, req: MoonshineSamVideoPropagateRequest):
+        """Start a background SAM2 video propagation task."""
+        task = sam_video_task_manager.create_task(req)
+        worker = threading.Thread(
+            target=self._run_sam_video_propagate_task,
+            args=(task.task_id,),
+            daemon=True,
+            name=f"sam-video-{task.task_id[:8]}",
+        )
+        worker.start()
+        return JSONResponse(content=jsonable_encoder(task.to_dict()))
+
+    def api_moonshine_sam_video_propagate_job(self, task_id: str):
+        task = sam_video_task_manager.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="SAM2 video propagation task not found")
+        return JSONResponse(content=jsonable_encoder(task.to_dict()))
+
+    def api_moonshine_sam_video_propagate_job_result(self, task_id: str):
+        task = sam_video_task_manager.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="SAM2 video propagation task not found")
+        if task.status == "failed":
+            raise HTTPException(status_code=422, detail=task.error or task.message)
+        if task.status == "canceled":
+            raise HTTPException(status_code=409, detail=task.message)
+        if task.status != "completed" or task.result is None:
+            raise HTTPException(status_code=409, detail="SAM2 video propagation task is not complete")
+        return JSONResponse(content=jsonable_encoder(task.result))
+
+    def api_moonshine_sam_video_propagate_job_cancel(self, task_id: str):
+        task = sam_video_task_manager.cancel_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="SAM2 video propagation task not found")
+        return JSONResponse(content=jsonable_encoder(task.to_dict()))
 
     def api_moonshine_sam_text_predict(self, req: MoonshineSamTextPredictRequest):
         """Run SAM3 text smart selection when the managed runtime and model are ready."""
@@ -492,8 +585,16 @@ class Api:
             self._moonshine_runners[key] = runner
         return runner
 
+    @staticmethod
+    def _normalize_device_value(device) -> str:
+        raw_value = getattr(device, "value", device)
+        normalized = str(raw_value or "cpu").strip().lower()
+        if normalized.startswith("device."):
+            normalized = normalized.rsplit(".", 1)[-1]
+        return normalized if normalized in {"cpu", "cuda", "mps"} else "cpu"
+
     def _get_sam_service(self, device: Optional[str] = None) -> SamService:
-        sam_device = str(device or self.config.device or "cpu")
+        sam_device = self._normalize_device_value(device or self.config.device)
         key = (str(self._model_dir()), sam_device)
         service = self._sam_services.get(key)
         if service is None:
@@ -832,8 +933,8 @@ class Api:
             mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)[1]
         return mask
 
-    @staticmethod
     def _save_result_image(
+        self,
         result_bytes: bytes,
         item_id: str,
         temp_path: Optional[str],
@@ -847,6 +948,12 @@ class Api:
         else:
             output_path = output_name
 
+        ensure_disk_space(
+            output_path,
+            len(result_bytes),
+            safety_bytes=DEFAULT_DISK_SPACE_SAFETY_BYTES,
+            operation="保存图片处理结果",
+        )
         with open(output_path, "wb") as output_file:
             output_file.write(result_bytes)
         return output_path
@@ -913,6 +1020,8 @@ class Api:
                 )
                 torch_gc()
             except Exception as e:
+                if isinstance(e, DiskSpaceError):
+                    raise
                 logger.exception(f"Moonshine image processing failed for {item_id}")
                 results.append(
                     {
@@ -1029,6 +1138,8 @@ class Api:
                 torch_gc()
 
             except Exception as e:
+                if isinstance(e, DiskSpaceError):
+                    raise
                 logger.error(f"Error processing item {item_id}: {str(e)}")
                 results.append(
                     {
@@ -1105,7 +1216,7 @@ class Api:
         except Exception as e:
             logger.error(f"Batch processing failed: {str(e)}")
             return JSONResponse(
-                status_code=500,
+                status_code=507 if isinstance(e, DiskSpaceError) else 500,
                 content=jsonable_encoder({
                     "success": False,
                     "error": str(e)
@@ -1154,7 +1265,7 @@ class Api:
         except Exception as e:
             logger.exception(f"Moonshine folder processing failed: {str(e)}")
             return JSONResponse(
-                status_code=500,
+                status_code=507 if isinstance(e, DiskSpaceError) else 500,
                 content=jsonable_encoder(
                     {
                         "success": False,
@@ -1201,7 +1312,7 @@ class Api:
             mask = mask_image
 
         if not keep_grayscale:
-            mask = np.where(mask > 0, 255, 0).astype(np.uint8)
+            mask = np.where(mask > 127, 255, 0).astype(np.uint8)
 
         return mask
 
@@ -1232,6 +1343,12 @@ class Api:
             infos={},
         )
 
+        ensure_disk_space(
+            output_path,
+            len(result_bytes),
+            safety_bytes=DEFAULT_DISK_SPACE_SAFETY_BYTES,
+            operation="保存视频处理结果帧",
+        )
         with open(output_path, "wb") as output_file:
             output_file.write(result_bytes)
 
@@ -1272,6 +1389,20 @@ class Api:
         masks_dir = os.path.join(snapshot_dir, "masks")
         os.makedirs(frames_dir, exist_ok=True)
         os.makedirs(masks_dir, exist_ok=True)
+
+        estimated_snapshot_bytes = 0
+        for frame_item in req.frames:
+            estimated_snapshot_bytes += file_size_or_zero(frame_item.image_path)
+            if frame_item.mask_path:
+                estimated_snapshot_bytes += file_size_or_zero(frame_item.mask_path)
+        estimated_snapshot_bytes += len(json.dumps(req.model_dump(mode="json"), ensure_ascii=False).encode("utf-8"))
+        estimated_snapshot_bytes += len(json.dumps(failed_items, ensure_ascii=False).encode("utf-8"))
+        ensure_disk_space(
+            snapshot_dir,
+            estimated_snapshot_bytes,
+            safety_bytes=DEFAULT_DISK_SPACE_SAFETY_BYTES,
+            operation="保存视频失败诊断快照",
+        )
 
         for frame_item in req.frames:
             if os.path.exists(frame_item.image_path):
@@ -1407,6 +1538,8 @@ class Api:
                 if index % gc_interval == 0:
                     torch_gc()
             except Exception as error:
+                if isinstance(error, DiskSpaceError):
+                    raise
                 failed = {
                     "frame_index": item.frame_index,
                     "image_path": item.image_path,
