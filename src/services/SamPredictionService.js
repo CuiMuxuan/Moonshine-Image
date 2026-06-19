@@ -16,18 +16,18 @@ const normalizeImagePayload = (image, imageType = "base64") => {
 
 const normalizePoints = (points = []) =>
   points.map((point) => ({
-    x: Number(point.x),
-    y: Number(point.y),
+    x: Math.max(0, Number(point.x) || 0),
+    y: Math.max(0, Number(point.y) || 0),
     label: Number(point.label ?? 1) === 0 ? 0 : 1,
   }));
 
 const normalizeBox = (box) => {
   if (!box) return null;
   return {
-    x: Number(box.x),
-    y: Number(box.y),
-    width: Number(box.width),
-    height: Number(box.height),
+    x: Math.max(0, Number(box.x) || 0),
+    y: Math.max(0, Number(box.y) || 0),
+    width: Math.max(1, Number(box.width) || 1),
+    height: Math.max(1, Number(box.height) || 1),
   };
 };
 

@@ -3,28 +3,29 @@ const clampNumber = (value, min, max) => Math.min(max, Math.max(min, value));
 const resolveSamAutoExpandRadius = ({ bboxWidth, bboxHeight, imageWidth, imageHeight } = {}) => {
   if (!bboxWidth || !bboxHeight || !imageWidth || !imageHeight) return 0;
   const maskShortSide = Math.max(1, Math.min(bboxWidth, bboxHeight));
-  const imageShortSide = Math.max(1, Math.min(imageWidth, imageHeight));
-  const scaleFactor = clampNumber(imageShortSide / 1080, 0.75, 2);
-  const normalizedShortSide = maskShortSide / scaleFactor;
+  const maskLongSide = Math.max(1, Math.max(bboxWidth, bboxHeight));
+  const imageLongSide = Math.max(1, Math.max(imageWidth, imageHeight));
+  const scaleFactor = clampNumber(imageLongSide / 1080, 0.75, 2);
+  const normalizedLongSide = maskLongSide / scaleFactor;
   let baseRadius = 16;
 
-  if (normalizedShortSide <= 32) {
+  if (normalizedLongSide <= 32) {
     baseRadius = 4;
-  } else if (normalizedShortSide <= 96) {
+  } else if (normalizedLongSide <= 96) {
     baseRadius = 6;
-  } else if (normalizedShortSide <= 240) {
+  } else if (normalizedLongSide <= 240) {
     baseRadius = 8;
-  } else if (normalizedShortSide <= 480) {
+  } else if (normalizedLongSide <= 480) {
     baseRadius = 12;
   }
 
   const aspectRatio = Math.max(bboxWidth, bboxHeight) / maskShortSide;
   let radius = Math.round((baseRadius * scaleFactor) / 4);
-  if (aspectRatio >= 4 && normalizedShortSide <= 120) {
+  if (aspectRatio >= 4 && normalizedLongSide <= 120) {
     radius += Math.round((2 * scaleFactor) / 4);
   }
 
-  return clampNumber(radius, 2, 6);
+  return clampNumber(radius, 4, 6);
 };
 
 const inspectSamMaskPixels = (imageData) => {

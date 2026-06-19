@@ -603,6 +603,22 @@ class SamService:
         return f"data:image/png;base64,{encoded}"
 
     @staticmethod
+    def _sort_candidates_by_score(candidates: list[dict]) -> list[dict]:
+        def sort_key(candidate: dict):
+            score = candidate.get("score")
+            if score is None:
+                return (1, 0.0)
+            try:
+                score_value = float(score)
+            except (TypeError, ValueError):
+                return (1, 0.0)
+            if score_value != score_value:
+                return (1, 0.0)
+            return (0, -score_value)
+
+        return sorted(candidates, key=sort_key)
+
+    @staticmethod
     def _save_video_mask(mask: np.ndarray, output_dir: Path, frame_index: int, object_id: int) -> dict:
         mask_binary = np.where(mask > 128, 255, 0).astype(np.uint8)
         file_name = f"mask_f{frame_index:06d}_o{object_id:03d}.jpg"
@@ -950,6 +966,7 @@ class SamService:
                     "score": float(scores[index]) if index < len(scores) else None,
                 }
             )
+        candidates = self._sort_candidates_by_score(candidates)
         encode_ms = (time.perf_counter() - encode_started_at) * 1000
         total_ms = (time.perf_counter() - total_started_at) * 1000
 
@@ -1417,6 +1434,7 @@ class SamService:
                     },
                 }
             )
+        candidates = self._sort_candidates_by_score(candidates)
         encode_ms = (time.perf_counter() - encode_started_at) * 1000
         total_ms = (time.perf_counter() - total_started_at) * 1000
 

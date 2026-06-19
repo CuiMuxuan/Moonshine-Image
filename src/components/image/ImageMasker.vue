@@ -1252,15 +1252,26 @@ const dataUrlToImageData = async (dataUrl, width, height) => {
 
 const normalizeCanvasRect = (startPoint, endPoint) => {
   if (!startPoint || !endPoint) return null;
-  const left = Math.min(startPoint.x, endPoint.x);
-  const right = Math.max(startPoint.x, endPoint.x);
-  const top = Math.min(startPoint.y, endPoint.y);
-  const bottom = Math.max(startPoint.y, endPoint.y);
+  const clampedStart = clampSamCanvasPoint(startPoint);
+  const clampedEnd = clampSamCanvasPoint(endPoint);
+  const left = Math.min(clampedStart.x, clampedEnd.x);
+  const right = Math.max(clampedStart.x, clampedEnd.x);
+  const top = Math.min(clampedStart.y, clampedEnd.y);
+  const bottom = Math.max(clampedStart.y, clampedEnd.y);
   return {
     x: left,
     y: top,
     width: Math.max(1, right - left),
     height: Math.max(1, bottom - top),
+  };
+};
+
+const clampSamCanvasPoint = (point) => {
+  const width = Math.max(0, Number(maskCanvas.value?.width || store.imageWidth || 0));
+  const height = Math.max(0, Number(maskCanvas.value?.height || store.imageHeight || 0));
+  return {
+    x: Math.max(0, Math.min(width, Number(point?.x || 0))),
+    y: Math.max(0, Math.min(height, Number(point?.y || 0))),
   };
 };
 
@@ -2044,7 +2055,7 @@ const finishSamEraseOperation = async (event = null) => {
 const handleWindowPointerMove = (event) => {
   if (smartSelectionMode.value && samPointerStart.value) {
     updateCursorPosition(event);
-    samDragPoint.value = getCanvasPoint(event);
+    samDragPoint.value = clampSamCanvasPoint(getCanvasPoint(event));
     event.preventDefault();
     return;
   }
@@ -2056,7 +2067,7 @@ const handleWindowPointerMove = (event) => {
 
 const finishSamPointerOperation = async (event) => {
   const startPoint = samPointerStart.value;
-  const endPoint = getCanvasPoint(event) || samDragPoint.value || startPoint;
+  const endPoint = clampSamCanvasPoint(getCanvasPoint(event) || samDragPoint.value || startPoint);
   samPointerStart.value = null;
   samDragPoint.value = null;
   detachDrawingWindowListeners();
@@ -2124,7 +2135,7 @@ const handleCanvasPointerDown = (event) => {
       return;
     }
 
-    samPointerStart.value = getCanvasPoint(event);
+    samPointerStart.value = clampSamCanvasPoint(getCanvasPoint(event));
     samDragPoint.value = samPointerStart.value;
     detachDrawingWindowListeners();
     window.addEventListener("pointermove", handleWindowPointerMove, true);

@@ -574,8 +574,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/utils/samMaskAutoExpand.js",
-    description: "Shared SAM auto-expand utility keeps the LaMa quarter-size radius thresholds",
-    pattern: /(?=[\s\S]*resolveSamAutoExpandRadius)(?=[\s\S]*normalizedShortSide <= 32[\s\S]*baseRadius = 4)(?=[\s\S]*normalizedShortSide <= 96[\s\S]*baseRadius = 6)(?=[\s\S]*normalizedShortSide <= 240[\s\S]*baseRadius = 8)(?=[\s\S]*normalizedShortSide <= 480[\s\S]*baseRadius = 12)(?=[\s\S]*Math\.round\(\(baseRadius \* scaleFactor\) \/ 4\))(?=[\s\S]*aspectRatio >= 4 && normalizedShortSide <= 120[\s\S]*Math\.round\(\(2 \* scaleFactor\) \/ 4\))(?=[\s\S]*clampNumber\(radius, 2, 6\))(?=[\s\S]*inspectSamMaskPixels)(?=[\s\S]*dilateBinaryAlphaMask)(?=[\s\S]*expandSamMaskImageDataForLama)[\s\S]*/,
+    description: "Shared SAM auto-expand utility uses LaMa long-side radius thresholds with a 4px minimum",
+    pattern: /(?=[\s\S]*resolveSamAutoExpandRadius)(?=[\s\S]*maskLongSide)(?=[\s\S]*imageLongSide)(?=[\s\S]*normalizedLongSide <= 32[\s\S]*baseRadius = 4)(?=[\s\S]*normalizedLongSide <= 96[\s\S]*baseRadius = 6)(?=[\s\S]*normalizedLongSide <= 240[\s\S]*baseRadius = 8)(?=[\s\S]*normalizedLongSide <= 480[\s\S]*baseRadius = 12)(?=[\s\S]*Math\.round\(\(baseRadius \* scaleFactor\) \/ 4\))(?=[\s\S]*aspectRatio >= 4 && normalizedLongSide <= 120[\s\S]*Math\.round\(\(2 \* scaleFactor\) \/ 4\))(?=[\s\S]*clampNumber\(radius, 4, 6\))(?=[\s\S]*inspectSamMaskPixels)(?=[\s\S]*dilateBinaryAlphaMask)(?=[\s\S]*expandSamMaskImageDataForLama)[\s\S]*/,
   });
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
@@ -586,6 +586,21 @@ function runAssertions() {
     file: "src/components/image/ImageMasker.vue",
     description: "Image masker expands SAM masks before rendering without mutating the original candidate mask",
     pattern: /(?=[\s\S]*samExpandedMaskCache = new WeakMap\(\))(?=[\s\S]*Keep candidate\.mask untouched so every render starts from the original SAM result)(?=[\s\S]*renderSamCandidates[\s\S]*resolveSamCandidateMaskForRendering\(candidate)(?=[\s\S]*composeSamMaskDataUrl[\s\S]*resolveSamCandidateMaskForRendering\(candidate)(?=[\s\S]*watch\([\s\S]*\(\) => props\.currentModel[\s\S]*renderSamCandidates\(\{ pushHistory: false \}\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/components/image/ImageMasker.vue",
+    description: "Image masker clamps SAM point and box prompts to the canvas before prediction",
+    pattern: /(?=[\s\S]*const clampSamCanvasPoint = \(point\) =>)(?=[\s\S]*Math\.max\(0, Math\.min\(width, Number\(point\?\.x \|\| 0\)\)\))(?=[\s\S]*Math\.max\(0, Math\.min\(height, Number\(point\?\.y \|\| 0\)\)\))(?=[\s\S]*const clampedStart = clampSamCanvasPoint\(startPoint\))(?=[\s\S]*const clampedEnd = clampSamCanvasPoint\(endPoint\))(?=[\s\S]*samDragPoint\.value = clampSamCanvasPoint\(getCanvasPoint\(event\)\))(?=[\s\S]*const endPoint = clampSamCanvasPoint\(getCanvasPoint\(event\) \|\| samDragPoint\.value \|\| startPoint\))(?=[\s\S]*samPointerStart\.value = clampSamCanvasPoint\(getCanvasPoint\(event\)\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/services/SamPredictionService.js",
+    description: "SAM prediction service protects request payloads from negative point and box coordinates",
+    pattern: /(?=[\s\S]*const normalizePoints = \(points = \[\]\) =>[\s\S]*Math\.max\(0, Number\(point\.x\) \|\| 0\))(?=[\s\S]*Math\.max\(0, Number\(point\.y\) \|\| 0\))(?=[\s\S]*const normalizeBox = \(box\) =>[\s\S]*Math\.max\(0, Number\(box\.x\) \|\| 0\))(?=[\s\S]*Math\.max\(0, Number\(box\.y\) \|\| 0\))(?=[\s\S]*Math\.max\(1, Number\(box\.width\) \|\| 1\))(?=[\s\S]*Math\.max\(1, Number\(box\.height\) \|\| 1\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/moonshine/sam_service.py",
+    description: "SAM image and text candidates are sorted by score while keeping original model indexes",
+    pattern: /(?=[\s\S]*def _sort_candidates_by_score\(candidates: list\[dict\]\) -> list\[dict\]:)(?=[\s\S]*score = candidate\.get\("score"\))(?=[\s\S]*return \(0, -score_value\))(?=[\s\S]*return sorted\(candidates, key=sort_key\))(?=[\s\S]*"index": index,[\s\S]*"score": float\(scores\[index\]\) if index < len\(scores\) else None,[\s\S]*candidates = self\._sort_candidates_by_score\(candidates\))(?=[\s\S]*"index": index,[\s\S]*"score": score,[\s\S]*candidates = self\._sort_candidates_by_score\(candidates\))[\s\S]*/,
   });
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
