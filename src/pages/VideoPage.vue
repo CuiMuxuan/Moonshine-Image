@@ -50,7 +50,6 @@
               @replace-source="replaceCurrentVideoSource"
               @restore-history="restoreVideoHistory"
               @run-sam-video-selection="runSamVideoSelectionFromMaskList"
-              @remove-sam-video-object="removeSamVideoObjectFromResourceList"
               @remove-mask="removeVideoMaskTrack"
             />
           </q-card-section>
@@ -256,6 +255,45 @@
                                           )
                                       "
                                     />
+                                    <q-input
+                                      v-if="isLamaModel"
+                                      :model-value="objectItem.expandPx ?? objectItem.autoExpandPx ?? 0"
+                                      type="number"
+                                      dense
+                                      outlined
+                                      min="0"
+                                      max="99"
+                                      suffix="px"
+                                      class="video-sam-object-expand-input"
+                                      input-class="text-center"
+                                      :disable="samVideoState.running"
+                                      @update:model-value="setSelectedSamVideoObjectExpandPx(objectItem.objectId, $event)"
+                                      @click.stop
+                                    >
+                                      <template #prepend>
+                                        <q-btn
+                                          flat
+                                          dense
+                                          round
+                                          size="sm"
+                                          icon="remove"
+                                          :disable="samVideoState.running || Number(objectItem.expandPx ?? objectItem.autoExpandPx ?? 0) <= 0"
+                                          @click.stop="stepSelectedSamVideoObjectExpandPx(objectItem.objectId, -1)"
+                                        />
+                                      </template>
+                                      <template #append>
+                                        <q-btn
+                                          flat
+                                          dense
+                                          round
+                                          size="sm"
+                                          icon="add"
+                                          :disable="samVideoState.running || Number(objectItem.expandPx ?? objectItem.autoExpandPx ?? 0) >= 99"
+                                          @click.stop="stepSelectedSamVideoObjectExpandPx(objectItem.objectId, 1)"
+                                        />
+                                      </template>
+                                      <q-tooltip>LaMa 扩边大小</q-tooltip>
+                                    </q-input>
                                     <q-btn
                                       flat
                                       round
@@ -724,7 +762,12 @@ import {
   buildBackendPathBlockedMessage,
   validateBackendPathsForConfig,
 } from "src/utils/backendPathValidation";
-import { expandSamMaskImageDataForLama } from "src/utils/samMaskAutoExpand";
+import {
+  inspectSamMaskPixels,
+  normalizeSamExpandRadius,
+  resolveSamAutoExpandRadius,
+  expandSamMaskImageDataForLama,
+} from "src/utils/samMaskAutoExpand";
 import {
   clearActiveProcessingTask,
   setActiveProcessingTask,
@@ -923,6 +966,15 @@ const canOpenOutput = computed(
 const defaultSamVideoModelId = computed(
   () => configStore.config.masking?.defaultSam2Model || "sam2_1_hiera_large"
 );
+
+const normalizeSamVideoExpandPx = (value, fallback = 0) =>
+  Math.max(
+    0,
+    Math.min(
+      99,
+      Math.round(Number.isFinite(Number(value)) ? Number(value) : Number(fallback) || 0)
+    )
+  );
 
 const proxyDimensions = computed(() => {
   const width = videoStore.videoWidth || 0;
@@ -1510,14 +1562,22 @@ const removeSelectedSamVideoObject = async (objectId) => {
   return track;
 };
 
-const removeSamVideoObjectFromResourceList = async ({ maskId, objectId } = {}) => {
-  const mask = videoStore.masks.find((item) => item.id === maskId);
-  if (!mask) return null;
-  const assetPaths = collectSamVideoMaskAssetPaths(mask, { objectId });
-  const track = videoStore.removeSamVideoObject(maskId, objectId);
-  await cleanupSamVideoMaskAssetPaths(assetPaths);
-  syncTimelineRowsFromStore();
-  return track;
+const setSelectedSamVideoObjectExpandPx = (objectId, value) => {
+  if (!selectedMaskIsSamVideo.value || !videoStore.selectedMaskId) return null;
+  return videoStore.setSamVideoObjectExpandPx(
+    videoStore.selectedMaskId,
+    objectId,
+    normalizeSamVideoExpandPx(value)
+  );
+};
+
+const stepSelectedSamVideoObjectExpandPx = (objectId, delta) => {
+  const objectItem = selectedSamVideoResultObjects.value.find(
+    (item) => Number(item.objectId) === Number(objectId)
+  );
+  if (!objectItem) return;
+  const current = normalizeSamVideoExpandPx(objectItem.expandPx, objectItem.autoExpandPx);
+  setSelectedSamVideoObjectExpandPx(objectId, current + Number(delta || 0));
 };
 
 const removeVideoMaskTrack = async (maskId) => {
@@ -1699,6 +1759,85 @@ const persistSamVideoMaskAssets = async ({
   };
 };
 
+const resolveSamVideoMaskAutoExpandPxFromPath = async (maskPath = "", width = 0, height = 0) => {
+  if (!maskPath) return 0;
+  try {
+    const image = await loadImageElement(getLocalFileUrl(maskPath));
+    const canvas =
+      typeof OffscreenCanvas !== "undefined"
+        ? new OffscreenCanvas(width || image.width || 1, height || image.height || 1)
+        : document.createElement("canvas");
+    canvas.width = Math.max(1, Math.floor(width || image.width || 1));
+    canvas.height = Math.max(1, Math.floor(height || image.height || 1));
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+    for (let index = 0; index < data.length; index += 4) {
+      const luminance = Math.max(data[index], data[index + 1], data[index + 2]);
+      const alpha = data[index + 3];
+      data[index + 3] = alpha < 255 ? (alpha > 0 ? 255 : 0) : (luminance > 127 ? 255 : 0);
+    }
+    const maskInfo = inspectSamMaskPixels(imageData);
+    if (!maskInfo) return 0;
+    return normalizeSamExpandRadius(
+      resolveSamAutoExpandRadius({
+        bboxWidth: maskInfo.bboxWidth,
+        bboxHeight: maskInfo.bboxHeight,
+        imageWidth: canvas.width,
+        imageHeight: canvas.height,
+      })
+    );
+  } catch (error) {
+    console.warn("计算 SAM 视频对象自动扩边失败，已使用 0px:", error);
+    return 0;
+  }
+};
+
+const hydrateSamVideoObjectExpandDefaults = async (result = {}) => {
+  const frames = Array.isArray(result?.frames) ? result.frames : [];
+  if (!frames.length) return result;
+
+  const width = Number(result.width || videoStore.videoWidth || 0);
+  const height = Number(result.height || videoStore.videoHeight || 0);
+  const radiusMap = new Map();
+  for (const frame of frames) {
+    for (const item of frame.masks || []) {
+      const objectId = Number(item.objectId ?? item.object_id ?? 0);
+      const maskPath = String(item.maskPath || "").trim();
+      if (objectId <= 0 || !maskPath) continue;
+      const radius = await resolveSamVideoMaskAutoExpandPxFromPath(maskPath, width, height);
+      radiusMap.set(objectId, Math.max(radiusMap.get(objectId) || 0, radius));
+    }
+  }
+
+  if (!radiusMap.size) return result;
+  const objectMap = new Map(
+    (result.objects || []).map((item) => [
+      Number(item.objectId ?? item.object_id ?? item.id ?? 0),
+      { ...item },
+    ])
+  );
+  radiusMap.forEach((radius, objectId) => {
+    const existing = objectMap.get(objectId) || { objectId };
+    const autoExpandPx = normalizeSamVideoExpandPx(existing.autoExpandPx, radius);
+    const hasManualValue = existing.expandPx != null;
+    objectMap.set(objectId, {
+      ...existing,
+      objectId,
+      autoExpandPx,
+      expandPx: normalizeSamVideoExpandPx(hasManualValue ? existing.expandPx : autoExpandPx, autoExpandPx),
+    });
+  });
+
+  return {
+    ...result,
+    objects: [...objectMap.values()].sort(
+      (left, right) => Number(left.objectId) - Number(right.objectId)
+    ),
+  };
+};
+
 const ensureSamVideoSourcePath = async () => {
   const existingPath = getSamVideoSourcePath();
   if (existingPath) {
@@ -1865,7 +2004,7 @@ const runSamVideoPropagation = async () => {
       promptObjects,
       frameIndex,
     });
-    const result = await persistSamVideoMaskAssets({
+    let result = await persistSamVideoMaskAssets({
       result: mergedResult,
       trackId: targetMaskId,
       sourcePath,
@@ -1878,6 +2017,7 @@ const runSamVideoPropagation = async () => {
         updateSamVideoGlobalLoadingOverlay(samVideoState.message, progress);
       },
     });
+    result = await hydrateSamVideoObjectExpandDefaults(result);
     samVideoState.lastResultSummary = summarizeSamVideoResult(result);
     samVideoState.progress = 1;
     updateSamVideoGlobalLoadingOverlay("完成阶段：正在写入智能选区轨道", 1);
@@ -2084,7 +2224,12 @@ const encodeMaskImageAsJpegBlob = async (imageSource, width, height) => {
   });
 };
 
-const createBinaryAlphaMaskBitmap = async (image, width, height, { expandForLama = false } = {}) => {
+const createBinaryAlphaMaskBitmap = async (
+  image,
+  width,
+  height,
+  { expandForLama = false, expandPx = null } = {}
+) => {
   const canvas =
     typeof OffscreenCanvas !== "undefined"
       ? new OffscreenCanvas(width, height)
@@ -2108,6 +2253,7 @@ const createBinaryAlphaMaskBitmap = async (image, width, height, { expandForLama
     imageData = expandSamMaskImageDataForLama(imageData, {
       imageWidth: canvas.width,
       imageHeight: canvas.height,
+      radiusOverride: expandPx,
     }).imageData;
   }
   ctx.putImageData(imageData, 0, 0);
@@ -6733,12 +6879,14 @@ const createCombinedMaskRenderer = async ({ masks, width, height, modelId = curr
     objectId,
     maskPath = "",
     maskSignature = "",
+    expandPx = null,
   } = {}) =>
     [
       maskId,
       frameIndex,
       objectId,
       shouldAutoExpandSamVideoMasks ? "lama-expanded" : "original",
+      shouldAutoExpandSamVideoMasks ? normalizeSamVideoExpandPx(expandPx) : "auto",
       maskPath || maskSignature,
     ].join(":");
 
@@ -6761,6 +6909,7 @@ const createCombinedMaskRenderer = async ({ masks, width, height, modelId = curr
     objectId,
     maskPath,
     maskSignature,
+    expandPx,
   }) => {
     if (!maskPath) return null;
     const cacheKey = getSamFrameCacheKey({
@@ -6769,6 +6918,7 @@ const createCombinedMaskRenderer = async ({ masks, width, height, modelId = curr
       objectId,
       maskPath,
       maskSignature,
+      expandPx,
     });
     const cached = samFrameImageCache.get(cacheKey);
     if (cached) {
@@ -6782,6 +6932,7 @@ const createCombinedMaskRenderer = async ({ masks, width, height, modelId = curr
         cacheKey,
         await createBinaryAlphaMaskBitmap(image, width, height, {
           expandForLama: shouldAutoExpandSamVideoMasks,
+          expandPx,
         })
       );
     } catch (error) {
@@ -6884,6 +7035,12 @@ const createCombinedMaskRenderer = async ({ masks, width, height, modelId = curr
               .map((item) => Number(item.objectId))
           );
           if (enabledObjects.size === 0) continue;
+          const samObjectMap = new Map(
+            (asset.mask.samObjects || []).map((item) => [
+              Number(item.objectId),
+              normalizeSamVideoExpandPx(item.expandPx, item.autoExpandPx),
+            ])
+          );
           const nearestFrame = findNearestSamFrame(asset, time);
           if (!nearestFrame) continue;
 
@@ -6895,6 +7052,7 @@ const createCombinedMaskRenderer = async ({ masks, width, height, modelId = curr
               objectId: item.objectId,
               maskPath: item.maskPath,
               maskSignature: item.maskSignature,
+              expandPx: samObjectMap.get(Number(item.objectId)) ?? 0,
             });
             if (image) {
               ctx.drawImage(image, 0, 0, width, height);
@@ -7612,6 +7770,24 @@ onUnmounted(() => {
 .video-sam-candidate-panel {
   min-width: 260px;
   max-width: min(360px, calc(100vw - 32px));
+}
+
+.video-sam-object-expand-input {
+  width: 112px;
+}
+
+.video-sam-object-expand-input :deep(.q-field__control) {
+  min-height: 32px;
+  padding: 0 4px;
+}
+
+.video-sam-object-expand-input :deep(.q-field__prepend),
+.video-sam-object-expand-input :deep(.q-field__append) {
+  padding: 0;
+}
+
+.video-sam-object-expand-input :deep(input) {
+  padding: 0;
 }
 
 .video-sam-settings-item {

@@ -82,11 +82,18 @@ const isSamVideoMask = (mask) => mask?.type === MASK_TRACK_TYPES.SAM_VIDEO;
 const normalizeSamVideoObject = (object = {}) => {
   const rawId = object.objectId ?? object.object_id ?? object.id;
   const objectId = Math.max(1, Math.floor(Number(rawId || 1)));
+  const autoExpandPx = Math.max(0, Math.min(99, Math.round(Number(object.autoExpandPx ?? 0) || 0)));
+  const expandPx = Math.max(
+    0,
+    Math.min(99, Math.round(Number(object.expandPx ?? autoExpandPx) || 0))
+  );
   return {
     objectId,
     enabled: object.enabled !== false,
     pointCount: Math.max(0, Number(object.pointCount || 0)),
     hasBox: Boolean(object.hasBox),
+    autoExpandPx,
+    expandPx,
   };
 };
 
@@ -1172,6 +1179,19 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     });
   };
 
+  const setSamVideoObjectExpandPx = (maskId, objectId, expandPx) => {
+    const mask = getMaskById(maskId);
+    if (!isSamVideoMask(mask)) return null;
+    const normalizedObjectId = Math.max(1, Math.floor(Number(objectId || 1)));
+    const normalizedExpandPx = Math.max(0, Math.min(99, Math.round(Number(expandPx) || 0)));
+    return commitMask(maskId, {
+      ...cloneMask(mask),
+      samObjects: (mask.samObjects || []).map((item) =>
+        item.objectId === normalizedObjectId ? { ...item, expandPx: normalizedExpandPx } : item
+      ),
+    });
+  };
+
   const removeSamVideoObject = (maskId, objectId) => {
     const mask = getMaskById(maskId);
     if (!isSamVideoMask(mask)) return null;
@@ -2007,6 +2027,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     renameMask,
     renameProcessingRange,
     setSamVideoObjectEnabled,
+    setSamVideoObjectExpandPx,
     removeSamVideoObject,
     clearSamVideoResult,
     addSamVideoPromptObject,

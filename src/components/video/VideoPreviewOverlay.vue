@@ -424,12 +424,16 @@ const getSamFrameCacheKey = ({
   modelId = "",
   previewColor = "",
   previewAlpha = 1,
+  expandPx = null,
 } = {}) =>
   [
     maskId,
     frameIndex,
     objectId,
     String(modelId || "").toLowerCase() === "lama" ? "lama-expanded" : "original",
+    String(modelId || "").toLowerCase() === "lama"
+      ? normalizeSamObjectExpandPx(expandPx)
+      : "auto",
     maskPath || maskSignature,
     previewColor,
     Number(previewAlpha || 0).toFixed(3),
@@ -498,7 +502,10 @@ const parseMaskPreviewColor = (color = "") => {
   };
 };
 
-const createPreviewMaskImage = async (image, { color, alpha } = {}) => {
+const normalizeSamObjectExpandPx = (value, fallback = 0) =>
+  Math.max(0, Math.min(99, Math.round(Number.isFinite(Number(value)) ? Number(value) : Number(fallback) || 0)));
+
+const createPreviewMaskImage = async (image, { color, alpha, expandPx = null } = {}) => {
   const width = Math.max(1, Number(image?.naturalWidth || image?.videoWidth || image?.width || 1));
   const height = Math.max(1, Number(image?.naturalHeight || image?.videoHeight || image?.height || 1));
   const canvas = document.createElement("canvas");
@@ -522,6 +529,7 @@ const createPreviewMaskImage = async (image, { color, alpha } = {}) => {
     imageData = expandSamMaskImageDataForLama(imageData, {
       imageWidth: width,
       imageHeight: height,
+      radiusOverride: expandPx,
     }).imageData;
   }
   const previewData = imageData.data;
@@ -559,6 +567,7 @@ const loadSamFrameMaskImage = async ({
   objectId,
   maskPath,
   maskSignature,
+  expandPx,
 }) => {
   if (!maskPath) return null;
   const previewColor = videoStore.maskTool.brushColor;
@@ -573,6 +582,7 @@ const loadSamFrameMaskImage = async ({
     modelId,
     previewColor,
     previewAlpha,
+    expandPx,
   });
   const cached = samFrameImageCache.get(cacheKey);
   if (cached) {
@@ -588,6 +598,7 @@ const loadSamFrameMaskImage = async ({
       await createPreviewMaskImage(image, {
         color: previewColor,
         alpha: previewAlpha,
+        expandPx,
       })
     );
   } catch (error) {
@@ -609,6 +620,12 @@ const preloadSamFrameMasks = async ({ mask, asset, nearestFrame } = {}) => {
       .map((item) => Number(item.objectId))
   );
   if (!enabledObjects.size) return;
+  const samObjectMap = new Map(
+    (mask.samObjects || []).map((item) => [
+      Number(item.objectId),
+      normalizeSamObjectExpandPx(item.expandPx, item.autoExpandPx),
+    ])
+  );
   const stride = Math.max(1, Math.floor(SAM_FRAME_PRELOAD_WINDOW / 2));
   const windowBucket = Math.floor(startIndex / stride);
   const preloadKey = [
@@ -618,7 +635,10 @@ const preloadSamFrameMasks = async ({ mask, asset, nearestFrame } = {}) => {
     props.currentModel,
     videoStore.maskTool.brushColor,
     Number(videoStore.maskTool.brushAlpha || 0).toFixed(3),
-    [...enabledObjects].sort((a, b) => a - b).join(","),
+    [...enabledObjects]
+      .sort((a, b) => a - b)
+      .map((objectId) => `${objectId}:${samObjectMap.get(objectId) ?? 0}`)
+      .join(","),
   ].join(":");
   if (preloadKey === lastSamFramePreloadKey) return;
   lastSamFramePreloadKey = preloadKey;
@@ -640,6 +660,7 @@ const preloadSamFrameMasks = async ({ mask, asset, nearestFrame } = {}) => {
             objectId: item.objectId,
             maskPath: item.maskPath,
             maskSignature: item.maskSignature,
+            expandPx: samObjectMap.get(Number(item.objectId)) ?? 0,
           })
         )
     );
@@ -793,12 +814,16 @@ const renderOverlay = async () => {
           ctx.globalAlpha = getMaskPreviewOpacity(mask.id);
           for (const item of nearestFrame.masks) {
             if (!enabledObjects.has(Number(item.objectId))) continue;
+            const samObject = (mask.samObjects || []).find(
+              (objectItem) => Number(objectItem.objectId) === Number(item.objectId)
+            );
             const image = await loadSamFrameMaskImage({
               maskId: mask.id,
               frameIndex: nearestFrame.frameIndex,
               objectId: item.objectId,
               maskPath: item.maskPath,
               maskSignature: item.maskSignature,
+              expandPx: normalizeSamObjectExpandPx(samObject?.expandPx, samObject?.autoExpandPx),
             });
             if (renderToken !== renderOverlayToken) break;
             if (image) {
@@ -1209,7 +1234,7 @@ watch(
           mask.id,
           mask.type,
           mask.baseMaskDataUrl,
-          ...(mask.samObjects || []).map((item) => `${item.objectId}:${item.enabled !== false}`),
+          ...(mask.samObjects || []).map((item) => `${item.objectId}:${item.enabled !== false}:${item.expandPx ?? item.autoExpandPx ?? 0}`),
           getSamFrameListSignature(mask.samFrames),
         ].join("|")
       )
@@ -1250,7 +1275,7 @@ watch(
           mask.interpolation,
           mask.enabled,
           mask.type,
-          ...(mask.samObjects || []).map((item) => `${item.objectId}:${item.enabled !== false}`),
+          ...(mask.samObjects || []).map((item) => `${item.objectId}:${item.enabled !== false}:${item.expandPx ?? item.autoExpandPx ?? 0}`),
           ...(mask.keyframes || []).map(
             (keyframe) =>
               [

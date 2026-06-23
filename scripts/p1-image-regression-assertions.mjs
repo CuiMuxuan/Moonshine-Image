@@ -574,13 +574,23 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/utils/samMaskAutoExpand.js",
-    description: "Shared SAM auto-expand utility uses LaMa long-side radius thresholds with a 4px minimum",
-    pattern: /(?=[\s\S]*resolveSamAutoExpandRadius)(?=[\s\S]*maskLongSide)(?=[\s\S]*imageLongSide)(?=[\s\S]*normalizedLongSide <= 32[\s\S]*baseRadius = 4)(?=[\s\S]*normalizedLongSide <= 96[\s\S]*baseRadius = 6)(?=[\s\S]*normalizedLongSide <= 240[\s\S]*baseRadius = 8)(?=[\s\S]*normalizedLongSide <= 480[\s\S]*baseRadius = 12)(?=[\s\S]*Math\.round\(\(baseRadius \* scaleFactor\) \/ 4\))(?=[\s\S]*aspectRatio >= 4 && normalizedLongSide <= 120[\s\S]*Math\.round\(\(2 \* scaleFactor\) \/ 4\))(?=[\s\S]*clampNumber\(radius, 4, 6\))(?=[\s\S]*inspectSamMaskPixels)(?=[\s\S]*dilateBinaryAlphaMask)(?=[\s\S]*expandSamMaskImageDataForLama)[\s\S]*/,
+    description: "Shared SAM auto-expand utility maps LaMa expansion radius from the SAM mask long side",
+    pattern: /(?=[\s\S]*resolveSamAutoExpandRadius)(?=[\s\S]*maskLongSide)(?=[\s\S]*maskLongSide <= 64\) return 4)(?=[\s\S]*maskLongSide <= 160\) return 5)(?=[\s\S]*maskLongSide <= 360\) return 6)(?=[\s\S]*maskLongSide <= 720\) return 8)(?=[\s\S]*return 10)(?![\s\S]*imageLongSide)(?![\s\S]*normalizedLongSide)(?=[\s\S]*inspectSamMaskPixels)(?=[\s\S]*dilateBinaryAlphaMask)(?=[\s\S]*expandSamMaskImageDataForLama)[\s\S]*/,
   });
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
     description: "Image masker auto-expands visible SAM candidates only for LaMa through the shared utility",
-    pattern: /(?=[\s\S]*import \{ expandSamMaskImageDataForLama \} from "src\/utils\/samMaskAutoExpand")(?=[\s\S]*currentModel:\s*\{[\s\S]*type:\s*String)(?=[\s\S]*currentProcessingModelId)(?=[\s\S]*shouldAutoExpandSamMasks[\s\S]*=== "lama")(?=[\s\S]*hasEnabledSamCandidates[\s\S]*candidate\.enabled && candidate\.mask)(?=[\s\S]*expandSamMaskForLama[\s\S]*expandSamMaskImageDataForLama)(?=[\s\S]*resolveSamCandidateMaskForRendering)[\s\S]*/,
+    pattern: /(?=[\s\S]*expandSamMaskImageDataForLama,[\s\S]*from "src\/utils\/samMaskAutoExpand")(?=[\s\S]*currentModel:\s*\{[\s\S]*type:\s*String)(?=[\s\S]*currentProcessingModelId)(?=[\s\S]*shouldAutoExpandSamMasks[\s\S]*=== "lama")(?=[\s\S]*hasEnabledSamCandidates[\s\S]*candidate\.enabled && candidate\.mask)(?=[\s\S]*expandSamMaskForLama[\s\S]*expandSamMaskImageDataForLama)(?=[\s\S]*resolveSamCandidateMaskForRendering)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/components/image/ImageMasker.vue",
+    description: "Image masker lets LaMa users override each SAM candidate expansion radius from 0 to 99px",
+    pattern: /(?=[\s\S]*autoExpandPx)(?=[\s\S]*expandPx)(?=[\s\S]*resolveSamMaskAutoExpandPx)(?=[\s\S]*hydrateSamCandidateExpandPx)(?=[\s\S]*setSamCandidateExpandPx)(?=[\s\S]*stepSamCandidateExpandPx)(?=[\s\S]*<q-input[\s\S]*type="number"[\s\S]*sam-expand-input)(?=[\s\S]*icon="remove")(?=[\s\S]*icon="add")(?=[\s\S]*suffix="px")(?=[\s\S]*expandSamMaskForLama\(sourceMask, renderWidth, renderHeight, expandPx\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/utils/samMaskAutoExpand.js",
+    description: "Shared SAM expansion utility accepts a manual radius override where 0 disables expansion",
+    pattern: /(?=[\s\S]*normalizeSamExpandRadius)(?=[\s\S]*radiusOverride = null)(?=[\s\S]*radiusOverride == null \? autoRadius : normalizeSamExpandRadius\(radiusOverride, autoRadius\))(?=[\s\S]*if \(!radius\) return \{ imageData, expanded: false, radius: 0 \})[\s\S]*/,
   });
   assertPattern({
     file: "src/components/image/ImageMasker.vue",

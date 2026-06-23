@@ -124,6 +124,7 @@ import { classifyMoonshineError } from "src/services/ErrorClassifier";
 import { useAppStateStore } from "src/stores/appState";
 import { useBackendEngineStore } from "src/stores/backendEngine";
 import { useConfigStore } from "src/stores/config";
+import { useRuntimeDiagnosticsStore } from "src/stores/runtimeDiagnostics";
 import {
   BACKEND_PATH_CJK_BLOCK_MESSAGE,
   validateBackendPathsForConfig,
@@ -135,6 +136,7 @@ const router = useRouter();
 const configStore = useConfigStore();
 const appStateStore = useAppStateStore();
 const backendEngineStore = useBackendEngineStore();
+const runtimeDiagnosticsStore = useRuntimeDiagnosticsStore();
 const globalLoadingLogo = resolvePublicAssetPath("icons/cmx-logo256.png");
 
 const showBackendManager = ref(false);
@@ -149,6 +151,8 @@ const runtimeE2EFlag =
   typeof window !== "undefined" && window.__MOONSHINE_E2E__ === true;
 const isE2EMode = import.meta.env.VITE_MOONSHINE_E2E === "1" || runtimeE2EFlag;
 const pendingBackendPathDialog = ref(null);
+const cudaDiagnosticNotificationKey = ref("");
+const backendSessionStartedAt = ref(0);
 
 const loadingState = ref({
   showing: false,
@@ -316,6 +320,71 @@ const openBackendDiagnostics = () => {
   showBackendManager.value = true;
 };
 
+const openExternalUrl = (url) => {
+  if (!url) return;
+  if (window.electron?.openExternal) {
+    window.electron.openExternal(url);
+    return;
+  }
+  if (window.electron?.ipcRenderer?.send) {
+    window.electron.ipcRenderer.send("open-external-link", url);
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
+};
+
+const maybeNotifyCudaDiagnostic = (cudaInfo = {}) => {
+  const level = cudaInfo?.notification_level;
+  if (!level || cudaInfo?.torch_package === "cpu") return;
+  const port = configStore.config.general?.backendPort || "unknown";
+  const code = cudaInfo?.diagnostic_code || level;
+  const key = `${port}:${code}`;
+  if (cudaDiagnosticNotificationKey.value === key) return;
+  cudaDiagnosticNotificationKey.value = key;
+  const links = Array.isArray(cudaInfo.notification_links)
+    ? cudaInfo.notification_links
+    : [];
+  $q.notify({
+    type: level === "negative" ? "negative" : "warning",
+    message: cudaInfo.notification_message || cudaInfo.message || "CUDA 诊断提示",
+    caption: cudaInfo.notification_title || "",
+    position: "top",
+    timeout: 9000,
+    actions: [
+      ...links.map((link) => ({
+        label: link.label,
+        color: "white",
+        handler: () => openExternalUrl(link.url),
+      })),
+      { label: "关闭", color: "white" },
+    ],
+  });
+};
+
+const getBackendSessionKey = () => {
+  const general = configStore.config.general || {};
+  return [
+    general.backendPort || "8080",
+    general.launchMode || "cuda",
+    backendSessionStartedAt.value || "existing",
+  ].join(":");
+};
+
+const refreshCudaDiagnostics = async ({ force = false, notify = true } = {}) => {
+  const sessionKey = getBackendSessionKey();
+  if (!force && runtimeDiagnosticsStore.getCudaStatusMatchesSession(sessionKey)) {
+    return runtimeDiagnosticsStore.cudaStatus;
+  }
+
+  runtimeDiagnosticsStore.setCudaRefreshing(sessionKey);
+  const cudaInfo = await api.get("/api/v1/check_cuda");
+  const nextStatus = runtimeDiagnosticsStore.setCudaStatus(cudaInfo, sessionKey);
+  if (notify) {
+    maybeNotifyCudaDiagnostic(cudaInfo);
+  }
+  return nextStatus;
+};
+
 const openGlobalSettings = ({ tab = "", modelId = "" } = {}) => {
   settingsTarget.value = {
     tab,
@@ -368,6 +437,10 @@ provide("backendEngine", backendEngineContext);
 provide("globalLoadingState", loadingState);
 provide("globalSettings", {
   open: openGlobalSettings,
+});
+provide("runtimeDiagnostics", {
+  refreshCudaDiagnostics,
+  getBackendSessionKey,
 });
 provide("layoutFooter", {
   setPageFooter,
@@ -433,12 +506,13 @@ const handleLoadingUpdate = (state) => {
 
 const checkBackendStatus = async ({ notifyOnFailure = true } = {}) => {
   try {
-    await api.get("/api/v1/check_cuda");
+    await refreshCudaDiagnostics({ notify: true });
     backendRunning.value = true;
     backendEngineStore.setRunning();
     return true;
   } catch (error) {
     backendRunning.value = false;
+    runtimeDiagnosticsStore.setCudaUnavailable("后端服务未启动");
     if (notifyOnFailure) {
       const classifiedError = classifyMoonshineError(error, "后端服务未启动");
       $q.notify({
@@ -571,6 +645,9 @@ const prepareBackendEngine = async () => {
     const processStatus = await invoke("check-backend-status");
     if (processStatus?.success && processStatus.running) {
       await syncBackendRuntimePort(processStatus.port);
+      if (!backendSessionStartedAt.value) {
+        backendSessionStartedAt.value = Date.now();
+      }
       backendEngineStore.setPhase("verifying");
       const reachable = await checkBackendStatus({ notifyOnFailure: false });
       if (!reachable) {
@@ -618,6 +695,7 @@ const prepareBackendEngine = async () => {
     }
 
     await syncBackendRuntimePort(startResult.port || generalConfig.backendPort || 8080);
+    backendSessionStartedAt.value = Date.now();
     if (startResult.portChanged) {
       $q.notify({
         type: "warning",

@@ -198,35 +198,6 @@
                 <q-item-label caption>
                   {{ formatSeconds(mask.startTime) }} - {{ formatSeconds(mask.endTime) }}
                 </q-item-label>
-                <div v-if="mask.type === 'samVideo'" class="sam-object-list">
-                  <div
-                    v-for="objectItem in mask.samObjects || []"
-                    :key="`${mask.id}-${objectItem.objectId}`"
-                    class="sam-object-row"
-                  >
-                    <q-checkbox
-                      dense
-                      :model-value="objectItem.enabled !== false"
-                      :disable="isProcessing"
-                      :label="`对象 ${objectItem.objectId}`"
-                      @update:model-value="
-                        (value) =>
-                          videoStore.setSamVideoObjectEnabled(mask.id, objectItem.objectId, value)
-                      "
-                    />
-                    <q-btn
-                      flat
-                      round
-                      dense
-                      icon="delete"
-                      color="negative"
-                      :disable="isProcessing"
-                      @click.stop="emit('remove-sam-video-object', { maskId: mask.id, objectId: objectItem.objectId })"
-                    >
-                      <q-tooltip>删除对象</q-tooltip>
-                    </q-btn>
-                  </div>
-                </div>
               </q-item-section>
 
               <q-item-section side>
@@ -640,7 +611,6 @@ const emit = defineEmits([
   "video-uploaded",
   "video-cleared",
   "run-sam-video-selection",
-  "remove-sam-video-object",
   "remove-mask",
 ]);
 
@@ -925,21 +895,6 @@ onUnmounted(() => {
   align-items: center;
   display: flex;
   gap: 8px;
-}
-
-.sam-object-list {
-  border-left: 2px solid rgba(245, 158, 11, 0.35);
-  display: grid;
-  gap: 4px;
-  margin-top: 8px;
-  padding-left: 8px;
-}
-
-.sam-object-row {
-  align-items: center;
-  display: flex;
-  gap: 6px;
-  justify-content: space-between;
 }
 
 .model-settings,

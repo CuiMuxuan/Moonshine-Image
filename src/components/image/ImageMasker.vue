@@ -423,16 +423,56 @@
                         </q-item-label>
                       </q-item-section>
                       <q-item-section side>
-                        <q-btn
-                          flat
-                          dense
-                          round
-                          icon="close"
-                          color="primary"
-                          @click.stop="removeSamCandidate(candidate.localId)"
-                        >
-                          <q-tooltip :class="toolbarTooltipContentClass">删除该候选</q-tooltip>
-                        </q-btn>
+                        <div class="sam-candidate-actions">
+                          <q-input
+                            v-if="shouldAutoExpandSamMasks"
+                            :model-value="candidate.expandPx ?? candidate.autoExpandPx ?? 0"
+                            type="number"
+                            dense
+                            outlined
+                            min="0"
+                            max="99"
+                            suffix="px"
+                            class="sam-expand-input"
+                            input-class="text-center"
+                            @update:model-value="setSamCandidateExpandPx(candidate.localId, $event)"
+                            @click.stop
+                          >
+                            <template #prepend>
+                              <q-btn
+                                flat
+                                dense
+                                round
+                                size="sm"
+                                icon="remove"
+                                :disable="Number(candidate.expandPx ?? candidate.autoExpandPx ?? 0) <= 0"
+                                @click.stop="stepSamCandidateExpandPx(candidate.localId, -1)"
+                              />
+                            </template>
+                            <template #append>
+                              <q-btn
+                                flat
+                                dense
+                                round
+                                size="sm"
+                                icon="add"
+                                :disable="Number(candidate.expandPx ?? candidate.autoExpandPx ?? 0) >= 99"
+                                @click.stop="stepSamCandidateExpandPx(candidate.localId, 1)"
+                              />
+                            </template>
+                            <q-tooltip :class="toolbarTooltipContentClass">LaMa 扩边大小</q-tooltip>
+                          </q-input>
+                          <q-btn
+                            flat
+                            dense
+                            round
+                            icon="close"
+                            color="primary"
+                            @click.stop="removeSamCandidate(candidate.localId)"
+                          >
+                            <q-tooltip :class="toolbarTooltipContentClass">删除该候选</q-tooltip>
+                          </q-btn>
+                        </div>
                       </q-item-section>
                     </q-item>
                   </q-list>
@@ -520,7 +560,12 @@ import {
   computeAnchoredPlacement,
   resolveViewportRect,
 } from "src/utils/viewportPlacement";
-import { expandSamMaskImageDataForLama } from "src/utils/samMaskAutoExpand";
+import {
+  expandSamMaskImageDataForLama,
+  inspectSamMaskPixels,
+  normalizeSamExpandRadius,
+  resolveSamAutoExpandRadius,
+} from "src/utils/samMaskAutoExpand";
 import { useEditorStore } from "src/stores/editor";
 
 const editor = inject("image-editor", { value: null });
@@ -1086,16 +1131,17 @@ const refreshSamTextLexicon = async () => {
   }
 };
 
-const buildSamTextCandidate = (candidate, index, result = {}, prompt = samTextPrompt.value.trim()) => ({
-  ...candidate,
-  localId: `${Date.now()}-${samOperationIndex.value}-text-${index}`,
-  label: `文本候选 ${index + 1}`,
-  enabled: index === 0,
-  source: "text",
-  modelId: getTextModelId(),
-  prompt: candidate.prompt || result.prompt || { type: "text", text: prompt },
-  createdAt: new Date().toISOString(),
-});
+const buildSamTextCandidate = async (candidate, index, result = {}, prompt = samTextPrompt.value.trim()) =>
+  hydrateSamCandidateExpandPx({
+    ...candidate,
+    localId: `${Date.now()}-${samOperationIndex.value}-text-${index}`,
+    label: `文本候选 ${index + 1}`,
+    enabled: index === 0,
+    source: "text",
+    modelId: getTextModelId(),
+    prompt: candidate.prompt || result.prompt || { type: "text", text: prompt },
+    createdAt: new Date().toISOString(),
+  });
 
 const cloneSamCandidates = (items = []) =>
   items.map((candidate) => {
@@ -1103,6 +1149,29 @@ const cloneSamCandidates = (items = []) =>
     delete nextCandidate.renderedMask;
     return nextCandidate;
   });
+
+const setSamCandidateExpandPx = async (localId, value, { render = true } = {}) => {
+  const candidate = samCandidates.value.find((item) => item.localId === localId);
+  if (!candidate) return;
+  const nextValue = normalizeSamCandidateExpandPx(value, candidate.autoExpandPx ?? candidate.expandPx ?? 0);
+  if (candidate.expandPx === nextValue) return;
+  candidate.expandPx = nextValue;
+  candidate.renderedMask = "";
+  samExpandedMaskCache.delete(candidate);
+  saveSamContextSession();
+  if (render) {
+    await renderSamCandidates({ pushHistory: false });
+  }
+};
+
+const stepSamCandidateExpandPx = async (localId, delta) => {
+  const candidate = samCandidates.value.find((item) => item.localId === localId);
+  if (!candidate) return;
+  await setSamCandidateExpandPx(
+    localId,
+    normalizeSamCandidateExpandPx(candidate.expandPx ?? candidate.autoExpandPx ?? 0) + Number(delta || 0)
+  );
+};
 
 const saveSamContextSession = () => {
   const contextId = activeSamContextId.value;
@@ -1250,6 +1319,42 @@ const dataUrlToImageData = async (dataUrl, width, height) => {
   return canvasContext.getImageData(0, 0, width, height);
 };
 
+const resolveSamMaskAutoExpandPx = async (maskDataUrl, width, height) => {
+  const imageData = await dataUrlToImageData(maskDataUrl, width, height);
+  if (!imageData) return 0;
+  const maskInfo = inspectSamMaskPixels(imageData);
+  if (!maskInfo) return 0;
+  return resolveSamAutoExpandRadius({
+    bboxWidth: maskInfo.bboxWidth,
+    bboxHeight: maskInfo.bboxHeight,
+    imageWidth: width,
+    imageHeight: height,
+  });
+};
+
+const normalizeSamCandidateExpandPx = (value, fallback = 0) =>
+  normalizeSamExpandRadius(value, fallback);
+
+const hydrateSamCandidateExpandPx = async (candidate) => {
+  const fallback = normalizeSamCandidateExpandPx(candidate?.autoExpandPx ?? candidate?.expandPx ?? 0);
+  if (!candidate?.mask || !store.imageWidth || !store.imageHeight) {
+    return {
+      ...candidate,
+      autoExpandPx: fallback,
+      expandPx: normalizeSamCandidateExpandPx(candidate?.expandPx, fallback),
+    };
+  }
+  const autoExpandPx =
+    candidate.autoExpandPx == null
+      ? await resolveSamMaskAutoExpandPx(candidate.mask, store.imageWidth, store.imageHeight)
+      : normalizeSamCandidateExpandPx(candidate.autoExpandPx, fallback);
+  return {
+    ...candidate,
+    autoExpandPx,
+    expandPx: normalizeSamCandidateExpandPx(candidate.expandPx, autoExpandPx),
+  };
+};
+
 const normalizeCanvasRect = (startPoint, endPoint) => {
   if (!startPoint || !endPoint) return null;
   const clampedStart = clampSamCanvasPoint(startPoint);
@@ -1297,8 +1402,9 @@ const drawImageUrlToContext = (dataUrl) =>
     image.src = dataUrl;
   });
 
-const expandSamMaskForLama = async (maskDataUrl, width, height) => {
+const expandSamMaskForLama = async (maskDataUrl, width, height, radiusOverride = null) => {
   if (!maskDataUrl || !width || !height) return maskDataUrl || "";
+  if (radiusOverride === 0) return maskDataUrl;
   const image = await drawImageUrlToContext(maskDataUrl);
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -1312,6 +1418,7 @@ const expandSamMaskForLama = async (maskDataUrl, width, height) => {
   const result = expandSamMaskImageDataForLama(imageData, {
     imageWidth: width,
     imageHeight: height,
+    radiusOverride,
   });
   if (!result.expanded) return maskDataUrl;
 
@@ -1348,6 +1455,7 @@ const resolveSamCandidateMaskForRendering = async (candidate, { width = 0, heigh
   const renderWidth = Math.max(1, Math.round(width || maskCanvas.value?.width || store.imageWidth || 1));
   const renderHeight = Math.max(1, Math.round(height || maskCanvas.value?.height || store.imageHeight || 1));
   let renderMask = sourceMask;
+  const expandPx = normalizeSamCandidateExpandPx(candidate.expandPx, candidate.autoExpandPx ?? 0);
 
   if (!shouldAutoExpandSamMasks.value) {
     renderMask = sourceMask;
@@ -1356,17 +1464,19 @@ const resolveSamCandidateMaskForRendering = async (candidate, { width = 0, heigh
     if (
       cached?.sourceMask === sourceMask &&
       cached.width === renderWidth &&
-      cached.height === renderHeight
+      cached.height === renderHeight &&
+      cached.expandPx === expandPx
     ) {
       renderMask = cached.dataUrl;
     } else {
       try {
         // Keep candidate.mask untouched so every render starts from the original SAM result.
-        renderMask = await expandSamMaskForLama(sourceMask, renderWidth, renderHeight);
+        renderMask = await expandSamMaskForLama(sourceMask, renderWidth, renderHeight, expandPx);
         samExpandedMaskCache.set(candidate, {
           sourceMask,
           width: renderWidth,
           height: renderHeight,
+          expandPx,
           dataUrl: renderMask,
         });
       } catch (error) {
@@ -1626,16 +1736,20 @@ const runSamPrediction = async ({ point = null, box = null } = {}) => {
       multimaskOutput: !box,
     });
     samLastPerformance.value = result.performance ? { ...result.performance } : null;
-    const nextCandidates = (result.candidates || []).map((candidate, index) => ({
-      ...candidate,
-      localId: `${Date.now()}-${samOperationIndex.value}-${index}`,
-      label: box ? `框选候选 ${index + 1}` : `点选候选 ${index + 1}`,
-      enabled: index === 0,
-      source: box ? "box" : "point",
-      modelId: effectiveSamModelId.value,
-      prompt: box ? { box } : { point },
-      createdAt: new Date().toISOString(),
-    }));
+    const nextCandidates = await Promise.all(
+      (result.candidates || []).map((candidate, index) =>
+        hydrateSamCandidateExpandPx({
+          ...candidate,
+          localId: `${Date.now()}-${samOperationIndex.value}-${index}`,
+          label: box ? `框选候选 ${index + 1}` : `点选候选 ${index + 1}`,
+          enabled: index === 0,
+          source: box ? "box" : "point",
+          modelId: effectiveSamModelId.value,
+          prompt: box ? { box } : { point },
+          createdAt: new Date().toISOString(),
+        })
+      )
+    );
     samOperationIndex.value += 1;
     samCandidates.value = [...samCandidates.value, ...nextCandidates];
     await renderSamCandidates({ pushHistory: nextCandidates.length > 0 });
@@ -1678,8 +1792,10 @@ const runSamTextPrediction = async () => {
       promptNoun: promptSpec.noun,
     });
     samLastPerformance.value = result.performance ? { ...result.performance } : null;
-    const nextCandidates = (result.candidates || []).map((candidate, index) =>
-      buildSamTextCandidate(candidate, index, result, prompt)
+    const nextCandidates = await Promise.all(
+      (result.candidates || []).map((candidate, index) =>
+        buildSamTextCandidate(candidate, index, result, prompt)
+      )
     );
     samOperationIndex.value += 1;
     if (!nextCandidates.length) {
@@ -1766,16 +1882,20 @@ const appendExternalSamTextResult = async ({
   const previousOperationIndex = Number.isInteger(previousSession.operationIndex)
     ? previousSession.operationIndex
     : 0;
-  const nextCandidates = (result.candidates || []).map((candidate, index) => ({
-    ...candidate,
-    localId: `${Date.now()}-${previousOperationIndex}-batch-text-${index}`,
-    label: `文本候选 ${previousCandidates.length + index + 1}`,
-    enabled: index === 0,
-    source: "text",
-    modelId: modelId || getTextModelId(),
-    prompt: candidate.prompt || result.prompt || { type: "text", text: prompt },
-    createdAt: new Date().toISOString(),
-  }));
+  const nextCandidates = await Promise.all(
+    (result.candidates || []).map((candidate, index) =>
+      hydrateSamCandidateExpandPx({
+        ...candidate,
+        localId: `${Date.now()}-${previousOperationIndex}-batch-text-${index}`,
+        label: `文本候选 ${previousCandidates.length + index + 1}`,
+        enabled: index === 0,
+        source: "text",
+        modelId: modelId || getTextModelId(),
+        prompt: candidate.prompt || result.prompt || { type: "text", text: prompt },
+        createdAt: new Date().toISOString(),
+      })
+    )
+  );
   const mergedCandidates = [...previousCandidates, ...nextCandidates];
   const width = Number(result.width || 0);
   const height = Number(result.height || 0);
@@ -3025,6 +3145,30 @@ defineExpose({
   overflow: auto;
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.5);
+}
+
+.sam-candidate-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sam-expand-input {
+  width: 112px;
+}
+
+.sam-expand-input :deep(.q-field__control) {
+  min-height: 32px;
+  padding: 0 4px;
+}
+
+.sam-expand-input :deep(.q-field__prepend),
+.sam-expand-input :deep(.q-field__append) {
+  padding: 0;
+}
+
+.sam-expand-input :deep(input) {
+  padding: 0;
 }
 
 :global(.mask-toolbar-popup) {

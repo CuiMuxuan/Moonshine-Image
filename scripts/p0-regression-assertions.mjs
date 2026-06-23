@@ -36,6 +36,15 @@ function assertPattern({ file, description, pattern }) {
   console.log(`PASS  ${description}`);
 }
 
+function assertAbsentPattern({ file, description, pattern }) {
+  const content = readText(file);
+  const ok = pattern instanceof RegExp ? !pattern.test(content) : !content.includes(pattern);
+  if (!ok) {
+    throw new Error(`Assertion failed: ${description}\nFile: ${file}`);
+  }
+  console.log(`PASS  ${description}`);
+}
+
 function assertPatternOrder({ file, description, patterns }) {
   const content = readText(file);
   let cursor = 0;
@@ -170,8 +179,13 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/components/video/ResourceManage.vue",
-    description: "Video resource list exposes SAM object checkbox and object delete controls",
-    pattern: /mask\.type === 'samVideo'[\s\S]*q-checkbox[\s\S]*setSamVideoObjectEnabled[\s\S]*remove-sam-video-object/,
+    description: "Video resource list keeps SAM video tracks at track-level controls only",
+    pattern: /(?=[\s\S]*mask\.type === 'samVideo'[\s\S]*SAM)(?=[\s\S]*emit\('remove-mask', mask\.id\))[\s\S]*/,
+  });
+  assertAbsentPattern({
+    file: "src/components/video/ResourceManage.vue",
+    description: "Video resource list does not expose SAM object checkbox or object delete controls",
+    pattern: /setSamVideoObjectEnabled|remove-sam-video-object|sam-object-list/,
   });
 
   logSection("Image Workflow");
@@ -253,6 +267,11 @@ function runAssertions() {
     file: "src/pages/IndexPage.vue",
     description: "Image page captures preferred drawing mode instead of temporary disabled state",
     pattern: /const captureMaskUiState = \(\) => \(\{[\s\S]*showMaskTools: maskToolsPreferredVisible\.value,[\s\S]*drawingMode: runtimeUiStore\.imageMaskDrawingEnabled,/,
+  });
+  assertPattern({
+    file: "src/pages/IndexPage.vue",
+    description: "Image page syncs managed output path before the settings drawer first renders",
+    pattern: /onMounted\(async \(\) => \{[\s\S]*await configStore\.loadConfig\(\);[\s\S]*if \(configStore\.config\.fileManagement\) \{[\s\S]*syncManagedImageOutputPath\(configStore\.config\.fileManagement\);[\s\S]*runtimeUiStore\.ensureImageMaskToolState/,
   });
   assertPattern({
     file: "src/services/ImageProcessingService.js",
@@ -510,6 +529,26 @@ function runAssertions() {
       /后端服务启动成功，端口: \$\{actualPort\}/,
       /已更新前端 API 端口配置为: \$\{actualPort\}/,
     ],
+  });
+  assertPattern({
+    file: "server/moonshine_server/api.py",
+    description: "CUDA health API reports PyTorch CUDA, NVIDIA driver, nvcc, and user notification diagnostics",
+    pattern: /(?=[\s\S]*def _get_nvidia_driver_info\(self\))(?=[\s\S]*nvidia-smi)(?=[\s\S]*def _get_nvcc_info\(self\))(?=[\s\S]*nvcc)(?=[\s\S]*torch_package)(?=[\s\S]*torch_cuda_version)(?=[\s\S]*torch_cuda_available)(?=[\s\S]*diagnostic_code)(?=[\s\S]*notification_links)(?=[\s\S]*https:\/\/pytorch\.org\/get-started\/locally\/)(?=[\s\S]*https:\/\/www\.nvidia\.com\/en-us\/drivers\/)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/layouts/MainLayout.vue",
+    description: "Frontend shows CUDA diagnostic notifications once per backend startup and keeps CPU package silent",
+    pattern: /(?=[\s\S]*cudaDiagnosticNotificationKey)(?=[\s\S]*backendSessionStartedAt)(?=[\s\S]*useRuntimeDiagnosticsStore)(?=[\s\S]*getBackendSessionKey)(?=[\s\S]*refreshCudaDiagnostics)(?=[\s\S]*getCudaStatusMatchesSession\(sessionKey\))(?=[\s\S]*runtimeDiagnosticsStore\.setCudaStatus\(cudaInfo, sessionKey\))(?=[\s\S]*maybeNotifyCudaDiagnostic)(?=[\s\S]*torch_package === "cpu")(?=[\s\S]*notification_links)(?=[\s\S]*openExternalUrl)(?=[\s\S]*maybeNotifyCudaDiagnostic\(cudaInfo\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/components/common/CudaStatus.vue",
+    description: "CUDA status menu displays runtime package, PyTorch CUDA, NVIDIA driver, and nvcc details",
+    pattern: /(?=[\s\S]*useRuntimeDiagnosticsStore)(?=[\s\S]*inject\("runtimeDiagnostics")(?=[\s\S]*refreshCudaStatus)(?=[\s\S]*runtimeDiagnostics\.refreshCudaDiagnostics\(\{ force: true, notify: true \}\))(?=[\s\S]*CPU 运行包)(?=[\s\S]*statusBadgeColor)(?=[\s\S]*grey-7)(?=[\s\S]*PyTorch CUDA)(?=[\s\S]*NVIDIA 驱动)(?=[\s\S]*CUDA Toolkit)(?=[\s\S]*torch_cuda_available)(?=[\s\S]*nvidia_driver_available)(?=[\s\S]*nvcc_available)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/stores/runtimeDiagnostics.js",
+    description: "Runtime diagnostics cache CUDA by backend session key instead of a short TTL",
+    pattern: /(?=[\s\S]*sessionKey)(?=[\s\S]*getCudaStatusMatchesSession)(?![\s\S]*CUDA_STATUS_TTL_MS)(?![\s\S]*cudaStatusFresh)[\s\S]*/,
   });
 
   logSection("Backend API Contracts");

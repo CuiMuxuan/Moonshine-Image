@@ -1,8 +1,8 @@
 <template>
   <div class="row items-center">
     <div class="col">
-      <q-badge :color="cudaAvailable ? 'positive' : 'negative'">
-        CUDA {{ cudaAvailable ? "可用" : "不可用" }}
+      <q-badge :color="statusBadgeColor">
+        {{ statusBadgeText }}
       </q-badge>
       <q-btn
         round
@@ -15,11 +15,31 @@
       >
         <q-tooltip> 点击查看CUDA详细信息 </q-tooltip>
         <q-menu>
-          <q-card style="min-width: 250px">
-            <q-card-section>
+          <q-card style="min-width: 320px">
+            <q-card-section class="row items-center q-pb-sm">
               <div class="text-h6">CUDA信息</div>
+              <q-space />
+              <q-btn
+                flat
+                round
+                dense
+                size="sm"
+                icon="refresh"
+                :loading="cudaRefreshing"
+                :disable="!backendRunning"
+                @click.stop="refreshCudaStatus"
+              >
+                <q-tooltip>刷新 CUDA 诊断</q-tooltip>
+              </q-btn>
             </q-card-section>
             <q-card-section v-if="cudaInfo">
+              <div class="q-mb-sm">
+                <p><strong>运行包:</strong> {{ packageText }}</p>
+                <p><strong>PyTorch CUDA:</strong> {{ cudaInfo.torch_cuda_version || "不可用" }}</p>
+                <p><strong>CUDA 推理:</strong> {{ cudaInfo.torch_cuda_available ? "可用" : "不可用" }}</p>
+                <p><strong>NVIDIA 驱动:</strong> {{ driverText }}</p>
+                <p><strong>CUDA Toolkit:</strong> {{ toolkitText }}</p>
+              </div>
               <div v-if="cudaAvailable">
                 <p>
                   <strong>设备名称:</strong>
@@ -39,9 +59,14 @@
                 </p>
               </div>
               <div v-else>
-                <p>CUDA不可用，将使用CPU进行处理</p>
-                <p>{{ cudaInfo.message || "无法获取详细信息" }}</p>
+                <p>{{ cudaInfo.message || "CUDA不可用，将使用CPU进行处理" }}</p>
               </div>
+              <p v-if="cudaInfo.toolkit_message" class="text-caption text-grey-7">
+                {{ cudaInfo.toolkit_message }}
+              </p>
+              <p v-if="lastCheckedText" class="text-caption text-grey-7">
+                {{ lastCheckedText }}
+              </p>
             </q-card-section>
             <q-card-section v-else>
               <p>正在加载CUDA信息...</p>
@@ -54,9 +79,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue';
-import { useQuasar } from 'quasar';
-import { api } from 'src/boot/axios';
+import { computed, inject, onMounted, watch } from 'vue';
+import { useRuntimeDiagnosticsStore } from "src/stores/runtimeDiagnostics";
 
 const emit = defineEmits(['cuda-status-changed']);
 const props = defineProps({
@@ -66,87 +90,71 @@ const props = defineProps({
   }
 });
 
-const $q = useQuasar();
-const cudaAvailable = ref(false);
-const cudaInfo = ref(null);
-const checkInterval = ref(null);
+const runtimeDiagnosticsStore = useRuntimeDiagnosticsStore();
+const runtimeDiagnostics = inject("runtimeDiagnostics", null);
 
-// 检查CUDA可用性
-const checkCUDAAvailability = async () => {
-  // 只有在后端运行时才检查CUDA
-  if (!props.backendRunning) {
-    cudaAvailable.value = false;
-    cudaInfo.value = { message: "后端服务未启动" };
-    emit('cuda-status-changed', {
-      available: false,
-      info: { message: "后端服务未启动" }
-    });
-    return;
-  }
+const cudaAvailable = computed(() => runtimeDiagnosticsStore.cudaAvailable);
+const cudaInfo = computed(() => runtimeDiagnosticsStore.cudaInfo);
+const cudaRefreshing = computed(() => runtimeDiagnosticsStore.cudaRefreshing);
+
+const emitCudaStatus = () => {
+  emit('cuda-status-changed', {
+    available: cudaAvailable.value,
+    info: cudaInfo.value || {}
+  });
+};
+
+const statusBadgeText = computed(() => {
+  if (cudaInfo.value?.torch_package === "cpu") return "CPU 运行包";
+  return `CUDA ${cudaAvailable.value ? "可用" : "不可用"}`;
+});
+
+const statusBadgeColor = computed(() => {
+  if (cudaInfo.value?.torch_package === "cpu") return "grey-7";
+  return cudaAvailable.value ? "positive" : "negative";
+});
+
+const packageText = computed(() =>
+  cudaInfo.value?.torch_package === "cuda" ? "CUDA 运行包" : "CPU 运行包"
+);
+
+const driverText = computed(() => {
+  if (!cudaInfo.value?.nvidia_driver_available) return "未检测到";
+  return cudaInfo.value.nvidia_driver_version || "已检测到";
+});
+
+const toolkitText = computed(() => {
+  if (!cudaInfo.value?.nvcc_available) return "未检测到 nvcc";
+  return cudaInfo.value.nvcc_version || "已检测到 nvcc";
+});
+
+const lastCheckedText = computed(() => {
+  const checkedAt = Number(runtimeDiagnosticsStore.cudaStatus.checkedAt || 0);
+  if (!checkedAt) return "";
+  return `最后检测：${new Date(checkedAt).toLocaleTimeString()}`;
+});
+
+const refreshCudaStatus = async () => {
+  if (!props.backendRunning || !runtimeDiagnostics?.refreshCudaDiagnostics) return;
   try {
-    const response = await api.get("/api/v1/check_cuda");
-
-    // 更新CUDA状态
-    cudaAvailable.value =
-      response.cuda_available && response.cuda_compatible !== false;
-    cudaInfo.value = response;
-
-    emit('cuda-status-changed', {
-      available: cudaAvailable.value,
-      info: response
-    });
-
-    if (cudaAvailable.value) {
-      $q.notify({
-        type: "positive",
-        message: `CUDA可用! 设备: ${response.device_name}`,
-        position: "top",
-        timeout: 3000,
-      });
-    }
+    await runtimeDiagnostics.refreshCudaDiagnostics({ force: true, notify: true });
+    emitCudaStatus();
   } catch (error) {
-    console.error("检查CUDA可用性时出错:", error);
-    cudaAvailable.value = false;
-    cudaInfo.value = { message: "检测CUDA时发生错误" };
-
-    emit('cuda-status-changed', {
-      available: false,
-      info: { message: "检测CUDA时发生错误" }
-    });
+    console.error("刷新CUDA诊断时出错:", error);
+    runtimeDiagnosticsStore.setCudaUnavailable("检测CUDA时发生错误");
+    emitCudaStatus();
   }
 };
 
 // 监听后端状态变化
 watch(() => props.backendRunning, (newVal) => {
-  if (newVal) {
-    // 后端启动后延迟检查CUDA
-    setTimeout(() => {
-      checkCUDAAvailability();
-    }, 2000);
-  } else {
-    // 后端停止时清除检查
-    if (checkInterval.value) {
-      clearInterval(checkInterval.value);
-      checkInterval.value = null;
-    }
-    cudaAvailable.value = false;
-    cudaInfo.value = { message: "后端服务未启动" };
+  if (!newVal) {
+    runtimeDiagnosticsStore.setCudaUnavailable("后端服务未启动");
   }
+  emitCudaStatus();
 });
 
-// 组件挂载时检查CUDA可用性
 onMounted(() => {
-  if (props.backendRunning) {
-    setTimeout(() => {
-      checkCUDAAvailability();
-    }, 1000);
-  }
-});
-
-// 组件卸载时清理
-onUnmounted(() => {
-  if (checkInterval.value) {
-    clearInterval(checkInterval.value);
-  }
+  emitCudaStatus();
 });
 </script>

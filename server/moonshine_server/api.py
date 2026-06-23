@@ -1,6 +1,8 @@
 import json
+import logging
 import os
 import shutil
+import subprocess
 import threading
 import time
 import traceback
@@ -85,6 +87,21 @@ from moonshine_server.schema import (
     MoonshineSamTextPredictRequest,
     MoonshineSamVideoPropagateRequest,
 )
+
+
+SAM_VIDEO_POLLING_PATH_PREFIX = "/api/v1/moonshine/sam/video/propagate/jobs/"
+
+
+class SamVideoPollingAccessLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name != "uvicorn.access":
+            return True
+        message = record.getMessage()
+        if "GET " not in message:
+            return True
+        if SAM_VIDEO_POLLING_PATH_PREFIX not in message:
+            return True
+        return "/result" in message or "/cancel" in message
 from moonshine_server.moonshine.slbr_runner import (
     SlbrRunner,
     clamp_tile_batch,
@@ -616,7 +633,88 @@ class Api:
             "overlap": get_overlap_for_tile_size(tile_size),
         }
 
+    @staticmethod
+    def _run_diagnostic_command(command, timeout=4):
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+                encoding="utf-8",
+                errors="replace",
+            )
+            return {
+                "available": result.returncode == 0,
+                "returncode": result.returncode,
+                "stdout": (result.stdout or "").strip(),
+                "stderr": (result.stderr or "").strip(),
+            }
+        except FileNotFoundError:
+            return {
+                "available": False,
+                "returncode": None,
+                "stdout": "",
+                "stderr": "command not found",
+            }
+        except Exception as exc:
+            return {
+                "available": False,
+                "returncode": None,
+                "stdout": "",
+                "stderr": str(exc),
+            }
+
+    def _get_nvidia_driver_info(self):
+        result = self._run_diagnostic_command(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,driver_version",
+                "--format=csv,noheader",
+            ]
+        )
+        gpu_names = []
+        driver_version = ""
+        if result["available"]:
+            for line in result["stdout"].splitlines():
+                parts = [part.strip() for part in line.split(",")]
+                if parts and parts[0]:
+                    gpu_names.append(parts[0])
+                if len(parts) > 1 and parts[1] and not driver_version:
+                    driver_version = parts[1]
+        return {
+            "nvidia_smi_available": result["available"],
+            "nvidia_driver_available": result["available"] and bool(gpu_names),
+            "nvidia_driver_version": driver_version,
+            "nvidia_gpu_count": len(gpu_names),
+            "nvidia_gpu_names": gpu_names,
+            "nvidia_smi_error": "" if result["available"] else result["stderr"],
+        }
+
+    def _get_nvcc_info(self):
+        result = self._run_diagnostic_command(["nvcc", "--version"])
+        version_line = ""
+        if result["available"]:
+            version_line = next(
+                (
+                    line.strip()
+                    for line in result["stdout"].splitlines()
+                    if "release" in line.lower()
+                ),
+                result["stdout"].splitlines()[-1].strip() if result["stdout"].splitlines() else "",
+            )
+        return {
+            "nvcc_available": result["available"],
+            "nvcc_version": version_line,
+            "nvcc_error": "" if result["available"] else result["stderr"],
+        }
+
     def _get_cuda_info(self):
+        torch_cuda_version = getattr(getattr(torch, "version", None), "cuda", None)
+        torch_package = "cuda" if torch_cuda_version else "cpu"
+        driver_info = self._get_nvidia_driver_info()
+        nvcc_info = self._get_nvcc_info()
         cuda_info = {
             "cuda_available": torch.cuda.is_available(),
             "cuda_device_count": torch.cuda.device_count(),
@@ -629,6 +727,17 @@ class Api:
             "free_memory_mb": None,
             "used_memory_mb": None,
             "message": None,
+            "torch_package": torch_package,
+            "torch_cuda_version": torch_cuda_version,
+            "torch_cuda_available": torch.cuda.is_available(),
+            **driver_info,
+            **nvcc_info,
+            "diagnostic_code": None,
+            "diagnostic_status": "unknown",
+            "notification_level": None,
+            "notification_title": None,
+            "notification_message": None,
+            "notification_links": [],
         }
 
         if cuda_info["cuda_available"] and cuda_info["cuda_device_count"] > 0:
@@ -688,6 +797,51 @@ class Api:
         else:
             cuda_info["cuda_compatible"] = False
             cuda_info["message"] = "当前运行时未检测到可用 CUDA 设备。"
+
+        if torch_package == "cpu":
+            cuda_info["diagnostic_code"] = "torch_cpu_package"
+            cuda_info["diagnostic_status"] = "cpu-runtime"
+            cuda_info["message"] = "当前为 CPU 运行包，CUDA 推理不可用。"
+        elif cuda_info["cuda_available"] and cuda_info["cuda_compatible"] is not False:
+            cuda_info["diagnostic_code"] = "cuda_inference_available"
+            cuda_info["diagnostic_status"] = "ok"
+            if not cuda_info["nvcc_available"]:
+                cuda_info["toolkit_message"] = (
+                    "未检测到 nvcc/CUDA Toolkit；这不会影响当前 PyTorch CUDA 推理。"
+                )
+        elif not cuda_info["nvidia_driver_available"]:
+            cuda_info["diagnostic_code"] = "no_nvidia_gpu"
+            cuda_info["diagnostic_status"] = "warning"
+            cuda_info["notification_level"] = "warning"
+            cuda_info["notification_title"] = "未检测到可用 GPU"
+            cuda_info["notification_message"] = (
+                "未检测到 NVIDIA GPU 或驱动，SAM 高配能力将使用 CPU 或不可用。"
+            )
+            cuda_info["notification_links"] = [
+                {
+                    "label": "NVIDIA 驱动",
+                    "url": "https://www.nvidia.com/en-us/drivers/",
+                }
+            ]
+        else:
+            cuda_info["diagnostic_code"] = "torch_cuda_unavailable"
+            cuda_info["diagnostic_status"] = "warning"
+            cuda_info["notification_level"] = "warning"
+            cuda_info["notification_title"] = "CUDA 推理不可用"
+            cuda_info["notification_message"] = (
+                "已检测到 NVIDIA GPU，但当前 PyTorch CUDA 不可用。请检查 CUDA 版 PyTorch "
+                "与 NVIDIA 驱动是否匹配。"
+            )
+            cuda_info["notification_links"] = [
+                {
+                    "label": "PyTorch 安装说明",
+                    "url": "https://pytorch.org/get-started/locally/",
+                },
+                {
+                    "label": "NVIDIA 驱动",
+                    "url": "https://www.nvidia.com/en-us/drivers/",
+                },
+            ]
 
         cuda_info["recommended"] = {
             "slbr": recommend_slbr_params(cuda_info),
@@ -800,6 +954,9 @@ class Api:
 
     def launch(self):
         self.app.include_router(self.router)
+        access_logger = logging.getLogger("uvicorn.access")
+        if not any(isinstance(item, SamVideoPollingAccessLogFilter) for item in access_logger.filters):
+            access_logger.addFilter(SamVideoPollingAccessLogFilter())
         uvicorn.run(
             self.combined_asgi_app,
             host=self.config.host,

@@ -3019,6 +3019,9 @@ const restorePageState = async () => {
 onMounted(async () => {
   // 1. 首先加载配置
   await configStore.loadConfig();
+  if (configStore.config.fileManagement) {
+    syncManagedImageOutputPath(configStore.config.fileManagement);
+  }
   runtimeUiStore.ensureImageMaskToolState(configStore.config.advanced?.imageBrushDefault);
 
   // 2. 然后初始化fileManager配置（使用正确的配置）
@@ -3028,10 +3031,7 @@ onMounted(async () => {
   await restorePageState();
   await loadImageModelOptions();
 
-  // 4. 应用配置到UI状态
-  if (configStore.config.fileManagement) {
-    syncManagedImageOutputPath(configStore.config.fileManagement);
-  }
+  // 4. 应用配置到UI状态已在挂载早期完成，避免右侧栏先渲染空保存路径。
 
   // 5. 设置配置更新监听器
   if (window.electron) {

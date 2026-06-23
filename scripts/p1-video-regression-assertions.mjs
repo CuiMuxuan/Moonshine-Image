@@ -306,6 +306,11 @@ function runAssertions() {
     pattern: /(?=[\s\S]*add_api_route\("\/api\/v1\/moonshine\/sam\/video\/propagate", self\.api_moonshine_sam_video_propagate)(?=[\s\S]*add_api_route\("\/api\/v1\/moonshine\/sam\/video\/propagate\/jobs", self\.api_moonshine_sam_video_propagate_job_create)(?=[\s\S]*add_api_route\("\/api\/v1\/moonshine\/sam\/video\/propagate\/jobs\/\{task_id\}", self\.api_moonshine_sam_video_propagate_job)(?=[\s\S]*add_api_route\("\/api\/v1\/moonshine\/sam\/video\/propagate\/jobs\/\{task_id\}\/result", self\.api_moonshine_sam_video_propagate_job_result)(?=[\s\S]*add_api_route\("\/api\/v1\/moonshine\/sam\/video\/propagate\/jobs\/\{task_id\}\/cancel", self\.api_moonshine_sam_video_propagate_job_cancel)(?=[\s\S]*def api_moonshine_sam_video_propagate[\s\S]*video_path=req\.video_path[\s\S]*input_type=req\.input_type[\s\S]*objects=req\.objects)(?=[\s\S]*def _run_sam_video_propagate_task[\s\S]*progress_callback=sam_video_task_manager\.make_progress_callback\(task_id\))[\s\S]*/,
   });
   assertPattern({
+    file: "server/moonshine_server/api.py",
+    description: "SAM2 video status polling access logs are filtered without silencing result or cancel requests",
+    pattern: /(?=[\s\S]*class SamVideoPollingAccessLogFilter\(logging\.Filter\))(?=[\s\S]*SAM_VIDEO_POLLING_PATH_PREFIX = "\/api\/v1\/moonshine\/sam\/video\/propagate\/jobs\/")(?=[\s\S]*record\.name != "uvicorn\.access")(?=[\s\S]*"GET " not in message)(?=[\s\S]*return "\/result" in message or "\/cancel" in message)(?=[\s\S]*access_logger = logging\.getLogger\("uvicorn\.access"\))(?=[\s\S]*access_logger\.addFilter\(SamVideoPollingAccessLogFilter\(\)\))[\s\S]*/,
+  });
+  assertPattern({
     file: "server/moonshine_server/moonshine/sam_video_tasks.py",
     description: "SAM2 video task manager stores in-memory job status, result, error, and best-effort cancellation state",
     pattern: /(?=[\s\S]*SAM_VIDEO_TASK_STATUSES[\s\S]*"queued"[\s\S]*"frame_loading"[\s\S]*"prompt_encoding"[\s\S]*"propagating"[\s\S]*"writing_masks"[\s\S]*"completed"[\s\S]*"failed"[\s\S]*"canceled")(?=[\s\S]*class SamVideoTask)(?=[\s\S]*def to_dict)(?=[\s\S]*class SamVideoTaskManager)(?=[\s\S]*def create_task)(?=[\s\S]*def cancel_task)(?=[\s\S]*def finish_task)(?=[\s\S]*def fail_task)(?=[\s\S]*def make_progress_callback)[\s\S]*/,
@@ -378,7 +383,7 @@ function runAssertions() {
   assertPattern({
     file: "src/components/video/ResourceManage.vue",
     description: "Video resource manager places SAM smart selection at the same level as creating a manual mask",
-    pattern: /(?=[\s\S]*isSlbrModel \? '增加范围' : '新建蒙版')(?=[\s\S]*label="智能选区")(?=[\s\S]*samVideoActionDisabled)(?=[\s\S]*samVideoActionTooltip)(?=[\s\S]*run-sam-video-selection)(?=[\s\S]*mask\.type === ['"]samVideo['"])(?=[\s\S]*setSamVideoObjectEnabled)(?=[\s\S]*remove-sam-video-object)[\s\S]*/,
+    pattern: /(?=[\s\S]*isSlbrModel \? '增加范围' : '新建蒙版')(?=[\s\S]*label="智能选区")(?=[\s\S]*samVideoActionDisabled)(?=[\s\S]*samVideoActionTooltip)(?=[\s\S]*run-sam-video-selection)(?=[\s\S]*mask\.type === ['"]samVideo['"])(?=[\s\S]*emit\('remove-mask', mask\.id\))(?![\s\S]*setSamVideoObjectEnabled)(?![\s\S]*remove-sam-video-object)[\s\S]*/,
   });
   assertPattern({
     file: "src/stores/videoManager.js",
@@ -388,7 +393,7 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "SAM video propagation keeps only backend path-backed mask assets before writing track state",
-    pattern: /(?=[\s\S]*SAM_VIDEO_MASK_ASSET_DIRECTORY = "moonshine-sam-video-masks")(?=[\s\S]*buildSamVideoMaskAssetRoot)(?=[\s\S]*persistSamVideoMaskAssets)(?=[\s\S]*const maskPath = String\(item\.maskPath \|\| ""\)\.trim\(\))(?=[\s\S]*persistedMasks\.push\(\{[\s\S]*objectId,[\s\S]*maskPath,[\s\S]*maskAssetId:[\s\S]*maskSize:[\s\S]*maskSignature:)(?=[\s\S]*skippedCount)(?=[\s\S]*const result = await persistSamVideoMaskAssets)(?=[\s\S]*videoStore\.updateSamVideoMaskTrackResult\(targetMaskId, result\))(?=[\s\S]*collectSamVideoMaskAssetPaths)(?=[\s\S]*cleanupSamVideoMaskAssetPaths)(?=[\s\S]*removeVideoMaskTrack)(?=[\s\S]*cleanup-temp-file)[\s\S]*/,
+    pattern: /(?=[\s\S]*SAM_VIDEO_MASK_ASSET_DIRECTORY = "moonshine-sam-video-masks")(?=[\s\S]*buildSamVideoMaskAssetRoot)(?=[\s\S]*persistSamVideoMaskAssets)(?=[\s\S]*const maskPath = String\(item\.maskPath \|\| ""\)\.trim\(\))(?=[\s\S]*persistedMasks\.push\(\{[\s\S]*objectId,[\s\S]*maskPath,[\s\S]*maskAssetId:[\s\S]*maskSize:[\s\S]*maskSignature:)(?=[\s\S]*skippedCount)(?=[\s\S]*let result = await persistSamVideoMaskAssets)(?=[\s\S]*result = await hydrateSamVideoObjectExpandDefaults\(result\))(?=[\s\S]*videoStore\.updateSamVideoMaskTrackResult\(targetMaskId, result\))(?=[\s\S]*collectSamVideoMaskAssetPaths)(?=[\s\S]*cleanupSamVideoMaskAssetPaths)(?=[\s\S]*removeVideoMaskTrack)(?=[\s\S]*cleanup-temp-file)[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -404,6 +409,11 @@ function runAssertions() {
     file: "src/components/video/VideoMaskEditor.vue",
     description: "SAM video selected-track editor lists prompt objects before running and supports delete plus source-frame seeking",
     pattern: /(?=[\s\S]*data-testid="video-sam-prompt-list")(?=[\s\S]*v-for="prompt in samPromptObjects")(?=[\s\S]*帧 \{\{ prompt\.frameIndex \}\} ·)(?=[\s\S]*@click="seekToSamPromptFrame\(prompt\)")(?=[\s\S]*@click\.stop="videoStore\.removeSamVideoPromptObject\(videoStore\.selectedMaskId, prompt\.objectId\)")(?=[\s\S]*const getSamPromptForObject)(?=[\s\S]*const seekToSamPromptFrame)(?=[\s\S]*videoStore\.setCurrentTime\(clamp\(frameIndex \/ fps, 0, duration\)\))[\s\S]*/,
+  });
+  assertAbsentPattern({
+    file: "src/components/video/VideoMaskEditor.vue",
+    description: "SAM video candidate objects stay operable after their prompt object is deleted",
+    pattern: /:disable="disabled \|\| samVideoRunning \|\| !getSamPromptForObject\(objectItem\.objectId\)"/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -478,7 +488,27 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "Final SAM video mask renderer auto-expands LaMa masks with the shared utility before processing",
-    pattern: /(?=[\s\S]*import \{ expandSamMaskImageDataForLama \} from "src\/utils\/samMaskAutoExpand")(?=[\s\S]*createBinaryAlphaMaskBitmap[\s\S]*expandForLama = false)(?=[\s\S]*if \(expandForLama\)[\s\S]*expandSamMaskImageDataForLama\(imageData)(?=[\s\S]*createCombinedMaskRenderer = async \(\{ masks, width, height, modelId = currentModel\.value \}\))(?=[\s\S]*shouldAutoExpandSamVideoMasks[\s\S]*toLowerCase\(\) === "lama")(?=[\s\S]*"lama-expanded"[\s\S]*"original")(?=[\s\S]*createBinaryAlphaMaskBitmap\(image, width, height, \{[\s\S]*expandForLama: shouldAutoExpandSamVideoMasks)[\s\S]*/,
+    pattern: /(?=[\s\S]*expandSamMaskImageDataForLama,[\s\S]*from "src\/utils\/samMaskAutoExpand")(?=[\s\S]*createBinaryAlphaMaskBitmap[\s\S]*expandForLama = false)(?=[\s\S]*if \(expandForLama\)[\s\S]*expandSamMaskImageDataForLama\(imageData)(?=[\s\S]*createCombinedMaskRenderer = async \(\{ masks, width, height, modelId = currentModel\.value \}\))(?=[\s\S]*shouldAutoExpandSamVideoMasks[\s\S]*toLowerCase\(\) === "lama")(?=[\s\S]*"lama-expanded"[\s\S]*"original")(?=[\s\S]*createBinaryAlphaMaskBitmap\(image, width, height, \{[\s\S]*expandForLama: shouldAutoExpandSamVideoMasks)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/stores/videoManager.js",
+    description: "SAM video objects keep manual LaMa expansion values by objectId",
+    pattern: /(?=[\s\S]*const normalizeSamVideoObject = \(object = \{\}\) =>)(?=[\s\S]*autoExpandPx)(?=[\s\S]*expandPx)(?=[\s\S]*const setSamVideoObjectExpandPx = \(maskId, objectId, expandPx\) =>)(?=[\s\S]*samObjects: \(mask\.samObjects \|\| \[\]\)\.map\(\(item\) =>[\s\S]*expandPx: normalizedExpandPx)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/components/video/VideoMaskEditor.vue",
+    description: "SAM video sidebar exposes per-object LaMa expansion controls",
+    pattern: /(?=[\s\S]*sam-object-expand-input)(?=[\s\S]*:model-value="objectItem\.expandPx \?\? objectItem\.autoExpandPx \?\? 0")(?=[\s\S]*type="number")(?=[\s\S]*icon="remove")(?=[\s\S]*icon="add")(?=[\s\S]*setSamVideoObjectExpandPx)(?=[\s\S]*stepSamVideoObjectExpandPx)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Fullscreen SAM video candidate popup and final renderer share object expansion values",
+    pattern: /(?=[\s\S]*video-sam-object-expand-input)(?=[\s\S]*setSelectedSamVideoObjectExpandPx)(?=[\s\S]*stepSelectedSamVideoObjectExpandPx)(?=[\s\S]*hydrateSamVideoObjectExpandDefaults)(?=[\s\S]*resolveSamVideoMaskAutoExpandPxFromPath)(?=[\s\S]*radiusOverride: expandPx)(?=[\s\S]*samObjectMap\.get\(Number\(item\.objectId\)\) \?\? 0)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/components/video/VideoPreviewOverlay.vue",
+    description: "SAM video preview cache and preload use per-object expansion values",
+    pattern: /(?=[\s\S]*expandPx = null)(?=[\s\S]*normalizeSamObjectExpandPx\(expandPx\))(?=[\s\S]*radiusOverride: expandPx)(?=[\s\S]*samObjectMap)(?=[\s\S]*preloadKey[\s\S]*`\$\{objectId\}:\$\{samObjectMap\.get\(objectId\) \?\? 0\}`)(?=[\s\S]*expandPx: samObjectMap\.get\(Number\(item\.objectId\)\) \?\? 0)[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -492,8 +522,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/components/video/ResourceManage.vue",
-    description: "Video resource manager delegates SAM object and track deletion so local mask assets can be cleaned",
-    pattern: /(?=[\s\S]*emit\('remove-sam-video-object', \{ maskId: mask\.id, objectId: objectItem\.objectId \}\))(?=[\s\S]*emit\('remove-mask', mask\.id\))(?=[\s\S]*"remove-sam-video-object")(?=[\s\S]*"remove-mask")[\s\S]*/,
+    description: "Video resource manager delegates SAM track deletion only; per-object deletion stays in the right editor",
+    pattern: /(?=[\s\S]*emit\('remove-mask', mask\.id\))(?=[\s\S]*"remove-mask")(?![\s\S]*emit\('remove-sam-video-object')(?![\s\S]*"remove-sam-video-object")[\s\S]*/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",

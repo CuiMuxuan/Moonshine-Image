@@ -1,31 +1,18 @@
-const clampNumber = (value, min, max) => Math.min(max, Math.max(min, value));
-
 const resolveSamAutoExpandRadius = ({ bboxWidth, bboxHeight, imageWidth, imageHeight } = {}) => {
   if (!bboxWidth || !bboxHeight || !imageWidth || !imageHeight) return 0;
-  const maskShortSide = Math.max(1, Math.min(bboxWidth, bboxHeight));
   const maskLongSide = Math.max(1, Math.max(bboxWidth, bboxHeight));
-  const imageLongSide = Math.max(1, Math.max(imageWidth, imageHeight));
-  const scaleFactor = clampNumber(imageLongSide / 1080, 0.75, 2);
-  const normalizedLongSide = maskLongSide / scaleFactor;
-  let baseRadius = 16;
 
-  if (normalizedLongSide <= 32) {
-    baseRadius = 4;
-  } else if (normalizedLongSide <= 96) {
-    baseRadius = 6;
-  } else if (normalizedLongSide <= 240) {
-    baseRadius = 8;
-  } else if (normalizedLongSide <= 480) {
-    baseRadius = 12;
-  }
+  if (maskLongSide <= 64) return 4;
+  if (maskLongSide <= 160) return 5;
+  if (maskLongSide <= 360) return 6;
+  if (maskLongSide <= 720) return 8;
+  return 10;
+};
 
-  const aspectRatio = Math.max(bboxWidth, bboxHeight) / maskShortSide;
-  let radius = Math.round((baseRadius * scaleFactor) / 4);
-  if (aspectRatio >= 4 && normalizedLongSide <= 120) {
-    radius += Math.round((2 * scaleFactor) / 4);
-  }
-
-  return clampNumber(radius, 4, 6);
+const normalizeSamExpandRadius = (value, fallback = 0) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return Math.max(0, Math.min(99, Math.round(Number(fallback) || 0)));
+  return Math.max(0, Math.min(99, Math.round(numeric)));
 };
 
 const inspectSamMaskPixels = (imageData) => {
@@ -113,7 +100,7 @@ const dilateBinaryAlphaMask = ({ data, width, height, radius } = {}) => {
   return expanded;
 };
 
-const expandSamMaskImageDataForLama = (imageData, { imageWidth, imageHeight } = {}) => {
+const expandSamMaskImageDataForLama = (imageData, { imageWidth, imageHeight, radiusOverride = null } = {}) => {
   if (!imageData?.data || !imageData.width || !imageData.height) {
     return { imageData, expanded: false, radius: 0 };
   }
@@ -123,12 +110,14 @@ const expandSamMaskImageDataForLama = (imageData, { imageWidth, imageHeight } = 
   const maskInfo = inspectSamMaskPixels(imageData);
   if (!maskInfo) return { imageData, expanded: false, radius: 0 };
 
-  const radius = resolveSamAutoExpandRadius({
+  const autoRadius = resolveSamAutoExpandRadius({
     bboxWidth: maskInfo.bboxWidth,
     bboxHeight: maskInfo.bboxHeight,
     imageWidth: imageWidth || width,
     imageHeight: imageHeight || height,
   });
+  const radius =
+    radiusOverride == null ? autoRadius : normalizeSamExpandRadius(radiusOverride, autoRadius);
   if (!radius) return { imageData, expanded: false, radius: 0 };
 
   const expandedMask = dilateBinaryAlphaMask({
@@ -161,5 +150,6 @@ export {
   dilateBinaryAlphaMask,
   expandSamMaskImageDataForLama,
   inspectSamMaskPixels,
+  normalizeSamExpandRadius,
   resolveSamAutoExpandRadius,
 };

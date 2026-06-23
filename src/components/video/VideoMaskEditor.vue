@@ -265,7 +265,7 @@
             v-for="objectItem in samObjects"
             :key="objectItem.objectId"
             clickable
-            :disable="disabled || samVideoRunning || !getSamPromptForObject(objectItem.objectId)"
+            :disable="disabled || samVideoRunning"
             @click="seekToSamPromptFrame(objectItem.objectId)"
           >
             <q-item-section>
@@ -291,6 +291,45 @@
                   "
                   @click.stop
                 />
+                <q-input
+                  v-if="isLamaModel"
+                  :model-value="objectItem.expandPx ?? objectItem.autoExpandPx ?? 0"
+                  type="number"
+                  dense
+                  outlined
+                  min="0"
+                  max="99"
+                  suffix="px"
+                  class="sam-object-expand-input"
+                  input-class="text-center"
+                  :disable="disabled || samVideoRunning"
+                  @update:model-value="setSamVideoObjectExpandPx(objectItem.objectId, $event)"
+                  @click.stop
+                >
+                  <template #prepend>
+                    <q-btn
+                      flat
+                      dense
+                      round
+                      size="sm"
+                      icon="remove"
+                      :disable="disabled || samVideoRunning || Number(objectItem.expandPx ?? objectItem.autoExpandPx ?? 0) <= 0"
+                      @click.stop="stepSamVideoObjectExpandPx(objectItem.objectId, -1)"
+                    />
+                  </template>
+                  <template #append>
+                    <q-btn
+                      flat
+                      dense
+                      round
+                      size="sm"
+                      icon="add"
+                      :disable="disabled || samVideoRunning || Number(objectItem.expandPx ?? objectItem.autoExpandPx ?? 0) >= 99"
+                      @click.stop="stepSamVideoObjectExpandPx(objectItem.objectId, 1)"
+                    />
+                  </template>
+                  <q-tooltip>LaMa 扩边大小</q-tooltip>
+                </q-input>
                 <q-btn
                   flat
                   round
@@ -631,6 +670,7 @@ const controlButtonSize = computed(() =>
   normalizeButtonSize(configStore.config.ui?.buttonSize)
 );
 const isSlbrModel = computed(() => props.currentModel === "slbr");
+const isLamaModel = computed(() => String(props.currentModel || "").toLowerCase() === "lama");
 const DEFAULT_SECTION_STATE = Object.freeze({
   brush: true,
   range: false,
@@ -685,6 +725,24 @@ const samSmartToolHint = computed(() => {
 });
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+const normalizeExpandPx = (value, fallback = 0) =>
+  Math.max(0, Math.min(99, Math.round(Number.isFinite(Number(value)) ? Number(value) : Number(fallback) || 0)));
+
+const setSamVideoObjectExpandPx = (objectId, value) => {
+  videoStore.setSamVideoObjectExpandPx(
+    videoStore.selectedMaskId,
+    objectId,
+    normalizeExpandPx(value)
+  );
+};
+
+const stepSamVideoObjectExpandPx = (objectId, delta) => {
+  const objectItem = samObjects.value.find((item) => Number(item.objectId) === Number(objectId));
+  if (!objectItem) return;
+  const current = normalizeExpandPx(objectItem.expandPx, objectItem.autoExpandPx);
+  setSamVideoObjectExpandPx(objectId, current + Number(delta || 0));
+};
 
 const getSamPromptForObject = (promptOrObjectId) => {
   if (typeof promptOrObjectId === "object" && promptOrObjectId !== null) {
@@ -1093,6 +1151,24 @@ const setProcessingRangeEndFromCurrentTime = () => {
 
 .sam-track-object-list {
   background: rgba(245, 158, 11, 0.05);
+}
+
+.sam-object-expand-input {
+  width: 112px;
+}
+
+.sam-object-expand-input :deep(.q-field__control) {
+  min-height: 32px;
+  padding: 0 4px;
+}
+
+.sam-object-expand-input :deep(.q-field__prepend),
+.sam-object-expand-input :deep(.q-field__append) {
+  padding: 0;
+}
+
+.sam-object-expand-input :deep(input) {
+  padding: 0;
 }
 
 .sam-smart-tool-body {
