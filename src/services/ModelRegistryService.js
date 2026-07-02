@@ -70,6 +70,11 @@ const normalizeModel = (model = {}) => ({
   deviceCompatible: model.deviceCompatible !== false,
   recommendedDevice: model.recommendedDevice || "",
   minimumVram: model.minimumVram || null,
+  recommendedVram: model.recommendedVram || model.minimumVram || null,
+  recommendedVramWarning:
+    model.recommendedVramWarning && typeof model.recommendedVramWarning === "object"
+      ? model.recommendedVramWarning
+      : null,
   size: model.size || null,
   sha256: model.sha256 || "",
   runCapabilities:

@@ -221,6 +221,8 @@ function createMockConfig() {
       defaultSam1Model: "sam_vit_b",
       defaultSam2Model: "sam2_1_hiera_large",
       defaultSam3Model: "sam3_1_multiplex",
+      imageSmartSelectionDefaultModel: "sam_vit_b",
+      videoSmartSelectionDefaultModel: "sam2_1_hiera_large",
     },
     fileManagement: {
       downloadPath: "",
@@ -567,15 +569,15 @@ async function runSamSmartSelectionUiTest(page) {
   assert(
     smartSnapshot.smart.samModelOptions.includes("sam_vit_b") &&
       smartSnapshot.smart.samModelOptions.includes("sam2_1_hiera_large"),
-    "Smart selection should offer installed SAM1/SAM2 point and box models."
+    "Smart selection should offer installed SAM1/SAM2.1 point and box models."
   );
   assert(
-    !smartSnapshot.smart.samModelOptions.includes("sam3_1_multiplex"),
-    "Smart selection point/box model selector must exclude SAM3 text models."
+    smartSnapshot.smart.samModelOptions.includes("sam3_1_multiplex"),
+    "Smart selection model selector should include the configured SAM3.1 text model."
   );
   assert(
     !smartSnapshot.smart.samModelOptions.includes("sam3"),
-    "Smart selection point/box model selector must exclude SAM3 base text models."
+    "Smart selection model selector should not add unused SAM3 base when SAM3.1 is configured."
   );
   assert(
     smartSnapshot.smart.maskMode === "smart" && smartSnapshot.smart.smartSelectionMode === true,

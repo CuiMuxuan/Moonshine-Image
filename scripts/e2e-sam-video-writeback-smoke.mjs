@@ -236,7 +236,11 @@ function createMockConfig() {
     },
     masking: {
       defaultSamModel: "sam_vit_b",
-      defaultSamVideoModel: "sam2_1_hiera_large",
+      defaultSam1Model: "sam_vit_b",
+      defaultSam2Model: "sam2_1_hiera_large",
+      defaultSam3Model: "sam3_1_multiplex",
+      imageSmartSelectionDefaultModel: "sam_vit_b",
+      videoSmartSelectionDefaultModel: "sam2_1_hiera_large",
     },
     ui: {
       theme: "light",

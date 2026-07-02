@@ -388,7 +388,7 @@ function runAssertions() {
   assertPattern({
     file: "src/stores/videoManager.js",
     description: "Video store supports empty full-duration SAM smart-selection tracks, prompt objects, result writeback, object visibility, and full clear",
-    pattern: /(?=[\s\S]*createEmptySamVideoMaskTrack[\s\S]*type:\s*MASK_TRACK_TYPES\.SAM_VIDEO[\s\S]*startTime,[\s\S]*endTime,[\s\S]*samFrames: \[\][\s\S]*samPromptObjects: \[\])(?=[\s\S]*maskPath)(?=[\s\S]*maskAssetId)(?=[\s\S]*maskSignature)(?=[\s\S]*updateSamVideoMaskTrackResult)(?=[\s\S]*addSamVideoPromptObject)(?=[\s\S]*removeSamVideoPromptObject)(?=[\s\S]*setSamVideoObjectEnabled)(?=[\s\S]*removeSamVideoObject)(?=[\s\S]*clearSamVideoResult[\s\S]*samObjects: \[\][\s\S]*samFrames: \[\][\s\S]*samPromptObjects: \[\][\s\S]*samPromptFrameIndex: null)(?=[\s\S]*时间范围由 SAM2 传播结果决定)[\s\S]*/,
+    pattern: /(?=[\s\S]*createEmptySamVideoMaskTrack[\s\S]*type:\s*MASK_TRACK_TYPES\.SAM_VIDEO[\s\S]*startTime,[\s\S]*endTime,[\s\S]*samFrames: \[\][\s\S]*samPromptObjects: \[\])(?=[\s\S]*maskPath)(?=[\s\S]*maskAssetId)(?=[\s\S]*maskSignature)(?=[\s\S]*updateSamVideoMaskTrackResult)(?=[\s\S]*addSamVideoPromptObject)(?=[\s\S]*removeSamVideoPromptObject)(?=[\s\S]*setSamVideoObjectEnabled)(?=[\s\S]*removeSamVideoObject)(?=[\s\S]*clearSamVideoResult[\s\S]*samObjects: \[\][\s\S]*samFrames: \[\][\s\S]*samPromptObjects: \[\][\s\S]*samPromptFrameIndex: null)(?=[\s\S]*时间范围由 SAM2\.1 传播结果决定)[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -433,7 +433,7 @@ function runAssertions() {
   assertPattern({
     file: "server/moonshine_server/moonshine/sam_service.py",
     description: "SAM2 video service uses the shared disk-space guard before writing path-backed mask frames",
-    pattern: /(?=[\s\S]*from moonshine_server\.disk_space import DEFAULT_DISK_SPACE_SAFETY_BYTES, ensure_disk_space)(?=[\s\S]*def _estimate_video_mask_disk_bytes)(?=[\s\S]*def _ensure_video_mask_disk_space)(?=[\s\S]*ensure_disk_space\([\s\S]*operation="SAM2 视频蒙版临时文件写入")(?=[\s\S]*operation="SAM2 视频蒙版写入")(?=[\s\S]*remaining_frames=estimated_output_frame_count)(?=[\s\S]*remaining_frames=max\(1, estimated_output_frame_count - len\(frames\)\))[\s\S]*/,
+    pattern: /(?=[\s\S]*from moonshine_server\.disk_space import DEFAULT_DISK_SPACE_SAFETY_BYTES, ensure_disk_space)(?=[\s\S]*def _estimate_video_mask_disk_bytes)(?=[\s\S]*def _ensure_video_mask_disk_space)(?=[\s\S]*ensure_disk_space\([\s\S]*operation="SAM2\.1 视频蒙版临时文件写入")(?=[\s\S]*operation="SAM2\.1 视频蒙版写入")(?=[\s\S]*remaining_frames=estimated_output_frame_count)(?=[\s\S]*remaining_frames=max\(1, estimated_output_frame_count - len\(frames\)\))[\s\S]*/,
   });
   assertPattern({
     file: "src/services/SamPredictionService.js",
@@ -453,7 +453,7 @@ function runAssertions() {
   assertPattern({
     file: "server/moonshine_server/moonshine/sam_service.py",
     description: "SAM video mask asset writes happen in the backend with disk-space preflight",
-    pattern: /(?=[\s\S]*def _ensure_video_mask_disk_space)(?=[\s\S]*operation="SAM2 视频蒙版临时文件写入")(?=[\s\S]*operation="SAM2 视频蒙版写入")(?=[\s\S]*def _save_video_mask)(?=[\s\S]*mask_path\.write_bytes\(mask_bytes\))(?=[\s\S]*"maskPath": str\(mask_path\))[\s\S]*/,
+    pattern: /(?=[\s\S]*def _ensure_video_mask_disk_space)(?=[\s\S]*operation="SAM2\.1 视频蒙版临时文件写入")(?=[\s\S]*operation="SAM2\.1 视频蒙版写入")(?=[\s\S]*def _save_video_mask)(?=[\s\S]*mask_path\.write_bytes\(mask_bytes\))(?=[\s\S]*"maskPath": str\(mask_path\))[\s\S]*/,
   });
   assertAbsentPattern({
     file: "src/pages/VideoPage.vue",
@@ -497,13 +497,13 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/components/video/VideoMaskEditor.vue",
-    description: "SAM video sidebar exposes per-object LaMa expansion controls",
-    pattern: /(?=[\s\S]*sam-object-expand-input)(?=[\s\S]*:model-value="objectItem\.expandPx \?\? objectItem\.autoExpandPx \?\? 0")(?=[\s\S]*type="number")(?=[\s\S]*icon="remove")(?=[\s\S]*icon="add")(?=[\s\S]*setSamVideoObjectExpandPx)(?=[\s\S]*stepSamVideoObjectExpandPx)[\s\S]*/,
+    description: "SAM video sidebar exposes per-object LaMa expansion controls with a native 0-99px number input",
+    pattern: /(?=[\s\S]*sam-object-expand-input)(?=[\s\S]*:model-value="objectItem\.expandPx \?\? objectItem\.autoExpandPx \?\? 0")(?=[\s\S]*type="number")(?=[\s\S]*min="0")(?=[\s\S]*max="99")(?=[\s\S]*step="1")(?=[\s\S]*suffix="px")(?=[\s\S]*setSamVideoObjectExpandPx)(?![\s\S]*stepSamVideoObjectExpandPx)[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "Fullscreen SAM video candidate popup and final renderer share object expansion values",
-    pattern: /(?=[\s\S]*video-sam-object-expand-input)(?=[\s\S]*setSelectedSamVideoObjectExpandPx)(?=[\s\S]*stepSelectedSamVideoObjectExpandPx)(?=[\s\S]*hydrateSamVideoObjectExpandDefaults)(?=[\s\S]*resolveSamVideoMaskAutoExpandPxFromPath)(?=[\s\S]*radiusOverride: expandPx)(?=[\s\S]*samObjectMap\.get\(Number\(item\.objectId\)\) \?\? 0)[\s\S]*/,
+    pattern: /(?=[\s\S]*video-sam-object-expand-input)(?=[\s\S]*type="number")(?=[\s\S]*min="0")(?=[\s\S]*max="99")(?=[\s\S]*step="1")(?=[\s\S]*suffix="px")(?=[\s\S]*setSelectedSamVideoObjectExpandPx)(?![\s\S]*stepSelectedSamVideoObjectExpandPx)(?=[\s\S]*hydrateSamVideoObjectExpandDefaults)(?=[\s\S]*resolveSamVideoMaskAutoExpandPxFromPath)(?=[\s\S]*radiusOverride: expandPx)(?=[\s\S]*samObjectMap\.get\(Number\(item\.objectId\)\) \?\? 0)[\s\S]*/,
   });
   assertPattern({
     file: "src/components/video/VideoPreviewOverlay.vue",
@@ -560,6 +560,11 @@ function runAssertions() {
     description: "Final video mask renderer lazily loads only path-backed nearest SAM video frame masks",
     pattern: /(?=[\s\S]*const createCombinedMaskRenderer)(?=[\s\S]*const samFrameImageCache = new Map\(\))(?=[\s\S]*loadSamFrameMaskImage)(?=[\s\S]*getSamFrameEntries)(?=[\s\S]*buildSamFrameIndex)(?=[\s\S]*findNearestSamFrame)(?=[\s\S]*maskPath: item\.maskPath \|\| "")(?=[\s\S]*\.filter\(\(item\) => item\.objectId > 0 && item\.maskPath\))(?=[\s\S]*samFrameIndex: buildSamFrameIndex\(samFrames\))(?=[\s\S]*const nearestFrame = findNearestSamFrame\(asset, time\))(?=[\s\S]*await loadSamFrameMaskImage)(?=[\s\S]*maskPath: item\.maskPath)(?=[\s\S]*ctx\.drawImage\(image, 0, 0, width, height\))[\s\S]*/,
   });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Fullscreen SAM smart-selection toolbar provides native tooltips for fullscreen mode",
+    pattern: /(?=[\s\S]*data-testid="video-sam-fullscreen-settings-button")(?=[\s\S]*aria-label="智能选区设置")(?=[\s\S]*title="智能选区设置")(?=[\s\S]*data-testid="video-sam-fullscreen-select-tool-button")(?=[\s\S]*aria-label="点选\/框选对象：单击点选，拖拽框选")(?=[\s\S]*title="点选\/框选对象：单击点选，拖拽框选")(?=[\s\S]*data-testid="video-sam-fullscreen-candidate-button")(?=[\s\S]*aria-label="候选蒙版列表")(?=[\s\S]*title="候选蒙版列表")(?=[\s\S]*aria-label="清空提示、候选对象和传播结果")(?=[\s\S]*title="清空提示、候选对象和传播结果")(?=[\s\S]*aria-label="运行智能选区")(?=[\s\S]*title="运行智能选区")(?=[\s\S]*aria-label="重置视图")(?=[\s\S]*title="重置视图")(?=[\s\S]*data-testid="video-sam-fullscreen-hold-hide-button")(?=[\s\S]*aria-label="按住隐藏全部蒙版")(?=[\s\S]*title="按住隐藏全部蒙版")[\s\S]*/,
+  });
   assertAbsentPattern({
     file: "src/pages/VideoPage.vue",
     description: "Final video mask renderer must not read inline SAM frame masks",
@@ -568,7 +573,7 @@ function runAssertions() {
   assertPattern({
     file: "src/components/video/VideoMaskEditor.vue",
     description: "Video mask editor treats SAM smart-selection as a special mask track with smart tools and candidate object list",
-    pattern: /(?=[\s\S]*videoStore\.selectedMask\?\.type === 'samVideo')(?=[\s\S]*label="轨道名称")(?=[\s\S]*智能选区轨道使用 SAM2 点选\/框选传播生成)(?=[\s\S]*data-testid="video-sam-smart-tool-section")(?=[\s\S]*sam-video-tool-group)(?=[\s\S]*data-testid="video-sam-settings-button")(?=[\s\S]*data-testid="video-sam-select-tool-button")(?=[\s\S]*data-testid="video-sam-clear-result-button")(?=[\s\S]*清空提示、候选对象和传播结果)(?=[\s\S]*运行智能选区)(?=[\s\S]*data-testid="video-sam-prompt-list")(?=[\s\S]*data-testid="video-sam-candidate-list-section")(?=[\s\S]*候选蒙版列表)(?=[\s\S]*setSamVideoObjectEnabled)(?=[\s\S]*@click\.stop)(?=[\s\S]*remove-sam-video-object)[\s\S]*/,
+    pattern: /(?=[\s\S]*videoStore\.selectedMask\?\.type === 'samVideo')(?=[\s\S]*label="轨道名称")(?=[\s\S]*智能选区轨道使用 SAM2\.1 点选\/框选传播生成)(?=[\s\S]*data-testid="video-sam-smart-tool-section")(?=[\s\S]*sam-video-tool-group)(?=[\s\S]*data-testid="video-sam-settings-button")(?=[\s\S]*data-testid="video-sam-select-tool-button")(?=[\s\S]*data-testid="video-sam-clear-result-button")(?=[\s\S]*清空提示、候选对象和传播结果)(?=[\s\S]*运行智能选区)(?=[\s\S]*data-testid="video-sam-prompt-list")(?=[\s\S]*data-testid="video-sam-candidate-list-section")(?=[\s\S]*候选蒙版列表)(?=[\s\S]*setSamVideoObjectEnabled)(?=[\s\S]*@click\.stop)(?=[\s\S]*remove-sam-video-object)[\s\S]*/,
   });
   assertPattern({
     file: "src/components/video/VideoPreviewOverlay.vue",

@@ -273,10 +273,10 @@
                       <strong>{{ getSamVersionVariantLabel(model) }}</strong>
                     </div>
                     <div class="model-info-line">
-                      <span>最低显存</span>
-                      <strong>{{ formatVram(model.minimumVram) }}</strong>
+                      <span>{{ model.recommendedVram ? "推荐显存" : "最低显存" }}</span>
+                      <strong>{{ formatVram(model.recommendedVram || model.minimumVram) }}</strong>
                     </div>
-                    <div class="model-info-line">
+                    <div v-if="!isSamModel(model)" class="model-info-line">
                       <span>设备适配</span>
                       <strong>{{ model.deviceCompatible ? "适配" : "不适配" }}</strong>
                     </div>
@@ -836,7 +836,7 @@ const modelTreeNodes = computed(() => {
         }),
         createModelGroupNode({
           id: "sam2",
-          label: "SAM2",
+          label: "SAM2.1",
           icon: "filter_2",
           models: sam2Models,
         }),
@@ -878,7 +878,7 @@ const modelBundleLabel = computed(() => {
 const runtimeNotice = computed(() => {
   const runtime = modelRegistry.runtime || {};
   if (runtime.runtimeFlavor === "cpu") {
-    return "当前是 CPU 运行时，SAM3/SAM3.1 文本智能选区会显示为不可用；SAM1/SAM2 点选/框选仍按已安装模型和设备状态判断。";
+    return "当前是 CPU 运行时，SAM3/SAM3.1 文本智能选区会显示为不可用；SAM1/SAM2.1 点选/框选仍按已安装模型和设备状态判断。";
   }
   if (runtime.externalModels) {
     return "当前包使用外置模型模式，缺失模型时请在模型管理中下载或手动放置到对应 sam/、sam2/、sam3/ 子目录。";
@@ -900,7 +900,7 @@ const getSamDefaultConfigKey = (model) => {
 
 const getSamFamilyLabel = (model) => {
   if (model?.familyLabel) return model.familyLabel;
-  if (model?.family === "sam2") return "SAM2";
+  if (model?.family === "sam2") return "SAM2.1";
   if (model?.family === "sam3") return "SAM3";
   return "SAM1";
 };
@@ -1227,6 +1227,9 @@ const getModelWarning = (model) => {
   if (model?.family === "sam3" && modelRegistry.runtime?.sam3TextPackageReason) {
     return modelRegistry.runtime.sam3TextPackageReason;
   }
+  if (model?.recommendedVramWarning?.message) {
+    return model.recommendedVramWarning.message;
+  }
   if (!model?.deviceCompatible) {
     return "当前设备或运行时不满足该模型建议条件，模型不会误报为可用。";
   }
@@ -1243,7 +1246,6 @@ const getModelWarning = (model) => {
 const getStatusLabel = (model) => {
   if (model.corruptFiles?.length) return "需修复";
   if (model.missingFiles?.length) return "未安装";
-  if (model.installed && !model.deviceCompatible) return "已安装·设备不适配";
   if (model.installed) return "已安装";
   if (!model.deviceCompatible) return "设备不适配";
   return "未安装";
@@ -1252,7 +1254,6 @@ const getStatusLabel = (model) => {
 const getStatusColor = (model) => {
   if (model.corruptFiles?.length) return "negative";
   if (model.missingFiles?.length) return "grey";
-  if (model.installed && !model.deviceCompatible) return "warning";
   if (model.installed) return "positive";
   if (!model.deviceCompatible) return "warning";
   return "grey";

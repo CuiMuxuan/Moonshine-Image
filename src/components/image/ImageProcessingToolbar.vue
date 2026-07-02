@@ -251,7 +251,7 @@ const toolbarTextVisible = computed(() => $q.screen.gt.sm);
 const smartSelectionDisabledReason = computed(() => {
   if (!props.backendReady) return "后端服务启动成功后可用";
   if (!props.smartSelectionAvailable) {
-    return "智能选区需要先安装 SAM1/SAM2 点选模型或 SAM3 文本模型";
+    return "智能选区需要先安装 SAM1/SAM2.1 点选模型或 SAM3 文本模型";
   }
   return "";
 });

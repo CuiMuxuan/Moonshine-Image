@@ -3,7 +3,7 @@ import {
   normalizeShortcutConfig,
 } from "../utils/shortcutConfig.js";
 
-export const CONFIG_SCHEMA_VERSION = 6;
+export const CONFIG_SCHEMA_VERSION = 7;
 
 export const DEFAULT_THEME_MODE = "light";
 export const DEFAULT_UI_BUTTON_SIZE = "sm";
@@ -56,6 +56,8 @@ export const DEFAULT_MASKING_CONFIG = Object.freeze({
   defaultSam1Model: "sam_vit_b",
   defaultSam2Model: "sam2_1_hiera_large",
   defaultSam3Model: "sam3_1_multiplex",
+  imageSmartSelectionDefaultModel: "sam_vit_b",
+  videoSmartSelectionDefaultModel: "sam2_1_hiera_large",
 });
 
 export const createDefaultAppConfig = () => ({
@@ -222,6 +224,17 @@ export const normalizeConfigToCurrentSchema = (rawConfig = {}) => {
   }
   if (!String(aligned.masking?.defaultSam3Model || "").trim()) {
     aligned.masking.defaultSam3Model = DEFAULT_MASKING_CONFIG.defaultSam3Model;
+  }
+  if (!String(aligned.masking?.imageSmartSelectionDefaultModel || "").trim()) {
+    aligned.masking.imageSmartSelectionDefaultModel =
+      aligned.masking.defaultSamModel ||
+      aligned.masking.defaultSam1Model ||
+      DEFAULT_MASKING_CONFIG.imageSmartSelectionDefaultModel;
+  }
+  if (!String(aligned.masking?.videoSmartSelectionDefaultModel || "").trim()) {
+    aligned.masking.videoSmartSelectionDefaultModel =
+      aligned.masking.defaultSam2Model ||
+      DEFAULT_MASKING_CONFIG.videoSmartSelectionDefaultModel;
   }
   aligned.shortcuts = normalizeShortcutConfig(aligned.shortcuts);
   return aligned;

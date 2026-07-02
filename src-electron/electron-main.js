@@ -1815,6 +1815,10 @@ function createRuntimeDefaultConfig() {
   nextConfig.masking.defaultSam1Model = DEFAULT_MASKING_CONFIG.defaultSam1Model;
   nextConfig.masking.defaultSam2Model = DEFAULT_MASKING_CONFIG.defaultSam2Model;
   nextConfig.masking.defaultSam3Model = DEFAULT_MASKING_CONFIG.defaultSam3Model;
+  nextConfig.masking.imageSmartSelectionDefaultModel =
+    DEFAULT_MASKING_CONFIG.imageSmartSelectionDefaultModel;
+  nextConfig.masking.videoSmartSelectionDefaultModel =
+    DEFAULT_MASKING_CONFIG.videoSmartSelectionDefaultModel;
   nextConfig.video.tempFramesPath = path.join(userDataPath, "temp", "video_frames");
   return nextConfig;
 }
@@ -1961,6 +1965,14 @@ function sanitizeAppConfig(config = {}) {
   merged.masking.defaultSam3Model =
     String(merged.masking?.defaultSam3Model || "").trim() ||
     DEFAULT_MASKING_CONFIG.defaultSam3Model;
+  merged.masking.imageSmartSelectionDefaultModel =
+    String(merged.masking?.imageSmartSelectionDefaultModel || "").trim() ||
+    String(merged.masking?.defaultSamModel || merged.masking?.defaultSam1Model || "").trim() ||
+    DEFAULT_MASKING_CONFIG.imageSmartSelectionDefaultModel;
+  merged.masking.videoSmartSelectionDefaultModel =
+    String(merged.masking?.videoSmartSelectionDefaultModel || "").trim() ||
+    String(merged.masking?.defaultSam2Model || "").trim() ||
+    DEFAULT_MASKING_CONFIG.videoSmartSelectionDefaultModel;
   merged.shortcuts = normalizeShortcutConfig(merged.shortcuts);
   if (isLegacyDefaultModelDir(merged.general.modelDir)) {
     merged.general.modelDir = getDefaultModelDir();
@@ -2026,7 +2038,9 @@ function validateConfig(config) {
       typeof config.masking.defaultSamModel !== "string" ||
       typeof config.masking.defaultSam1Model !== "string" ||
       typeof config.masking.defaultSam2Model !== "string" ||
-      typeof config.masking.defaultSam3Model !== "string"
+      typeof config.masking.defaultSam3Model !== "string" ||
+      typeof config.masking.imageSmartSelectionDefaultModel !== "string" ||
+      typeof config.masking.videoSmartSelectionDefaultModel !== "string"
     ) {
       return false;
     }

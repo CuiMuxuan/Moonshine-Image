@@ -1107,7 +1107,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     if (!patch) {
       return createResult(false, {
         code: "sam-video-empty-result",
-        error: "SAM2 已返回结果，但没有可用蒙版。",
+        error: "SAM2.1 已返回结果，但没有可用蒙版。",
       });
     }
     const nextMask = commitMask(maskId, {
@@ -1798,7 +1798,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     if (isSamVideoMask(mask)) {
       return createResult(false, {
         code: "sam-video-track-locked",
-        error: "SAM 视频轨道的时间范围由 SAM2 传播结果决定，不能手动调整范围。",
+        error: "SAM 视频轨道的时间范围由 SAM2.1 传播结果决定，不能手动调整范围。",
       });
     }
 
@@ -1851,7 +1851,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     if (isSamVideoMask(mask)) {
       return createResult(false, {
         code: "sam-video-track-locked",
-        error: "SAM 视频轨道的时间范围由 SAM2 传播结果决定，不能手动调整范围。",
+        error: "SAM 视频轨道的时间范围由 SAM2.1 传播结果决定，不能手动调整范围。",
       });
     }
 

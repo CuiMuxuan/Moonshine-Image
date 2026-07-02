@@ -30,8 +30,15 @@ MANUAL_MODEL_INSTALL_HINT = (
     "如果 Hugging Face 主源下载不可用，请从夸克网盘副源手动下载对应模型文件，"
     "并放入当前模型目录。也可以私信作者或者加入交流群获取模型文件或百度网盘链接。"
 )
+SAM_MODEL_MANUAL_SOURCES = [
+    {
+        "label": "夸克网盘副源",
+        "type": "quark",
+        "url": MANUAL_MODEL_SOURCE_URL,
+    }
+]
 SAM_MODEL_INSTALL_HINT = (
-    "SAM 模型推荐按版本分目录放置：SAM1 放入 sam/，SAM2/SAM2.1 放入 sam2/，"
+    "SAM 模型推荐按版本分目录放置：SAM1 放入 sam/，SAM2.1 放入 sam2/，"
     "SAM3/SAM3.1 放入 sam3/。同一版本的不同型号按各自 checkpoint 文件名并列管理；"
     "根目录 checkpoint 不再作为 SAM 模型安装位置识别。"
 )
@@ -57,7 +64,7 @@ SAM1_LICENSE = {
 SAM2_LICENSE = {
     "name": "Apache-2.0",
     "url": "https://github.com/facebookresearch/sam2/blob/main/LICENSE",
-    "note": "SAM2/SAM2.1 代码和公开 checkpoint 按上游 SAM2 许可证记录。",
+    "note": "SAM2.1 代码和公开 checkpoint 按上游 SAM2 许可证记录。",
 }
 SAM3_LICENSE = {
     "name": "SAM License",
@@ -212,7 +219,7 @@ MODEL_MANIFEST = (
         "variant": "ViT-B",
         "category": "mask_generator",
         "label": "SAM1 ViT-B 智能选区模型",
-        "description": "SAM1 入门型号，用于图片蒙版编辑中的点选和框选智能选区。第一阶段推荐默认型号。",
+        "description": "适合日常图片智能选区。可以通过单击目标或拖出框选范围快速生成蒙版，速度快、占用较低，是多数图片处理场景的默认选择。",
         "type": "mask",
         "requiresMask": False,
         "downloadable": True,
@@ -223,7 +230,7 @@ MODEL_MANIFEST = (
                 "url": f"{HF_MODEL_REPO_BASE_URL}/sam/sam_vit_b_01ec64.pth",
             }
         ],
-        "manualSources": [],
+        "manualSources": SAM_MODEL_MANUAL_SOURCES,
         "manualHint": (
             "请将 sam_vit_b_01ec64.pth 放入当前模型目录的 sam/ 子目录。"
             + SAM_MODEL_INSTALL_HINT
@@ -240,7 +247,7 @@ MODEL_MANIFEST = (
         "size": 375042383,
         "sha256": "ec2df62732614e57411cdcf32a23ffdf28910380d03139ee0f4fcbe91eb8c912",
         "recommendedDevice": "cuda",
-        "minimumVram": 4096,
+        "recommendedVram": 4096,
         "runCapabilities": {
             "scopes": ["currentImage"],
             "maskPrompts": ["point", "box"],
@@ -267,12 +274,18 @@ MODEL_MANIFEST = (
         "variant": "ViT-L",
         "category": "mask_generator",
         "label": "SAM1 ViT-L 智能选区模型",
-        "description": "SAM1 中等规模型号，用于更高质量的点选和框选智能选区，资源消耗高于 ViT-B。",
+        "description": "适合需要更细致图片选区的场景。支持点选和框选生成蒙版，边缘识别通常比 ViT-B 更稳，但加载和处理会更慢。",
         "type": "mask",
         "requiresMask": False,
-        "downloadable": False,
-        "sourceLinks": [],
-        "manualSources": [],
+        "downloadable": True,
+        "sourceLinks": [
+            {
+                "label": "Hugging Face 主源",
+                "type": "huggingface",
+                "url": f"{HF_MODEL_REPO_BASE_URL}/sam/sam_vit_l_0b3195.pth",
+            }
+        ],
+        "manualSources": SAM_MODEL_MANUAL_SOURCES,
         "manualHint": (
             "请将 sam_vit_l_0b3195.pth 放入当前模型目录的 sam/ 子目录。"
             + SAM_MODEL_INSTALL_HINT
@@ -282,14 +295,14 @@ MODEL_MANIFEST = (
                 "path": "sam/sam_vit_l_0b3195.pth",
                 "label": "sam_vit_l_0b3195.pth",
                 "size": 1249524607,
-                "sha256": "",
+                "sha256": "3adcc4315b642a4d2101128f611684e8734c41232a17c648ed1693702a49a622",
                 "legacyPaths": [],
             }
         ],
         "size": 1249524607,
-        "sha256": "",
+        "sha256": "3adcc4315b642a4d2101128f611684e8734c41232a17c648ed1693702a49a622",
         "recommendedDevice": "cuda",
-        "minimumVram": 8192,
+        "recommendedVram": 8192,
         "runCapabilities": {
             "scopes": ["currentImage"],
             "maskPrompts": ["point", "box"],
@@ -316,12 +329,18 @@ MODEL_MANIFEST = (
         "variant": "ViT-H",
         "category": "mask_generator",
         "label": "SAM1 ViT-H 智能选区模型",
-        "description": "SAM1 高端型号，适合显存更充足的设备，质量优先但加载和推理成本最高。",
+        "description": "适合质量优先的图片智能选区。对复杂主体、细节边缘和大图更友好，但显存和处理时间要求最高。",
         "type": "mask",
         "requiresMask": False,
-        "downloadable": False,
-        "sourceLinks": [],
-        "manualSources": [],
+        "downloadable": True,
+        "sourceLinks": [
+            {
+                "label": "Hugging Face 主源",
+                "type": "huggingface",
+                "url": f"{HF_MODEL_REPO_BASE_URL}/sam/sam_vit_h_4b8939.pth",
+            }
+        ],
+        "manualSources": SAM_MODEL_MANUAL_SOURCES,
         "manualHint": (
             "请将 sam_vit_h_4b8939.pth 放入当前模型目录的 sam/ 子目录。"
             + SAM_MODEL_INSTALL_HINT
@@ -331,14 +350,14 @@ MODEL_MANIFEST = (
                 "path": "sam/sam_vit_h_4b8939.pth",
                 "label": "sam_vit_h_4b8939.pth",
                 "size": 2564550879,
-                "sha256": "",
+                "sha256": "a7bf3b02f3ebf1267aba913ff637d9a2d5c33d3173bb679e46d9f338c26f262e",
                 "legacyPaths": [],
             }
         ],
         "size": 2564550879,
-        "sha256": "",
+        "sha256": "a7bf3b02f3ebf1267aba913ff637d9a2d5c33d3173bb679e46d9f338c26f262e",
         "recommendedDevice": "cuda",
-        "minimumVram": 12000,
+        "recommendedVram": 12288,
         "runCapabilities": {
             "scopes": ["currentImage"],
             "maskPrompts": ["point", "box"],
@@ -358,202 +377,6 @@ MODEL_MANIFEST = (
         },
     },
     {
-        "id": "sam2_hiera_tiny",
-        "family": "sam2",
-        "familyLabel": "SAM2",
-        "modelVersion": "SAM2",
-        "variant": "Hiera Tiny",
-        "category": "mask_generator",
-        "label": "SAM2 Hiera Tiny",
-        "description": "SAM2 旧版最小型号，适合兼容已有 SAM2 checkpoint 和轻量视频蒙版流程验证。",
-        "type": "mask",
-        "requiresMask": False,
-        "downloadable": False,
-        "sourceLinks": [],
-        "manualSources": [],
-        "manualHint": (
-            "请将 sam2_hiera_tiny.pt 放入当前模型目录的 sam2/ 子目录。"
-            + SAM_MODEL_INSTALL_HINT
-        ),
-        "files": [
-            {
-                "path": "sam2/sam2_hiera_tiny.pt",
-                "label": "sam2_hiera_tiny.pt",
-                "size": None,
-                "sha256": "",
-                "legacyPaths": [],
-            }
-        ],
-        "size": None,
-        "sha256": "",
-        "recommendedDevice": "cuda",
-        "minimumVram": 4096,
-        "runCapabilities": {
-            "scopes": ["currentImage", "videoFrames"],
-            "maskPrompts": ["point", "box", "mask"],
-            "outputRequired": False,
-        },
-        "parameters": {"config": "sam2/configs/sam2/sam2_hiera_t.yaml"},
-        "parameterHelp": "SAM2 旧版 checkpoint 作为兼容变体管理；新安装优先使用 SAM2.1。",
-        "capabilities": {
-            "speed": 8.0,
-            "realImageQuality": 7.0,
-            "cartoonImageQuality": 7.0,
-            "simpleSceneQuality": 8.0,
-            "complexSceneQuality": 7.0,
-            "textWatermarkAbility": 2.0,
-            "lowVramFriendly": 7.0,
-            "stability": 6.0,
-        },
-    },
-    {
-        "id": "sam2_hiera_small",
-        "family": "sam2",
-        "familyLabel": "SAM2",
-        "modelVersion": "SAM2",
-        "variant": "Hiera Small",
-        "category": "mask_generator",
-        "label": "SAM2 Hiera Small",
-        "description": "SAM2 旧版小型型号，适合兼容已有 SAM2 checkpoint 和轻量视频蒙版流程验证。",
-        "type": "mask",
-        "requiresMask": False,
-        "downloadable": False,
-        "sourceLinks": [],
-        "manualSources": [],
-        "manualHint": (
-            "请将 sam2_hiera_small.pt 放入当前模型目录的 sam2/ 子目录。"
-            + SAM_MODEL_INSTALL_HINT
-        ),
-        "files": [
-            {
-                "path": "sam2/sam2_hiera_small.pt",
-                "label": "sam2_hiera_small.pt",
-                "size": None,
-                "sha256": "",
-                "legacyPaths": [],
-            }
-        ],
-        "size": None,
-        "sha256": "",
-        "recommendedDevice": "cuda",
-        "minimumVram": 6144,
-        "runCapabilities": {
-            "scopes": ["currentImage", "videoFrames"],
-            "maskPrompts": ["point", "box", "mask"],
-            "outputRequired": False,
-        },
-        "parameters": {"config": "sam2/configs/sam2/sam2_hiera_s.yaml"},
-        "parameterHelp": "SAM2 旧版 checkpoint 作为兼容变体管理；新安装优先使用 SAM2.1。",
-        "capabilities": {
-            "speed": 7.0,
-            "realImageQuality": 7.0,
-            "cartoonImageQuality": 7.0,
-            "simpleSceneQuality": 8.0,
-            "complexSceneQuality": 7.0,
-            "textWatermarkAbility": 2.0,
-            "lowVramFriendly": 6.0,
-            "stability": 6.0,
-        },
-    },
-    {
-        "id": "sam2_hiera_base_plus",
-        "family": "sam2",
-        "familyLabel": "SAM2",
-        "modelVersion": "SAM2",
-        "variant": "Hiera Base+",
-        "category": "mask_generator",
-        "label": "SAM2 Hiera Base+",
-        "description": "SAM2 旧版 Base+ 型号，适合兼容已有 SAM2 checkpoint 和质量优先的视频蒙版流程验证。",
-        "type": "mask",
-        "requiresMask": False,
-        "downloadable": False,
-        "sourceLinks": [],
-        "manualSources": [],
-        "manualHint": (
-            "请将 sam2_hiera_base_plus.pt 放入当前模型目录的 sam2/ 子目录。"
-            + SAM_MODEL_INSTALL_HINT
-        ),
-        "files": [
-            {
-                "path": "sam2/sam2_hiera_base_plus.pt",
-                "label": "sam2_hiera_base_plus.pt",
-                "size": None,
-                "sha256": "",
-                "legacyPaths": [],
-            }
-        ],
-        "size": None,
-        "sha256": "",
-        "recommendedDevice": "cuda",
-        "minimumVram": 8192,
-        "runCapabilities": {
-            "scopes": ["currentImage", "videoFrames"],
-            "maskPrompts": ["point", "box", "mask"],
-            "outputRequired": False,
-        },
-        "parameters": {"config": "sam2/configs/sam2/sam2_hiera_b+.yaml"},
-        "parameterHelp": "SAM2 旧版 checkpoint 作为兼容变体管理；新安装优先使用 SAM2.1。",
-        "capabilities": {
-            "speed": 6.0,
-            "realImageQuality": 8.0,
-            "cartoonImageQuality": 8.0,
-            "simpleSceneQuality": 8.0,
-            "complexSceneQuality": 8.0,
-            "textWatermarkAbility": 2.0,
-            "lowVramFriendly": 5.0,
-            "stability": 6.0,
-        },
-    },
-    {
-        "id": "sam2_hiera_large",
-        "family": "sam2",
-        "familyLabel": "SAM2",
-        "modelVersion": "SAM2",
-        "variant": "Hiera Large",
-        "category": "mask_generator",
-        "label": "SAM2 Hiera Large",
-        "description": "SAM2 旧版 Large 型号，适合兼容已有 SAM2 checkpoint 和质量优先的视频蒙版流程验证。",
-        "type": "mask",
-        "requiresMask": False,
-        "downloadable": False,
-        "sourceLinks": [],
-        "manualSources": [],
-        "manualHint": (
-            "请将 sam2_hiera_large.pt 放入当前模型目录的 sam2/ 子目录。"
-            + SAM_MODEL_INSTALL_HINT
-        ),
-        "files": [
-            {
-                "path": "sam2/sam2_hiera_large.pt",
-                "label": "sam2_hiera_large.pt",
-                "size": None,
-                "sha256": "",
-                "legacyPaths": [],
-            }
-        ],
-        "size": None,
-        "sha256": "",
-        "recommendedDevice": "cuda",
-        "minimumVram": 12000,
-        "runCapabilities": {
-            "scopes": ["currentImage", "videoFrames"],
-            "maskPrompts": ["point", "box", "mask"],
-            "outputRequired": False,
-        },
-        "parameters": {"config": "sam2/configs/sam2/sam2_hiera_l.yaml"},
-        "parameterHelp": "SAM2 旧版 checkpoint 作为兼容变体管理；新安装优先使用 SAM2.1。",
-        "capabilities": {
-            "speed": 4.0,
-            "realImageQuality": 9.0,
-            "cartoonImageQuality": 8.0,
-            "simpleSceneQuality": 9.0,
-            "complexSceneQuality": 9.0,
-            "textWatermarkAbility": 2.0,
-            "lowVramFriendly": 3.0,
-            "stability": 6.0,
-        },
-    },
-    {
         "id": "sam2_1_hiera_tiny",
         "family": "sam2",
         "familyLabel": "SAM2.1",
@@ -561,12 +384,18 @@ MODEL_MANIFEST = (
         "variant": "Hiera Tiny",
         "category": "mask_generator",
         "label": "SAM2.1 Hiera Tiny",
-        "description": "SAM2.1 最小型号，适合优先验证图像增强分割、视频蒙版和跨帧传播流程。",
+        "description": "适合轻量视频智能选区。可以用较低资源完成目标跟踪和跨帧蒙版生成，适合快速试选和低配置设备。",
         "type": "mask",
         "requiresMask": False,
-        "downloadable": False,
-        "sourceLinks": [],
-        "manualSources": [],
+        "downloadable": True,
+        "sourceLinks": [
+            {
+                "label": "Hugging Face 主源",
+                "type": "huggingface",
+                "url": f"{HF_MODEL_REPO_BASE_URL}/sam2/sam2.1_hiera_tiny.pt",
+            }
+        ],
+        "manualSources": SAM_MODEL_MANUAL_SOURCES,
         "manualHint": (
             "请将 sam2.1_hiera_tiny.pt 放入当前模型目录的 sam2/ 子目录。"
             + SAM_MODEL_INSTALL_HINT
@@ -575,15 +404,15 @@ MODEL_MANIFEST = (
             {
                 "path": "sam2/sam2.1_hiera_tiny.pt",
                 "label": "sam2.1_hiera_tiny.pt",
-                "size": None,
-                "sha256": "",
+                "size": 156008466,
+                "sha256": "7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69",
                 "legacyPaths": [],
             }
         ],
-        "size": None,
-        "sha256": "",
+        "size": 156008466,
+        "sha256": "7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69",
         "recommendedDevice": "cuda",
-        "minimumVram": 4096,
+        "recommendedVram": 4096,
         "runCapabilities": {
             "scopes": ["currentImage", "videoFrames"],
             "maskPrompts": ["point", "box", "mask"],
@@ -610,12 +439,18 @@ MODEL_MANIFEST = (
         "variant": "Hiera Small",
         "category": "mask_generator",
         "label": "SAM2.1 Hiera Small",
-        "description": "SAM2.1 小型型号，质量和速度平衡，适合后续视频蒙版流程评估。",
+        "description": "适合常规视频智能选区。速度和选区质量比较均衡，可以处理人物、物体等常见目标的跨帧蒙版。",
         "type": "mask",
         "requiresMask": False,
-        "downloadable": False,
-        "sourceLinks": [],
-        "manualSources": [],
+        "downloadable": True,
+        "sourceLinks": [
+            {
+                "label": "Hugging Face 主源",
+                "type": "huggingface",
+                "url": f"{HF_MODEL_REPO_BASE_URL}/sam2/sam2.1_hiera_small.pt",
+            }
+        ],
+        "manualSources": SAM_MODEL_MANUAL_SOURCES,
         "manualHint": (
             "请将 sam2.1_hiera_small.pt 放入当前模型目录的 sam2/ 子目录。"
             + SAM_MODEL_INSTALL_HINT
@@ -624,15 +459,15 @@ MODEL_MANIFEST = (
             {
                 "path": "sam2/sam2.1_hiera_small.pt",
                 "label": "sam2.1_hiera_small.pt",
-                "size": None,
-                "sha256": "",
+                "size": 184416285,
+                "sha256": "6d1aa6f30de5c92224f8172114de081d104bbd23dd9dc5c58996f0cad5dc4d38",
                 "legacyPaths": [],
             }
         ],
-        "size": None,
-        "sha256": "",
+        "size": 184416285,
+        "sha256": "6d1aa6f30de5c92224f8172114de081d104bbd23dd9dc5c58996f0cad5dc4d38",
         "recommendedDevice": "cuda",
-        "minimumVram": 6144,
+        "recommendedVram": 6144,
         "runCapabilities": {
             "scopes": ["currentImage", "videoFrames"],
             "maskPrompts": ["point", "box", "mask"],
@@ -659,12 +494,18 @@ MODEL_MANIFEST = (
         "variant": "Hiera Base+",
         "category": "mask_generator",
         "label": "SAM2.1 Hiera Base+",
-        "description": "SAM2.1 Base+ 型号，适合质量优先的图像增强分割和视频蒙版评估。",
+        "description": "适合更复杂的视频选区任务。对目标边缘、运动变化和跨帧一致性更友好，适合比 Small 更高质量的输出。",
         "type": "mask",
         "requiresMask": False,
-        "downloadable": False,
-        "sourceLinks": [],
-        "manualSources": [],
+        "downloadable": True,
+        "sourceLinks": [
+            {
+                "label": "Hugging Face 主源",
+                "type": "huggingface",
+                "url": f"{HF_MODEL_REPO_BASE_URL}/sam2/sam2.1_hiera_base_plus.pt",
+            }
+        ],
+        "manualSources": SAM_MODEL_MANUAL_SOURCES,
         "manualHint": (
             "请将 sam2.1_hiera_base_plus.pt 放入当前模型目录的 sam2/ 子目录。"
             + SAM_MODEL_INSTALL_HINT
@@ -673,15 +514,15 @@ MODEL_MANIFEST = (
             {
                 "path": "sam2/sam2.1_hiera_base_plus.pt",
                 "label": "sam2.1_hiera_base_plus.pt",
-                "size": None,
-                "sha256": "",
+                "size": 323606802,
+                "sha256": "a2345aede8715ab1d5d31b4a509fb160c5a4af1970f199d9054ccfb746c004c5",
                 "legacyPaths": [],
             }
         ],
-        "size": None,
-        "sha256": "",
+        "size": 323606802,
+        "sha256": "a2345aede8715ab1d5d31b4a509fb160c5a4af1970f199d9054ccfb746c004c5",
         "recommendedDevice": "cuda",
-        "minimumVram": 8192,
+        "recommendedVram": 8192,
         "runCapabilities": {
             "scopes": ["currentImage", "videoFrames"],
             "maskPrompts": ["point", "box", "mask"],
@@ -708,7 +549,7 @@ MODEL_MANIFEST = (
         "variant": "Hiera Large",
         "category": "mask_generator",
         "label": "SAM2.1 Hiera Large",
-        "description": "SAM2.1 默认评估型号，适合后续高质量图像增强分割、视频蒙版和跨帧传播。",
+        "description": "适合高质量视频智能选区。可以把当前帧的点选或框选目标传播到视频片段中，生成更稳定、细节更好的蒙版轨道。",
         "type": "mask",
         "requiresMask": False,
         "downloadable": True,
@@ -719,7 +560,7 @@ MODEL_MANIFEST = (
                 "url": f"{HF_MODEL_REPO_BASE_URL}/sam2/sam2.1_hiera_large.pt",
             }
         ],
-        "manualSources": [],
+        "manualSources": SAM_MODEL_MANUAL_SOURCES,
         "manualHint": (
             "请将 sam2.1_hiera_large.pt 放入当前模型目录的 sam2/ 子目录。"
             + SAM_MODEL_INSTALL_HINT
@@ -736,14 +577,14 @@ MODEL_MANIFEST = (
         "size": 898083611,
         "sha256": "2647878d5dfa5098f2f8649825738a9345572bae2d4350a2468587ece47dd318",
         "recommendedDevice": "cuda",
-        "minimumVram": 12000,
+        "recommendedVram": 12288,
         "runCapabilities": {
             "scopes": ["currentImage", "videoFrames"],
             "maskPrompts": ["point", "box", "mask"],
             "outputRequired": False,
         },
         "parameters": {"config": "sam2/configs/sam2.1/sam2.1_hiera_l.yaml"},
-        "parameterHelp": "SAM2.1 Hiera Large 是本项目 SAM2 默认评估型号。",
+        "parameterHelp": "SAM2.1 Hiera Large 是本项目默认视频智能选区型号。",
         "capabilities": {
             "speed": 4.0,
             "realImageQuality": 9.0,
@@ -763,7 +604,7 @@ MODEL_MANIFEST = (
         "variant": "Base",
         "category": "text_smart_selection",
         "label": "SAM3 文本智能选区模型",
-        "description": "SAM3 原始文本智能选区 checkpoint，用于后续中文和英文文本提示词智能选区评估。",
+        "description": "适合用文字查找图片中的目标。输入简短目标名称后自动检索并生成候选蒙版，适合不方便点选或目标较明确的图片选区。",
         "type": "mask",
         "requiresMask": False,
         "downloadable": True,
@@ -774,7 +615,7 @@ MODEL_MANIFEST = (
                 "url": f"{HF_MODEL_REPO_BASE_URL}/sam3/sam3.pt",
             }
         ],
-        "manualSources": [],
+        "manualSources": SAM_MODEL_MANUAL_SOURCES,
         "manualHint": (
             "请将 sam3.pt 放入当前模型目录的 sam3/ 子目录。"
             + SAM_MODEL_INSTALL_HINT
@@ -792,7 +633,7 @@ MODEL_MANIFEST = (
         "size": 3450062241,
         "sha256": "9999e2341ceef5e136daa386eecb55cb414446a00ac2b55eb2dfd2f7c3cf8c9e",
         "recommendedDevice": "cuda",
-        "minimumVram": 12000,
+        "recommendedVram": 16384,
         "runCapabilities": {
             "scopes": ["currentImage", "selectedImages"],
             "maskPrompts": ["text"],
@@ -820,7 +661,7 @@ MODEL_MANIFEST = (
         "variant": "Multiplex",
         "category": "text_smart_selection",
         "label": "SAM3.1 Multiplex 文本智能选区模型",
-        "description": "SAM3.1 默认评估型号，包含 Object Multiplex 优化，用于后续文本提示词图像/视频智能选区。",
+        "description": "适合更强的文本智能选区。可以用中文或英文短语检索图片目标，并返回可选择的候选蒙版；对多目标和相似目标场景更友好。",
         "type": "mask",
         "requiresMask": False,
         "downloadable": True,
@@ -831,7 +672,7 @@ MODEL_MANIFEST = (
                 "url": f"{HF_MODEL_REPO_BASE_URL}/sam3/sam3.1_multiplex.pt",
             }
         ],
-        "manualSources": [],
+        "manualSources": SAM_MODEL_MANUAL_SOURCES,
         "manualHint": (
             "请将 sam3.1_multiplex.pt 放入当前模型目录的 sam3/ 子目录。"
             + SAM_MODEL_INSTALL_HINT
@@ -849,7 +690,7 @@ MODEL_MANIFEST = (
         "size": 3502755717,
         "sha256": "0567debeec80ba4ac6369540c6c248025283cb3ff2b92827509e57e2b3541cb6",
         "recommendedDevice": "cuda",
-        "minimumVram": 12000,
+        "recommendedVram": 16384,
         "runCapabilities": {
             "scopes": ["currentImage", "selectedImages", "videoFrames"],
             "maskPrompts": ["text", "point"],
@@ -1012,6 +853,32 @@ def _device_compatible(model: dict, cuda_info: Optional[dict]) -> bool:
         return True
 
 
+def _recommended_vram_warning(model: dict, cuda_info: Optional[dict]) -> Optional[dict]:
+    recommended_vram = model.get("recommendedVram")
+    if not recommended_vram:
+        return None
+
+    cuda_info = cuda_info or {}
+    memory_mb = cuda_info.get("total_memory_mb") or cuda_info.get("free_memory_mb") or 0
+    try:
+        recommended_mb = float(recommended_vram)
+        current_mb = float(memory_mb or 0)
+    except (TypeError, ValueError):
+        return None
+
+    if current_mb <= 0 or current_mb >= recommended_mb:
+        return None
+
+    return {
+        "recommendedVram": recommended_mb,
+        "currentVram": current_mb,
+        "message": (
+            f"推荐 {recommended_mb / 1024:.0f}GB，当前 {current_mb / 1024:.0f}GB，"
+            "可能较慢或失败。"
+        ),
+    }
+
+
 def build_model_status(model_dir: Path, cuda_info: Optional[dict] = None) -> list[dict]:
     model_dir = Path(model_dir).expanduser().resolve()
     models = []
@@ -1032,6 +899,7 @@ def build_model_status(model_dir: Path, cuda_info: Optional[dict] = None) -> lis
         ]
         installed = len(file_statuses) > 0 and not missing_files and not corrupt_files
         device_compatible = _device_compatible(manifest_item, cuda_info)
+        recommended_vram_warning = _recommended_vram_warning(manifest_item, cuda_info)
 
         item = {
             **manifest_item,
@@ -1042,6 +910,7 @@ def build_model_status(model_dir: Path, cuda_info: Optional[dict] = None) -> lis
             "missingFiles": missing_files,
             "corruptFiles": corrupt_files,
             "deviceCompatible": device_compatible,
+            "recommendedVramWarning": recommended_vram_warning,
             "capabilities": _normalize_capabilities(manifest_item.get("capabilities")),
         }
         models.append(item)

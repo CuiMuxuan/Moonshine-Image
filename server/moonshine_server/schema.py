@@ -363,7 +363,7 @@ class MoonshineModelRegistryRequest(BaseModel):
 class MoonshineSamPredictRequest(BaseModel):
     image: str = Field(..., description="Base64 image data or local image path")
     image_type: Literal["base64", "path"] = Field("base64")
-    model_id: str = Field("sam_vit_b", description="SAM1/SAM2 model id")
+    model_id: str = Field("sam_vit_b", description="SAM1/SAM2.1 model id")
     points: List[SamPromptPoint] = Field(default_factory=list)
     box: Optional[SamPromptBox] = None
     multimask_output: bool = Field(True)
@@ -390,11 +390,11 @@ class SamVideoObjectPrompt(BaseModel):
 class MoonshineSamVideoPropagateRequest(BaseModel):
     input_type: Literal["jpegFrameDirectory", "videoPath"] = Field(
         "jpegFrameDirectory",
-        description="SAM2 video input kind",
+        description="SAM2.1 video input kind",
     )
     frame_dir: Optional[str] = Field(None, description="Directory containing JPEG video frames")
     video_path: Optional[str] = Field(None, description="Local video path to stage as JPEG frames")
-    model_id: str = Field("sam2_1_hiera_large", description="SAM2 model id")
+    model_id: str = Field("sam2_1_hiera_large", description="SAM2.1 model id")
     frame_index: int = Field(0, ge=0)
     object_id: int = Field(1, ge=1)
     points: List[SamPromptPoint] = Field(default_factory=list)
@@ -406,7 +406,7 @@ class MoonshineSamVideoPropagateRequest(BaseModel):
     offload_state_to_cpu: bool = Field(True)
     response_type: Literal["base64", "path"] = Field(
         "base64",
-        description="Return SAM2 masks as base64 data URLs or local file paths",
+        description="Return SAM2.1 masks as base64 data URLs or local file paths",
     )
     mask_output_dir: Optional[str] = Field(
         None,

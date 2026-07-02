@@ -38,7 +38,7 @@
     ></div>
 
     <img
-      v-if="hoveredSamCandidate"
+      v-if="samCandidateMenuOpen && hoveredSamCandidate"
       :src="hoveredSamCandidateMask"
       class="absolute sam-candidate-preview"
       :style="samCandidatePreviewStyle"
@@ -209,14 +209,15 @@
             >
               <q-tooltip :class="toolbarTooltipContentClass">智能选区设置</q-tooltip>
               <q-menu
+                ref="samSettingsMenuRef"
                 v-model="samSettingsMenuOpen"
                 :anchor="settingsPopupAnchor"
                 :self="settingsPopupSelf"
-                :content-class="toolbarPopupContentClass"
+                :content-class="samSettingsPopupContentClass"
                 :transition-show="settingsPopupTransitionShow"
                 :transition-hide="settingsPopupTransitionHide"
               >
-                <div class="sam-settings-panel q-pa-md">
+                <div ref="samSettingsPanelRef" class="sam-settings-panel q-pa-md">
                   <div class="sam-popup-header">
                     <div class="sam-settings-title">SAM 模型</div>
                     <q-btn
@@ -242,11 +243,11 @@
                     options-dense
                     label="默认模型"
                     class="sam-model-select"
-                    :disable="samPredicting || !props.samAvailable"
+                    :disable="samPredicting || (!props.samAvailable && !props.samTextAvailable)"
                     @update:model-value="updateSelectedSamModel"
                   />
                   <div v-else class="sam-empty-state">
-                    请先在模型管理中安装 SAM1/SAM2 点选模型；文本选区需安装 SAM3 文本模型。
+                    请先在模型管理中安装 SAM1/SAM2.1 点选模型；文本选区需安装 SAM3 文本模型。
                   </div>
                   <div class="sam-settings-hint">{{ samStatusText }}</div>
                   <div v-if="samAutoExpandNotice" class="sam-auto-expand-notice">
@@ -260,7 +261,7 @@
                   </div>
 
                   <div
-                    v-if="props.samTextAvailable"
+                    v-if="selectedSamModelSupportsText"
                     class="sam-settings-section"
                     data-testid="sam-text-settings-section"
                   >
@@ -325,7 +326,7 @@
                           color="primary"
                           @click="cancelSamTextBatchPrediction"
                         >
-                          <q-tooltip :class="toolbarTooltipContentClass">取消批量检索</q-tooltip>
+                          <q-tooltip :class="toolbarTooltipContentClass">取消检索选中图片</q-tooltip>
                         </q-btn>
                       </div>
                       <q-linear-progress
@@ -353,7 +354,7 @@
                         no-caps
                         color="primary"
                         icon="select_all"
-                        label="批量检索"
+                        label="检索选中图片"
                         :disable="!canRunSamBatchTextPrediction"
                         :loading="samTextBatchRunning"
                         @click="requestSamTextBatchPrediction"
@@ -432,34 +433,13 @@
                             outlined
                             min="0"
                             max="99"
+                            step="1"
                             suffix="px"
                             class="sam-expand-input"
                             input-class="text-center"
                             @update:model-value="setSamCandidateExpandPx(candidate.localId, $event)"
                             @click.stop
                           >
-                            <template #prepend>
-                              <q-btn
-                                flat
-                                dense
-                                round
-                                size="sm"
-                                icon="remove"
-                                :disable="Number(candidate.expandPx ?? candidate.autoExpandPx ?? 0) <= 0"
-                                @click.stop="stepSamCandidateExpandPx(candidate.localId, -1)"
-                              />
-                            </template>
-                            <template #append>
-                              <q-btn
-                                flat
-                                dense
-                                round
-                                size="sm"
-                                icon="add"
-                                :disable="Number(candidate.expandPx ?? candidate.autoExpandPx ?? 0) >= 99"
-                                @click.stop="stepSamCandidateExpandPx(candidate.localId, 1)"
-                              />
-                            </template>
                             <q-tooltip :class="toolbarTooltipContentClass">LaMa 扩边大小</q-tooltip>
                           </q-input>
                           <q-btn
@@ -544,6 +524,11 @@ import {
   loadSam3Lexicon,
 } from "src/services/SamLexiconService";
 import {
+  getLastExecutedSamImageModelId,
+  getSamImageSessionStore,
+  setLastExecutedSamImageModelId,
+} from "src/services/SamImageSessionStore";
+import {
   DEFAULT_IMAGE_BRUSH,
   normalizeBrushConfig,
   normalizeButtonSize,
@@ -618,6 +603,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  samTextSupported: {
+    type: Boolean,
+    default: false,
+  },
   samTextAvailable: {
     type: Boolean,
     default: false,
@@ -671,6 +660,7 @@ const props = defineProps({
       total: 0,
       completed: 0,
       success: 0,
+      notFound: 0,
       failed: 0,
       cancelled: false,
     }),
@@ -711,11 +701,14 @@ const rectPreview = ref(null);
 const isDrawingWindowBound = ref(false);
 const toolbarPopupClass = "mask-toolbar-popup";
 const toolbarPopupContentClass = `${toolbarPopupClass} sam-toolbar-popup-layer`;
+const samSettingsPopupContentClass = `${toolbarPopupContentClass} sam-settings-toolbar-popup`;
 const toolbarTooltipContentClass = "sam-toolbar-tooltip-layer";
 const isToolbarPointerRegionActive = ref(false);
 const samToolMode = ref(SAM_TOOL_MODES.SELECT);
 const samEraseOperation = ref(null);
 const samSettingsMenuOpen = ref(false);
+const samSettingsMenuRef = ref(null);
+const samSettingsPanelRef = ref(null);
 const samCandidateMenuOpen = ref(false);
 
 const drawingModeActive = computed(() => Boolean(props.drawingMode));
@@ -816,10 +809,20 @@ const samBaseSnapshot = ref(null);
 const samBaseSnapshotDataUrl = ref("");
 const samOperationIndex = ref(0);
 const samLastPerformance = ref(null);
-const samSessionByContext = new Map();
+const samSessionByContext = getSamImageSessionStore();
 const samExpandedMaskCache = new WeakMap();
 const activeSamContextId = ref("");
 const selectedSamModelId = ref("");
+const lastExecutedSamModelId = ref(getLastExecutedSamImageModelId());
+let maskImageLoadVersion = 0;
+let stableCompositeFrame = 0;
+let stableCompositeToken = 0;
+let samBaseSnapshotRevision = 0;
+let samCandidatesRevision = 0;
+let samRenderToken = 0;
+let samRenderInFlight = null;
+let samRenderInFlightSignature = "";
+let lastSamRenderSignature = "";
 
 const normalizeBatchState = (value = {}) => {
   const total = Math.max(0, Number(value.total || 0));
@@ -829,6 +832,7 @@ const normalizeBatchState = (value = {}) => {
     total,
     completed,
     success: Math.max(0, Number(value.success || 0)),
+    notFound: Math.max(0, Number(value.notFound || value.not_found || 0)),
     failed: Math.max(0, Number(value.failed || 0)),
     cancelled: Boolean(value.cancelled),
   };
@@ -846,14 +850,14 @@ const samTextBatchProgress = computed(() => {
 });
 const samTextBatchText = computed(() => {
   const state = samTextBatchState.value;
-  if (!state.total) return "等待批量文本检索";
+  if (!state.total) return "等待检索选中图片";
   if (state.running) {
-    return `批量检索 ${state.completed}/${state.total} · 成功 ${state.success} · 失败 ${state.failed}`;
+    return `检索选中图片 ${state.completed}/${state.total} · 成功 ${state.success} · 未检出 ${state.notFound} · 失败 ${state.failed}`;
   }
   if (state.cancelled) {
-    return `批量检索已取消 · 成功 ${state.success} · 失败 ${state.failed}`;
+    return `检索选中图片已取消 · 成功 ${state.success} · 未检出 ${state.notFound} · 失败 ${state.failed}`;
   }
-  return `批量检索完成 · 成功 ${state.success} · 失败 ${state.failed}`;
+  return `检索选中图片完成 · 成功 ${state.success} · 未检出 ${state.notFound} · 失败 ${state.failed}`;
 });
 const samProcessingState = computed(() => {
   if (samTextBatchRunning.value) {
@@ -944,13 +948,13 @@ const samEraseTooltip = computed(() => {
 
 const samStatusText = computed(() => {
   if (!props.samAvailable && !props.samTextAvailable) {
-    return "请先安装 SAM1/SAM2 点选模型或 SAM3 文本模型";
+    return "请先安装 SAM1/SAM2.1 点选模型或 SAM3 文本模型";
   }
   if (samPredicting.value) return "正在加载模型或计算图片特征";
   if (samToolMode.value === SAM_TOOL_MODES.ERASE) return "拖动擦除智能选区结果";
   if (samCandidates.value.length) return `${samCandidates.value.length} 个候选`;
-  if (!props.samAvailable && props.samTextAvailable) return "输入文本提示后检索当前图片";
-  return "单击点选，拖拽框选，或输入文本提示";
+  if (selectedSamModelSupportsText.value) return "输入文本提示后检索当前图片";
+  return "单击点选，拖拽框选";
 });
 
 const samPerformanceText = computed(() => {
@@ -985,16 +989,15 @@ const samToolToggleTooltip = computed(() => {
 });
 
 const hoveredSamCandidate = computed(() =>
-  samCandidates.value.find((candidate) => candidate.localId === hoveredSamCandidateId.value) || null
+  samCandidateMenuOpen.value
+    ? samCandidates.value.find((candidate) => candidate.localId === hoveredSamCandidateId.value) || null
+    : null
 );
 const hoveredSamCandidateMask = computed(() => {
   const candidate = hoveredSamCandidate.value;
   if (!candidate) return "";
   if (candidate.renderedMask) return candidate.renderedMask;
-  if (candidate.eraseMask) return candidate.mask || "";
-  if (!shouldAutoExpandSamMasks.value) return candidate.mask || "";
-  const cached = samExpandedMaskCache.get(candidate);
-  return cached?.dataUrl || candidate.mask || "";
+  return "";
 });
 
 const samCandidatePreviewStyle = computed(() => ({
@@ -1044,6 +1047,7 @@ const normalizeSamModelOptions = (items = []) =>
     .map((item) => ({
       label: item.label || item.id || item.value,
       value: item.value || item.id,
+      family: item.family || "",
       disable: Boolean(item.disable),
     }));
 
@@ -1067,8 +1071,20 @@ const resolvedSamModelOptions = computed(() => {
 const effectiveSamModelId = computed(
   () => selectedSamModelId.value || props.samModelId || ""
 );
+const selectedSamModelOption = computed(() =>
+  resolvedSamModelOptions.value.find((option) => option.value === effectiveSamModelId.value) || null
+);
+const selectedSamModelFamily = computed(() =>
+  selectedSamModelOption.value?.family ||
+  (["sam3", "sam3_1_multiplex"].includes(effectiveSamModelId.value) ? "sam3" : "")
+);
+const selectedSamModelSupportsText = computed(() => selectedSamModelFamily.value === "sam3");
+const selectedSamModelSupportsPointBox = computed(() =>
+  ["sam", "sam2"].includes(selectedSamModelFamily.value)
+);
 const canRunSamTextPrediction = computed(
   () =>
+    selectedSamModelSupportsText.value &&
     Boolean(props.samTextAvailable) &&
     Boolean(props.samImage) &&
     Boolean(samTextPromptSpec.value.text) &&
@@ -1077,6 +1093,7 @@ const canRunSamTextPrediction = computed(
 );
 const canRunSamBatchTextPrediction = computed(
   () =>
+    selectedSamModelSupportsText.value &&
     Boolean(props.samTextAvailable) &&
     Boolean(samTextPromptSpec.value.text) &&
     props.samTextBatchTargetCount > 0 &&
@@ -1084,10 +1101,11 @@ const canRunSamBatchTextPrediction = computed(
     !samTextBatchRunning.value
 );
 const samTextBatchTooltip = computed(() => {
+  if (!selectedSamModelSupportsText.value) return "当前 SAM 模型不支持文本智选";
   if (!props.samTextAvailable) return "请先安装 SAM3 文本模型";
   if (!samTextPromptSpec.value.text) return "先输入文本提示或选择颜色/目标";
-  if (props.samTextBatchTargetCount <= 0) return "先在左侧选择图片";
-  if (samTextBatchRunning.value) return "正在批量检索";
+  if (props.samTextBatchTargetCount <= 0) return "请先选择图片";
+  if (samTextBatchRunning.value) return "正在检索选中图片";
   return `检索 ${props.samTextBatchTargetCount} 张选中图片`;
 });
 const samCandidateMenuTooltip = computed(() => {
@@ -1101,9 +1119,25 @@ const updateSelectedSamModel = (modelId) => {
   saveSamContextSession();
   selectedSamModelId.value = nextModelId;
   restoreSamContextSession();
+  scheduleSamSettingsMenuLayoutSync();
 };
 
-const getTextModelId = () => props.samTextModelId || "sam3";
+const getTextModelId = () => {
+  if (selectedSamModelSupportsText.value && effectiveSamModelId.value) {
+    return effectiveSamModelId.value;
+  }
+  return props.samTextModelId || "sam3";
+};
+
+const rememberExecutedSamModel = (modelId) => {
+  const nextModelId = String(modelId || "").trim();
+  if (!nextModelId) return;
+  lastExecutedSamModelId.value = nextModelId;
+  setLastExecutedSamImageModelId(nextModelId);
+  if (resolvedSamModelOptions.value.some((option) => option.value === nextModelId)) {
+    selectedSamModelId.value = nextModelId;
+  }
+};
 
 const filterSamTextNounOptions = (value, update) => {
   update(() => {
@@ -1131,22 +1165,32 @@ const refreshSamTextLexicon = async () => {
   }
 };
 
-const buildSamTextCandidate = async (candidate, index, result = {}, prompt = samTextPrompt.value.trim()) =>
+const buildSamTextCandidate = async (
+  candidate,
+  index,
+  result = {},
+  prompt = samTextPrompt.value.trim(),
+  modelId = getTextModelId()
+) =>
   hydrateSamCandidateExpandPx({
     ...candidate,
     localId: `${Date.now()}-${samOperationIndex.value}-text-${index}`,
     label: `文本候选 ${index + 1}`,
     enabled: index === 0,
     source: "text",
-    modelId: getTextModelId(),
+    modelId,
     prompt: candidate.prompt || result.prompt || { type: "text", text: prompt },
     createdAt: new Date().toISOString(),
   });
 
 const cloneSamCandidates = (items = []) =>
   items.map((candidate) => {
-    const nextCandidate = { ...candidate };
+    const nextCandidate = {
+      ...candidate,
+      displayAlpha: normalizeSamDisplayAlpha(candidate?.displayAlpha, getEffectiveMaskDisplayAlpha()),
+    };
     delete nextCandidate.renderedMask;
+    delete nextCandidate.renderedMaskMeta;
     return nextCandidate;
   });
 
@@ -1157,20 +1201,13 @@ const setSamCandidateExpandPx = async (localId, value, { render = true } = {}) =
   if (candidate.expandPx === nextValue) return;
   candidate.expandPx = nextValue;
   candidate.renderedMask = "";
+  candidate.renderedMaskMeta = null;
   samExpandedMaskCache.delete(candidate);
+  bumpSamCandidatesRevision();
   saveSamContextSession();
   if (render) {
     await renderSamCandidates({ pushHistory: false });
   }
-};
-
-const stepSamCandidateExpandPx = async (localId, delta) => {
-  const candidate = samCandidates.value.find((item) => item.localId === localId);
-  if (!candidate) return;
-  await setSamCandidateExpandPx(
-    localId,
-    normalizeSamCandidateExpandPx(candidate.expandPx ?? candidate.autoExpandPx ?? 0) + Number(delta || 0)
-  );
 };
 
 const saveSamContextSession = () => {
@@ -1178,7 +1215,7 @@ const saveSamContextSession = () => {
   if (!contextId) return;
   samSessionByContext.set(contextId, {
     candidates: cloneSamCandidates(samCandidates.value),
-    hoveredCandidateId: hoveredSamCandidateId.value,
+    hoveredCandidateId: "",
     baseSnapshot: samBaseSnapshot.value ? cloneImageData(samBaseSnapshot.value) : null,
     baseSnapshotDataUrl: samBaseSnapshotDataUrl.value || "",
     operationIndex: samOperationIndex.value,
@@ -1191,13 +1228,72 @@ const restoreSamContextSession = () => {
   activeSamContextId.value = contextId;
   const session = samSessionByContext.get(contextId);
   samCandidates.value = cloneSamCandidates(session?.candidates || []);
-  hoveredSamCandidateId.value = session?.hoveredCandidateId || "";
+  bumpSamCandidatesRevision();
+  hoveredSamCandidateId.value = "";
   samBaseSnapshot.value = session?.baseSnapshot ? cloneImageData(session.baseSnapshot) : null;
   samBaseSnapshotDataUrl.value = session?.baseSnapshotDataUrl || "";
   samOperationIndex.value = Number.isInteger(session?.operationIndex) ? session.operationIndex : 0;
   samLastPerformance.value = session?.lastPerformance ? { ...session.lastPerformance } : null;
   samPointerStart.value = null;
   samDragPoint.value = null;
+  bumpSamBaseSnapshotRevision();
+  resetSamRenderState();
+};
+
+const hasActiveSamCandidateLayer = () =>
+  samCandidates.value.some((candidate) => candidate?.mask);
+
+const hasStoredSamContextCandidates = (contextId = getSamContextId()) => {
+  const session = samSessionByContext.get(contextId);
+  return Array.isArray(session?.candidates) && session.candidates.some((candidate) => candidate?.mask);
+};
+
+const hasSamContextCandidates = (contextId = getSamContextId()) => {
+  if (contextId === activeSamContextId.value && hasActiveSamCandidateLayer()) {
+    return true;
+  }
+  return hasStoredSamContextCandidates(contextId);
+};
+
+const createMaskImageLoadGuard = () => {
+  const contextId = getSamContextId();
+  const version = (maskImageLoadVersion += 1);
+  return {
+    contextId,
+    isCurrent: () => version === maskImageLoadVersion && contextId === getSamContextId(),
+  };
+};
+
+const cancelStableMaskComposite = () => {
+  if (!stableCompositeFrame || typeof window === "undefined") return;
+  window.cancelAnimationFrame(stableCompositeFrame);
+  stableCompositeFrame = 0;
+};
+
+const runStableMaskComposite = async (contextId) => {
+  if (!props.show || !ctx.value || !maskCanvas.value) return false;
+  if (contextId !== getSamContextId()) return false;
+  applyToolState();
+  if (hasSamContextCandidates(contextId)) {
+    return rerenderSamContextCandidates(contextId);
+  }
+  return false;
+};
+
+const scheduleStableMaskComposite = () => {
+  if (typeof window === "undefined") return;
+  const contextId = getSamContextId();
+  const token = (stableCompositeToken += 1);
+  cancelStableMaskComposite();
+  stableCompositeFrame = window.requestAnimationFrame(() => {
+    stableCompositeFrame = window.requestAnimationFrame(async () => {
+      stableCompositeFrame = 0;
+      if (token !== stableCompositeToken) return;
+      await nextTick();
+      if (token !== stableCompositeToken) return;
+      await runStableMaskComposite(contextId);
+    });
+  });
 };
 
 const getToolbarViewport = ({ respectInsets = false } = {}) => {
@@ -1238,6 +1334,102 @@ const settingsPopupTransitionShow = computed(() =>
 const settingsPopupTransitionHide = computed(() =>
   toolbarShouldOpenUpward.value ? "jump-down" : "jump-up"
 );
+
+const SAM_SETTINGS_MENU_MARGIN = 12;
+let samSettingsMenuLayoutFrame = 0;
+
+const getSamSettingsPopupElement = () =>
+  samSettingsPanelRef.value?.closest(`.${toolbarPopupClass}`) || null;
+
+const resetSamSettingsPanelBounds = () => {
+  const panelEl = samSettingsPanelRef.value;
+  if (!panelEl) return;
+  panelEl.style.removeProperty("max-height");
+  panelEl.style.removeProperty("overflow-y");
+};
+
+const clearAdjustedSamSettingsPopupTop = () => {
+  const popupEl = getSamSettingsPopupElement();
+  if (!popupEl || popupEl.dataset.samSettingsAdjustedTop !== "true") return;
+  popupEl.style.removeProperty("top");
+  delete popupEl.dataset.samSettingsAdjustedTop;
+};
+
+const getSamSettingsViewportBounds = () => {
+  const rootRect = rootRef.value?.getBoundingClientRect();
+  const minTop = Math.max(
+    SAM_SETTINGS_MENU_MARGIN,
+    (rootRect?.top ?? 0) + SAM_SETTINGS_MENU_MARGIN
+  );
+  const maxBottom = Math.min(
+    window.innerHeight - SAM_SETTINGS_MENU_MARGIN,
+    (rootRect?.bottom ?? window.innerHeight) - SAM_SETTINGS_MENU_MARGIN
+  );
+  return {
+    minTop,
+    maxBottom,
+    height: Math.max(160, maxBottom - minTop),
+  };
+};
+
+const syncSamSettingsMenuLayout = async () => {
+  if (!samSettingsMenuOpen.value) return;
+  await nextTick();
+
+  const menu = samSettingsMenuRef.value;
+  if (typeof menu?.updatePosition === "function") {
+    clearAdjustedSamSettingsPopupTop();
+    resetSamSettingsPanelBounds();
+    menu.updatePosition();
+    await nextTick();
+  }
+
+  const panelEl = samSettingsPanelRef.value;
+  const popupEl = getSamSettingsPopupElement();
+  const toolbarEl = toolbarRef.value;
+  if (!panelEl || !popupEl || !toolbarEl) return;
+
+  const bounds = getSamSettingsViewportBounds();
+  const toolbarRect = toolbarEl.getBoundingClientRect();
+  let popupRect = popupEl.getBoundingClientRect();
+  let opensUpward = popupRect.top < toolbarRect.top;
+
+  if (popupRect.height > bounds.height || popupRect.top < bounds.minTop) {
+    panelEl.style.maxHeight = `${bounds.height}px`;
+    panelEl.style.overflowY = "auto";
+    if (typeof menu?.updatePosition === "function") {
+      menu.updatePosition();
+      await nextTick();
+      popupRect = popupEl.getBoundingClientRect();
+      opensUpward = popupRect.top < toolbarRect.top;
+    }
+  }
+
+  if (!opensUpward) return;
+
+  const overflowBottom = popupRect.bottom - bounds.maxBottom;
+  if (overflowBottom <= 0) return;
+
+  const currentTop = Number.parseFloat(popupEl.style.top || "");
+  if (!Number.isFinite(currentTop)) return;
+
+  const shift = Math.min(overflowBottom, Math.max(0, popupRect.top - bounds.minTop));
+  if (shift <= 0) return;
+
+  popupEl.style.top = `${Math.round(currentTop - shift)}px`;
+  popupEl.dataset.samSettingsAdjustedTop = "true";
+};
+
+const scheduleSamSettingsMenuLayoutSync = () => {
+  if (!samSettingsMenuOpen.value || typeof window === "undefined") return;
+  if (samSettingsMenuLayoutFrame) {
+    window.cancelAnimationFrame(samSettingsMenuLayoutFrame);
+  }
+  samSettingsMenuLayoutFrame = window.requestAnimationFrame(() => {
+    samSettingsMenuLayoutFrame = 0;
+    void syncSamSettingsMenuLayout();
+  });
+};
 
 let rasterMaskEditor;
 const syncRectPreview = () => {
@@ -1285,6 +1477,33 @@ const syncToolbarPointerRegionState = (event) => {
 
 const cloneImageData = (imageData) =>
   new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
+
+const bumpSamBaseSnapshotRevision = () => {
+  samBaseSnapshotRevision += 1;
+};
+
+const bumpSamCandidatesRevision = () => {
+  samCandidatesRevision += 1;
+};
+
+const resetSamRenderState = () => {
+  samRenderToken += 1;
+  samRenderInFlight = null;
+  samRenderInFlightSignature = "";
+  lastSamRenderSignature = "";
+};
+
+const buildSamRenderSignature = ({ contextId = getSamContextId(), width = 0, height = 0 } = {}) =>
+  JSON.stringify({
+    contextId,
+    width,
+    height,
+    baseRevision: samBaseSnapshotRevision,
+    candidatesRevision: samCandidatesRevision,
+    baseAlpha: getEffectiveMaskDisplayAlpha(),
+    currentModel: currentProcessingModelId.value,
+    autoExpand: shouldAutoExpandSamMasks.value,
+  });
 
 const imageDataToDataUrl = (imageData) => {
   if (!imageData?.width || !imageData?.height) return "";
@@ -1337,9 +1556,11 @@ const normalizeSamCandidateExpandPx = (value, fallback = 0) =>
 
 const hydrateSamCandidateExpandPx = async (candidate) => {
   const fallback = normalizeSamCandidateExpandPx(candidate?.autoExpandPx ?? candidate?.expandPx ?? 0);
+  const displayAlpha = normalizeSamDisplayAlpha(candidate?.displayAlpha, getEffectiveMaskDisplayAlpha());
   if (!candidate?.mask || !store.imageWidth || !store.imageHeight) {
     return {
       ...candidate,
+      displayAlpha,
       autoExpandPx: fallback,
       expandPx: normalizeSamCandidateExpandPx(candidate?.expandPx, fallback),
     };
@@ -1350,6 +1571,7 @@ const hydrateSamCandidateExpandPx = async (candidate) => {
       : normalizeSamCandidateExpandPx(candidate.autoExpandPx, fallback);
   return {
     ...candidate,
+    displayAlpha,
     autoExpandPx,
     expandPx: normalizeSamCandidateExpandPx(candidate.expandPx, autoExpandPx),
   };
@@ -1391,6 +1613,7 @@ const ensureSamBaseSnapshot = () => {
     maskCanvas.value.height
   );
   samBaseSnapshotDataUrl.value = getMaskData();
+  bumpSamBaseSnapshotRevision();
   return samBaseSnapshot.value;
 };
 
@@ -1401,6 +1624,81 @@ const drawImageUrlToContext = (dataUrl) =>
     image.onerror = () => reject(new Error("候选蒙版加载失败"));
     image.src = dataUrl;
   });
+
+const normalizeSamDisplayAlpha = (value, fallback = DEFAULT_IMAGE_BRUSH.alpha) =>
+  Math.min(1, Math.max(0.05, Number(value ?? fallback) || fallback || DEFAULT_IMAGE_BRUSH.alpha));
+
+const getEffectiveMaskDisplayAlpha = () =>
+  normalizeSamDisplayAlpha(props.toolState?.brushAlpha ?? brushAlpha.value, DEFAULT_IMAGE_BRUSH.alpha);
+
+const getSamCandidateMaskAlpha = (candidate = null) =>
+  Math.round(255 * normalizeSamDisplayAlpha(candidate?.displayAlpha));
+
+const normalizeSamCandidateMaskOpacity = async (maskDataUrl, width, height, candidate = null) => {
+  if (!maskDataUrl || !width || !height) return maskDataUrl || "";
+  const image = await drawImageUrlToContext(maskDataUrl);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const canvasContext = canvas.getContext("2d", { willReadFrequently: true });
+  if (!canvasContext) return maskDataUrl;
+
+  canvasContext.clearRect(0, 0, width, height);
+  canvasContext.drawImage(image, 0, 0, width, height);
+  const imageData = canvasContext.getImageData(0, 0, width, height);
+  const targetAlpha = getSamCandidateMaskAlpha(candidate);
+  let changed = false;
+  for (let index = 3; index < imageData.data.length; index += 4) {
+    if (imageData.data[index] <= 0 || imageData.data[index] === targetAlpha) {
+      continue;
+    }
+    imageData.data[index] = targetAlpha;
+    changed = true;
+  }
+  if (!changed) return maskDataUrl;
+
+  canvasContext.putImageData(imageData, 0, 0);
+  return canvas.toDataURL("image/png");
+};
+
+const normalizeMaskImageDataOpacity = (imageData, alpha = getEffectiveMaskDisplayAlpha()) => {
+  if (!imageData) return null;
+  const targetAlpha = Math.round(255 * normalizeSamDisplayAlpha(alpha));
+  const nextImageData = new ImageData(
+    new Uint8ClampedArray(imageData.data),
+    imageData.width,
+    imageData.height
+  );
+  for (let index = 3; index < nextImageData.data.length; index += 4) {
+    if (nextImageData.data[index] > 0) {
+      nextImageData.data[index] = targetAlpha;
+    }
+  }
+  return nextImageData;
+};
+
+const normalizeMaskDataUrlOpacity = async (
+  maskDataUrl,
+  width,
+  height,
+  alpha = getEffectiveMaskDisplayAlpha()
+) => {
+  if (!maskDataUrl || !width || !height) return maskDataUrl || "";
+  const image = await drawImageUrlToContext(maskDataUrl);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const canvasContext = canvas.getContext("2d", { willReadFrequently: true });
+  if (!canvasContext) return maskDataUrl;
+
+  canvasContext.clearRect(0, 0, width, height);
+  canvasContext.drawImage(image, 0, 0, width, height);
+  const imageData = canvasContext.getImageData(0, 0, width, height);
+  const normalized = normalizeMaskImageDataOpacity(imageData, alpha);
+  if (!normalized) return maskDataUrl;
+  canvasContext.putImageData(normalized, 0, 0);
+  return canvas.toDataURL("image/png");
+};
 
 const expandSamMaskForLama = async (maskDataUrl, width, height, radiusOverride = null) => {
   if (!maskDataUrl || !width || !height) return maskDataUrl || "";
@@ -1456,6 +1754,29 @@ const resolveSamCandidateMaskForRendering = async (candidate, { width = 0, heigh
   const renderHeight = Math.max(1, Math.round(height || maskCanvas.value?.height || store.imageHeight || 1));
   let renderMask = sourceMask;
   const expandPx = normalizeSamCandidateExpandPx(candidate.expandPx, candidate.autoExpandPx ?? 0);
+  const displayAlpha = normalizeSamDisplayAlpha(candidate.displayAlpha);
+  const renderMeta = {
+    sourceMask,
+    width: renderWidth,
+    height: renderHeight,
+    expandPx,
+    eraseMask: candidate.eraseMask || "",
+    autoExpand: shouldAutoExpandSamMasks.value,
+    displayAlpha,
+  };
+  const cachedRender = candidate.renderedMaskMeta;
+  if (
+    candidate.renderedMask &&
+    cachedRender?.sourceMask === renderMeta.sourceMask &&
+    cachedRender.width === renderMeta.width &&
+    cachedRender.height === renderMeta.height &&
+    cachedRender.expandPx === renderMeta.expandPx &&
+    cachedRender.eraseMask === renderMeta.eraseMask &&
+    cachedRender.autoExpand === renderMeta.autoExpand &&
+    cachedRender.displayAlpha === renderMeta.displayAlpha
+  ) {
+    return candidate.renderedMask;
+  }
 
   if (!shouldAutoExpandSamMasks.value) {
     renderMask = sourceMask;
@@ -1495,7 +1816,9 @@ const resolveSamCandidateMaskForRendering = async (candidate, { width = 0, heigh
     );
   }
 
+  renderMask = await normalizeSamCandidateMaskOpacity(renderMask, renderWidth, renderHeight, candidate);
   candidate.renderedMask = renderMask;
+  candidate.renderedMaskMeta = renderMeta;
   return renderMask;
 };
 
@@ -1626,13 +1949,17 @@ const applySamEraseOperationToCandidate = async (candidate, operation = {}) => {
   if (!imageDataHasVisibleAlpha(nextEraseMask)) {
     candidate.eraseMask = "";
     candidate.renderedMask = "";
+    candidate.renderedMaskMeta = null;
     samExpandedMaskCache.delete(candidate);
+    bumpSamCandidatesRevision();
     return true;
   }
 
   candidate.eraseMask = canvas.toDataURL("image/png");
   candidate.renderedMask = "";
+  candidate.renderedMaskMeta = null;
   samExpandedMaskCache.delete(candidate);
+  bumpSamCandidatesRevision();
   return true;
 };
 
@@ -1662,42 +1989,119 @@ const syncSamBaseSnapshotFromManualOperation = async (operationResult = {}) => {
 
   samBaseSnapshot.value = nextBaseSnapshot;
   samBaseSnapshotDataUrl.value = imageDataToDataUrl(nextBaseSnapshot);
+  bumpSamBaseSnapshotRevision();
   await renderSamCandidates({ pushHistory: true });
   return true;
 };
 
 const renderSamCandidates = async ({ pushHistory = false, saveSession = true } = {}) => {
   if (!ctx.value || !maskCanvas.value) return;
-  const baseSnapshot = samBaseSnapshot.value || (!samBaseSnapshotDataUrl.value ? ensureSamBaseSnapshot() : null);
-  if (baseSnapshot) {
-    ctx.value.putImageData(baseSnapshot, 0, 0);
-  } else if (samBaseSnapshotDataUrl.value) {
-    ctx.value.clearRect(0, 0, maskCanvas.value.width, maskCanvas.value.height);
-    const baseImage = await drawImageUrlToContext(samBaseSnapshotDataUrl.value);
-    ctx.value.drawImage(baseImage, 0, 0, maskCanvas.value.width, maskCanvas.value.height);
-  } else {
-    ctx.value.clearRect(0, 0, maskCanvas.value.width, maskCanvas.value.height);
+  const contextId = getSamContextId();
+  const canvas = maskCanvas.value;
+  const width = canvas.width;
+  const height = canvas.height;
+  if (!width || !height) return;
+
+  const baseSnapshot =
+    samBaseSnapshot.value ||
+    (!samBaseSnapshotDataUrl.value && !samCandidates.value.length
+      ? ensureSamBaseSnapshot()
+      : null);
+  const renderSignature = buildSamRenderSignature({ contextId, width, height });
+  if (!pushHistory && renderSignature === lastSamRenderSignature) {
+    return;
+  }
+  if (!pushHistory && samRenderInFlight && samRenderInFlightSignature === renderSignature) {
+    await samRenderInFlight;
+    return;
   }
 
-  for (const candidate of samCandidates.value) {
-    if (!candidate.enabled) continue;
-    if (!candidate.mask) continue;
-    const candidateMask = await resolveSamCandidateMaskForRendering(candidate, {
-      width: maskCanvas.value.width,
-      height: maskCanvas.value.height,
-    });
-    if (!candidateMask) continue;
-    const image = await drawImageUrlToContext(candidateMask);
-    ctx.value.drawImage(image, 0, 0, maskCanvas.value.width, maskCanvas.value.height);
-  }
+  const renderToken = (samRenderToken += 1);
+  const renderPromise = (async () => {
+    const compositeCanvas = document.createElement("canvas");
+    compositeCanvas.width = width;
+    compositeCanvas.height = height;
+    const compositeContext = compositeCanvas.getContext("2d", { willReadFrequently: true });
+    if (!compositeContext) return false;
 
-  if (pushHistory) {
-    appendHistorySnapshot(ctx.value.getImageData(0, 0, maskCanvas.value.width, maskCanvas.value.height));
+    if (baseSnapshot) {
+      compositeContext.putImageData(
+        hasActiveSamCandidateLayer()
+          ? normalizeMaskImageDataOpacity(baseSnapshot)
+          : baseSnapshot,
+        0,
+        0
+      );
+    } else if (samBaseSnapshotDataUrl.value) {
+      compositeContext.clearRect(0, 0, width, height);
+      const baseMask = hasActiveSamCandidateLayer()
+        ? await normalizeMaskDataUrlOpacity(
+          samBaseSnapshotDataUrl.value,
+          width,
+          height
+        )
+        : samBaseSnapshotDataUrl.value;
+      const baseImage = await drawImageUrlToContext(baseMask);
+      compositeContext.drawImage(baseImage, 0, 0, width, height);
+    } else {
+      compositeContext.clearRect(0, 0, width, height);
+    }
+
+    for (const candidate of samCandidates.value) {
+      if (!candidate.enabled) continue;
+      if (!candidate.mask) continue;
+      const candidateMask = await resolveSamCandidateMaskForRendering(candidate, {
+        width,
+        height,
+      });
+      if (!candidateMask) continue;
+      const image = await drawImageUrlToContext(candidateMask);
+      compositeContext.drawImage(image, 0, 0, width, height);
+    }
+
+    if (
+      renderToken !== samRenderToken ||
+      contextId !== getSamContextId() ||
+      canvas !== maskCanvas.value ||
+      !ctx.value
+    ) {
+      return false;
+    }
+
+    ctx.value.clearRect(0, 0, width, height);
+    ctx.value.drawImage(compositeCanvas, 0, 0, width, height);
+    lastSamRenderSignature = renderSignature;
+
+    if (saveSession) {
+      saveSamContextSession();
+    }
+    if (pushHistory) {
+      appendHistorySnapshot(ctx.value.getImageData(0, 0, width, height));
+    }
+    emitMask();
+    return true;
+  })();
+
+  samRenderInFlight = renderPromise;
+  samRenderInFlightSignature = renderSignature;
+  try {
+    await renderPromise;
+  } finally {
+    if (samRenderInFlight === renderPromise) {
+      samRenderInFlight = null;
+      samRenderInFlightSignature = "";
+    }
   }
-  emitMask();
-  if (saveSession) {
-    saveSamContextSession();
+};
+
+const rerenderSamContextCandidates = async (contextId = getSamContextId()) => {
+  if (contextId !== getSamContextId() || !hasSamContextCandidates(contextId)) return false;
+  if (!(contextId === activeSamContextId.value && hasActiveSamCandidateLayer())) {
+    restoreSamContextSession();
   }
+  if (!hasActiveSamCandidateLayer()) return false;
+  await renderSamCandidates({ pushHistory: false });
+  return true;
 };
 
 const formatSamScore = (score) =>
@@ -1715,22 +2119,26 @@ const formatSamCreatedAt = (value) => {
 
 const runSamPrediction = async ({ point = null, box = null } = {}) => {
   if (!props.samImage || samPredicting.value) return;
-  if (!props.samAvailable || !effectiveSamModelId.value) {
+  if (!selectedSamModelSupportsPointBox.value || !props.samAvailable || !effectiveSamModelId.value) {
     $q.notify({
       type: "warning",
-      message: "请先在模型管理中安装 SAM1/SAM2 点选模型",
+      message: selectedSamModelSupportsText.value
+        ? "当前 SAM3 模型不支持点选/框选，请使用文本智选"
+        : "请先在模型管理中安装 SAM1/SAM2.1 点选模型",
       position: "top",
     });
     return;
   }
   closeSamToolbarPopups();
   ensureSamBaseSnapshot();
+  const runModelId = effectiveSamModelId.value;
+  rememberExecutedSamModel(runModelId);
   samPredicting.value = true;
   try {
     const result = await predictSamMask({
       image: props.samImage,
       imageType: props.samImageType,
-      modelId: effectiveSamModelId.value,
+      modelId: runModelId,
       points: point ? [point] : [],
       box,
       multimaskOutput: !box,
@@ -1744,7 +2152,7 @@ const runSamPrediction = async ({ point = null, box = null } = {}) => {
           label: box ? `框选候选 ${index + 1}` : `点选候选 ${index + 1}`,
           enabled: index === 0,
           source: box ? "box" : "point",
-          modelId: effectiveSamModelId.value,
+          modelId: runModelId,
           prompt: box ? { box } : { point },
           createdAt: new Date().toISOString(),
         })
@@ -1752,6 +2160,7 @@ const runSamPrediction = async ({ point = null, box = null } = {}) => {
     );
     samOperationIndex.value += 1;
     samCandidates.value = [...samCandidates.value, ...nextCandidates];
+    bumpSamCandidatesRevision();
     await renderSamCandidates({ pushHistory: nextCandidates.length > 0 });
   } catch (error) {
     $q.notify({
@@ -1768,6 +2177,14 @@ const runSamTextPrediction = async () => {
   const promptSpec = samTextPromptSpec.value;
   const prompt = promptSpec.text;
   if (!props.samImage || samPredicting.value || !prompt) return;
+  if (!selectedSamModelSupportsText.value) {
+    $q.notify({
+      type: "warning",
+      message: "当前 SAM 模型不支持文本智选",
+      position: "top",
+    });
+    return;
+  }
   if (!props.samTextAvailable) {
     $q.notify({
       type: "warning",
@@ -1778,13 +2195,15 @@ const runSamTextPrediction = async () => {
   }
   closeSamToolbarPopups();
   ensureSamBaseSnapshot();
+  const runModelId = getTextModelId();
+  rememberExecutedSamModel(runModelId);
   samPredicting.value = true;
   samTextPredicting.value = true;
   try {
     const result = await predictSamText({
       image: props.samImage,
       imageType: props.samImageType,
-      modelId: getTextModelId(),
+      modelId: runModelId,
       text: prompt,
       language: promptSpec.language,
       promptSource: promptSpec.source,
@@ -1794,7 +2213,7 @@ const runSamTextPrediction = async () => {
     samLastPerformance.value = result.performance ? { ...result.performance } : null;
     const nextCandidates = await Promise.all(
       (result.candidates || []).map((candidate, index) =>
-        buildSamTextCandidate(candidate, index, result, prompt)
+        buildSamTextCandidate(candidate, index, result, prompt, runModelId)
       )
     );
     samOperationIndex.value += 1;
@@ -1808,6 +2227,7 @@ const runSamTextPrediction = async () => {
       return;
     }
     samCandidates.value = [...samCandidates.value, ...nextCandidates];
+    bumpSamCandidatesRevision();
     await renderSamCandidates({ pushHistory: true });
   } catch (error) {
     $q.notify({
@@ -1910,7 +2330,7 @@ const appendExternalSamTextResult = async ({
   samSessionByContext.set(sessionKey, {
     ...previousSession,
     candidates: mergedCandidates,
-    hoveredCandidateId: previousSession.hoveredCandidateId || "",
+    hoveredCandidateId: "",
     baseSnapshot: previousSession.baseSnapshot || null,
     baseSnapshotDataUrl,
     operationIndex: previousOperationIndex + 1,
@@ -1919,7 +2339,9 @@ const appendExternalSamTextResult = async ({
 
   if (sessionKey === activeSamContextId.value) {
     samCandidates.value = cloneSamCandidates(mergedCandidates);
+    bumpSamCandidatesRevision();
     samBaseSnapshotDataUrl.value = baseSnapshotDataUrl;
+    bumpSamBaseSnapshotRevision();
     samOperationIndex.value = previousOperationIndex + 1;
     samLastPerformance.value = result.performance ? { ...result.performance } : samLastPerformance.value;
     if (ctx.value && maskCanvas.value) {
@@ -1938,11 +2360,13 @@ const setSamCandidateEnabled = async (localId, enabled) => {
   const candidate = samCandidates.value.find((item) => item.localId === localId);
   if (!candidate) return;
   candidate.enabled = Boolean(enabled);
+  bumpSamCandidatesRevision();
   await renderSamCandidates({ pushHistory: true });
 };
 
 const removeSamCandidate = async (localId) => {
   samCandidates.value = samCandidates.value.filter((item) => item.localId !== localId);
+  bumpSamCandidatesRevision();
   if (hoveredSamCandidateId.value === localId) {
     hoveredSamCandidateId.value = "";
   }
@@ -1955,11 +2379,13 @@ const removeSamCandidate = async (localId) => {
 
 const clearSamCandidates = async () => {
   samCandidates.value = [];
+  bumpSamCandidatesRevision();
   hoveredSamCandidateId.value = "";
   samCandidateMenuOpen.value = false;
   samLastPerformance.value = null;
   await renderSamCandidates({ pushHistory: true, saveSession: false });
   samBaseSnapshot.value = null;
+  bumpSamBaseSnapshotRevision();
   saveSamContextSession();
 };
 
@@ -2019,6 +2445,13 @@ const initCanvas = () => {
   ctx.value = canvas.getContext("2d", { willReadFrequently: true });
   ctx.value.globalCompositeOperation = "source-over";
   ctx.value.clearRect(0, 0, canvas.width, canvas.height);
+  maskImageLoadVersion += 1;
+  resetSamRenderState();
+
+  if (hasSamContextCandidates()) {
+    scheduleStableMaskComposite();
+    return;
+  }
 
   if (!props.mask) {
     saveInitialState();
@@ -2033,7 +2466,13 @@ const initCanvas = () => {
 
   if (props.mask.data && typeof props.mask.data === "string") {
     const img = new Image();
-    img.onload = () => {
+    const loadGuard = createMaskImageLoadGuard();
+    img.onload = async () => {
+      if (!loadGuard.isCurrent()) return;
+      if (await rerenderSamContextCandidates(loadGuard.contextId)) {
+        return;
+      }
+      if (!loadGuard.isCurrent()) return;
       ctx.value.clearRect(0, 0, canvas.width, canvas.height);
       ctx.value.drawImage(img, 0, 0, canvas.width, canvas.height);
       saveInitialState();
@@ -2068,18 +2507,24 @@ const getMaskData = () => {
   return maskCanvas.value?.toDataURL("image/png") || "";
 };
 
+const getMaskEmitContextId = () => activeSamContextId.value || getSamContextId();
+
 const emitMask = () => {
   if (!ctx.value || !maskCanvas.value) return;
 
   if (!canvasHasVisibleMaskPixels()) {
     pendingMaskSyncDataUrl.value = "";
-    emit("update:mask", null);
+    emit("update:mask", {
+      clear: true,
+      contextId: getMaskEmitContextId(),
+    });
     return;
   }
 
   const dataUrl = maskCanvas.value.toDataURL("image/png");
   pendingMaskSyncDataUrl.value = dataUrl;
   emit("update:mask", {
+    contextId: getMaskEmitContextId(),
     data: dataUrl,
     width: maskCanvas.value.width,
     height: maskCanvas.value.height,
@@ -2255,14 +2700,16 @@ const handleCanvasPointerDown = (event) => {
       return;
     }
 
-    samPointerStart.value = clampSamCanvasPoint(getCanvasPoint(event));
-    samDragPoint.value = samPointerStart.value;
-    detachDrawingWindowListeners();
-    window.addEventListener("pointermove", handleWindowPointerMove, true);
-    window.addEventListener("pointerup", handleWindowPointerUp, true);
-    isDrawingWindowBound.value = true;
-    event.preventDefault();
-    event.stopPropagation();
+    if (selectedSamModelSupportsPointBox.value) {
+      samPointerStart.value = clampSamCanvasPoint(getCanvasPoint(event));
+      samDragPoint.value = samPointerStart.value;
+      detachDrawingWindowListeners();
+      window.addEventListener("pointermove", handleWindowPointerMove, true);
+      window.addEventListener("pointerup", handleWindowPointerUp, true);
+      isDrawingWindowBound.value = true;
+      event.preventDefault();
+      event.stopPropagation();
+    }
     return;
   }
 
@@ -2462,6 +2909,13 @@ const updateMask = (newMask) => {
   if (!ctx.value || !maskCanvas.value) return;
 
   cancelCurrentOperation();
+  maskImageLoadVersion += 1;
+  resetSamRenderState();
+
+  if (hasSamContextCandidates()) {
+    scheduleStableMaskComposite();
+    return;
+  }
 
   if (!newMask) {
     ctx.value.clearRect(0, 0, maskCanvas.value.width, maskCanvas.value.height);
@@ -2477,7 +2931,13 @@ const updateMask = (newMask) => {
 
   if (newMask.data && typeof newMask.data === "string") {
     const img = new Image();
-    img.onload = () => {
+    const loadGuard = createMaskImageLoadGuard();
+    img.onload = async () => {
+      if (!loadGuard.isCurrent()) return;
+      if (await rerenderSamContextCandidates(loadGuard.contextId)) {
+        return;
+      }
+      if (!loadGuard.isCurrent()) return;
       ctx.value.clearRect(0, 0, maskCanvas.value.width, maskCanvas.value.height);
       ctx.value.drawImage(img, 0, 0, maskCanvas.value.width, maskCanvas.value.height);
       saveInitialState();
@@ -2612,7 +3072,7 @@ onMounted(() => {
     initCanvas();
   }
 
-  if (props.samTextAvailable) {
+  if (selectedSamModelSupportsText.value) {
     refreshSamTextLexicon();
   }
 
@@ -2623,6 +3083,11 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  cancelStableMaskComposite();
+  if (samSettingsMenuLayoutFrame) {
+    window.cancelAnimationFrame(samSettingsMenuLayoutFrame);
+    samSettingsMenuLayoutFrame = 0;
+  }
   document.removeEventListener("mousemove", moveToolbar, { capture: true });
   document.removeEventListener("mouseup", stopDragToolbar, { capture: true });
   detachDrawingWindowListeners();
@@ -2664,6 +3129,7 @@ useEventListener(window, "blur", () => {
 useEventListener(window, "resize", () => {
   nextTick(() => {
     syncToolbarPosition();
+    scheduleSamSettingsMenuLayoutSync();
     emitToolState();
   });
 });
@@ -2704,6 +3170,11 @@ watch(
       pendingMaskSyncDataUrl.value = "";
       return;
     }
+    if (hasSamContextCandidates()) {
+      pendingMaskSyncDataUrl.value = "";
+      scheduleStableMaskComposite();
+      return;
+    }
     pendingMaskSyncDataUrl.value = "";
     updateMask(newMask);
   },
@@ -2729,7 +3200,7 @@ watch(
     if (enabled && rasterMaskEditor.isOperating.value) {
       cancelCurrentOperation();
     }
-    if (enabled && props.samTextAvailable) {
+    if (enabled && selectedSamModelSupportsText.value) {
       refreshSamTextLexicon();
     }
     nextTick(() => {
@@ -2739,13 +3210,50 @@ watch(
 );
 
 watch(
-  () => props.samTextAvailable,
-  (available) => {
-    if (available) {
+  selectedSamModelSupportsText,
+  (supported) => {
+    if (supported) {
       refreshSamTextLexicon();
     }
+    scheduleSamSettingsMenuLayoutSync();
   },
   { immediate: true }
+);
+
+watch(
+  samSettingsMenuOpen,
+  (open) => {
+    if (open) {
+      scheduleSamSettingsMenuLayoutSync();
+      return;
+    }
+    resetSamSettingsPanelBounds();
+    if (samSettingsMenuLayoutFrame) {
+      window.cancelAnimationFrame(samSettingsMenuLayoutFrame);
+      samSettingsMenuLayoutFrame = 0;
+    }
+  }
+);
+
+watch(
+  samCandidateMenuOpen,
+  (open) => {
+    if (!open) {
+      hoveredSamCandidateId.value = "";
+    }
+  }
+);
+
+watch(
+  [
+    selectedSamModelId,
+    samTextBatchVisible,
+    () => samTextColorOptions.value.length,
+    () => samTextNounOptions.value.length,
+  ],
+  () => {
+    scheduleSamSettingsMenuLayoutSync();
+  }
 );
 
 watch(
@@ -2755,7 +3263,7 @@ watch(
     restoreSamContextSession();
     await nextTick();
     if (samCandidates.value.length && ctx.value && maskCanvas.value) {
-      await renderSamCandidates({ pushHistory: false });
+      scheduleStableMaskComposite();
     }
   },
   { immediate: true }
@@ -2765,7 +3273,7 @@ watch(
   () => props.currentModel,
   async () => {
     if (!samCandidates.value.length || !ctx.value || !maskCanvas.value) return;
-    await renderSamCandidates({ pushHistory: false });
+    scheduleStableMaskComposite();
   }
 );
 
@@ -2774,8 +3282,18 @@ watch(
   () => {
     const options = resolvedSamModelOptions.value;
     const currentAvailable = options.some((option) => option.value === selectedSamModelId.value);
-    if (currentAvailable) return;
-    selectedSamModelId.value = props.samModelId || options[0]?.value || "sam_vit_b";
+    if (currentAvailable) {
+      scheduleSamSettingsMenuLayoutSync();
+      return;
+    }
+    const preferredModelId = [
+      lastExecutedSamModelId.value,
+      props.samModelId,
+      options[0]?.value,
+      "sam_vit_b",
+    ].find((modelId) => modelId && options.some((option) => option.value === modelId));
+    selectedSamModelId.value = preferredModelId || props.samModelId || options[0]?.value || "sam_vit_b";
+    scheduleSamSettingsMenuLayoutSync();
   },
   { immediate: true }
 );
@@ -2853,6 +3371,9 @@ watch(
     await nextTick();
     applyToolState();
     restoreToolbarState();
+    if (hasSamContextCandidates()) {
+      scheduleStableMaskComposite();
+    }
   },
   { deep: true }
 );
@@ -3154,17 +3675,12 @@ defineExpose({
 }
 
 .sam-expand-input {
-  width: 112px;
+  width: 76px;
 }
 
 .sam-expand-input :deep(.q-field__control) {
   min-height: 32px;
   padding: 0 4px;
-}
-
-.sam-expand-input :deep(.q-field__prepend),
-.sam-expand-input :deep(.q-field__append) {
-  padding: 0;
 }
 
 .sam-expand-input :deep(input) {

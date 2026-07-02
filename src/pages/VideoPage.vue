@@ -157,6 +157,8 @@
                         color="primary"
                         text-color="white"
                         icon="tune"
+                        aria-label="智能选区设置"
+                        title="智能选区设置"
                         data-testid="video-sam-fullscreen-settings-button"
                       >
                         <q-tooltip>智能选区设置</q-tooltip>
@@ -182,7 +184,7 @@
                             </div>
                             <div class="video-sam-settings-item">
                               <div class="text-caption text-grey-7">当前点选/框选模型</div>
-                              <div class="text-body2">SAM2 / SAM2.1 视频传播</div>
+                              <div class="text-body2">SAM2.1 视频传播</div>
                             </div>
                             <q-separator />
                             <div class="video-sam-settings-item is-disabled">
@@ -197,6 +199,8 @@
                         color="primary"
                         text-color="white"
                         icon="ads_click"
+                        aria-label="点选/框选对象：单击点选，拖拽框选"
+                        title="点选/框选对象：单击点选，拖拽框选"
                         data-testid="video-sam-fullscreen-select-tool-button"
                       >
                         <q-tooltip>点选/框选对象：单击点选，拖拽框选</q-tooltip>
@@ -204,6 +208,8 @@
                       <q-btn
                         icon="format_list_bulleted"
                         :text-color="$q.dark.isActive ? 'grey-2' : 'grey-8'"
+                        aria-label="候选蒙版列表"
+                        title="候选蒙版列表"
                         data-testid="video-sam-fullscreen-candidate-button"
                       >
                         <q-tooltip>候选蒙版列表</q-tooltip>
@@ -246,6 +252,8 @@
                                       dense
                                       :model-value="objectItem.enabled !== false"
                                       :disable="samVideoState.running"
+                                      :aria-label="objectItem.enabled === false ? '显示候选对象' : '隐藏候选对象'"
+                                      :title="objectItem.enabled === false ? '显示候选对象' : '隐藏候选对象'"
                                       @update:model-value="
                                         (value) =>
                                           videoStore.setSamVideoObjectEnabled(
@@ -263,6 +271,7 @@
                                       outlined
                                       min="0"
                                       max="99"
+                                      step="1"
                                       suffix="px"
                                       class="video-sam-object-expand-input"
                                       input-class="text-center"
@@ -270,28 +279,6 @@
                                       @update:model-value="setSelectedSamVideoObjectExpandPx(objectItem.objectId, $event)"
                                       @click.stop
                                     >
-                                      <template #prepend>
-                                        <q-btn
-                                          flat
-                                          dense
-                                          round
-                                          size="sm"
-                                          icon="remove"
-                                          :disable="samVideoState.running || Number(objectItem.expandPx ?? objectItem.autoExpandPx ?? 0) <= 0"
-                                          @click.stop="stepSelectedSamVideoObjectExpandPx(objectItem.objectId, -1)"
-                                        />
-                                      </template>
-                                      <template #append>
-                                        <q-btn
-                                          flat
-                                          dense
-                                          round
-                                          size="sm"
-                                          icon="add"
-                                          :disable="samVideoState.running || Number(objectItem.expandPx ?? objectItem.autoExpandPx ?? 0) >= 99"
-                                          @click.stop="stepSelectedSamVideoObjectExpandPx(objectItem.objectId, 1)"
-                                        />
-                                      </template>
                                       <q-tooltip>LaMa 扩边大小</q-tooltip>
                                     </q-input>
                                     <q-btn
@@ -325,6 +312,8 @@
                       icon="clear"
                       color="primary"
                       :disable="!hasSelectedSamVideoState"
+                      aria-label="清空提示、候选对象和传播结果"
+                      title="清空提示、候选对象和传播结果"
                       data-testid="video-sam-fullscreen-clear-button"
                       @click="clearSelectedSamVideoResult"
                     >
@@ -338,6 +327,8 @@
                       color="primary"
                       :loading="samVideoState.running"
                       :disable="!canRunSamVideoPropagation"
+                      aria-label="运行智能选区"
+                      title="运行智能选区"
                       @click="runSamVideoPropagation"
                     >
                       <q-tooltip>运行智能选区</q-tooltip>
@@ -348,6 +339,8 @@
                       dense
                       icon="center_focus_strong"
                       color="primary"
+                      aria-label="重置视图"
+                      title="重置视图"
                       @click="resetFullscreenViewport"
                     >
                       <q-tooltip>重置视图</q-tooltip>
@@ -358,6 +351,8 @@
                       dense
                       icon="visibility_off"
                       color="primary"
+                      aria-label="按住隐藏全部蒙版"
+                      title="按住隐藏全部蒙版"
                       data-testid="video-sam-fullscreen-hold-hide-button"
                       @mousedown.prevent="setFullscreenMaskPreviewVisible(false)"
                       @mouseup.prevent="setFullscreenMaskPreviewVisible(true)"
@@ -964,7 +959,10 @@ const canOpenOutput = computed(
       (Boolean(videoStore.currentSourceIsReplacement) && videoStore.videoHistory.length > 0))
 );
 const defaultSamVideoModelId = computed(
-  () => configStore.config.masking?.defaultSam2Model || "sam2_1_hiera_large"
+  () =>
+    configStore.config.masking?.videoSmartSelectionDefaultModel ||
+    configStore.config.masking?.defaultSam2Model ||
+    "sam2_1_hiera_large"
 );
 
 const normalizeSamVideoExpandPx = (value, fallback = 0) =>
@@ -1453,7 +1451,7 @@ const checkLocalFileExists = async (filePath) => {
 };
 
 const samVideoMissingLocalPathMessage =
-  "当前视频没有后端可读取的本地文件路径。请通过“选择视频文件”重新导入本地视频，避免使用仅浏览器临时可见的 blob/会话文件后再运行 SAM2 智能选区。";
+  "当前视频没有后端可读取的本地文件路径。请通过“选择视频文件”重新导入本地视频，避免使用仅浏览器临时可见的 blob/会话文件后再运行 SAM2.1 智能选区。";
 
 const canRunSamVideoPropagation = computed(
   () =>
@@ -1468,8 +1466,8 @@ const canRunSamVideoPropagation = computed(
 const samVideoSelectionActionTooltip = computed(() => {
   if (!videoStore.hasVideoFile) return "请先打开视频文件";
   if (isProcessing.value) return "视频处理中暂不能创建智能选区轨道";
-  if (samVideoState.running) return "SAM2 视频传播正在运行";
-  return "新建一条空的 SAM2 智能选区轨道";
+  if (samVideoState.running) return "SAM2.1 视频传播正在运行";
+  return "新建一条空的 SAM2.1 智能选区轨道";
 });
 
 const canRunSamVideoSelectionFromMaskList = computed(
@@ -1569,15 +1567,6 @@ const setSelectedSamVideoObjectExpandPx = (objectId, value) => {
     objectId,
     normalizeSamVideoExpandPx(value)
   );
-};
-
-const stepSelectedSamVideoObjectExpandPx = (objectId, delta) => {
-  const objectItem = selectedSamVideoResultObjects.value.find(
-    (item) => Number(item.objectId) === Number(objectId)
-  );
-  if (!objectItem) return;
-  const current = normalizeSamVideoExpandPx(objectItem.expandPx, objectItem.autoExpandPx);
-  setSelectedSamVideoObjectExpandPx(objectId, current + Number(delta || 0));
 };
 
 const removeVideoMaskTrack = async (maskId) => {
@@ -1886,7 +1875,7 @@ const getSamVideoJobStageText = (job = {}, directionLabel = "") => {
   if (phase === "completed") return `${prefix}传播完成`;
   if (phase === "failed") return `${prefix}传播失败`;
   if (phase === "canceled") return `${prefix}传播已取消`;
-  return `${prefix}${job.message || "等待 SAM2 视频传播"}`;
+  return `${prefix}${job.message || "等待 SAM2.1 视频传播"}`;
 };
 
 const applySamVideoJobProgress = (job = {}, directionLabel = "") => {
@@ -1901,7 +1890,7 @@ const runSamVideoPropagationJob = async (request, directionLabel) => {
   let job = createResponse?.data || createResponse;
   const taskId = job?.taskId || job?.task_id;
   if (!taskId) {
-    throw new Error("SAM2 视频传播任务没有返回有效 taskId");
+    throw new Error("SAM2.1 视频传播任务没有返回有效 taskId");
   }
   applySamVideoJobProgress(job, directionLabel);
 
@@ -1913,10 +1902,10 @@ const runSamVideoPropagationJob = async (request, directionLabel) => {
   }
 
   if (job.status === "failed") {
-    throw new Error(job.error || job.message || "SAM2 视频传播任务失败");
+    throw new Error(job.error || job.message || "SAM2.1 视频传播任务失败");
   }
   if (job.status === "canceled") {
-    throw new Error(job.message || "SAM2 视频传播任务已取消");
+    throw new Error(job.message || "SAM2.1 视频传播任务已取消");
   }
 
   const resultResponse = await getSamVideoPropagationJobResult(taskId);
@@ -1934,7 +1923,7 @@ const runSamVideoPropagation = async () => {
       ? "请先选择智能选区轨道"
       : promptObjects.length === 0
       ? "请先在预览画面点选或框选至少一个对象"
-      : "当前无法运行 SAM2 视频智能选区";
+      : "当前无法运行 SAM2.1 视频智能选区";
     samVideoState.error = samVideoState.message;
     return null;
   }
@@ -1942,10 +1931,10 @@ const runSamVideoPropagation = async () => {
   samVideoState.running = true;
   samVideoState.progress = 0;
   samVideoState.error = "";
-  samVideoState.message = "正在准备 SAM2 视频传播";
+  samVideoState.message = "正在准备 SAM2.1 视频传播";
   samVideoState.lastResultSummary = null;
   samVideoState.lastTrackId = "";
-  updateSamVideoGlobalLoadingOverlay("准备阶段：正在启动 SAM2 视频智能选区任务", samVideoState.progress);
+  updateSamVideoGlobalLoadingOverlay("准备阶段：正在启动 SAM2.1 视频智能选区任务", samVideoState.progress);
 
   try {
     const sourcePath = await ensureSamVideoSourcePath();
@@ -2031,8 +2020,8 @@ const runSamVideoPropagation = async () => {
     }
     samVideoState.lastTrackId = track?.id || "";
     samVideoState.message = track
-      ? `SAM2 已更新 ${track.name}，共 ${result?.frames?.length || 0} 帧`
-      : updateResult.error || `SAM2 已返回 ${result?.frames?.length || 0} 帧，但没有可用蒙版`;
+      ? `SAM2.1 已更新 ${track.name}，共 ${result?.frames?.length || 0} 帧`
+      : updateResult.error || `SAM2.1 已返回 ${result?.frames?.length || 0} 帧，但没有可用蒙版`;
     return result;
   } catch (error) {
     samVideoState.progress = 0;
@@ -7773,17 +7762,12 @@ onUnmounted(() => {
 }
 
 .video-sam-object-expand-input {
-  width: 112px;
+  width: 76px;
 }
 
 .video-sam-object-expand-input :deep(.q-field__control) {
   min-height: 32px;
   padding: 0 4px;
-}
-
-.video-sam-object-expand-input :deep(.q-field__prepend),
-.video-sam-object-expand-input :deep(.q-field__append) {
-  padding: 0;
 }
 
 .video-sam-object-expand-input :deep(input) {

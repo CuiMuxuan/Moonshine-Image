@@ -111,13 +111,13 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/shared/appConfigSchema.js",
-    description: "Shared config schema keeps a separate default SAM model setting",
-    pattern: /CONFIG_SCHEMA_VERSION = 6[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*defaultSamModel:\s*"sam_vit_b"[\s\S]*defaultSam2Model:\s*"sam2_1_hiera_large"[\s\S]*defaultSam3Model:\s*"sam3_1_multiplex"[\s\S]*masking:\s*\{[\s\S]*DEFAULT_MASKING_CONFIG/,
+    description: "Shared config schema keeps version and page-level default SAM model settings",
+    pattern: /CONFIG_SCHEMA_VERSION = 7[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*defaultSamModel:\s*"sam_vit_b"[\s\S]*defaultSam2Model:\s*"sam2_1_hiera_large"[\s\S]*defaultSam3Model:\s*"sam3_1_multiplex"[\s\S]*imageSmartSelectionDefaultModel:\s*"sam_vit_b"[\s\S]*videoSmartSelectionDefaultModel:\s*"sam2_1_hiera_large"[\s\S]*masking:\s*\{[\s\S]*DEFAULT_MASKING_CONFIG/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",
-    description: "Electron config persists the separate default SAM model setting",
-    pattern: /DEFAULT_MASKING_CONFIG[\s\S]*nextConfig\.masking\.defaultSamModel = DEFAULT_MASKING_CONFIG\.defaultSamModel[\s\S]*nextConfig\.masking\.defaultSam2Model = DEFAULT_MASKING_CONFIG\.defaultSam2Model[\s\S]*merged\.masking\.defaultSam3Model/,
+    description: "Electron config persists version and page-level default SAM model settings",
+    pattern: /DEFAULT_MASKING_CONFIG[\s\S]*nextConfig\.masking\.defaultSamModel = DEFAULT_MASKING_CONFIG\.defaultSamModel[\s\S]*nextConfig\.masking\.defaultSam2Model = DEFAULT_MASKING_CONFIG\.defaultSam2Model[\s\S]*nextConfig\.masking\.imageSmartSelectionDefaultModel[\s\S]*nextConfig\.masking\.videoSmartSelectionDefaultModel[\s\S]*merged\.masking\.defaultSam3Model[\s\S]*merged\.masking\.imageSmartSelectionDefaultModel[\s\S]*merged\.masking\.videoSmartSelectionDefaultModel/,
   });
 
   logSection("Backend Protocol");
@@ -153,8 +153,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "server/moonshine_server/moonshine/model_registry.py",
-    description: "Model registry tracks same-family SAM2 and SAM2.1 variants under the sam2 folder",
-    pattern: /"id": "sam2_hiera_tiny"[\s\S]*"modelVersion": "SAM2"[\s\S]*"path": "sam2\/sam2_hiera_tiny\.pt"[\s\S]*"id": "sam2_hiera_large"[\s\S]*"path": "sam2\/sam2_hiera_large\.pt"[\s\S]*"id": "sam2_1_hiera_tiny"[\s\S]*"modelVersion": "SAM2\.1"[\s\S]*"path": "sam2\/sam2\.1_hiera_tiny\.pt"[\s\S]*"id": "sam2_1_hiera_large"[\s\S]*"path": "sam2\/sam2\.1_hiera_large\.pt"/,
+    description: "Model registry tracks SAM2.1 variants under the sam2 folder and no longer exposes old SAM2 checkpoints",
+    pattern: /(?=[\s\S]*"id": "sam2_1_hiera_tiny"[\s\S]*"modelVersion": "SAM2\.1"[\s\S]*"path": "sam2\/sam2\.1_hiera_tiny\.pt")(?=[\s\S]*"id": "sam2_1_hiera_small"[\s\S]*"path": "sam2\/sam2\.1_hiera_small\.pt")(?=[\s\S]*"id": "sam2_1_hiera_base_plus"[\s\S]*"path": "sam2\/sam2\.1_hiera_base_plus\.pt")(?=[\s\S]*"id": "sam2_1_hiera_large"[\s\S]*"path": "sam2\/sam2\.1_hiera_large\.pt")(?![\s\S]*"id": "sam2_hiera_)[\s\S]*/,
   });
   assertPattern({
     file: "server/moonshine_server/moonshine/model_registry.py",
@@ -163,7 +163,7 @@ function runAssertions() {
   });
   assertAbsentPattern({
     file: "server/moonshine_server/moonshine/model_registry.py",
-    description: "SAM1/SAM2/SAM2.1 no longer accept root checkpoint legacy paths",
+    description: "SAM1/SAM2.1 no longer accept root checkpoint legacy paths",
     pattern: /"legacyPaths": \["sam(?:_vit|2|2\.1)/,
   });
   assertPattern({
@@ -232,8 +232,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "server/moonshine_server/moonshine/sam_service.py",
-    description: "SAM service loads SAM1 and SAM2 from the model registry without plugin download",
-    pattern: /SAM1_MODEL_TYPES[\s\S]*SAM2_MODEL_TYPES = \{[\s\S]*"sam2_hiera_tiny": "sam2_tiny"[\s\S]*"sam2_1_hiera_large": "sam2_1_large"[\s\S]*build_model_status\(self\.model_dir[\s\S]*build_sam2\(model_type,\s*ckpt_path=str\(checkpoint_path\),\s*device=self\.device\)[\s\S]*sam_model_registry\[model_type\]\(checkpoint=str\(checkpoint_path\)\)[\s\S]*predictor\.predict\(/,
+    description: "SAM service loads SAM1 and SAM2.1 from the model registry without plugin download",
+    pattern: /SAM1_MODEL_TYPES[\s\S]*SAM2_MODEL_TYPES = \{(?![\s\S]*"sam2_hiera_)[\s\S]*"sam2_1_hiera_large": "sam2_1_large"[\s\S]*build_model_status\(self\.model_dir[\s\S]*build_sam2\(model_type,\s*ckpt_path=str\(checkpoint_path\),\s*device=self\.device\)[\s\S]*sam_model_registry\[model_type\]\(checkpoint=str\(checkpoint_path\)\)[\s\S]*predictor\.predict\(/,
   });
   assertPattern({
     file: "server/moonshine_server/api.py",
@@ -253,12 +253,12 @@ function runAssertions() {
   assertPattern({
     file: "server/moonshine_server/moonshine/sam_service.py",
     description: "SAM service translates common CUDA resource failures into user-facing guidance",
-    pattern: /def _format_runtime_error[\s\S]*out of memory[\s\S]*SAM 推理显存不足[\s\S]*no available kernel[\s\S]*SAM2 CUDA attention kernel 不可用/,
+    pattern: /def _format_runtime_error[\s\S]*out of memory[\s\S]*SAM 推理显存不足[\s\S]*no available kernel[\s\S]*SAM2\.1 CUDA attention kernel 不可用/,
   });
   assertPattern({
     file: "server/moonshine_server/moonshine/sam_service.py",
     description: "SAM point and box prediction rejects SAM3 text models until the text route is implemented",
-    pattern: /POINT_BOX_FAMILIES = \{"sam", "sam2"\}[\s\S]*model\.get\("family"\) not in POINT_BOX_FAMILIES[\s\S]*Only SAM1\/SAM2 point\/box prediction is enabled now/,
+    pattern: /POINT_BOX_FAMILIES = \{"sam", "sam2"\}[\s\S]*model\.get\("family"\) not in POINT_BOX_FAMILIES[\s\S]*Only SAM1\/SAM2\.1 point\/box prediction is enabled now/,
   });
   assertPattern({
     file: "server/moonshine_server/moonshine/sam_service.py",
@@ -268,7 +268,7 @@ function runAssertions() {
   assertPattern({
     file: "server/moonshine_server/moonshine/sam_service.py",
     description: "SAM2 video propagation uses the bundled video predictor and JPEG frame directories",
-    pattern: /build_sam2_video_predictor[\s\S]*self\._video_predictors = \{\}[\s\S]*def _get_video_predictor[\s\S]*def propagate_video[\s\S]*SAM2 video input must be a JPEG frame directory[\s\S]*predictor\.add_new_points_or_box[\s\S]*predictor\.propagate_in_video/,
+    pattern: /build_sam2_video_predictor[\s\S]*self\._video_predictors = \{\}[\s\S]*def _get_video_predictor[\s\S]*def propagate_video[\s\S]*SAM2\.1 video input must be a JPEG frame directory[\s\S]*predictor\.add_new_points_or_box[\s\S]*predictor\.propagate_in_video/,
   });
   assertPattern({
     file: "server/moonshine_server/moonshine/sam_service.py",
@@ -394,8 +394,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/components/global/ModelManagementPanel.vue",
-    description: "Model management panel distinguishes installed SAM files from device/runtime incompatibility and shows canonical paths",
-    pattern: /(?=[\s\S]*目标相对路径：)(?=[\s\S]*正式检测路径：)(?=[\s\S]*当前检测到：)(?=[\s\S]*if \(model\.installed && !model\.deviceCompatible\) return "已安装·设备不适配")(?=[\s\S]*if \(model\.installed && !model\.deviceCompatible\) return "warning")[\s\S]*/,
+    description: "Model management panel shows recommended VRAM as guidance without changing installed status",
+    pattern: /(?=[\s\S]*目标相对路径：)(?=[\s\S]*正式检测路径：)(?=[\s\S]*当前检测到：)(?=[\s\S]*推荐显存)(?=[\s\S]*model\.recommendedVramWarning\.message)(?=[\s\S]*if \(model\.installed\) return "已安装")(?![\s\S]*已安装·设备不适配)[\s\S]*/,
   });
   assertPattern({
     file: "src/components/global/ModelManagementPanel.vue",
@@ -410,7 +410,12 @@ function runAssertions() {
   assertPattern({
     file: "src/services/ModelRegistryService.js",
     description: "Frontend model registry preserves SAM model version, license, legacy, and runtime metadata",
-    pattern: /familyLabel: String\(model\.familyLabel[\s\S]*modelVersion: String\(model\.modelVersion[\s\S]*variant: String\(model\.variant[\s\S]*license: model\.license[\s\S]*legacyDetected[\s\S]*runtime: response\?\.runtime/,
+    pattern: /familyLabel: String\(model\.familyLabel[\s\S]*modelVersion: String\(model\.modelVersion[\s\S]*variant: String\(model\.variant[\s\S]*license: model\.license[\s\S]*legacyDetected[\s\S]*recommendedVram[\s\S]*recommendedVramWarning[\s\S]*runtime: response\?\.runtime/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/moonshine/model_registry.py",
+    description: "SAM registry uses recommended VRAM guidance without making installed SAM models unavailable",
+    pattern: /(?=[\s\S]*"id": "sam_vit_b"[\s\S]*"recommendedVram": 4096)(?=[\s\S]*"id": "sam2_1_hiera_large"[\s\S]*"recommendedVram": 12288)(?=[\s\S]*"id": "sam3_1_multiplex"[\s\S]*"recommendedVram": 16384)(?=[\s\S]*def _recommended_vram_warning)(?=[\s\S]*"可能较慢或失败。")(?=[\s\S]*"recommendedVramWarning": recommended_vram_warning)[\s\S]*/,
   });
   assertPattern({
     file: "src/services/ModelRegistryService.js",
@@ -505,17 +510,17 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/IndexPage.vue",
     description: "Image page passes SAM smart selection state and image payload into the editor",
-    pattern: /:smart-selection-mode="isSmartSelectionMode"[\s\S]*:current-model="currentModel"[\s\S]*:sam-model-id="defaultSamModelId"[\s\S]*:sam-available="samPointBoxAvailable"[\s\S]*:sam-text-available="samTextAvailable"[\s\S]*:sam-image="samImagePayload\.image"[\s\S]*:sam-image-type="samImagePayload\.imageType"[\s\S]*setMaskMode[\s\S]*"update:mask-mode"/,
+    pattern: /:smart-selection-mode="isSmartSelectionMode"[\s\S]*:current-model="currentModel"[\s\S]*:sam-model-id="defaultSamModelId"[\s\S]*:sam-available="samPointBoxAvailable"[\s\S]*:sam-text-supported="samTextSupported"[\s\S]*:sam-text-available="samTextAvailable"[\s\S]*:sam-image="samImagePayload\.image"[\s\S]*:sam-image-type="samImagePayload\.imageType"[\s\S]*setMaskMode[\s\S]*"update:mask-mode"/,
   });
   assertPattern({
     file: "src/pages/IndexPage.vue",
-    description: "Image page only offers installed SAM1/SAM2 models for point and box smart selection",
-    pattern: /(?=[\s\S]*:sam-model-options="samModelOptions")(?=[\s\S]*samModelOptions = computed)(?=[\s\S]*installedMaskModels)(?=[\s\S]*\["sam", "sam2"\]\.includes\(model\.family\))[\s\S]*/,
+    description: "Image page offers SAM1/SAM2.1 point-box models plus available SAM3 text models in one selector",
+    pattern: /(?=[\s\S]*:sam-model-options="samModelOptions")(?=[\s\S]*samPointBoxModelOptions = computed)(?=[\s\S]*installedMaskModels)(?=[\s\S]*\["sam", "sam2"\]\.includes\(model\.family\))(?=[\s\S]*configuredImageSamModelId = computed)(?=[\s\S]*imageSmartSelectionDefaultModel)(?=[\s\S]*samTextModelOptions = computed)(?=[\s\S]*model\.family === "sam3")(?=[\s\S]*defaultSamTextModelId\.value)(?=[\s\S]*samModelOptions = computed\(\(\) =>[\s\S]*samPointBoxModelOptions\.value[\s\S]*samTextModelOptions\.value)[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/IndexPage.vue",
-    description: "Image page can enter smart selection when SAM1/SAM2 point-box or SAM3 text is available",
-    pattern: /(?=[\s\S]*samPointBoxAvailable = computed\(\(\) => samModelOptions\.value\.length > 0\))(?=[\s\S]*samTextAvailable = computed\(\(\) =>[\s\S]*samCapabilities\.value\?\.text\?\.enabled)(?=[\s\S]*\["sam3_1_multiplex", "sam3"\]\.includes\(model\.id\))(?=[\s\S]*defaultSamTextModelId = computed[\s\S]*sam3_1_multiplex)(?=[\s\S]*samSmartSelectionAvailable = computed\([\s\S]*backendEngineValue\.value\.isRunning && \(samPointBoxAvailable\.value \|\| samTextAvailable\.value\))(?=[\s\S]*resolvePreferredMaskMode[\s\S]*samSmartSelectionAvailable\.value \? "smart" : "manual")(?=[\s\S]*nextMode === "smart" && !samSmartSelectionAvailable\.value)(?=[\s\S]*后端服务启动成功后可用)(?=[\s\S]*请先在模型管理中安装 SAM1\/SAM2 点选模型或 SAM3 文本模型)(?=[\s\S]*const order = \["off", "manual", "smart"\])[\s\S]*/,
+    description: "Image page can enter smart selection when SAM1/SAM2.1 point-box or SAM3 text is available",
+    pattern: /(?=[\s\S]*samPointBoxAvailable = computed\(\(\) => samPointBoxModelOptions\.value\.length > 0\))(?=[\s\S]*samTextSupportedModelIds = \["sam3_1_multiplex", "sam3"\])(?=[\s\S]*samTextSupported = computed)(?=[\s\S]*samTextAvailable = computed\(\(\) =>[\s\S]*samTextSupported\.value[\s\S]*samCapabilities\.value\?\.text\?\.enabled)(?=[\s\S]*defaultSamTextModelId = computed[\s\S]*sam3_1_multiplex)(?=[\s\S]*samSmartSelectionAvailable = computed\([\s\S]*backendEngineValue\.value\.isRunning && \(samPointBoxAvailable\.value \|\| samTextSupported\.value\))(?=[\s\S]*resolvePreferredMaskMode[\s\S]*samSmartSelectionAvailable\.value \? "smart" : "manual")(?=[\s\S]*nextMode === "smart" && !samSmartSelectionAvailable\.value)(?=[\s\S]*后端服务启动成功后可用)(?=[\s\S]*请先在模型管理中安装 SAM1\/SAM2\.1 点选模型或 SAM3 文本模型)(?=[\s\S]*const order = \["off", "manual", "smart"\])[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/IndexPage.vue",
@@ -530,12 +535,12 @@ function runAssertions() {
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
     description: "Image masker runs SAM point and box prompts and applies candidates to the current mask",
-    pattern: /predictSamMask[\s\S]*runSamPrediction[\s\S]*modelId:\s*effectiveSamModelId\.value[\s\S]*points:\s*point \? \[point\] : \[\][\s\S]*box,[\s\S]*renderSamCandidates[\s\S]*setSamCandidateEnabled[\s\S]*removeSamCandidate/,
+    pattern: /predictSamMask[\s\S]*runSamPrediction[\s\S]*const runModelId = effectiveSamModelId\.value[\s\S]*rememberExecutedSamModel\(runModelId\)[\s\S]*modelId:\s*runModelId[\s\S]*points:\s*point \? \[point\] : \[\][\s\S]*box,[\s\S]*renderSamCandidates[\s\S]*setSamCandidateEnabled[\s\S]*removeSamCandidate/,
   });
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
-    description: "Image masker keeps point-box prompts gated by SAM1/SAM2 availability",
-    pattern: /samAvailable[\s\S]*sam-empty-state[\s\S]*请先在模型管理中安装 SAM1\/SAM2 点选模型[\s\S]*if \(!props\.samAvailable \|\| !effectiveSamModelId\.value\)[\s\S]*请先在模型管理中安装 SAM1\/SAM2 点选模型/,
+    description: "Image masker keeps point-box prompts gated by SAM1/SAM2.1 availability",
+    pattern: /samAvailable[\s\S]*sam-empty-state[\s\S]*请先在模型管理中安装 SAM1\/SAM2\.1 点选模型[\s\S]*if \(!selectedSamModelSupportsPointBox\.value \|\| !props\.samAvailable \|\| !effectiveSamModelId\.value\)[\s\S]*请先在模型管理中安装 SAM1\/SAM2\.1 点选模型/,
   });
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
@@ -545,7 +550,17 @@ function runAssertions() {
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
     description: "Image masker exposes SAM3 text prompt controls inside the smart-selection settings popup",
-    pattern: /(?=[\s\S]*predictSamMask, predictSamText)(?=[\s\S]*data-testid="sam-settings-button")(?=[\s\S]*v-if="props\.samTextAvailable"[\s\S]*data-testid="sam-text-settings-section")(?=[\s\S]*v-model="samTextPrompt")(?=[\s\S]*label="自定义文本")(?=[\s\S]*v-model="samTextColor")(?=[\s\S]*v-model="samTextNoun")(?=[\s\S]*samGeneratedPromptText)(?=[\s\S]*buildSam3LexiconPrompt)(?=[\s\S]*icon="image_search")(?=[\s\S]*@click="runSamTextPrediction")(?=[\s\S]*icon="select_all")(?=[\s\S]*@click="requestSamTextBatchPrediction")(?=[\s\S]*samTextAvailable)(?=[\s\S]*canRunSamTextPrediction)(?=[\s\S]*canRunSamBatchTextPrediction)(?=[\s\S]*const runSamTextPrediction = async)(?=[\s\S]*predictSamText\()(?=[\s\S]*promptSource: promptSpec\.source)(?=[\s\S]*promptColor: promptSpec\.color)(?=[\s\S]*promptNoun: promptSpec\.noun)(?=[\s\S]*文本候选)(?=[\s\S]*source: "text")[\s\S]*/,
+    pattern: /(?=[\s\S]*predictSamMask, predictSamText)(?=[\s\S]*data-testid="sam-settings-button")(?=[\s\S]*v-if="selectedSamModelSupportsText"[\s\S]*data-testid="sam-text-settings-section")(?=[\s\S]*v-model="samTextPrompt")(?=[\s\S]*label="自定义文本")(?=[\s\S]*v-model="samTextColor")(?=[\s\S]*v-model="samTextNoun")(?=[\s\S]*samGeneratedPromptText)(?=[\s\S]*buildSam3LexiconPrompt)(?=[\s\S]*selectedSamModelSupportsText = computed)(?=[\s\S]*selectedSamModelSupportsPointBox = computed)(?=[\s\S]*icon="image_search")(?=[\s\S]*@click="runSamTextPrediction")(?=[\s\S]*icon="select_all")(?=[\s\S]*label="检索选中图片")(?=[\s\S]*@click="requestSamTextBatchPrediction")(?=[\s\S]*samTextAvailable)(?=[\s\S]*canRunSamTextPrediction)(?=[\s\S]*canRunSamBatchTextPrediction)(?=[\s\S]*const runSamTextPrediction = async)(?=[\s\S]*当前 SAM 模型不支持文本智选)(?=[\s\S]*请先选择图片)(?=[\s\S]*predictSamText\()(?=[\s\S]*promptSource: promptSpec\.source)(?=[\s\S]*promptColor: promptSpec\.color)(?=[\s\S]*promptNoun: promptSpec\.noun)(?=[\s\S]*文本候选)(?=[\s\S]*source: "text")[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/components/image/ImageMasker.vue",
+    description: "Image masker constrains the SAM settings menu after dynamic text controls render",
+    pattern: /(?=[\s\S]*ref="samSettingsMenuRef"[\s\S]*:content-class="samSettingsPopupContentClass"[\s\S]*ref="samSettingsPanelRef")(?=[\s\S]*sam-settings-toolbar-popup)(?=[\s\S]*syncSamSettingsMenuLayout)(?=[\s\S]*updatePosition)(?=[\s\S]*popupRect\.top < toolbarRect\.top)(?=[\s\S]*panelEl\.style\.maxHeight)(?=[\s\S]*panelEl\.style\.overflowY = "auto")(?=[\s\S]*popupEl\.style\.top)(?=[\s\S]*scheduleSamSettingsMenuLayoutSync)(?=[\s\S]*watch\([\s\S]*samSettingsMenuOpen)(?=[\s\S]*window\.cancelAnimationFrame\(samSettingsMenuLayoutFrame\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/components/image/ImageMasker.vue",
+    description: "Image masker keeps the last executed SAM model in the current page session",
+    pattern: /(?=[\s\S]*lastExecutedSamModelId = ref\(getLastExecutedSamImageModelId\(\)\))(?=[\s\S]*const getTextModelId = \(\) => \{[\s\S]*selectedSamModelSupportsText\.value && effectiveSamModelId\.value[\s\S]*return effectiveSamModelId\.value)(?=[\s\S]*const rememberExecutedSamModel = \(modelId\) =>[\s\S]*lastExecutedSamModelId\.value = nextModelId[\s\S]*setLastExecutedSamImageModelId\(nextModelId\)[\s\S]*selectedSamModelId\.value = nextModelId)(?=[\s\S]*const runModelId = getTextModelId\(\)[\s\S]*rememberExecutedSamModel\(runModelId\)[\s\S]*modelId:\s*runModelId)(?=[\s\S]*buildSamTextCandidate\(candidate, index, result, prompt, runModelId\))(?=[\s\S]*lastExecutedSamModelId\.value,[\s\S]*props\.samModelId)[\s\S]*/,
   });
   assertAbsentPattern({
     file: "src/components/image/ImageMasker.vue",
@@ -555,7 +570,7 @@ function runAssertions() {
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
     description: "Image masker supports selected-images SAM3 text batch progress and candidate session injection",
-    pattern: /(?=[\s\S]*samTextBatchState)(?=[\s\S]*q-linear-progress)(?=[\s\S]*samTextBatchTargetCount)(?=[\s\S]*requestSamTextBatchPrediction)(?=[\s\S]*sam-text-batch-request)(?=[\s\S]*appendExternalSamTextResult)(?=[\s\S]*composeSamMaskDataUrl)(?=[\s\S]*defineExpose\(\{[\s\S]*appendExternalSamTextResult)[\s\S]*/,
+    pattern: /(?=[\s\S]*samTextBatchState)(?=[\s\S]*notFound)(?=[\s\S]*未检出)(?=[\s\S]*q-linear-progress)(?=[\s\S]*samTextBatchTargetCount)(?=[\s\S]*requestSamTextBatchPrediction)(?=[\s\S]*sam-text-batch-request)(?=[\s\S]*appendExternalSamTextResult)(?=[\s\S]*composeSamMaskDataUrl)(?=[\s\S]*defineExpose\(\{[\s\S]*appendExternalSamTextResult)[\s\S]*/,
   });
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
@@ -584,8 +599,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
-    description: "Image masker lets LaMa users override each SAM candidate expansion radius from 0 to 99px",
-    pattern: /(?=[\s\S]*autoExpandPx)(?=[\s\S]*expandPx)(?=[\s\S]*resolveSamMaskAutoExpandPx)(?=[\s\S]*hydrateSamCandidateExpandPx)(?=[\s\S]*setSamCandidateExpandPx)(?=[\s\S]*stepSamCandidateExpandPx)(?=[\s\S]*<q-input[\s\S]*type="number"[\s\S]*sam-expand-input)(?=[\s\S]*icon="remove")(?=[\s\S]*icon="add")(?=[\s\S]*suffix="px")(?=[\s\S]*expandSamMaskForLama\(sourceMask, renderWidth, renderHeight, expandPx\))[\s\S]*/,
+    description: "Image masker lets LaMa users override each SAM candidate expansion radius with a native 0-99px number input",
+    pattern: /(?=[\s\S]*autoExpandPx)(?=[\s\S]*expandPx)(?=[\s\S]*resolveSamMaskAutoExpandPx)(?=[\s\S]*hydrateSamCandidateExpandPx)(?=[\s\S]*setSamCandidateExpandPx)(?![\s\S]*stepSamCandidateExpandPx)(?=[\s\S]*<q-input[\s\S]*type="number"[\s\S]*min="0"[\s\S]*max="99"[\s\S]*step="1"[\s\S]*suffix="px"[\s\S]*class="sam-expand-input")(?=[\s\S]*expandSamMaskForLama\(sourceMask, renderWidth, renderHeight, expandPx\))[\s\S]*/,
   });
   assertPattern({
     file: "src/utils/samMaskAutoExpand.js",
@@ -595,7 +610,7 @@ function runAssertions() {
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
     description: "Image masker expands SAM masks before rendering without mutating the original candidate mask",
-    pattern: /(?=[\s\S]*samExpandedMaskCache = new WeakMap\(\))(?=[\s\S]*Keep candidate\.mask untouched so every render starts from the original SAM result)(?=[\s\S]*renderSamCandidates[\s\S]*resolveSamCandidateMaskForRendering\(candidate)(?=[\s\S]*composeSamMaskDataUrl[\s\S]*resolveSamCandidateMaskForRendering\(candidate)(?=[\s\S]*watch\([\s\S]*\(\) => props\.currentModel[\s\S]*renderSamCandidates\(\{ pushHistory: false \}\))[\s\S]*/,
+    pattern: /(?=[\s\S]*samExpandedMaskCache = new WeakMap\(\))(?=[\s\S]*Keep candidate\.mask untouched so every render starts from the original SAM result)(?=[\s\S]*renderSamCandidates[\s\S]*resolveSamCandidateMaskForRendering\(candidate)(?=[\s\S]*composeSamMaskDataUrl[\s\S]*resolveSamCandidateMaskForRendering\(candidate)(?=[\s\S]*watch\([\s\S]*\(\) => props\.currentModel[\s\S]*scheduleStableMaskComposite\(\))[\s\S]*/,
   });
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
@@ -660,7 +675,7 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/IndexPage.vue",
     description: "Image page runs selected-images SAM3 text batch prediction and writes masks per file",
-    pattern: /(?=[\s\S]*getSamCapabilities,)(?=[\s\S]*predictSamText)(?=[\s\S]*selectedSamTextBatchFiles = computed)(?=[\s\S]*loadSamCapabilities)(?=[\s\S]*getFilesForSamTextBatch)(?=[\s\S]*resolveSamTextImageInput)(?=[\s\S]*applySamTextResultToFile)(?=[\s\S]*runSamTextBatchPrediction)(?=[\s\S]*predictSamText\()(?=[\s\S]*fileManagerStore\.updateFileMask\(file\.id, applied\.mask\))[\s\S]*/,
+    pattern: /(?=[\s\S]*getSamCapabilities,)(?=[\s\S]*predictSamText)(?=[\s\S]*selectedSamTextBatchFiles = computed)(?=[\s\S]*loadSamCapabilities)(?=[\s\S]*getFilesForSamTextBatch)(?=[\s\S]*resolveSamTextImageInput)(?=[\s\S]*applySamTextResultToFile)(?=[\s\S]*runSamTextBatchPrediction)(?=[\s\S]*let notFound = 0)(?=[\s\S]*predictSamText\()(?=[\s\S]*notFound \+= 1)(?=[\s\S]*failed \+= 1)(?=[\s\S]*未检出 \$\{notFound\} 张)(?=[\s\S]*fileManagerStore\.updateFileMask\(file\.id, applied\.mask\))[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/IndexPage.vue",
@@ -670,12 +685,37 @@ function runAssertions() {
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
     description: "Image masker stores point, box, and text SAM candidates in one per-image candidate list",
-    pattern: /(?=[\s\S]*samContextId)(?=[\s\S]*samSessionByContext = new Map\(\))(?=[\s\S]*getSamContextId = \(\) => \{[\s\S]*if \(explicitId\) return explicitId;[\s\S]*return `\$\{props\.samImageType \|\| "base64"\}:\$\{props\.samImage \|\| ""\}`)(?=[\s\S]*buildSamContextId = \(contextId\) => \{[\s\S]*return explicitId;)(?=[\s\S]*source: "text",[\s\S]*modelId: getTextModelId\(\))(?=[\s\S]*source: box \? "box" : "point",[\s\S]*modelId: effectiveSamModelId\.value)(?=[\s\S]*appendExternalSamTextResult[\s\S]*const sessionKey = buildSamContextId\(contextId\)[\s\S]*modelId: modelId \|\| getTextModelId\(\))(?=[\s\S]*\(\) => \[props\.samContextId, props\.samImage, props\.samImageType\])[\s\S]*/,
+    pattern: /(?=[\s\S]*samContextId)(?=[\s\S]*getSamImageSessionStore)(?=[\s\S]*samSessionByContext = getSamImageSessionStore\(\))(?=[\s\S]*getSamContextId = \(\) => \{[\s\S]*if \(explicitId\) return explicitId;[\s\S]*return `\$\{props\.samImageType \|\| "base64"\}:\$\{props\.samImage \|\| ""\}`)(?=[\s\S]*buildSamContextId = \(contextId\) => \{[\s\S]*return explicitId;)(?=[\s\S]*source: "text",[\s\S]*modelId,)(?=[\s\S]*source: box \? "box" : "point",[\s\S]*modelId: runModelId)(?=[\s\S]*appendExternalSamTextResult[\s\S]*const sessionKey = buildSamContextId\(contextId\)[\s\S]*modelId: modelId \|\| getTextModelId\(\))(?=[\s\S]*\(\) => \[props\.samContextId, props\.samImage, props\.samImageType\])[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/services/SamImageSessionStore.js",
+    description: "SAM image candidate sessions survive ImageMasker remounts during image switching",
+    pattern: /const samImageSessionByContext = new Map\(\)[\s\S]*let lastExecutedSamImageModelId = ""[\s\S]*export const getSamImageSessionStore = \(\) => samImageSessionByContext[\s\S]*export const getLastExecutedSamImageModelId = \(\) => lastExecutedSamImageModelId[\s\S]*export const setLastExecutedSamImageModelId = \(modelId = ""\) =>[\s\S]*export const clearSamImageSessionStore = \(\) => \{[\s\S]*samImageSessionByContext\.clear\(\)[\s\S]*lastExecutedSamImageModelId = ""/,
+  });
+  assertPattern({
+    file: "src/components/image/ImageMasker.vue",
+    description: "Image masker versions SAM render inputs instead of hashing mask data URLs",
+    pattern: /(?=[\s\S]*let samBaseSnapshotRevision = 0)(?=[\s\S]*let samCandidatesRevision = 0)(?=[\s\S]*bumpSamBaseSnapshotRevision = \(\) => \{[\s\S]*samBaseSnapshotRevision \+= 1)(?=[\s\S]*bumpSamCandidatesRevision = \(\) => \{[\s\S]*samCandidatesRevision \+= 1)(?=[\s\S]*buildSamRenderSignature[\s\S]*baseRevision: samBaseSnapshotRevision[\s\S]*candidatesRevision: samCandidatesRevision[\s\S]*baseAlpha: getEffectiveMaskDisplayAlpha\(\))(?![\s\S]*compactDataUrlSignature)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/components/image/ImageMasker.vue",
+    description: "Image masker coalesces restored SAM candidate rendering after image switches",
+    pattern: /(?=[\s\S]*let maskImageLoadVersion = 0)(?=[\s\S]*let stableCompositeFrame = 0)(?=[\s\S]*createMaskImageLoadGuard = \(\) => \{[\s\S]*contextId[\s\S]*maskImageLoadVersion \+= 1[\s\S]*isCurrent: \(\) => version === maskImageLoadVersion && contextId === getSamContextId\(\))(?=[\s\S]*scheduleStableMaskComposite = \(\) => \{[\s\S]*requestAnimationFrame[\s\S]*await nextTick\(\)[\s\S]*runStableMaskComposite\(contextId\))(?=[\s\S]*runStableMaskComposite = async \(contextId\) => \{[\s\S]*applyToolState\(\)[\s\S]*hasSamContextCandidates\(contextId\)[\s\S]*rerenderSamContextCandidates\(contextId\))(?![\s\S]*stableCompositeReasons)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/components/image/ImageMasker.vue",
+    description: "Image masker commits SAM mask composition to the visible canvas once",
+    pattern: /(?=[\s\S]*renderSamCandidates = async[\s\S]*renderSignature === lastSamRenderSignature)(?=[\s\S]*samRenderInFlightSignature === renderSignature)(?=[\s\S]*const compositeCanvas = document\.createElement\("canvas"\))(?=[\s\S]*const compositeContext = compositeCanvas\.getContext\("2d", \{ willReadFrequently: true \}\))(?=[\s\S]*renderToken !== samRenderToken[\s\S]*contextId !== getSamContextId\(\))(?=[\s\S]*ctx\.value\.clearRect\(0, 0, width, height\)[\s\S]*ctx\.value\.drawImage\(compositeCanvas, 0, 0, width, height\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/components/image/ImageMasker.vue",
+    description: "Image masker routes SAM image switching through the stable composite path",
+    pattern: /(?=[\s\S]*rerenderSamContextCandidates = async \(contextId = getSamContextId\(\)\)[\s\S]*contextId !== getSamContextId\(\)[\s\S]*!\(contextId === activeSamContextId\.value && hasActiveSamCandidateLayer\(\)\)[\s\S]*restoreSamContextSession\(\)[\s\S]*hasActiveSamCandidateLayer\(\)[\s\S]*renderSamCandidates\(\{ pushHistory: false \}\))(?=[\s\S]*if \(hasSamContextCandidates\(\)\) \{[\s\S]*scheduleStableMaskComposite\(\)[\s\S]*return;[\s\S]*if \(!props\.mask\))(?=[\s\S]*updateMask = \(newMask\)[\s\S]*hasSamContextCandidates\(\)[\s\S]*scheduleStableMaskComposite\(\))(?=[\s\S]*props\.mask[\s\S]*hasSamContextCandidates\(\)[\s\S]*scheduleStableMaskComposite\(\))(?=[\s\S]*props\.samContextId, props\.samImage, props\.samImageType[\s\S]*scheduleStableMaskComposite\(\))(?=[\s\S]*props\.toolState[\s\S]*scheduleStableMaskComposite\(\))[\s\S]*/,
   });
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
     description: "Image masker records SAM prompt metadata and exposes hover preview without mutating the mask",
-    pattern: /hoveredSamCandidate[\s\S]*sam-candidate-preview[\s\S]*prompt:\s*box \? \{ box \} : \{ point \}[\s\S]*createdAt:\s*new Date\(\)\.toISOString\(\)/,
+    pattern: /(?=[\s\S]*v-if="samCandidateMenuOpen && hoveredSamCandidate"[\s\S]*sam-candidate-preview)(?=[\s\S]*hoveredSamCandidate = computed\(\(\) =>[\s\S]*samCandidateMenuOpen\.value[\s\S]*hoveredSamCandidateId\.value)(?=[\s\S]*hoveredCandidateId: "")(?=[\s\S]*hoveredSamCandidateId\.value = "")(?=[\s\S]*watch\([\s\S]*samCandidateMenuOpen[\s\S]*hoveredSamCandidateId\.value = "")(?=[\s\S]*prompt:\s*box \? \{ box \} : \{ point \})(?=[\s\S]*createdAt:\s*new Date\(\)\.toISOString\(\))[\s\S]*/,
   });
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
@@ -685,7 +725,7 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/IndexPage.vue",
     description: "Image page passes the current file id as the SAM candidate context",
-    pattern: /:sam-context-id="currentFile\.id"/,
+    pattern: /(?=[\s\S]*:sam-context-id="currentFile\.id")(?=[\s\S]*const handleMaskUpdate = \(maskData\) => \{[\s\S]*maskData\?\.contextId[\s\S]*fileManagerStore\.currentFile\?\.id[\s\S]*fileManagerStore\.updateFileMask\(targetFileId, maskData\?\.clear \? null : maskData\))[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/IndexPage.vue",
@@ -694,8 +734,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "scripts/e2e-sam-smart-selection-ui.mjs",
-    description: "SAM UI smoke test checks SAM1/SAM2 point-box options, SAM3 text entry, and dark mode",
-    pattern: /samModelOptions\.includes\("sam_vit_b"\)[\s\S]*samModelOptions\.includes\("sam2_1_hiera_large"\)[\s\S]*!smartSnapshot\.smart\.samModelOptions\.includes\("sam3_1_multiplex"\)[\s\S]*!smartSnapshot\.smart\.samModelOptions\.includes\("sam3"\)[\s\S]*defaultSamTextModelId === "sam3_1_multiplex"[\s\S]*SAM text prompt should be enabled when SAM3 is installed[\s\S]*Current-image and selected-images text search should be enabled[\s\S]*distinct dark-mode style/,
+    description: "SAM UI smoke test checks SAM1/SAM2.1 point-box options, SAM3 text entry, and dark mode",
+    pattern: /samModelOptions\.includes\("sam_vit_b"\)[\s\S]*samModelOptions\.includes\("sam2_1_hiera_large"\)[\s\S]*samModelOptions\.includes\("sam3_1_multiplex"\)[\s\S]*!smartSnapshot\.smart\.samModelOptions\.includes\("sam3"\)[\s\S]*defaultSamTextModelId === "sam3_1_multiplex"[\s\S]*SAM text prompt should be enabled when SAM3 is installed[\s\S]*Current-image and selected-images text search should be enabled[\s\S]*distinct dark-mode style/,
   });
 
   logSection("Bulk Import");

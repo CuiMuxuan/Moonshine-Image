@@ -335,6 +335,26 @@
                       </div>
 
                       <div class="mini-block">
+                        <div class="text-subtitle2 text-weight-medium q-mb-sm">智能选区默认模型</div>
+                        <q-select
+                          v-model="localConfig.masking.imageSmartSelectionDefaultModel"
+                          label="图片处理页默认智能选区模型"
+                          :options="imageSamDefaultModelOptions"
+                          emit-value
+                          map-options
+                          options-dense
+                          outlined
+                          dense
+                          data-testid="global-settings-image-sam-default-model"
+                        >
+                          <template #hint>{{ getImageSamDefaultHint() }}</template>
+                        </q-select>
+                        <div class="text-caption text-grey-7 q-mt-xs">
+                          SAM1/SAM2.1 用于点选和框选；SAM3/SAM3.1 用于文本智选。未安装模型需先在模型管理中下载或放置。
+                        </div>
+                      </div>
+
+                      <div class="mini-block">
                         <div class="text-subtitle2 text-weight-medium q-mb-sm">图片输出格式与质量</div>
                         <div class="grid">
                           <q-select
@@ -389,6 +409,26 @@
                         >
                           <template #hint>{{ getVideoProcessingEngineHint() }}</template>
                         </q-select>
+                      </div>
+
+                      <div class="mini-block">
+                        <div class="text-subtitle2 text-weight-medium q-mb-sm">智能选区默认模型</div>
+                        <q-select
+                          v-model="localConfig.masking.videoSmartSelectionDefaultModel"
+                          label="视频处理页默认智能选区模型"
+                          :options="videoSamDefaultModelOptions"
+                          emit-value
+                          map-options
+                          options-dense
+                          outlined
+                          dense
+                          data-testid="global-settings-video-sam-default-model"
+                        >
+                          <template #hint>{{ getVideoSamDefaultHint() }}</template>
+                        </q-select>
+                        <div class="text-caption text-grey-7 q-mt-xs">
+                          当前视频智能选区走 SAM2.1 视频传播能力，因此只提供 SAM2.1 型号。
+                        </div>
                       </div>
 
                       <div class="grid">
@@ -452,11 +492,12 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
 import { useQuasar } from "quasar";
 import ModelManagementPanel from "src/components/global/ModelManagementPanel.vue";
-import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_TEMP_CLEANUP, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, UI_BUTTON_SIZE_OPTIONS, VIDEO_PROCESSING_ENGINE_OPTIONS } from "src/config/ConfigManager";
+import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_MASKING_CONFIG, DEFAULT_TEMP_CLEANUP, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, UI_BUTTON_SIZE_OPTIONS, VIDEO_PROCESSING_ENGINE_OPTIONS } from "src/config/ConfigManager";
 import { createDefaultShortcuts, formatShortcutKeys, getShortcutDefinition, getShortcutTokenFromKeyboardEvent, getShortcutsByGroup, normalizeShortcutKeys, SHORTCUT_GROUP_META, SHORTCUT_GROUPS, validateShortcutConfig } from "src/utils/shortcutConfig";
 import { useAppStateStore } from "src/stores/appState";
 import { useConfigStore } from "src/stores/config";
 import { useFileManagerStore } from "src/stores/fileManager";
+import { useModelRegistryStore } from "src/stores/modelRegistry";
 import {
   buildBackendPathBlockedMessage,
   buildBackendPathSelectionBlockedMessage,
@@ -467,6 +508,7 @@ const $q = useQuasar();
 const configStore = useConfigStore();
 const appStateStore = useAppStateStore();
 const fileManagerStore = useFileManagerStore();
+const modelRegistryStore = useModelRegistryStore();
 const globalLoadingState = inject("globalLoadingState", ref({ showing: false }));
 
 const launchModeOptions = [{ label: "CUDA 加速", value: "cuda" }, { label: "CPU 模式", value: "cpu" }];
@@ -516,6 +558,32 @@ const videoProcessingEngineOptions = VIDEO_PROCESSING_ENGINE_OPTIONS.map((value)
   description: videoProcessingEngineOptionMeta[value]?.description || "",
 }));
 const previewTrialOptions = [{ label: "3 秒", value: 3 }, { label: "10 秒", value: 10 }];
+const fallbackSamModels = [
+  {
+    id: DEFAULT_MASKING_CONFIG.defaultSam1Model,
+    label: "SAM1 ViT-B",
+    family: "sam",
+    familyLabel: "SAM1",
+    modelVersion: "SAM1",
+    variant: "ViT-B",
+  },
+  {
+    id: DEFAULT_MASKING_CONFIG.defaultSam2Model,
+    label: "SAM2.1 Hiera Large",
+    family: "sam2",
+    familyLabel: "SAM2.1",
+    modelVersion: "SAM2.1",
+    variant: "Hiera Large",
+  },
+  {
+    id: DEFAULT_MASKING_CONFIG.defaultSam3Model,
+    label: "SAM3.1 Multiplex",
+    family: "sam3",
+    familyLabel: "SAM3.1",
+    modelVersion: "SAM3.1",
+    variant: "Multiplex",
+  },
+];
 const themeColorFields = [
   { key: "primary", label: "Primary" },
   { key: "secondary", label: "Secondary" },
@@ -554,6 +622,34 @@ const buildSerializableConfig = (sourceConfig) => JSON.parse(JSON.stringify(Conf
 const localConfig = ref(buildSerializableConfig(configStore.config));
 const shortcutGroups = Object.values(SHORTCUT_GROUPS).map((groupId) => ({ id: groupId, label: SHORTCUT_GROUP_META[groupId]?.label || groupId, description: SHORTCUT_GROUP_META[groupId]?.description || "", items: getShortcutsByGroup(groupId) }));
 const canChangeImageProcessingMethod = computed(() => fileManagerStore.files.length === 0);
+const knownSamModels = computed(() => {
+  const byId = new Map(fallbackSamModels.map((model) => [model.id, model]));
+  modelRegistryStore.maskModels
+    .filter((model) => ["sam", "sam2", "sam3"].includes(model?.family))
+    .forEach((model) => byId.set(model.id, model));
+  return Array.from(byId.values());
+});
+const formatSamDefaultModelLabel = (model = {}) => {
+  const family = model.familyLabel || (model.family === "sam2" ? "SAM2.1" : model.family === "sam3" ? "SAM3" : "SAM1");
+  const variant = model.variant || model.label || model.id;
+  const installState = model.installed === false ? " · 未安装" : "";
+  return `${family} · ${variant}${installState}`;
+};
+const buildSamDefaultModelOption = (model = {}) => ({
+  label: formatSamDefaultModelLabel(model),
+  value: model.id,
+  family: model.family || "",
+});
+const imageSamDefaultModelOptions = computed(() =>
+  knownSamModels.value
+    .filter((model) => ["sam", "sam2", "sam3"].includes(model.family))
+    .map(buildSamDefaultModelOption)
+);
+const videoSamDefaultModelOptions = computed(() =>
+  knownSamModels.value
+    .filter((model) => model.family === "sam2" && String(model.modelVersion || "SAM2.1").includes("SAM2.1"))
+    .map(buildSamDefaultModelOption)
+);
 const mergedConfig = computed(() => ConfigManager.mergeWithDefault(localConfig.value));
 const shortcutErrors = computed(() => validateShortcutConfig(localConfig.value.shortcuts));
 const validationErrors = computed(() => {
@@ -580,6 +676,21 @@ const validatePort = (port) => {
 const getImageProcessingHint = () => imageProcessingOptions.find((item) => item.value === (localConfig.value.advanced?.imageProcessingMethod || "auto"))?.description || "";
 const getImageOutputFormatHint = () => imageOutputFormatOptions.find((item) => item.value === (localConfig.value.advanced?.imageOutputFormat || "auto"))?.description || "";
 const getVideoProcessingEngineHint = () => videoProcessingEngineOptions.find((item) => item.value === (localConfig.value.advanced?.videoProcessingEngine || "auto"))?.description || "";
+const getSamDefaultHint = (options, modelId) => {
+  const selected = options.find((item) => item.value === modelId);
+  if (selected) return selected.label;
+  return modelId ? `${modelId}（未在当前模型注册表中找到）` : "";
+};
+const getImageSamDefaultHint = () =>
+  getSamDefaultHint(
+    imageSamDefaultModelOptions.value,
+    localConfig.value.masking?.imageSmartSelectionDefaultModel
+  );
+const getVideoSamDefaultHint = () =>
+  getSamDefaultHint(
+    videoSamDefaultModelOptions.value,
+    localConfig.value.masking?.videoSmartSelectionDefaultModel
+  );
 const getBrushConfig = (key) => localConfig.value.advanced?.[key] || DEFAULT_IMAGE_BRUSH;
 const getShortcutDisplayValue = (actionId) => formatShortcutKeys(recordingShortcutId.value === actionId && recordingKeys.value.length ? recordingKeys.value : localConfig.value.shortcuts?.[actionId] || []);
 const stopShortcutRecording = () => { recordingShortcutId.value = ""; recordingKeys.value = []; };

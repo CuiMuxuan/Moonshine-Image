@@ -33,6 +33,7 @@
             :sam-model-id="defaultSamModelId"
             :sam-model-options="samModelOptions"
             :sam-available="samPointBoxAvailable"
+            :sam-text-supported="samTextSupported"
             :sam-text-available="samTextAvailable"
             :sam-text-model-id="defaultSamTextModelId"
             :sam-text-batch-target-count="selectedSamTextBatchFiles.length"
@@ -324,6 +325,7 @@ const samTextBatchState = ref({
   total: 0,
   completed: 0,
   success: 0,
+  notFound: 0,
   failed: 0,
   cancelled: false,
 });
@@ -430,21 +432,44 @@ const currentModelRequiresMask = computed(() =>
 const isSmartSelectionMode = computed(
   () => Boolean(showMaskTools.value && currentModelRequiresMask.value && maskMode.value === "smart")
 );
-const samModelOptions = computed(() =>
+const samPointBoxModelOptions = computed(() =>
   modelRegistryStore.installedMaskModels
     .filter((model) => ["sam", "sam2"].includes(model.family))
     .map((model) => ({
-      label: model.family === "sam2" ? `${model.label || model.id}（SAM2）` : model.label || model.id,
+      label: model.family === "sam2" ? `${model.label || model.id}（SAM2.1）` : model.label || model.id,
       value: model.id,
+      family: model.family,
     }))
 );
-const samPointBoxAvailable = computed(() => samModelOptions.value.length > 0);
+const samPointBoxAvailable = computed(() => samPointBoxModelOptions.value.length > 0);
+const samTextSupportedModelIds = ["sam3_1_multiplex", "sam3"];
+const buildSamTextModelOption = (modelId) => {
+  const textModel = modelRegistryStore.maskModels.find((model) => model.id === modelId);
+  return {
+    label: textModel?.label || modelId,
+    value: modelId,
+    family: textModel?.family || "sam3",
+  };
+};
+const configuredImageSamModelId = computed(
+  () =>
+    configStore.config.masking?.imageSmartSelectionDefaultModel ||
+    configStore.config.masking?.defaultSamModel ||
+    configStore.config.masking?.defaultSam1Model ||
+    "sam_vit_b"
+);
+const samTextSupported = computed(() =>
+  samTextSupportedModelIds.includes(defaultSamTextModelId.value)
+);
 const samTextAvailable = computed(() =>
-  samCapabilities.value?.text?.enabled ??
-  modelRegistryStore.installedMaskModels.some(
-    (model) =>
-      model.family === "sam3" &&
-      ["sam3_1_multiplex", "sam3"].includes(model.id)
+  samTextSupported.value &&
+  (
+    samCapabilities.value?.text?.enabled ??
+    modelRegistryStore.installedMaskModels.some(
+      (model) =>
+        model.family === "sam3" &&
+        samTextSupportedModelIds.includes(model.id)
+    )
   )
 );
 const selectedSamTextBatchFiles = computed(() =>
@@ -453,6 +478,14 @@ const selectedSamTextBatchFiles = computed(() =>
   )
 );
 const defaultSamTextModelId = computed(() => {
+  const configuredImageDefault = configuredImageSamModelId.value;
+  if (samTextSupportedModelIds.includes(configuredImageDefault)) {
+    return configuredImageDefault;
+  }
+  const configuredFamilyDefault = configStore.config.masking?.defaultSam3Model;
+  if (samTextSupportedModelIds.includes(configuredFamilyDefault)) {
+    return configuredFamilyDefault;
+  }
   const capabilityDefault = samCapabilities.value?.text?.defaultModelId;
   if (capabilityDefault) return capabilityDefault;
   const installedIds = modelRegistryStore.installedMaskModels
@@ -462,14 +495,28 @@ const defaultSamTextModelId = computed(() => {
   if (installedIds.includes("sam3")) return "sam3";
   return "sam3";
 });
+const samTextModelOptions = computed(() => {
+  const modelIds = new Set();
+  modelRegistryStore.installedMaskModels
+    .filter((model) => model.family === "sam3" && samTextSupportedModelIds.includes(model.id))
+    .forEach((model) => modelIds.add(model.id));
+  if (samTextSupportedModelIds.includes(defaultSamTextModelId.value)) {
+    modelIds.add(defaultSamTextModelId.value);
+  }
+  return Array.from(modelIds).map(buildSamTextModelOption);
+});
+const samModelOptions = computed(() => {
+  const byId = new Map();
+  [...samPointBoxModelOptions.value, ...samTextModelOptions.value].forEach((option) => {
+    if (option?.value) byId.set(option.value, option);
+  });
+  return Array.from(byId.values());
+});
 const samSmartSelectionAvailable = computed(
-  () => backendEngineValue.value.isRunning && (samPointBoxAvailable.value || samTextAvailable.value)
+  () => backendEngineValue.value.isRunning && (samPointBoxAvailable.value || samTextSupported.value)
 );
 const defaultSamModelId = computed(() => {
-  const configured =
-    configStore.config.masking?.defaultSam1Model ||
-    configStore.config.masking?.defaultSamModel ||
-    "sam_vit_b";
+  const configured = configuredImageSamModelId.value;
   if (samModelOptions.value.some((option) => option.value === configured)) {
     return configured;
   }
@@ -684,9 +731,9 @@ const handleImageLoaded = () => {
   });
 };
 const handleMaskUpdate = (maskData) => {
-  if (fileManagerStore.currentFile) {
-    fileManagerStore.updateFileMask(fileManagerStore.currentFile.id, maskData);
-  }
+  const targetFileId = String(maskData?.contextId || fileManagerStore.currentFile?.id || "").trim();
+  if (!targetFileId) return;
+  fileManagerStore.updateFileMask(targetFileId, maskData?.clear ? null : maskData);
 };
 
 const loadSamCapabilities = async () => {
@@ -707,6 +754,7 @@ const resetSamTextBatchState = (patch = {}) => {
     total: 0,
     completed: 0,
     success: 0,
+    notFound: 0,
     failed: 0,
     cancelled: false,
     ...patch,
@@ -787,7 +835,9 @@ const runSamTextBatchPrediction = async ({
   if (!samTextAvailable.value) {
     $q.notify({
       type: "warning",
-      message: "请先在模型管理中安装 SAM3 文本模型",
+      message: samTextSupported.value
+        ? "请先在模型管理中安装 SAM3 文本模型"
+        : "当前 SAM 模型不支持文本智选",
       position: "top",
     });
     return;
@@ -797,7 +847,7 @@ const runSamTextBatchPrediction = async ({
   if (!filesToProcess.length) {
     $q.notify({
       type: "warning",
-      message: "请先选择要检索的图片",
+      message: "请先选择图片",
       position: "top",
     });
     return;
@@ -814,6 +864,7 @@ const runSamTextBatchPrediction = async ({
     fileManagerStore.resolveProcessingTransport(filesToProcess)
   );
   let success = 0;
+  let notFound = 0;
   let failed = 0;
 
   try {
@@ -821,10 +872,11 @@ const runSamTextBatchPrediction = async ({
       if (samTextBatchCancelRequested.value) break;
       try {
         const imageInput = await resolveSamTextImageInput(file, context);
+        const runModelId = modelId || defaultSamTextModelId.value;
         const result = await predictSamText({
           image: imageInput.image,
           imageType: imageInput.imageType,
-          modelId: modelId || defaultSamTextModelId.value,
+          modelId: runModelId,
           text: prompt,
           language,
           promptSource,
@@ -835,21 +887,22 @@ const runSamTextBatchPrediction = async ({
           file,
           result,
           prompt,
-          sessionModelId: defaultSamModelId.value,
+          sessionModelId: runModelId,
         });
         if ((applied.candidates || []).length > 0) {
           success += 1;
         } else {
-          failed += 1;
+          notFound += 1;
         }
       } catch (error) {
         failed += 1;
-        console.warn(`SAM3 文本批量检索失败: ${file?.name || file?.id}`, error);
+        console.warn(`SAM3 检索选中图片失败: ${file?.name || file?.id}`, error);
       } finally {
         samTextBatchState.value = {
           ...samTextBatchState.value,
           completed: samTextBatchState.value.completed + 1,
           success,
+          notFound,
           failed,
         };
       }
@@ -860,13 +913,14 @@ const runSamTextBatchPrediction = async ({
       ...samTextBatchState.value,
       running: false,
       success,
+      notFound,
       failed,
       cancelled,
     };
-    const type = cancelled ? "warning" : failed > 0 ? "warning" : "positive";
+    const type = cancelled ? "warning" : failed > 0 || notFound > 0 ? "warning" : "positive";
     const message = cancelled
-      ? `已取消批量文本检索，成功 ${success} 张，失败 ${failed} 张`
-      : `批量文本检索完成，成功 ${success} 张，失败 ${failed} 张`;
+      ? `已取消检索选中图片，成功 ${success} 张，未检出 ${notFound} 张，失败 ${failed} 张`
+      : `检索选中图片完成，成功 ${success} 张，未检出 ${notFound} 张，失败 ${failed} 张`;
     $q.notify({
       type,
       message,
@@ -895,7 +949,7 @@ const setMaskMode = (value, { persist = true, notifyUnavailable = true } = {}) =
   if (nextMode === "smart" && !samSmartSelectionAvailable.value) {
     if (notifyUnavailable) {
       const unavailableMessage = backendEngineValue.value.isRunning
-        ? "请先在模型管理中安装 SAM1/SAM2 点选模型或 SAM3 文本模型"
+        ? "请先在模型管理中安装 SAM1/SAM2.1 点选模型或 SAM3 文本模型"
         : "后端服务启动成功后可用";
       $q.notify({
         type: "warning",
@@ -2209,6 +2263,7 @@ const registerImageE2ETestBridge = () => {
       availableModels: imageModelOptions.value.map((option) => option.value),
       samModelOptions: samModelOptions.value.map((option) => option.value),
       defaultSamModelId: defaultSamModelId.value,
+      samTextSupported: samTextSupported.value,
       samTextAvailable: samTextAvailable.value,
       defaultSamTextModelId: defaultSamTextModelId.value,
       selectedSamTextBatchCount: selectedSamTextBatchFiles.value.length,

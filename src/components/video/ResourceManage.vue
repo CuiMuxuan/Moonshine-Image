@@ -590,7 +590,7 @@ const props = defineProps({
   },
   samVideoActionTooltip: {
     type: String,
-    default: "使用 SAM2 为当前视频创建智能蒙版轨道",
+    default: "使用 SAM2.1 为当前视频创建智能蒙版轨道",
   },
 });
 
@@ -693,14 +693,12 @@ const modelStatusLabel = computed(() => {
   if (!props.backendRunning) return "后端未启动";
   if (props.currentModelMetadata?.corruptFiles?.length > 0) return "需修复";
   if (!props.currentModelMetadata?.installed) return "未安装";
-  if (props.currentModelMetadata?.deviceCompatible === false) return "设备不适配";
   return "已安装";
 });
 const modelStatusColor = computed(() => {
   if (!props.backendRunning) return "grey-7";
   if (props.currentModelMetadata?.corruptFiles?.length > 0) return "warning";
   if (!props.currentModelMetadata?.installed) return "negative";
-  if (props.currentModelMetadata?.deviceCompatible === false) return "warning";
   return "positive";
 });
 

@@ -33,6 +33,7 @@
         :sam-model-id="samModelId"
         :sam-model-options="samModelOptions"
         :sam-available="samAvailable"
+        :sam-text-supported="samTextSupported"
         :sam-text-available="samTextAvailable"
         :sam-text-model-id="samTextModelId"
         :sam-text-batch-target-count="samTextBatchTargetCount"
@@ -119,6 +120,10 @@ const props = defineProps({
     default: () => [],
   },
   samAvailable: {
+    type: Boolean,
+    default: false,
+  },
+  samTextSupported: {
     type: Boolean,
     default: false,
   },

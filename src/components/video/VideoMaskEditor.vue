@@ -98,7 +98,7 @@
       class="sam-track-hint"
       :class="$q.dark.isActive ? 'text-amber-2' : 'text-grey-9'"
     >
-      智能选区轨道使用 SAM2 点选/框选传播生成，默认占满全部视频时长，范围和关键帧不可编辑。
+      智能选区轨道使用 SAM2.1 点选/框选传播生成，默认占满全部视频时长，范围和关键帧不可编辑。
     </q-banner>
 
     <q-expansion-item
@@ -144,7 +144,7 @@
                   </div>
                   <div class="video-sam-settings-item">
                     <div class="text-caption text-grey-7">当前点选/框选模型</div>
-                    <div class="text-body2">SAM2 / SAM2.1 视频传播</div>
+                    <div class="text-body2">SAM2.1 视频传播</div>
                   </div>
                   <q-separator />
                   <div class="video-sam-settings-item is-disabled">
@@ -299,6 +299,7 @@
                   outlined
                   min="0"
                   max="99"
+                  step="1"
                   suffix="px"
                   class="sam-object-expand-input"
                   input-class="text-center"
@@ -306,28 +307,6 @@
                   @update:model-value="setSamVideoObjectExpandPx(objectItem.objectId, $event)"
                   @click.stop
                 >
-                  <template #prepend>
-                    <q-btn
-                      flat
-                      dense
-                      round
-                      size="sm"
-                      icon="remove"
-                      :disable="disabled || samVideoRunning || Number(objectItem.expandPx ?? objectItem.autoExpandPx ?? 0) <= 0"
-                      @click.stop="stepSamVideoObjectExpandPx(objectItem.objectId, -1)"
-                    />
-                  </template>
-                  <template #append>
-                    <q-btn
-                      flat
-                      dense
-                      round
-                      size="sm"
-                      icon="add"
-                      :disable="disabled || samVideoRunning || Number(objectItem.expandPx ?? objectItem.autoExpandPx ?? 0) >= 99"
-                      @click.stop="stepSamVideoObjectExpandPx(objectItem.objectId, 1)"
-                    />
-                  </template>
                   <q-tooltip>LaMa 扩边大小</q-tooltip>
                 </q-input>
                 <q-btn
@@ -735,13 +714,6 @@ const setSamVideoObjectExpandPx = (objectId, value) => {
     objectId,
     normalizeExpandPx(value)
   );
-};
-
-const stepSamVideoObjectExpandPx = (objectId, delta) => {
-  const objectItem = samObjects.value.find((item) => Number(item.objectId) === Number(objectId));
-  if (!objectItem) return;
-  const current = normalizeExpandPx(objectItem.expandPx, objectItem.autoExpandPx);
-  setSamVideoObjectExpandPx(objectId, current + Number(delta || 0));
 };
 
 const getSamPromptForObject = (promptOrObjectId) => {
@@ -1154,17 +1126,12 @@ const setProcessingRangeEndFromCurrentTime = () => {
 }
 
 .sam-object-expand-input {
-  width: 112px;
+  width: 76px;
 }
 
 .sam-object-expand-input :deep(.q-field__control) {
   min-height: 32px;
   padding: 0 4px;
-}
-
-.sam-object-expand-input :deep(.q-field__prepend),
-.sam-object-expand-input :deep(.q-field__append) {
-  padding: 0;
 }
 
 .sam-object-expand-input :deep(input) {

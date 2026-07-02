@@ -38,10 +38,6 @@ SAM1_MODEL_TYPES = {
 }
 
 SAM2_MODEL_TYPES = {
-    "sam2_hiera_tiny": "sam2_tiny",
-    "sam2_hiera_small": "sam2_small",
-    "sam2_hiera_base_plus": "sam2_base",
-    "sam2_hiera_large": "sam2_large",
     "sam2_1_hiera_tiny": "sam2_1_tiny",
     "sam2_1_hiera_small": "sam2_1_small",
     "sam2_1_hiera_base_plus": "sam2_1_base",
@@ -166,7 +162,7 @@ class SamService:
         if model is None:
             raise SamServiceError(f"Unknown SAM model: {model_id}")
         if model.get("family") not in POINT_BOX_FAMILIES:
-            raise SamServiceError(f"Only SAM1/SAM2 point/box prediction is enabled now: {model_id}")
+            raise SamServiceError(f"Only SAM1/SAM2.1 point/box prediction is enabled now: {model_id}")
         if not model.get("installed"):
             missing = ", ".join(model.get("missingFiles") or [])
             raise SamServiceError(f"SAM model is not installed: {model_id}. Missing: {missing}")
@@ -377,7 +373,7 @@ class SamService:
                 "supportsMp4": True,
                 "supportsMultipleObjects": True,
                 "reason": (
-                    "SAM2 video predictor accepts JPEG frame directories and local video paths. "
+                    "SAM2.1 video predictor accepts JPEG frame directories and local video paths. "
                     "Video paths are staged to JPEG frames with OpenCV before propagation."
                 ),
             },
@@ -436,7 +432,7 @@ class SamService:
         if model.get("family") == "sam2":
             model_type = SAM2_MODEL_TYPES.get(model_id)
             if not model_type:
-                raise SamServiceError(f"Unsupported SAM2 model id: {model_id}")
+                raise SamServiceError(f"Unsupported SAM2.1 model id: {model_id}")
             self._configure_sam2_attention_compatibility()
             sam2 = build_sam2(model_type, ckpt_path=str(checkpoint_path), device=self.device)
             predictor = SAM2ImagePredictor(sam2)
@@ -453,12 +449,12 @@ class SamService:
     def _get_sam2_model_status(self, model_id: str) -> dict:
         model = next((item for item in self._build_status() if item.get("id") == model_id), None)
         if model is None:
-            raise SamServiceError(f"Unknown SAM2 model: {model_id}")
+            raise SamServiceError(f"Unknown SAM2.1 model: {model_id}")
         if model.get("family") != "sam2":
-            raise SamServiceError(f"Only SAM2 video propagation is enabled now: {model_id}")
+            raise SamServiceError(f"Only SAM2.1 video propagation is enabled now: {model_id}")
         if not model.get("installed"):
             missing = ", ".join(model.get("missingFiles") or [])
-            raise SamServiceError(f"SAM2 model is not installed: {model_id}. Missing: {missing}")
+            raise SamServiceError(f"SAM2.1 model is not installed: {model_id}. Missing: {missing}")
         return model
 
     def _get_video_predictor(self, model_id: str):
@@ -470,7 +466,7 @@ class SamService:
         model = self._get_sam2_model_status(model_id)
         model_type = SAM2_MODEL_TYPES.get(model_id)
         if not model_type:
-            raise SamServiceError(f"Unsupported SAM2 video model id: {model_id}")
+            raise SamServiceError(f"Unsupported SAM2.1 video model id: {model_id}")
         self._configure_sam2_attention_compatibility()
         checkpoint_path = self._get_checkpoint_path(model)
         predictor = build_sam2_video_predictor(
@@ -547,7 +543,7 @@ class SamService:
             )
         if "no available kernel" in lower_message or "flash attention" in lower_message:
             return (
-                "SAM2 CUDA attention kernel 不可用。当前运行时已优先使用稳定 math SDP，"
+                "SAM2.1 CUDA attention kernel 不可用。当前运行时已优先使用稳定 math SDP，"
                 "若仍失败，请切换 CPU 或更新 PyTorch/CUDA 运行时。"
             )
         if "cuda" in lower_message and "not available" in lower_message:
@@ -629,13 +625,13 @@ class SamService:
             [int(cv2.IMWRITE_JPEG_QUALITY), SAM_VIDEO_MASK_JPEG_QUALITY],
         )
         if not ok:
-            raise SamServiceError(f"Failed to encode SAM2 video mask: {mask_path}")
+            raise SamServiceError(f"Failed to encode SAM2.1 video mask: {mask_path}")
         mask_bytes = encoded.tobytes()
         ensure_disk_space(
             mask_path,
             len(mask_bytes),
             safety_bytes=DEFAULT_DISK_SPACE_SAFETY_BYTES,
-            operation="SAM2 视频蒙版写入",
+            operation="SAM2.1 视频蒙版写入",
         )
         mask_path.write_bytes(mask_bytes)
         mask_signature = hashlib.sha256(mask_bytes).hexdigest()
@@ -681,7 +677,7 @@ class SamService:
             output_dir,
             required_bytes,
             safety_bytes=DEFAULT_DISK_SPACE_SAFETY_BYTES,
-            operation="SAM2 视频蒙版临时文件写入",
+            operation="SAM2.1 视频蒙版临时文件写入",
         )
 
     @staticmethod
@@ -734,12 +730,12 @@ class SamService:
         progress_callback: Optional[Callable[..., None]] = None,
     ) -> dict:
         if not video_path.is_file():
-            raise SamServiceError(f"SAM2 video file not found: {video_path}")
+            raise SamServiceError(f"SAM2.1 video file not found: {video_path}")
         output_dir.mkdir(parents=True, exist_ok=True)
 
         capture = cv2.VideoCapture(str(video_path))
         if not capture.isOpened():
-            raise SamServiceError(f"Failed to open video for SAM2 propagation: {video_path}")
+            raise SamServiceError(f"Failed to open video for SAM2.1 propagation: {video_path}")
 
         frame_count = 0
         fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
@@ -762,7 +758,7 @@ class SamService:
                     break
                 frame_path = output_dir / f"{frame_count:06d}.jpg"
                 if not cv2.imwrite(str(frame_path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95]):
-                    raise SamServiceError(f"Failed to stage SAM2 video frame: {frame_path}")
+                    raise SamServiceError(f"Failed to stage SAM2.1 video frame: {frame_path}")
                 frame_count += 1
                 if frame_count == 1 or frame_count % 10 == 0:
                     SamService._emit_progress(
@@ -777,7 +773,7 @@ class SamService:
             capture.release()
 
         if frame_count <= 0:
-            raise SamServiceError(f"SAM2 video file has no readable frames: {video_path}")
+            raise SamServiceError(f"SAM2.1 video file has no readable frames: {video_path}")
 
         return {
             "frameCount": frame_count,
@@ -832,7 +828,7 @@ class SamService:
             seen_ids.add(item["objectId"])
         if duplicate_ids:
             duplicate_text = ", ".join(str(item) for item in sorted(duplicate_ids))
-            raise SamServiceError(f"SAM2 video object ids must be unique: {duplicate_text}")
+            raise SamServiceError(f"SAM2.1 video object ids must be unique: {duplicate_text}")
 
         return normalized
 
@@ -1018,7 +1014,7 @@ class SamService:
             progress_callback,
             status="queued",
             phase="queued",
-            message="SAM2 视频传播任务已开始",
+            message="SAM2.1 视频传播任务已开始",
             current=0,
             total=0,
             progress=0,
@@ -1040,16 +1036,16 @@ class SamService:
         mask_output_path = None
         if normalized_response_type == "path":
             if not mask_output_dir:
-                raise SamServiceError("mask_output_dir is required when SAM2 response_type is path.")
+                raise SamServiceError("mask_output_dir is required when SAM2.1 response_type is path.")
             mask_output_path = Path(mask_output_dir).expanduser().resolve()
             mask_output_path.mkdir(parents=True, exist_ok=True)
 
         if normalized_input_type == "videoPath":
             if not video_path:
-                raise SamServiceError("video_path is required for SAM2 videoPath input.")
+                raise SamServiceError("video_path is required for SAM2.1 videoPath input.")
             source_video_path = Path(video_path).expanduser().resolve()
             if not source_video_path.is_file():
-                raise SamServiceError(f"SAM2 video file not found: {source_video_path}")
+                raise SamServiceError(f"SAM2.1 video file not found: {source_video_path}")
             source_video_hash = self._file_hash(source_video_path)
             staging_root = Path(tempfile.mkdtemp(prefix="moonshine_sam2_video_"))
             frame_path = staging_root / "frames"
@@ -1065,10 +1061,10 @@ class SamService:
                 raise
         else:
             if not frame_dir:
-                raise SamServiceError("frame_dir is required for SAM2 JPEG frame directory input.")
+                raise SamServiceError("frame_dir is required for SAM2.1 JPEG frame directory input.")
             frame_path = Path(frame_dir).expanduser().resolve()
             if not frame_path.is_dir():
-                raise SamServiceError(f"SAM2 video input must be a JPEG frame directory: {frame_path}")
+                raise SamServiceError(f"SAM2.1 video input must be a JPEG frame directory: {frame_path}")
 
         frame_names = sorted(
             item.name
@@ -1076,7 +1072,7 @@ class SamService:
             if item.suffix.lower() in {".jpg", ".jpeg"}
         )
         if not frame_names:
-            raise SamServiceError(f"SAM2 video frame directory has no JPEG frames: {frame_path}")
+            raise SamServiceError(f"SAM2.1 video frame directory has no JPEG frames: {frame_path}")
         frame_dir_hash = (
             source_video_hash
             if normalized_input_type == "videoPath" and source_video_hash
@@ -1098,7 +1094,7 @@ class SamService:
                     progress_callback,
                     status="frame_loading",
                     phase="frame_loading",
-                    message=f"正在加载 SAM2 视频帧 0/{len(frame_names)}",
+                    message=f"正在加载 SAM2.1 视频帧 0/{len(frame_names)}",
                     current=0,
                     total=len(frame_names),
                     progress=0,
@@ -1109,7 +1105,7 @@ class SamService:
                         progress_callback,
                         status="frame_loading",
                         phase="frame_loading",
-                        message=f"正在加载 SAM2 视频帧 {current}/{total}",
+                        message=f"正在加载 SAM2.1 视频帧 {current}/{total}",
                         current=current,
                         total=total,
                     )
@@ -1124,7 +1120,7 @@ class SamService:
                     progress_callback,
                     status="frame_loading",
                     phase="frame_loading",
-                    message=f"SAM2 视频帧加载完成 {len(frame_names)}/{len(frame_names)}",
+                    message=f"SAM2.1 视频帧加载完成 {len(frame_names)}/{len(frame_names)}",
                     current=len(frame_names),
                     total=len(frame_names),
                     progress=1,
@@ -1171,7 +1167,7 @@ class SamService:
                     progress_callback,
                     status="propagating",
                     phase="propagating",
-                    message=f"正在传播 SAM2 视频蒙版 0/{estimated_output_frame_count}",
+                    message=f"正在传播 SAM2.1 视频蒙版 0/{estimated_output_frame_count}",
                     current=0,
                     total=estimated_output_frame_count,
                     progress=0,
@@ -1223,7 +1219,7 @@ class SamService:
                         progress_callback,
                         status="propagating",
                         phase="propagating",
-                        message=f"正在传播 SAM2 视频蒙版 {len(frames)}/{estimated_output_frame_count}",
+                        message=f"正在传播 SAM2.1 视频蒙版 {len(frames)}/{estimated_output_frame_count}",
                         current=len(frames),
                         total=estimated_output_frame_count,
                     )
@@ -1231,7 +1227,7 @@ class SamService:
                     progress_callback,
                     status="writing_masks",
                     phase="writing_masks",
-                    message=f"SAM2 蒙版写入完成 {len(frames)}/{estimated_output_frame_count}",
+                    message=f"SAM2.1 蒙版写入完成 {len(frames)}/{estimated_output_frame_count}",
                     current=len(frames),
                     total=estimated_output_frame_count,
                     progress=1,

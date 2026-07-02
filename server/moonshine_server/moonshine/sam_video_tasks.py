@@ -23,7 +23,7 @@ class SamVideoTask:
     request: Any
     status: str = "queued"
     phase: str = "queued"
-    message: str = "SAM2 视频传播任务已创建"
+    message: str = "SAM2.1 视频传播任务已创建"
     current: int = 0
     total: int = 0
     progress: float = 0.0
@@ -79,7 +79,7 @@ class SamVideoTaskManager:
             if task.status in {"queued"}:
                 task.status = "canceled"
                 task.phase = "canceled"
-                task.message = "SAM2 视频传播任务已取消"
+                task.message = "SAM2.1 视频传播任务已取消"
                 task.completed_at = task.updated_at
             return task
 
@@ -123,7 +123,7 @@ class SamVideoTaskManager:
             task.result = result
             task.status = "completed"
             task.phase = "completed"
-            task.message = "SAM2 视频传播任务已完成"
+            task.message = "SAM2.1 视频传播任务已完成"
             task.progress = 1.0
             task.updated_at = time.time()
             task.completed_at = task.updated_at
@@ -136,11 +136,11 @@ class SamVideoTaskManager:
             if task.canceled:
                 task.status = "canceled"
                 task.phase = "canceled"
-                task.message = "SAM2 视频传播任务已取消"
+                task.message = "SAM2.1 视频传播任务已取消"
             else:
                 task.status = "failed"
                 task.phase = "failed"
-                task.message = error or "SAM2 视频传播任务失败"
+                task.message = error or "SAM2.1 视频传播任务失败"
                 task.error = error or task.message
             task.updated_at = time.time()
             task.completed_at = task.updated_at
@@ -149,7 +149,7 @@ class SamVideoTaskManager:
         def callback(**payload: Any) -> None:
             task = self.get_task(task_id)
             if task and task.canceled:
-                raise RuntimeError("SAM2 video propagation task canceled.")
+                raise RuntimeError("SAM2.1 video propagation task canceled.")
             self.update_progress(task_id, **payload)
 
         return callback

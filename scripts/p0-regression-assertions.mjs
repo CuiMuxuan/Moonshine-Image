@@ -170,12 +170,12 @@ function runAssertions() {
   assertPattern({
     file: "src/stores/videoManager.js",
     description: "SAM video tracks are locked from manual range and keyframe edits",
-    pattern: /(?=[\s\S]*sam-video-track-locked)(?=[\s\S]*时间范围由 SAM2 传播结果决定)(?=[\s\S]*SAM 视频轨道不支持手动关键帧编辑)/,
+    pattern: /(?=[\s\S]*sam-video-track-locked)(?=[\s\S]*时间范围由 SAM2\.1 传播结果决定)(?=[\s\S]*SAM 视频轨道不支持手动关键帧编辑)/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "SAM2 propagation polls real-progress jobs and writes bidirectional results back into the selected SAM video track",
-    pattern: /(?=[\s\S]*runSamVideoSelectionFromMaskList[\s\S]*createEmptySamVideoMaskTrack)(?=[\s\S]*const targetMaskId = videoStore\.selectedMaskId)(?=[\s\S]*runSamVideoPropagationJob[\s\S]*reverse: false)(?=[\s\S]*runSamVideoPropagationJob[\s\S]*reverse: true)(?=[\s\S]*getSamVideoPropagationJobResult)(?=[\s\S]*updateSamVideoMaskTrackResult\(targetMaskId, result\))(?=[\s\S]*SAM2 已更新)/,
+    pattern: /(?=[\s\S]*runSamVideoSelectionFromMaskList[\s\S]*createEmptySamVideoMaskTrack)(?=[\s\S]*const targetMaskId = videoStore\.selectedMaskId)(?=[\s\S]*runSamVideoPropagationJob[\s\S]*reverse: false)(?=[\s\S]*runSamVideoPropagationJob[\s\S]*reverse: true)(?=[\s\S]*getSamVideoPropagationJobResult)(?=[\s\S]*updateSamVideoMaskTrackResult\(targetMaskId, result\))(?=[\s\S]*SAM2\.1 已更新)/,
   });
   assertPattern({
     file: "src/components/video/ResourceManage.vue",

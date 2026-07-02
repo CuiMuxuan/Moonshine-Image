@@ -126,7 +126,13 @@ export class ConfigManager {
       errors.push("默认 SAM 模型必须是字符串。");
     }
 
-    ["defaultSam1Model", "defaultSam2Model", "defaultSam3Model"].forEach((key) => {
+    [
+      "defaultSam1Model",
+      "defaultSam2Model",
+      "defaultSam3Model",
+      "imageSmartSelectionDefaultModel",
+      "videoSmartSelectionDefaultModel",
+    ].forEach((key) => {
       if (config.masking?.[key] && typeof config.masking[key] !== "string") {
         errors.push("默认 SAM 模型必须是字符串。");
       }
@@ -447,6 +453,14 @@ export class ConfigManager {
       defaultSam3Model:
         String(merged.masking?.defaultSam3Model || "").trim() ||
         DEFAULT_MASKING_CONFIG.defaultSam3Model,
+      imageSmartSelectionDefaultModel:
+        String(merged.masking?.imageSmartSelectionDefaultModel || "").trim() ||
+        String(merged.masking?.defaultSamModel || merged.masking?.defaultSam1Model || "").trim() ||
+        DEFAULT_MASKING_CONFIG.imageSmartSelectionDefaultModel,
+      videoSmartSelectionDefaultModel:
+        String(merged.masking?.videoSmartSelectionDefaultModel || "").trim() ||
+        String(merged.masking?.defaultSam2Model || "").trim() ||
+        DEFAULT_MASKING_CONFIG.videoSmartSelectionDefaultModel,
     };
 
     merged.video = {
