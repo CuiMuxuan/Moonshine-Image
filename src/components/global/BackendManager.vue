@@ -332,6 +332,8 @@
                           v-model="backendConfig.model"
                           :options="modelOptions"
                           label="模型"
+                          emit-value
+                          map-options
                           dense
                           outlined
                           color="primary"
@@ -611,7 +613,17 @@ const backendConfig = reactive({
 
 // 选项
 const deviceOptions = ["cuda", "cpu"];
-const modelOptions = ["lama"];
+const MAT_CUDA_FALLBACK_MESSAGE = "MAT 需要 CUDA，当前已自动切换为 LaMa。";
+const backendModelOptions = [
+  { label: "LaMa", value: "lama" },
+  { label: "MAT", value: "mat" },
+];
+const modelOptions = computed(() =>
+  backendModelOptions.map((option) => ({
+    ...option,
+    disable: option.value === "mat" && backendConfig.device !== "cuda",
+  }))
+);
 
 // 终端
 const terminalOutput = ref([]);
@@ -1281,6 +1293,7 @@ watch(
     backendConfig.model = newConfig.general.defaultModel || "lama";
     backendConfig.projectPath = newConfig.general.backendProjectPath || "";
     backendConfig.modelDir = newConfig.general.modelDir || "";
+    fallbackMatDefaultModelIfNeeded();
   },
   { deep: true }
 );
@@ -1288,6 +1301,13 @@ watch(
 watch(showDialog, (newVal) => {
   emit("update:modelValue", newVal);
 });
+
+watch(
+  () => [backendConfig.device, backendConfig.model],
+  () => {
+    fallbackMatDefaultModelIfNeeded({ notify: true, log: true });
+  }
+);
 
 // 添加终端日志
 const addTerminalLog = (message, type = "info") => {
@@ -1490,6 +1510,21 @@ const addTerminalLog = (message, type = "info") => {
 
   flushBuffer();
   scrollTerminalToBottom();
+};
+
+const fallbackMatDefaultModelIfNeeded = ({ notify = false, log = false } = {}) => {
+  if (backendConfig.model !== "mat" || backendConfig.device === "cuda") {
+    return false;
+  }
+
+  backendConfig.model = "lama";
+  if (notify) {
+    $q.notify({ type: "warning", message: MAT_CUDA_FALLBACK_MESSAGE, position: "top" });
+  }
+  if (log) {
+    addTerminalLog(MAT_CUDA_FALLBACK_MESSAGE, "warning");
+  }
+  return true;
 };
 
 const persistConfig = async (nextConfig) => {
@@ -2063,6 +2098,7 @@ const setupEnvironment = async () => {
 
 // 启动服务
 const startService = async () => {
+  fallbackMatDefaultModelIfNeeded({ notify: true, log: true });
   const pathsValid = await ensureBackendPathsValid({
     backendProjectPath: backendConfig.projectPath || projectPath.value || "",
     modelDir: backendConfig.modelDir || "",

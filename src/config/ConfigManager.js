@@ -55,6 +55,13 @@ const normalizeButtonSize = (value) =>
 const normalizeBoolean = (value, fallback = true) =>
   typeof value === "boolean" ? value : fallback;
 
+const DEFAULT_MODEL_IDS = Object.freeze(["lama", "mat"]);
+const normalizeDefaultModel = (value, launchMode = "cuda") => {
+  const normalized = String(value || "").trim().toLowerCase();
+  const model = DEFAULT_MODEL_IDS.includes(normalized) ? normalized : "lama";
+  return model === "mat" && launchMode !== "cuda" ? "lama" : model;
+};
+
 const normalizeModelDir = (value) => {
   const normalized = String(value || "").trim().replace(/\\/g, "/");
   if (!normalized || normalized.endsWith("/.cache/torch/hub/checkpoints")) {
@@ -106,6 +113,13 @@ export class ConfigManager {
 
     if (!["cuda", "cpu"].includes(config.general?.launchMode)) {
       errors.push("启动方式必须是 cuda 或 cpu。");
+    }
+
+    if (
+      config.general?.defaultModel &&
+      !DEFAULT_MODEL_IDS.includes(String(config.general.defaultModel).trim().toLowerCase())
+    ) {
+      errors.push("默认模型必须是 lama 或 mat。");
     }
 
     if (
@@ -162,6 +176,54 @@ export class ConfigManager {
       }
       if (field.max && field.value > field.max) {
         errors.push(`${field.name}不能超过 ${field.max}。`);
+      }
+    });
+
+    [
+      {
+        value: config.masking?.samRenderCacheMaxContexts,
+        name: "SAM 渲染缓存图片数量",
+        min: 1,
+        max: 50,
+      },
+      {
+        value: config.masking?.samRenderCacheMaxMemoryMb,
+        name: "SAM 渲染缓存内存上限",
+        min: 32,
+        max: 1024,
+      },
+      {
+        value: config.masking?.samRenderCacheLargeImageLongSide,
+        name: "SAM 渲染缓存大图长边阈值",
+        min: 1024,
+        max: 12000,
+      },
+      {
+        value: config.masking?.samRenderCacheNeighborPreloadCount,
+        name: "SAM 相邻图片预热数量",
+        min: 0,
+        max: 10,
+      },
+    ].forEach((field) => {
+      if (field.value === undefined) return;
+      if (
+        typeof field.value !== "number" ||
+        Number.isNaN(field.value) ||
+        !Number.isInteger(field.value) ||
+        field.value < field.min ||
+        field.value > field.max
+      ) {
+        errors.push(`${field.name}必须是 ${field.min}-${field.max} 范围内的整数。`);
+      }
+    });
+
+    [
+      "samRenderCacheEnabled",
+      "samLazyRenderDisabledCandidates",
+      "samRenderCachePreloadVisibleList",
+    ].forEach((key) => {
+      if (config.masking?.[key] !== undefined && typeof config.masking[key] !== "boolean") {
+        errors.push("SAM 渲染缓存开关必须是布尔值。");
       }
     });
 
@@ -356,6 +418,10 @@ export class ConfigManager {
         ? merged.general.launchMode
         : "cuda",
       modelDir: normalizeModelDir(merged.general?.modelDir) || this.defaultConfig.general.modelDir,
+      defaultModel: normalizeDefaultModel(
+        merged.general?.defaultModel,
+        ["cuda", "cpu"].includes(merged.general?.launchMode) ? merged.general.launchMode : "cuda"
+      ),
       autoStart: normalizeBoolean(merged.general?.autoStart, true),
     };
 
@@ -461,6 +527,42 @@ export class ConfigManager {
         String(merged.masking?.videoSmartSelectionDefaultModel || "").trim() ||
         String(merged.masking?.defaultSam2Model || "").trim() ||
         DEFAULT_MASKING_CONFIG.videoSmartSelectionDefaultModel,
+      samRenderCacheEnabled: normalizeBoolean(
+        merged.masking?.samRenderCacheEnabled,
+        DEFAULT_MASKING_CONFIG.samRenderCacheEnabled
+      ),
+      samRenderCacheMaxContexts: normalizeInteger(
+        merged.masking?.samRenderCacheMaxContexts,
+        DEFAULT_MASKING_CONFIG.samRenderCacheMaxContexts,
+        1,
+        50
+      ),
+      samRenderCacheMaxMemoryMb: normalizeInteger(
+        merged.masking?.samRenderCacheMaxMemoryMb,
+        DEFAULT_MASKING_CONFIG.samRenderCacheMaxMemoryMb,
+        32,
+        1024
+      ),
+      samRenderCacheLargeImageLongSide: normalizeInteger(
+        merged.masking?.samRenderCacheLargeImageLongSide,
+        DEFAULT_MASKING_CONFIG.samRenderCacheLargeImageLongSide,
+        1024,
+        12000
+      ),
+      samLazyRenderDisabledCandidates: normalizeBoolean(
+        merged.masking?.samLazyRenderDisabledCandidates,
+        DEFAULT_MASKING_CONFIG.samLazyRenderDisabledCandidates
+      ),
+      samRenderCachePreloadVisibleList: normalizeBoolean(
+        merged.masking?.samRenderCachePreloadVisibleList,
+        DEFAULT_MASKING_CONFIG.samRenderCachePreloadVisibleList
+      ),
+      samRenderCacheNeighborPreloadCount: normalizeInteger(
+        merged.masking?.samRenderCacheNeighborPreloadCount,
+        DEFAULT_MASKING_CONFIG.samRenderCacheNeighborPreloadCount,
+        0,
+        10
+      ),
     };
 
     merged.video = {

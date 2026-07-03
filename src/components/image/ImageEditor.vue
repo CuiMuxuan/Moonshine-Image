@@ -514,6 +514,15 @@ provide(
     isMaskerReady: () => Boolean(maskerRef.value?.isReady?.()),
     appendExternalSamTextResult: (payload) =>
       maskerRef.value?.appendExternalSamTextResult?.(payload),
+    clearSamContextSession: (contextId) =>
+      maskerRef.value?.clearSamContextSession?.(contextId),
+    scheduleSamRenderPreloadFlush: () =>
+      maskerRef.value?.scheduleSamRenderPreloadFlush?.(),
+    flushSamRenderPreloadQueue: (options) =>
+      maskerRef.value?.flushSamRenderPreloadQueue?.(options),
+    getSamRenderStats: () => maskerRef.value?.getSamRenderStats?.(),
+    resetSamRenderStats: () => maskerRef.value?.resetSamRenderStats?.(),
+    getSamRenderCacheSnapshot: () => maskerRef.value?.getSamRenderCacheSnapshot?.(),
   })
 );
 
@@ -526,6 +535,15 @@ defineExpose({
   isMaskerReady: () => Boolean(maskerRef.value?.isReady?.()),
   appendExternalSamTextResult: (payload) =>
     maskerRef.value?.appendExternalSamTextResult?.(payload),
+  clearSamContextSession: (contextId) =>
+    maskerRef.value?.clearSamContextSession?.(contextId),
+  scheduleSamRenderPreloadFlush: () =>
+    maskerRef.value?.scheduleSamRenderPreloadFlush?.(),
+  flushSamRenderPreloadQueue: (options) =>
+    maskerRef.value?.flushSamRenderPreloadQueue?.(options),
+  getSamRenderStats: () => maskerRef.value?.getSamRenderStats?.(),
+  resetSamRenderStats: () => maskerRef.value?.resetSamRenderStats?.(),
+  getSamRenderCacheSnapshot: () => maskerRef.value?.getSamRenderCacheSnapshot?.(),
 });
 </script>
 

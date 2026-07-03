@@ -279,6 +279,38 @@ function runAssertions() {
     pattern: /(?=[\s\S]*enginePreparing:\s*\{[\s\S]*type:\s*Boolean)(?=[\s\S]*enginePreparingLabel:\s*\{[\s\S]*type:\s*String)(?=[\s\S]*:icon="runButtonIcon")(?=[\s\S]*:loading="isProcessing \|\| enginePreparing")(?=[\s\S]*<q-spinner size="20px" class="on-left" \/>)(?=[\s\S]*backendPreparingText = computed)(?=[\s\S]*props\.enginePreparing \? "sync" : "play_arrow")(?=[\s\S]*if \(props\.enginePreparing\) return "启动中")(?=[\s\S]*engineRunDisabled \|\| enginePreparing)(?=[\s\S]*if \(props\.enginePreparing\) return backendPreparingText\.value)[\s\S]*/,
   });
 
+  logSection("MAT Video Model Reuse");
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video model selection treats MAT as a LaMa-equivalent mask inpaint model while keeping SLBR no-mask",
+    pattern: /(?=[\s\S]*VIDEO_PROCESSING_MODEL_IDS = \["lama", "mat", "slbr"\])(?=[\s\S]*MASK_INPAINT_MODEL_IDS = \["lama", "mat"\])(?=[\s\S]*videoModelOptions = computed\(\(\) => \{[\s\S]*\.filter\(\(model\) => VIDEO_PROCESSING_MODEL_IDS\.includes\(model\.id\)\))(?=[\s\S]*const isMaskInpaintModel = \(modelId = currentModel\.value\) => \([\s\S]*MASK_INPAINT_MODEL_IDS\.includes\(String\(modelId \|\| ""\)\.trim\(\)\.toLowerCase\(\)\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video backend model preflight switches MAT through the shared inpaint model path and falls back to LaMa on non-CUDA",
+    pattern: /(?=[\s\S]*MAT_CUDA_FALLBACK_MESSAGE = "MAT 需要 CUDA，当前已自动切换为 LaMa。")(?=[\s\S]*const ensureBackendVideoModel = async \(modelId = currentModel\.value\) => \{[\s\S]*if \(!isMaskInpaintModel\(requestedModel\)\) return true)(?=[\s\S]*modelRegistryStore\.switchModel\(requestedModel\))(?=[\s\S]*requestedModel === "mat"[\s\S]*handleModelChange\("lama"\)[\s\S]*MAT_CUDA_FALLBACK_MESSAGE)[\s\S]*/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/schema.py",
+    description: "Video batch request allows MAT, requires masks for LaMa/MAT, and keeps SLBR no-mask compatible",
+    pattern: /(?=[\s\S]*class VideoBatchInpaintRequest\(BaseModel\):)(?=[\s\S]*if values\.model_id in \{"lama", "mat"\}:)(?=[\s\S]*mask_path is required when model_id is lama or mat)(?=[\s\S]*if values\.model_id not in \{"lama", "mat", "slbr"\}:)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video batch artifact staging renders, saves, and posts masks only for mask inpaint models including MAT",
+    pattern: /(?=[\s\S]*const frameRequiresMask = isMaskInpaintModel\(modelId\))(?=[\s\S]*frameRequiresMask \? maskRenderer\.render\(ts\) : Promise\.resolve\(null\))(?=[\s\S]*if \(frameRequiresMask\) \{[\s\S]*await saveBlobToPath\(maskBlob, maskPath\))(?=[\s\S]*\.\.\.\(frameRequiresMask \? \{ mask_path: maskPath \} : \{\}\))(?=[\s\S]*\.\.\.\[framePath, frameRequiresMask \? maskPath : "", outputPath\]\.filter\(Boolean\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video disk-space estimation counts mask artifacts for LaMa/MAT and skips masks for SLBR",
+    pattern: /ensureVideoProcessingDiskSpace\(\{[\s\S]*hasMask: isMaskInpaintModel\(requestedModelId\),/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/api.py",
+    description: "Backend video batch keeps SLBR in the no-mask branch and sends LaMa/MAT through ModelManager mask inpaint",
+    pattern: /(?=[\s\S]*model_id = str\(req\.model_id or "lama"\)\.strip\(\)\.lower\(\) or "lama")(?=[\s\S]*if model_id == "slbr":[\s\S]*slbr_runner = self\._get_slbr_runner\(\))(?=[\s\S]*if model_id == "slbr":[\s\S]*slbr_runner\.infer_bgr)(?=[\s\S]*else:[\s\S]*mask = self\._load_mask_from_path)(?=[\s\S]*processed_bgr = self\.model_manager\(image, mask, inpaint_req\))[\s\S]*/,
+  });
+
   logSection("SAM2 Video Workflow");
   assertPattern({
     file: "server/moonshine_server/schema.py",
@@ -462,7 +494,7 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
-    description: "LaMa video processing writes temporary frame masks as JPEG files by binarizing source alpha",
+    description: "Mask inpaint video processing writes temporary frame masks as JPEG files by binarizing source alpha",
     pattern: /(?=[\s\S]*const maskName = `mask_\$\{String\(frameIndex\)\.padStart\(6, "0"\)\}\.jpg`)(?=[\s\S]*encodeMaskImageAsJpegBlob\(canvas, width, height\))(?=[\s\S]*const maskValue = data\[index \+ 3\] > 0 \? 255 : 0)(?=[\s\S]*data\[index \+ 3\] = 255)(?=[\s\S]*mimeType: "image\/jpeg")(?=[\s\S]*quality: 0\.92)[\s\S]*/,
   });
   assertPattern({
@@ -472,8 +504,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/components/video/VideoPreviewOverlay.vue",
-    description: "SAM video preview auto-expands masks with the shared LaMa rule before recoloring",
-    pattern: /(?=[\s\S]*import \{ expandSamMaskImageDataForLama \} from "src\/utils\/samMaskAutoExpand")(?=[\s\S]*currentModel:\s*\{[\s\S]*type:\s*String[\s\S]*default:\s*"lama")(?=[\s\S]*getSamFrameCacheKey[\s\S]*"lama-expanded"[\s\S]*"original")(?=[\s\S]*createPreviewMaskImage[\s\S]*String\(props\.currentModel \|\| ""\)\.toLowerCase\(\) === "lama"[\s\S]*expandSamMaskImageDataForLama\(imageData)(?=[\s\S]*previewColor = parseMaskPreviewColor)[\s\S]*/,
+    description: "SAM video preview auto-expands masks for LaMa/MAT mask inpaint models before recoloring",
+    pattern: /(?=[\s\S]*import \{ expandSamMaskImageDataForLama \} from "src\/utils\/samMaskAutoExpand")(?=[\s\S]*currentModel:\s*\{[\s\S]*type:\s*String[\s\S]*default:\s*"lama")(?=[\s\S]*getSamFrameCacheKey[\s\S]*"lama-expanded"[\s\S]*"original")(?=[\s\S]*createPreviewMaskImage[\s\S]*\["lama", "mat"\]\.includes\(String\(props\.currentModel \|\| ""\)\.toLowerCase\(\)\)[\s\S]*expandSamMaskImageDataForLama\(imageData)(?=[\s\S]*previewColor = parseMaskPreviewColor)[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -487,8 +519,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
-    description: "Final SAM video mask renderer auto-expands LaMa masks with the shared utility before processing",
-    pattern: /(?=[\s\S]*expandSamMaskImageDataForLama,[\s\S]*from "src\/utils\/samMaskAutoExpand")(?=[\s\S]*createBinaryAlphaMaskBitmap[\s\S]*expandForLama = false)(?=[\s\S]*if \(expandForLama\)[\s\S]*expandSamMaskImageDataForLama\(imageData)(?=[\s\S]*createCombinedMaskRenderer = async \(\{ masks, width, height, modelId = currentModel\.value \}\))(?=[\s\S]*shouldAutoExpandSamVideoMasks[\s\S]*toLowerCase\(\) === "lama")(?=[\s\S]*"lama-expanded"[\s\S]*"original")(?=[\s\S]*createBinaryAlphaMaskBitmap\(image, width, height, \{[\s\S]*expandForLama: shouldAutoExpandSamVideoMasks)[\s\S]*/,
+    description: "Final SAM video mask renderer auto-expands masks for LaMa/MAT with the shared utility before processing",
+    pattern: /(?=[\s\S]*expandSamMaskImageDataForLama,[\s\S]*from "src\/utils\/samMaskAutoExpand")(?=[\s\S]*createBinaryAlphaMaskBitmap[\s\S]*expandForLama = false)(?=[\s\S]*if \(expandForLama\)[\s\S]*expandSamMaskImageDataForLama\(imageData)(?=[\s\S]*createCombinedMaskRenderer = async \(\{ masks, width, height, modelId = currentModel\.value \}\))(?=[\s\S]*shouldAutoExpandSamVideoMasks = isMaskInpaintModel\(modelId\))(?=[\s\S]*"lama-expanded"[\s\S]*"original")(?=[\s\S]*createBinaryAlphaMaskBitmap\(image, width, height, \{[\s\S]*expandForLama: shouldAutoExpandSamVideoMasks)[\s\S]*/,
   });
   assertPattern({
     file: "src/stores/videoManager.js",

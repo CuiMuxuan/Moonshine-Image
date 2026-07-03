@@ -19,6 +19,7 @@
       @select-all="$emit('select-all')"
       @invert-selection="$emit('invert-selection')"
       @delete-selected="$emit('delete-selected')"
+      @visible-range-change="$emit('visible-range-change', $event)"
     />
   </q-drawer>
 </template>
@@ -60,7 +61,8 @@ const emit = defineEmits([
   'remove-file',
   'select-all',
   'invert-selection',
-  'delete-selected'
+  'delete-selected',
+  'visible-range-change'
 ])
 
 // 使用计算属性处理双向绑定

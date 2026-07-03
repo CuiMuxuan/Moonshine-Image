@@ -88,6 +88,12 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
     return response;
   };
 
+  const switchModel = async (modelId) => {
+    const response = await ModelRegistryService.switchModel(modelId);
+    currentModel.value = response?.currentModel || modelId || currentModel.value || "lama";
+    return response;
+  };
+
   const clearPollTimer = (taskId) => {
     const timer = pollTimers.get(taskId);
     if (timer) {
@@ -174,6 +180,7 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
     loadModels,
     refreshModels,
     verifyModel,
+    switchModel,
     startDownload,
     pollTask,
     getTaskForModel,

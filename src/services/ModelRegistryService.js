@@ -160,6 +160,15 @@ const verifyModel = async (modelId, options = {}) => {
   };
 };
 
+const switchModel = async (modelId) => {
+  const normalizedModelId = String(modelId || "").trim() || "lama";
+  const response = await api.post("/api/v1/model", { name: normalizedModelId });
+  return {
+    currentModel: response?.name || normalizedModelId,
+    model: response,
+  };
+};
+
 const startModelDownload = async (modelId, options = {}) => (
   api.post(
     `/api/v1/moonshine/models/${encodeURIComponent(modelId)}/download`,
@@ -176,6 +185,7 @@ export default {
   getImageModels,
   refreshModels,
   verifyModel,
+  switchModel,
   startModelDownload,
   getModelTask,
 };

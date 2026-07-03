@@ -470,12 +470,12 @@ class VideoBatchInpaintRequest(BaseModel):
             raise ValueError("frame_index must be unique in one batch")
         model_id = str(values.model_id or "lama").strip().lower()
         values.model_id = model_id or "lama"
-        if values.model_id == "lama":
+        if values.model_id in {"lama", "mat"}:
             missing_mask_indexes = [
                 item.frame_index for item in values.frames if not item.mask_path
             ]
             if missing_mask_indexes:
-                raise ValueError("mask_path is required when model_id is lama")
-        if values.model_id not in {"lama", "slbr"}:
+                raise ValueError("mask_path is required when model_id is lama or mat")
+        if values.model_id not in {"lama", "mat", "slbr"}:
             raise ValueError(f"Unsupported video model_id: {values.model_id}")
         return values

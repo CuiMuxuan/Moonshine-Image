@@ -1,5 +1,8 @@
+import hashlib
 import os
 import random
+import shutil
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -7,12 +10,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
+from torch.hub import download_url_to_file
 
 from moonshine_server.helper import (
     load_model,
-    get_cache_path_by_url,
     norm_img,
-    download_model,
 )
 from moonshine_server.schema import InpaintRequest
 from .base import InpaintModel
@@ -1867,12 +1869,45 @@ class Discriminator(torch.nn.Module):
         return x, x_stg1
 
 
+MOONSHINE_MODEL_DIR = Path(
+    os.environ.get("XDG_CACHE_HOME") or os.environ.get("TORCH_HOME") or Path.cwd() / "models"
+).expanduser()
+MAT_MODEL_FILE = "mat/Places_512_FullData_G.pth"
 MAT_MODEL_URL = os.environ.get(
     "MAT_MODEL_URL",
-    "https://github.com/Sanster/models/releases/download/add_mat/Places_512_FullData_G.pth",
+    "https://huggingface.co/CuiMuxuan/moonshine-models/resolve/main/mat/Places_512_FullData_G.pth",
 )
+MAT_MODEL_SHA256 = os.environ.get(
+    "MAT_MODEL_SHA256",
+    "0512e37ebba3986b0355130b2e2c1f95736d0778ac82e91b1212b4b21c231312",
+).lower()
 
-MAT_MODEL_MD5 = os.environ.get("MAT_MODEL_MD5", "8ca927835fa3f5e21d65ffcb165377ed")
+
+def _model_dir() -> Path:
+    return Path(
+        os.environ.get("XDG_CACHE_HOME") or os.environ.get("TORCH_HOME") or MOONSHINE_MODEL_DIR
+    ).expanduser()
+
+
+def _root_model_path(filename: str) -> Path:
+    return _model_dir() / filename
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _resolve_mat_model_path() -> str:
+    root_path = _root_model_path(MAT_MODEL_FILE)
+    if root_path.is_file():
+        return str(root_path)
+    raise FileNotFoundError(
+        f"MAT model is not installed. Please place Places_512_FullData_G.pth at {root_path}."
+    )
 
 
 class MAT(InpaintModel):
@@ -1883,6 +1918,9 @@ class MAT(InpaintModel):
     is_erase_model = True
 
     def init_model(self, device, **kwargs):
+        if "cuda" not in str(device).lower() or not torch.cuda.is_available():
+            raise RuntimeError("MAT requires CUDA. The default model has been switched back to LaMa.")
+
         seed = 240  # pick up a random number
         set_seed(seed)
 
@@ -1899,18 +1937,39 @@ class MAT(InpaintModel):
             mapping_kwargs={"torch_dtype": self.torch_dtype},
         ).to(self.torch_dtype)
         # fmt: off
-        self.model = load_model(G, MAT_MODEL_URL, device, MAT_MODEL_MD5)
+        self.model = load_model(G, _resolve_mat_model_path(), device, None)
         self.z = torch.from_numpy(np.random.randn(1, G.z_dim)).to(self.torch_dtype).to(device)
         self.label = torch.zeros([1, self.model.c_dim], device=device).to(self.torch_dtype)
         # fmt: on
 
     @staticmethod
     def download():
-        download_model(MAT_MODEL_URL, MAT_MODEL_MD5)
+        root_path = _root_model_path(MAT_MODEL_FILE)
+        if root_path.is_file():
+            return str(root_path)
+
+        root_path.parent.mkdir(parents=True, exist_ok=True)
+        part_path = root_path.with_name(f"{root_path.name}.part")
+
+        if os.path.exists(MAT_MODEL_URL):
+            shutil.copyfile(MAT_MODEL_URL, part_path)
+        else:
+            download_url_to_file(MAT_MODEL_URL, str(part_path), progress=True)
+
+        if MAT_MODEL_SHA256:
+            actual_sha256 = _sha256_file(part_path)
+            if actual_sha256 != MAT_MODEL_SHA256:
+                part_path.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"MAT model sha256 mismatch: {actual_sha256}, expected {MAT_MODEL_SHA256}"
+                )
+
+        os.replace(part_path, root_path)
+        return str(root_path)
 
     @staticmethod
     def is_downloaded() -> bool:
-        return os.path.exists(get_cache_path_by_url(MAT_MODEL_URL))
+        return _root_model_path(MAT_MODEL_FILE).is_file()
 
     def forward(self, image, mask, config: InpaintRequest):
         """Input images and output images have same size

@@ -406,7 +406,7 @@
                       :key="candidate.localId"
                       clickable
                       :active="hoveredSamCandidateId === candidate.localId"
-                      @mouseenter="hoveredSamCandidateId = candidate.localId"
+                      @mouseenter="prepareSamCandidatePreview(candidate.localId)"
                       @mouseleave="hoveredSamCandidateId = ''"
                     >
                       <q-item-section side>
@@ -524,10 +524,23 @@ import {
   loadSam3Lexicon,
 } from "src/services/SamLexiconService";
 import {
+  deleteSamImageSession,
   getLastExecutedSamImageModelId,
   getSamImageSessionStore,
   setLastExecutedSamImageModelId,
 } from "src/services/SamImageSessionStore";
+import {
+  clearSamRenderCacheContext,
+  dequeueSamRenderPreload,
+  getSamRenderPreloadQueueLength,
+  getSamRenderCacheSnapshot,
+  getSamRenderStats,
+  normalizeSamRenderCacheConfig,
+  recordSamRenderStat,
+  resetSamRenderStats,
+  shouldKeepSamRenderedCache,
+  touchSamRenderCacheContext,
+} from "src/services/SamImageRenderCache";
 import {
   DEFAULT_IMAGE_BRUSH,
   normalizeBrushConfig,
@@ -697,6 +710,7 @@ const dragOffset = ref({ x: 0, y: 0 });
 const hasManualToolbarPosition = ref(false);
 const maskVisible = ref(true);
 const pendingMaskSyncDataUrl = ref("");
+const lastEmittedMaskDataUrl = ref("");
 const rectPreview = ref(null);
 const isDrawingWindowBound = ref(false);
 const toolbarPopupClass = "mask-toolbar-popup";
@@ -823,6 +837,9 @@ let samRenderToken = 0;
 let samRenderInFlight = null;
 let samRenderInFlightSignature = "";
 let lastSamRenderSignature = "";
+let samPreloadIdleHandle = 0;
+let samPreloadFallbackTimer = 0;
+let samPreloadRunning = false;
 
 const normalizeBatchState = (value = {}) => {
   const total = Math.max(0, Number(value.total || 0));
@@ -999,6 +1016,18 @@ const hoveredSamCandidateMask = computed(() => {
   if (candidate.renderedMask) return candidate.renderedMask;
   return "";
 });
+
+const prepareSamCandidatePreview = async (localId) => {
+  hoveredSamCandidateId.value = localId;
+  const candidate = samCandidates.value.find((item) => item.localId === localId);
+  if (!candidate?.mask || !maskCanvas.value) return;
+  if (candidate.renderedMask) return;
+  await resolveSamCandidateMaskForRendering(candidate, {
+    width: maskCanvas.value.width,
+    height: maskCanvas.value.height,
+  });
+  saveSamContextSession();
+};
 
 const samCandidatePreviewStyle = computed(() => ({
   left: `${store.offsetX}px`,
@@ -1183,16 +1212,31 @@ const buildSamTextCandidate = async (
     createdAt: new Date().toISOString(),
   });
 
-const cloneSamCandidates = (items = []) =>
+const cloneSamCandidates = (items = [], { preserveRenderCache = false } = {}) =>
   items.map((candidate) => {
     const nextCandidate = {
       ...candidate,
       displayAlpha: normalizeSamDisplayAlpha(candidate?.displayAlpha, getEffectiveMaskDisplayAlpha()),
     };
-    delete nextCandidate.renderedMask;
-    delete nextCandidate.renderedMaskMeta;
+    if (!preserveRenderCache) {
+      delete nextCandidate.renderedMask;
+      delete nextCandidate.renderedMaskMeta;
+    }
     return nextCandidate;
   });
+
+const canPreserveSamRenderCache = ({ width = 0, height = 0 } = {}) =>
+  shouldKeepSamRenderedCache({
+    width: width || maskCanvas.value?.width || store.imageWidth || 0,
+    height: height || maskCanvas.value?.height || store.imageHeight || 0,
+    maskingConfig: configStore.config.masking || {},
+  });
+
+const resolveSamSessionDimensions = (session = {}) => {
+  const width = Math.max(0, Number(session.width || session.baseSnapshot?.width || 0));
+  const height = Math.max(0, Number(session.height || session.baseSnapshot?.height || 0));
+  return { width, height };
+};
 
 const setSamCandidateExpandPx = async (localId, value, { render = true } = {}) => {
   const candidate = samCandidates.value.find((item) => item.localId === localId);
@@ -1213,11 +1257,14 @@ const setSamCandidateExpandPx = async (localId, value, { render = true } = {}) =
 const saveSamContextSession = () => {
   const contextId = activeSamContextId.value;
   if (!contextId) return;
+  const preserveRenderCache = canPreserveSamRenderCache();
   samSessionByContext.set(contextId, {
-    candidates: cloneSamCandidates(samCandidates.value),
+    candidates: cloneSamCandidates(samCandidates.value, { preserveRenderCache }),
     hoveredCandidateId: "",
     baseSnapshot: samBaseSnapshot.value ? cloneImageData(samBaseSnapshot.value) : null,
     baseSnapshotDataUrl: samBaseSnapshotDataUrl.value || "",
+    width: Math.max(0, Number(maskCanvas.value?.width || store.imageWidth || 0)),
+    height: Math.max(0, Number(maskCanvas.value?.height || store.imageHeight || 0)),
     operationIndex: samOperationIndex.value,
     lastPerformance: samLastPerformance.value ? { ...samLastPerformance.value } : null,
   });
@@ -1227,7 +1274,9 @@ const restoreSamContextSession = () => {
   const contextId = getSamContextId();
   activeSamContextId.value = contextId;
   const session = samSessionByContext.get(contextId);
-  samCandidates.value = cloneSamCandidates(session?.candidates || []);
+  samCandidates.value = cloneSamCandidates(session?.candidates || [], {
+    preserveRenderCache: canPreserveSamRenderCache(),
+  });
   bumpSamCandidatesRevision();
   hoveredSamCandidateId.value = "";
   samBaseSnapshot.value = session?.baseSnapshot ? cloneImageData(session.baseSnapshot) : null;
@@ -1746,7 +1795,10 @@ const subtractSamEraseMask = async (maskDataUrl, eraseMaskDataUrl, width, height
   return canvas.toDataURL("image/png");
 };
 
-const resolveSamCandidateMaskForRendering = async (candidate, { width = 0, height = 0 } = {}) => {
+const resolveSamCandidateMaskForRendering = async (
+  candidate,
+  { width = 0, height = 0, contextId = "" } = {}
+) => {
   const sourceMask = candidate?.mask || "";
   if (!sourceMask) return "";
 
@@ -1775,8 +1827,16 @@ const resolveSamCandidateMaskForRendering = async (candidate, { width = 0, heigh
     cachedRender.autoExpand === renderMeta.autoExpand &&
     cachedRender.displayAlpha === renderMeta.displayAlpha
   ) {
+    recordSamRenderStat("cacheHitCount", {
+      lastRenderedContextId: contextId || activeSamContextId.value || getSamContextId(),
+      lastRenderReason: "candidate-cache-hit",
+    });
     return candidate.renderedMask;
   }
+  recordSamRenderStat("cacheMissCount", {
+    lastRenderedContextId: contextId || activeSamContextId.value || getSamContextId(),
+    lastRenderReason: "candidate-cache-miss",
+  });
 
   if (!shouldAutoExpandSamMasks.value) {
     renderMask = sourceMask;
@@ -1820,6 +1880,104 @@ const resolveSamCandidateMaskForRendering = async (candidate, { width = 0, heigh
   candidate.renderedMask = renderMask;
   candidate.renderedMaskMeta = renderMeta;
   return renderMask;
+};
+
+const preloadSamRenderContext = async (contextId = "", priority = "visible") => {
+  const normalizedContextId = String(contextId || "").trim();
+  if (!normalizedContextId) return false;
+  if (normalizedContextId === getSamContextId()) {
+    return false;
+  }
+
+  const session = samSessionByContext.get(normalizedContextId);
+  if (!session?.candidates?.length) return false;
+  const { width, height } = resolveSamSessionDimensions(session);
+  if (!width || !height) return false;
+  const maskingConfig = configStore.config.masking || {};
+  const cacheConfig = normalizeSamRenderCacheConfig(maskingConfig);
+  if (!cacheConfig.enabled) return false;
+  if (!shouldKeepSamRenderedCache({ width, height, maskingConfig })) return false;
+
+  const candidates = session.candidates.filter((candidate) => {
+    if (!candidate?.mask) return false;
+    if (!cacheConfig.lazyRenderDisabledCandidates) return true;
+    return Boolean(candidate.enabled);
+  });
+  if (!candidates.length) return false;
+
+  recordSamRenderStat("offscreenRenderCount", {
+    lastRenderedContextId: normalizedContextId,
+    lastRenderReason: `sam-preload-${priority}`,
+  });
+  for (const candidate of candidates) {
+    await resolveSamCandidateMaskForRendering(candidate, {
+      width,
+      height,
+      contextId: normalizedContextId,
+    });
+  }
+  touchSamRenderCacheContext({
+    contextId: normalizedContextId,
+    sessionStore: samSessionByContext,
+    maskingConfig,
+    width,
+    height,
+  });
+  return true;
+};
+
+const cancelSamRenderPreloadFlush = () => {
+  if (typeof window === "undefined") return;
+  if (samPreloadIdleHandle) {
+    if (typeof window.cancelIdleCallback === "function") {
+      window.cancelIdleCallback(samPreloadIdleHandle);
+    }
+    samPreloadIdleHandle = 0;
+  }
+  if (samPreloadFallbackTimer) {
+    window.clearTimeout(samPreloadFallbackTimer);
+    samPreloadFallbackTimer = 0;
+  }
+};
+
+const flushSamRenderPreloadQueue = async ({ maxItems = 6, maxSucceeded = 2 } = {}) => {
+  if (samPreloadRunning) return false;
+  samPreloadRunning = true;
+  const maxAttempts = Math.max(1, Math.round(Number(maxItems || 6)));
+  const successLimit = Math.max(1, Math.round(Number(maxSucceeded || 2)));
+  let attempted = 0;
+  let succeeded = 0;
+  try {
+    while (attempted < maxAttempts && succeeded < successLimit) {
+      const item = dequeueSamRenderPreload();
+      if (!item) break;
+      attempted += 1;
+      if (await preloadSamRenderContext(item.contextId, item.priority)) {
+        succeeded += 1;
+      }
+    }
+  } finally {
+    samPreloadRunning = false;
+  }
+  if (getSamRenderPreloadQueueLength() > 0) {
+    scheduleSamRenderPreloadFlush();
+  }
+  return attempted > 0;
+};
+
+const scheduleSamRenderPreloadFlush = () => {
+  if (typeof window === "undefined") return;
+  if (samPreloadRunning || samPreloadIdleHandle || samPreloadFallbackTimer) return;
+  const run = () => {
+    samPreloadIdleHandle = 0;
+    samPreloadFallbackTimer = 0;
+    void flushSamRenderPreloadQueue();
+  };
+  if (typeof window.requestIdleCallback === "function") {
+    samPreloadIdleHandle = window.requestIdleCallback(run, { timeout: 1200 });
+    return;
+  }
+  samPreloadFallbackTimer = window.setTimeout(run, 240);
 };
 
 const hasSamCandidateLayer = () => samCandidates.value.some((candidate) => candidate.mask);
@@ -2018,6 +2176,10 @@ const renderSamCandidates = async ({ pushHistory = false, saveSession = true } =
 
   const renderToken = (samRenderToken += 1);
   const renderPromise = (async () => {
+    recordSamRenderStat("offscreenRenderCount", {
+      lastRenderedContextId: contextId,
+      lastRenderReason: "sam-candidates-compose",
+    });
     const compositeCanvas = document.createElement("canvas");
     compositeCanvas.width = width;
     compositeCanvas.height = height;
@@ -2070,10 +2232,21 @@ const renderSamCandidates = async ({ pushHistory = false, saveSession = true } =
 
     ctx.value.clearRect(0, 0, width, height);
     ctx.value.drawImage(compositeCanvas, 0, 0, width, height);
+    recordSamRenderStat("visibleCanvasCommitCount", {
+      lastRenderedContextId: contextId,
+      lastRenderReason: "sam-candidates-commit",
+    });
     lastSamRenderSignature = renderSignature;
 
     if (saveSession) {
       saveSamContextSession();
+      touchSamRenderCacheContext({
+        contextId,
+        sessionStore: samSessionByContext,
+        maskingConfig: configStore.config.masking || {},
+        width,
+        height,
+      });
     }
     if (pushHistory) {
       appendHistorySnapshot(ctx.value.getImageData(0, 0, width, height));
@@ -2298,7 +2471,11 @@ const appendExternalSamTextResult = async ({
   if (!sessionKey) return { candidates: [], mask: "", performance: result.performance || null };
 
   const previousSession = samSessionByContext.get(sessionKey) || {};
-  const previousCandidates = cloneSamCandidates(previousSession.candidates || []);
+  const width = Number(result.width || 0);
+  const height = Number(result.height || 0);
+  const previousCandidates = cloneSamCandidates(previousSession.candidates || [], {
+    preserveRenderCache: canPreserveSamRenderCache({ width, height }),
+  });
   const previousOperationIndex = Number.isInteger(previousSession.operationIndex)
     ? previousSession.operationIndex
     : 0;
@@ -2317,8 +2494,6 @@ const appendExternalSamTextResult = async ({
     )
   );
   const mergedCandidates = [...previousCandidates, ...nextCandidates];
-  const width = Number(result.width || 0);
-  const height = Number(result.height || 0);
   const baseSnapshotDataUrl = previousSession.baseSnapshotDataUrl || baseMask || "";
   const composedMask = await composeSamMaskDataUrl({
     baseMask: baseSnapshotDataUrl,
@@ -2333,12 +2508,16 @@ const appendExternalSamTextResult = async ({
     hoveredCandidateId: "",
     baseSnapshot: previousSession.baseSnapshot || null,
     baseSnapshotDataUrl,
+    width,
+    height,
     operationIndex: previousOperationIndex + 1,
     lastPerformance: result.performance ? { ...result.performance } : previousSession.lastPerformance || null,
   });
 
   if (sessionKey === activeSamContextId.value) {
-    samCandidates.value = cloneSamCandidates(mergedCandidates);
+    samCandidates.value = cloneSamCandidates(mergedCandidates, {
+      preserveRenderCache: canPreserveSamRenderCache({ width, height }),
+    });
     bumpSamCandidatesRevision();
     samBaseSnapshotDataUrl.value = baseSnapshotDataUrl;
     bumpSamBaseSnapshotRevision();
@@ -2387,6 +2566,37 @@ const clearSamCandidates = async () => {
   samBaseSnapshot.value = null;
   bumpSamBaseSnapshotRevision();
   saveSamContextSession();
+};
+
+const clearSamContextSession = async (contextId = getSamContextId()) => {
+  const targetContextId = buildSamContextId(contextId);
+  if (!targetContextId) return false;
+  clearSamRenderCacheContext(targetContextId, samSessionByContext);
+  deleteSamImageSession(targetContextId);
+  if (targetContextId !== getSamContextId() && targetContextId !== activeSamContextId.value) {
+    return true;
+  }
+
+  activeSamContextId.value = targetContextId;
+  samCandidates.value = [];
+  hoveredSamCandidateId.value = "";
+  samCandidateMenuOpen.value = false;
+  samBaseSnapshot.value = null;
+  samBaseSnapshotDataUrl.value = "";
+  samOperationIndex.value = 0;
+  samLastPerformance.value = null;
+  samPointerStart.value = null;
+  samDragPoint.value = null;
+  bumpSamCandidatesRevision();
+  bumpSamBaseSnapshotRevision();
+  resetSamRenderState();
+
+  if (ctx.value && maskCanvas.value) {
+    ctx.value.clearRect(0, 0, maskCanvas.value.width, maskCanvas.value.height);
+    saveInitialState();
+    emitMask();
+  }
+  return true;
 };
 
 const saveInitialState = () => {
@@ -2514,6 +2724,7 @@ const emitMask = () => {
 
   if (!canvasHasVisibleMaskPixels()) {
     pendingMaskSyncDataUrl.value = "";
+    lastEmittedMaskDataUrl.value = "";
     emit("update:mask", {
       clear: true,
       contextId: getMaskEmitContextId(),
@@ -2523,6 +2734,7 @@ const emitMask = () => {
 
   const dataUrl = maskCanvas.value.toDataURL("image/png");
   pendingMaskSyncDataUrl.value = dataUrl;
+  lastEmittedMaskDataUrl.value = dataUrl;
   emit("update:mask", {
     contextId: getMaskEmitContextId(),
     data: dataUrl,
@@ -3084,6 +3296,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   cancelStableMaskComposite();
+  cancelSamRenderPreloadFlush();
   if (samSettingsMenuLayoutFrame) {
     window.cancelAnimationFrame(samSettingsMenuLayoutFrame);
     samSettingsMenuLayoutFrame = 0;
@@ -3161,11 +3374,15 @@ watch(
   (newMask) => {
     if (!props.show || !ctx.value) return;
     const nextMaskDataUrl = normalizeMaskDataUrl(newMask);
-    const currentMaskDataUrl = getMaskData();
     if (nextMaskDataUrl && nextMaskDataUrl === pendingMaskSyncDataUrl.value) {
       pendingMaskSyncDataUrl.value = "";
       return;
     }
+    if (nextMaskDataUrl && nextMaskDataUrl === lastEmittedMaskDataUrl.value) {
+      pendingMaskSyncDataUrl.value = "";
+      return;
+    }
+    const currentMaskDataUrl = hasSamContextCandidates() ? "" : getMaskData();
     if (nextMaskDataUrl && nextMaskDataUrl === currentMaskDataUrl) {
       pendingMaskSyncDataUrl.value = "";
       return;
@@ -3384,6 +3601,12 @@ defineExpose({
   undo,
   resetView,
   appendExternalSamTextResult,
+  clearSamContextSession,
+  scheduleSamRenderPreloadFlush,
+  flushSamRenderPreloadQueue,
+  getSamRenderCacheSnapshot,
+  getSamRenderStats,
+  resetSamRenderStats,
   isReady: () => Boolean(maskCanvas.value && ctx.value),
   canUndo: () => canUndo.value,
 });

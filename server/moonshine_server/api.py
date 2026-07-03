@@ -285,7 +285,10 @@ class Api:
     def api_switch_model(self, req: SwitchModelRequest) -> ModelInfo:
         if req.name == self.model_manager.name:
             return self.model_manager.current_model
-        self.model_manager.switch(req.name)
+        try:
+            self.model_manager.switch(req.name)
+        except RuntimeError as error:
+            raise HTTPException(status_code=422, detail=str(error))
         return self.model_manager.current_model
 
     def api_switch_plugin_model(self, req: SwitchPluginModelRequest):
@@ -880,9 +883,11 @@ class Api:
                 detail=f"Image size({image.shape[:2]}) and mask size({mask.shape[:2]}) not match.",
             )
         start = time.time()
-        rgb_np_img = self.model_manager(image, mask, req)
+        try:
+            rgb_np_img = self.model_manager(image, mask, req)
+        finally:
+            torch_gc()
         logger.info(f"process time: {(time.time() - start) * 1000:.2f}ms")
-        torch_gc()
 
         rgb_np_img = cv2.cvtColor(rgb_np_img.astype(np.uint8), cv2.COLOR_BGR2RGB)
         rgb_res = concat_alpha_channel(rgb_np_img, alpha_channel)
@@ -1289,7 +1294,6 @@ class Api:
                         **self._build_result_meta(output_spec),
                     }
                 )
-                torch_gc()
 
             except Exception as e:
                 if isinstance(e, DiskSpaceError):
@@ -1303,6 +1307,8 @@ class Api:
                         "success": False,
                     }
                 )
+            finally:
+                torch_gc()
 
         total_time = time.time() - start_time
         logger.info(
@@ -1339,8 +1345,9 @@ class Api:
             # Run the existing folder-based batch inpaint pipeline.
             start_time = time.time()
             
+            folder_model = self.model_manager.name if self.model_manager.name in {"lama", "mat"} else "lama"
             folder_results = batch_inpaint(
-                model="lama",  # Keep current default model for folder mode.
+                model=folder_model,
                 device=device,
                 image=image_path,
                 mask=mask_path,
@@ -1604,6 +1611,11 @@ class Api:
         if model_id == "slbr":
             slbr_runner = self._get_slbr_runner()
             slbr_options = self._normalize_moonshine_options(req.options.model_options)
+        elif model_id in {"lama", "mat"} and self.model_manager.name != model_id:
+            try:
+                self.model_manager.switch(model_id)
+            except RuntimeError as error:
+                raise HTTPException(status_code=422, detail=str(error))
 
         logger.info(
             f"[{batch_id}] start video batch: {total_frames} frame(s), "
@@ -1621,6 +1633,7 @@ class Api:
             mask = None
             alpha_channel = None
             mask_nonzero_pixels = None
+            should_gc = index % gc_interval == 0
             try:
                 image, alpha_channel = self._load_image_from_path(item.image_path)
 
@@ -1689,9 +1702,8 @@ class Api:
                         }
                     )
 
-                if index % gc_interval == 0:
-                    torch_gc()
             except Exception as error:
+                should_gc = True
                 if isinstance(error, DiskSpaceError):
                     raise
                 failed = {
@@ -1715,6 +1727,9 @@ class Api:
                 )
                 if req.options.stop_on_error:
                     break
+            finally:
+                if should_gc:
+                    torch_gc()
 
         torch_gc()
 

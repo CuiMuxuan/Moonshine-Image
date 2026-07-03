@@ -212,4 +212,5 @@ def batch_inpaint(
             # memory_info = psutil.Process(pid).memory_info()
             # memory_in_mb = memory_info.rss / (1024 * 1024)
             # print(f"原图大小：{img.shape},当前进程的内存占用：{memory_in_mb}MB")
+    model_manager.release()
     return results if return_results else processed_count

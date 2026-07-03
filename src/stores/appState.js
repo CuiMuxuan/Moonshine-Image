@@ -4,7 +4,7 @@ import { useConfigStore } from "./config";
 
 export const useAppStateStore = defineStore("appState", () => {
   const configStore = useConfigStore();
-  const SHARED_MODEL_IDS = ["lama", "slbr"];
+  const SHARED_MODEL_IDS = ["lama", "mat", "slbr"];
   const normalizeSharedCurrentModel = (value) => {
     const normalized = String(value || "")
       .trim()

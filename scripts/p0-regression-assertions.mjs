@@ -220,8 +220,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/pages/IndexPage.vue",
-    description: "Image page keeps Lama and SLBR model dispatch branches",
-    pattern: /switch\s*\(currentModel\.value\)\s*\{[\s\S]*case\s*"lama":[\s\S]*runRemoveModel\(\);[\s\S]*case\s*"slbr":[\s\S]*runSlbrModel\(\);/,
+    description: "Image page keeps Lama, MAT and SLBR model dispatch branches",
+    pattern: /switch\s*\(currentModel\.value\)\s*\{[\s\S]*case\s*"lama":[\s\S]*case\s*"mat":[\s\S]*runRemoveModel\(\);[\s\S]*case\s*"slbr":[\s\S]*runSlbrModel\(\);/,
   });
   assertPattern({
     file: "src/pages/IndexPage.vue",
@@ -387,6 +387,11 @@ function runAssertions() {
     pattern: /VIDEO_PROCESSING_ENGINE_OPTIONS = Object\.freeze\(\["auto", "webav", "ffmpeg"\]\)[\s\S]*videoProcessingEngine:\s*"auto"/,
   });
   assertPattern({
+    file: "src/shared/appConfigSchema.js",
+    description: "Shared config schema owns SAM render cache defaults",
+    pattern: /CONFIG_SCHEMA_VERSION = 8[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4/,
+  });
+  assertPattern({
     file: "src/config/ConfigManager.js",
     description: "Frontend config manager uses shared default config instead of a local default tree",
     pattern: /from "src\/shared\/appConfigSchema"[\s\S]*static defaultConfig = DEFAULT_APP_CONFIG;/,
@@ -417,9 +422,19 @@ function runAssertions() {
     pattern: /modelDir:\s*normalizeModelDir\(merged\.general\?\.modelDir\)\s*\|\|\s*this\.defaultConfig\.general\.modelDir/,
   });
   assertPattern({
+    file: "src/config/ConfigManager.js",
+    description: "Config manager validates and normalizes SAM render cache settings",
+    pattern: /SAM 渲染缓存图片数量[\s\S]*SAM 渲染缓存内存上限[\s\S]*SAM 渲染缓存大图长边阈值[\s\S]*SAM 相邻图片预热数量[\s\S]*samRenderCacheEnabled:\s*normalizeBoolean[\s\S]*samRenderCacheMaxContexts:\s*normalizeInteger[\s\S]*samRenderCacheNeighborPreloadCount:\s*normalizeInteger/,
+  });
+  assertPattern({
+    file: "src/components/global/GlobalSettings.vue",
+    description: "Global settings exposes SAM smart selection render cache controls in image processing settings",
+    pattern: /智能选区渲染缓存[\s\S]*global-settings-sam-render-cache-enabled[\s\S]*global-settings-sam-lazy-render-disabled-candidates[\s\S]*global-settings-sam-preload-visible-list[\s\S]*global-settings-sam-render-cache-max-contexts[\s\S]*global-settings-sam-neighbor-preload-count/,
+  });
+  assertPattern({
     file: "src/stores/appState.js",
     description: "App state includes shared current model normalization",
-    pattern: /const SHARED_MODEL_IDS = \["lama", "slbr"\];/,
+    pattern: /const SHARED_MODEL_IDS = \["lama", "mat", "slbr"\];/,
   });
   assertPattern({
     file: "src/stores/appState.js",
@@ -560,8 +575,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "server/moonshine_server/schema.py",
-    description: "Lama video request still requires mask_path",
-    pattern: /if values\.model_id == "lama":[\s\S]*mask_path is required when model_id is lama/,
+    description: "Mask-inpaint video requests require mask_path for LaMa and MAT",
+    pattern: /if values\.model_id in \{"lama", "mat"\}:[\s\S]*mask_path is required when model_id is lama or mat[\s\S]*values\.model_id not in \{"lama", "mat", "slbr"\}/,
   });
   assertPattern({
     file: "server/moonshine_server/schema.py",

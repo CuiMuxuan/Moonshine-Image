@@ -117,6 +117,13 @@ function normalizeInteger(value, fallback, min, max = Number.MAX_SAFE_INTEGER) {
   return clampNumber(Math.round(numeric), min, max);
 }
 
+const DEFAULT_BACKEND_MODEL_IDS = Object.freeze(["lama", "mat"]);
+function normalizeDefaultBackendModel(value, launchMode = "cuda") {
+  const normalized = String(value || "").trim().toLowerCase();
+  const model = DEFAULT_BACKEND_MODEL_IDS.includes(normalized) ? normalized : "lama";
+  return model === "mat" && launchMode !== "cuda" ? "lama" : model;
+}
+
 function mergeConfigForStrictValidation(config = {}) {
   const merged = mergeConfigWithDefaults(config);
   if (isPlainObject(config?.advanced)) {
@@ -1892,6 +1899,10 @@ function sanitizeAppConfig(config = {}) {
   merged.general.launchMode = ["cuda", "cpu"].includes(merged.general?.launchMode)
     ? merged.general.launchMode
     : "cuda";
+  merged.general.defaultModel = normalizeDefaultBackendModel(
+    merged.general?.defaultModel,
+    merged.general.launchMode
+  );
   merged.general.autoStart = normalizeBoolean(merged.general?.autoStart, true);
   merged.general.backendProjectPath = normalizeStoredBackendProjectPath(
     merged.general.backendProjectPath
@@ -2031,6 +2042,15 @@ function validateConfig(config) {
 
     // Validate launch mode
     if (!["cuda", "cpu"].includes(config.general.launchMode)) {
+      return false;
+    }
+
+    if (
+      config.general.defaultModel &&
+      !DEFAULT_BACKEND_MODEL_IDS.includes(
+        String(config.general.defaultModel).trim().toLowerCase()
+      )
+    ) {
       return false;
     }
 

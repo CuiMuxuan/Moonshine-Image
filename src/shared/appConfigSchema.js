@@ -3,7 +3,7 @@ import {
   normalizeShortcutConfig,
 } from "../utils/shortcutConfig.js";
 
-export const CONFIG_SCHEMA_VERSION = 7;
+export const CONFIG_SCHEMA_VERSION = 8;
 
 export const DEFAULT_THEME_MODE = "light";
 export const DEFAULT_UI_BUTTON_SIZE = "sm";
@@ -58,6 +58,13 @@ export const DEFAULT_MASKING_CONFIG = Object.freeze({
   defaultSam3Model: "sam3_1_multiplex",
   imageSmartSelectionDefaultModel: "sam_vit_b",
   videoSmartSelectionDefaultModel: "sam2_1_hiera_large",
+  samRenderCacheEnabled: true,
+  samRenderCacheMaxContexts: 12,
+  samRenderCacheMaxMemoryMb: 192,
+  samRenderCacheLargeImageLongSide: 4096,
+  samLazyRenderDisabledCandidates: true,
+  samRenderCachePreloadVisibleList: true,
+  samRenderCacheNeighborPreloadCount: 4,
 });
 
 export const createDefaultAppConfig = () => ({

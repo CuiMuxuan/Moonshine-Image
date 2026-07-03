@@ -56,6 +56,11 @@ SLBR_LICENSE = {
     "url": "",
     "note": "SLBR 权重来自上游研究发布，发布前需保留来源和本项目模型库校验记录。",
 }
+MAT_LICENSE = {
+    "name": "CC BY-NC 4.0",
+    "url": "https://creativecommons.org/licenses/by-nc/4.0/",
+    "note": "MAT 权重仅限非商业用途；分发和使用时必须保留上游来源、署名和许可证说明。",
+}
 SAM1_LICENSE = {
     "name": "Apache-2.0",
     "url": "https://github.com/facebookresearch/segment-anything/blob/main/LICENSE",
@@ -134,6 +139,63 @@ MODEL_MANIFEST = (
             "textWatermarkAbility": 6.0,
             "lowVramFriendly": 6.0,
             "stability": 8.0,
+        },
+    },
+    {
+        "id": "mat",
+        "label": "MAT 去除模型",
+        "description": "Mask-Aware Transformer 图像修复模型，适合需要蒙版的较大区域擦除和补全；仅限非商业用途，且需要 CUDA。",
+        "type": "image",
+        "family": "mat",
+        "modelVersion": "MAT",
+        "requiresMask": True,
+        "downloadable": True,
+        "sourceLinks": [
+            {
+                "label": "Hugging Face 主源",
+                "type": "huggingface",
+                "url": f"{HF_MODEL_REPO_BASE_URL}/mat/Places_512_FullData_G.pth",
+            }
+        ],
+        "manualSources": [
+            {
+                "label": "夸克网盘副源",
+                "type": "quark",
+                "url": MANUAL_MODEL_SOURCE_URL,
+            }
+        ],
+        "manualHint": MANUAL_MODEL_INSTALL_HINT,
+        "files": [
+            {
+                "path": "mat/Places_512_FullData_G.pth",
+                "label": "Places_512_FullData_G.pth",
+                "size": 250619359,
+                "sha256": "0512e37ebba3986b0355130b2e2c1f95736d0778ac82e91b1212b4b21c231312",
+            }
+        ],
+        "size": 250619359,
+        "sha256": "0512e37ebba3986b0355130b2e2c1f95736d0778ac82e91b1212b4b21c231312",
+        "license": MAT_LICENSE,
+        "recommendedDevice": "cuda",
+        "minimumVram": 6144,
+        "recommendedVram": 8192,
+        "runCapabilities": {
+            "scopes": ["selected", "batch", "folder", "video"],
+            "folderInputs": ["imageFolder", "maskFolder"],
+            "batchActions": ["deleteSelected", "applyCurrentMaskToSelected"],
+            "outputRequired": True,
+        },
+        "parameters": {},
+        "parameterHelp": "MAT 使用当前蒙版进行图像修复，需要 CUDA；无 CUDA 时会自动回退到 LaMa。",
+        "capabilities": {
+            "speed": 5.0,
+            "realImageQuality": 8.0,
+            "cartoonImageQuality": 7.0,
+            "simpleSceneQuality": 8.0,
+            "complexSceneQuality": 8.0,
+            "textWatermarkAbility": 6.0,
+            "lowVramFriendly": 4.0,
+            "stability": 7.0,
         },
     },
     {

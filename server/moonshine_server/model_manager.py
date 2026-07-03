@@ -11,6 +11,16 @@ from moonshine_server.model.utils import torch_gc
 from moonshine_server.schema import InpaintRequest, ModelInfo, ModelType
 
 
+MAT_CUDA_FALLBACK_MESSAGE = "MAT 需要 CUDA，当前已自动切换为 LaMa。"
+
+
+def _mat_cuda_unavailable(name: str, device) -> bool:
+    return (
+        str(name or "").strip().lower() == "mat"
+        and ("cuda" not in str(device).lower() or not torch.cuda.is_available())
+    )
+
+
 class ModelManager:
     def __init__(self, name: str, device: torch.device, **kwargs):
         self.name = name
@@ -20,6 +30,14 @@ class ModelManager:
         self.scan_models()
         self.model = None
         if name in self.available_models:
+            if _mat_cuda_unavailable(name, device):
+                logger.warning(MAT_CUDA_FALLBACK_MESSAGE)
+                if "lama" in self.available_models:
+                    self.name = "lama"
+                    self.model = self.init_model("lama", device, **kwargs)
+                else:
+                    logger.warning("Lama model is not installed; the server will start without a loaded model.")
+                return
             self.model = self.init_model(name, device, **kwargs)
         else:
             logger.warning(
@@ -31,6 +49,16 @@ class ModelManager:
         if self.name in self.available_models:
             return self.available_models[self.name]
         return ModelInfo(name=self.name, path=self.name, model_type=ModelType.INPAINT)
+
+    def release(self):
+        self.model = None
+        torch_gc()
+
+    def __del__(self):
+        try:
+            self.release()
+        except Exception:
+            pass
 
     def init_model(self, name: str, device, **kwargs):
         logger.info(f"Loading model: {name}")
@@ -44,18 +72,24 @@ class ModelManager:
 
     @torch.inference_mode()
     def __call__(self, image, mask, config: InpaintRequest):
-        if self.model is None:
-            self.scan_models()
-            if self.name not in self.available_models:
-                raise RuntimeError(
-                    f"Model {self.name} is not installed. Please install the model before processing."
+        try:
+            if self.model is None:
+                self.scan_models()
+                if self.name not in self.available_models:
+                    raise RuntimeError(
+                        f"Model {self.name} is not installed. Please install the model before processing."
+                    )
+                if _mat_cuda_unavailable(self.name, self.device):
+                    raise RuntimeError(MAT_CUDA_FALLBACK_MESSAGE)
+                self.model = self.init_model(
+                    self.name,
+                    switch_mps_device(self.name, self.device),
+                    **self.kwargs,
                 )
-            self.model = self.init_model(
-                self.name,
-                switch_mps_device(self.name, self.device),
-                **self.kwargs,
-            )
-        return self.model(image, mask, config).astype(np.uint8)
+            return self.model(image, mask, config).astype(np.uint8)
+        except Exception:
+            torch_gc()
+            raise
 
     def scan_models(self) -> List[ModelInfo]:
         available_models = scan_models()
@@ -72,12 +106,12 @@ class ModelManager:
             raise RuntimeError(
                 f"Model {new_name} is not installed. Please install the model before switching."
             )
+        if _mat_cuda_unavailable(new_name, self.device):
+            raise RuntimeError(MAT_CUDA_FALLBACK_MESSAGE)
 
         self.name = new_name
         try:
-            if self.model is not None:
-                del self.model
-            torch_gc()
+            self.release()
             self.model = self.init_model(
                 new_name,
                 switch_mps_device(new_name, self.device),
@@ -86,6 +120,7 @@ class ModelManager:
         except Exception as exc:
             self.name = old_name
             logger.info(f"Switch model from {old_name} to {new_name} failed, rollback")
+            self.release()
             self.model = (
                 self.init_model(
                     old_name,

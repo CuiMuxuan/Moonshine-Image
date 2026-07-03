@@ -96,6 +96,13 @@ import {
   getSamCapabilities,
   predictSamText,
 } from "src/services/SamPredictionService";
+import { deleteSamImageSessions, getSamImageSessionStore } from "src/services/SamImageSessionStore";
+import {
+  clearSamRenderCacheContext,
+  clearSamRenderPreloadQueue,
+  enqueueSamRenderPreload,
+  normalizeSamRenderCacheConfig,
+} from "src/services/SamImageRenderCache";
 import ImageEditor from "../components/image/ImageEditor.vue";
 import FileExplorer from "../components/common/FileExplorer.vue";
 import Workspace from "../components/common/Workspace.vue";
@@ -109,6 +116,9 @@ const appStateStore = useAppStateStore();
 const fileManagerStore = useFileManagerStore();
 const runtimeUiStore = useRuntimeUiStore();
 const modelRegistryStore = useModelRegistryStore();
+const MASK_INPAINT_MODEL_IDS = ["lama", "mat"];
+const MAT_CUDA_FALLBACK_MESSAGE = "MAT 需要 CUDA，当前已自动切换为 LaMa。";
+let samVisiblePreloadTimer = 0;
 
 const getDefaultDrawerState = () => {
   const viewportWidth =
@@ -425,6 +435,11 @@ const hasProcessedImages = computed(() => {
 });
 const imageModelMetadata = computed(() =>
   modelRegistryStore.imageModels.find((model) => model.id === currentModel.value) || {}
+);
+const currentProcessingModelLabel = computed(
+  () =>
+    imageModelOptions.value.find((option) => option.value === currentModel.value)?.label ||
+    currentModel.value.toUpperCase()
 );
 const currentModelRequiresMask = computed(() =>
   imageModelMetadata.value.requiresMask !== false
@@ -1162,9 +1177,72 @@ const restoreMaskUiState = (maskUiState = {}) => {
 
 const clearMasksForProcessedFileIds = (processedFileIds = []) => {
   const uniqueIds = [...new Set(processedFileIds.filter(Boolean))];
+  const currentFileId = fileManagerStore.currentFile?.id || "";
+  const currentProcessed = uniqueIds.includes(currentFileId);
   uniqueIds.forEach((fileId) => {
     fileManagerStore.updateFileMask(fileId, null);
   });
+
+  if (currentProcessed) {
+    void editorRef.value?.clearSamContextSession?.(currentFileId);
+  }
+
+  const backgroundIds = currentProcessed
+    ? uniqueIds.filter((fileId) => fileId !== currentFileId)
+    : uniqueIds;
+  backgroundIds.forEach((fileId) => {
+    clearSamRenderCacheContext(fileId, getSamImageSessionStore());
+  });
+  deleteSamImageSessions(backgroundIds);
+};
+
+const getImageFileIds = () =>
+  fileManagerStore.files
+    .filter((file) => file.originalFile?.type?.startsWith("image/") || file.type?.startsWith("image/"))
+    .map((file) => file.id)
+    .filter(Boolean);
+
+const enqueueSamRenderPreloadIds = (fileIds = [], priority = "visible") => {
+  const cacheConfig = normalizeSamRenderCacheConfig(configStore.config.masking || {});
+  if (!cacheConfig.enabled) return;
+  const sessionStore = getSamImageSessionStore();
+  const idsWithSession = [...new Set(fileIds)].filter((fileId) => sessionStore.has(fileId));
+  if (!idsWithSession.length) return;
+  enqueueSamRenderPreload(idsWithSession, priority);
+  editorRef.value?.scheduleSamRenderPreloadFlush?.();
+};
+
+const enqueueNeighborSamRenderPreload = () => {
+  const cacheConfig = normalizeSamRenderCacheConfig(configStore.config.masking || {});
+  const count = cacheConfig.neighborPreloadCount;
+  if (!cacheConfig.enabled || count <= 0 || !fileManagerStore.currentFile?.id) return;
+  const imageFileIds = getImageFileIds();
+  const currentIndex = imageFileIds.indexOf(fileManagerStore.currentFile.id);
+  if (currentIndex < 0) return;
+  const neighborIds = imageFileIds.slice(
+    Math.max(0, currentIndex - count),
+    Math.min(imageFileIds.length, currentIndex + count + 1)
+  );
+  enqueueSamRenderPreloadIds(
+    neighborIds.filter((fileId) => fileId !== fileManagerStore.currentFile.id),
+    "neighbor"
+  );
+};
+
+const handleLeftFileVisibleRangeChange = (range = {}) => {
+  const cacheConfig = normalizeSamRenderCacheConfig(configStore.config.masking || {});
+  if (!leftDrawerOpen.value || !cacheConfig.enabled || !cacheConfig.preloadVisibleList) {
+    clearSamRenderPreloadQueue({ priority: "visible" });
+    return;
+  }
+  if (samVisiblePreloadTimer) {
+    window.clearTimeout(samVisiblePreloadTimer);
+  }
+  const fileIds = Array.isArray(range.fileIds) ? range.fileIds : [];
+  samVisiblePreloadTimer = window.setTimeout(() => {
+    samVisiblePreloadTimer = 0;
+    enqueueSamRenderPreloadIds(fileIds, "visible");
+  }, 160);
 };
 
 const finalizeSuccessfulMaskRun = async (maskUiState, options = {}) => {
@@ -1630,6 +1708,7 @@ const runCurrentModel = async () => {
 
   switch (currentModel.value) {
     case "lama":
+    case "mat":
       runRemoveModel();
       break;
     case "slbr":
@@ -1645,6 +1724,48 @@ const runCurrentModel = async () => {
 };
 // 运行去除模型
 const getCurrentModelOptions = () => ({ ...modelParameterValues.value });
+
+const isMaskInpaintModel = (modelId = currentModel.value) => (
+  MASK_INPAINT_MODEL_IDS.includes(String(modelId || "").trim().toLowerCase())
+);
+
+const ensureBackendInpaintModel = async () => {
+  const requestedModel = String(currentModel.value || "lama").trim().toLowerCase();
+  if (!isMaskInpaintModel(requestedModel)) return true;
+
+  try {
+    const response = await modelRegistryStore.switchModel(requestedModel);
+    const activeModel = String(response?.currentModel || requestedModel).trim().toLowerCase();
+    if (activeModel !== requestedModel) {
+      handleModelChange(activeModel, { notify: false });
+      if (requestedModel === "mat") {
+        $q.notify({ type: "warning", message: MAT_CUDA_FALLBACK_MESSAGE, position: "top" });
+      }
+    }
+    return true;
+  } catch (error) {
+    if (requestedModel === "mat") {
+      handleModelChange("lama", { notify: false });
+      try {
+        await modelRegistryStore.switchModel("lama");
+      } catch (fallbackError) {
+        console.warn("Failed to switch backend model to lama after MAT fallback:", fallbackError);
+      }
+      $q.notify({
+        type: "warning",
+        message: error?.message || MAT_CUDA_FALLBACK_MESSAGE,
+        position: "top",
+      });
+      return true;
+    }
+    $q.notify({
+      type: "negative",
+      message: error?.message || "模型切换失败",
+      position: "top",
+    });
+    return false;
+  }
+};
 
 const runSlbrModel = async () => {
   let filesToProcess = [];
@@ -1737,6 +1858,9 @@ const runSlbrModel = async () => {
 };
 
 const runRemoveModel = async () => {
+  const backendModelReady = await ensureBackendInpaintModel();
+  if (!backendModelReady) return;
+
   const maskUiState = captureMaskUiState();
   // 确定要处理的文件列表
   let filesToProcess = [];
@@ -1823,14 +1947,16 @@ const runRemoveModel = async () => {
   }
 
   try {
-    setImageProcessingGuard(true, `正在处理 ${filesToProcess.length} 张图像`);
+    const modelLabel = currentProcessingModelLabel.value;
+    const imageProgressLabel = `正在使用 ${modelLabel} 处理图片 0/${filesToProcess.length}`;
+    setImageProcessingGuard(true, imageProgressLabel);
     if (backendRunning.value) {
       loadingControl.show(
-        `正在处理 ${filesToProcess.length} 张图像，你可以打开终端管理页面查看进度`
+        `${imageProgressLabel}，你可以打开终端管理页面查看进度`
       );
     } else {
       loadingControl.show(
-        `正在处理 ${filesToProcess.length} 张图像，请稍候...`
+        `${imageProgressLabel}，请稍候...`
       );
     }
     isPageDisabled.value = true;
@@ -1881,14 +2007,15 @@ const runRemoveModel = async () => {
 const processFolderImages = async () => {
   const maskUiState = captureMaskUiState();
   try {
-    setImageProcessingGuard(true, "正在批量处理文件夹图像");
+    const modelLabel = currentProcessingModelLabel.value;
+    setImageProcessingGuard(true, `正在使用 ${modelLabel} 批量处理文件夹图像`);
     // 显示加载状态
     if (backendRunning.value) {
       loadingControl.show(
-        "正在批量处理文件夹图像，你可以打开终端管理页面查看进度"
+        `正在使用 ${modelLabel} 批量处理文件夹图像，你可以打开终端管理页面查看进度`
       );
     } else {
-      loadingControl.show("正在批量处理文件夹图像，请稍候...");
+      loadingControl.show(`正在使用 ${modelLabel} 批量处理文件夹图像，请稍候...`);
     }
     isPageDisabled.value = true;
 
@@ -2241,9 +2368,28 @@ const registerImageE2ETestBridge = () => {
           ...(configStore.config.fileManagement || {}),
           ...(patch.fileManagement || {}),
         },
+        masking: {
+          ...(configStore.config.masking || {}),
+          ...(patch.masking || {}),
+        },
       };
       return configStore.saveConfig(nextConfig);
     },
+    handleVisibleRangeChange: (range = {}) => {
+      handleLeftFileVisibleRangeChange(range);
+      return window.__MOONSHINE_IMAGE_TEST__.getSamRenderStats();
+    },
+    flushSamRenderPreloadQueue: async (options = {}) => {
+      await editorRef.value?.flushSamRenderPreloadQueue?.(options);
+      return window.__MOONSHINE_IMAGE_TEST__.getSamRenderCacheSnapshot();
+    },
+    clearSamContextSession: async (contextId = fileManagerStore.currentFileId) => {
+      await editorRef.value?.clearSamContextSession?.(contextId);
+      return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
+    },
+    getSamRenderStats: () => editorRef.value?.getSamRenderStats?.() || null,
+    resetSamRenderStats: () => editorRef.value?.resetSamRenderStats?.(),
+    getSamRenderCacheSnapshot: () => editorRef.value?.getSamRenderCacheSnapshot?.() || null,
     prepareMoonshineImageProcessData: async (fileIds = []) =>
       summarizeBridgeRequest(
         await fileManagerStore.prepareMoonshineImageProcessData(
@@ -2298,11 +2444,26 @@ const registerImageE2ETestBridge = () => {
       },
     }),
   };
+  if (import.meta.env.DEV || window.__MOONSHINE_ENABLE_DEBUG_BRIDGE__) {
+    window.__moonshineDebug = {
+      ...(window.__moonshineDebug || {}),
+      get samRenderStats() {
+        return editorRef.value?.getSamRenderStats?.() || null;
+      },
+      getSamRenderCacheSnapshot: () => editorRef.value?.getSamRenderCacheSnapshot?.() || null,
+      flushSamRenderPreloadQueue: (options = {}) =>
+        editorRef.value?.flushSamRenderPreloadQueue?.(options),
+      resetSamRenderStats: () => editorRef.value?.resetSamRenderStats?.(),
+    };
+  }
 };
 
 const unregisterImageE2ETestBridge = () => {
   if (typeof window !== "undefined" && window.__MOONSHINE_IMAGE_TEST__) {
     delete window.__MOONSHINE_IMAGE_TEST__;
+  }
+  if (typeof window !== "undefined" && window.__moonshineDebug) {
+    delete window.__moonshineDebug;
   }
 };
 // 显示原图
@@ -2454,9 +2615,16 @@ watch(
           currentFileId: newFile.id,
         },
       });
+      enqueueNeighborSamRenderPreload();
     }
   }
 );
+
+watch(leftDrawerOpen, (open) => {
+  if (!open) {
+    clearSamRenderPreloadQueue({ priority: "visible" });
+  }
+});
 
 // 监听 actionScope 变化，当首次选择 folder 时提示选择文件夹
 watch(
@@ -2464,7 +2632,7 @@ watch(
   (newValue) => {
     if (newValue?.value === "folder") {
       // 如果没有设置必要的路径，自动打开右侧设置面板
-      const needsMaskFolder = currentModel.value === "lama";
+      const needsMaskFolder = currentModelRequiresMask.value;
       if (
         !folderPath.value ||
         (needsMaskFolder && !maskFolderPath.value) ||
@@ -2686,21 +2854,26 @@ const loadImageModelOptions = async ({ preferredModel = currentModel.value } = {
     value: model.id,
     description: model.description,
     installed: model.installed,
+    available: model.available !== false,
+    deviceCompatible: model.deviceCompatible !== false,
     requiresMask: model.requiresMask,
     parameters: model.parameters || {},
     runCapabilities: model.runCapabilities || {},
   }));
 
+  const isOptionAvailable = (option) => option?.available !== false;
   const hasPreferredModel = imageModelOptions.value.some(
-    (option) => option.value === preferredModel
+    (option) => option.value === preferredModel && isOptionAvailable(option)
   );
   const hasCurrentModel = imageModelOptions.value.some(
-    (option) => option.value === currentModel.value
+    (option) => option.value === currentModel.value && isOptionAvailable(option)
   );
   const hasSharedModel = imageModelOptions.value.some(
-    (option) => option.value === sharedModel
+    (option) => option.value === sharedModel && isOptionAvailable(option)
   );
-  const hasLamaModel = imageModelOptions.value.some((option) => option.value === "lama");
+  const hasLamaModel = imageModelOptions.value.some(
+    (option) => option.value === "lama" && isOptionAvailable(option)
+  );
   let nextModel = currentModel.value || "lama";
   if (hasPreferredModel) {
     nextModel = preferredModel;
@@ -2709,11 +2882,15 @@ const loadImageModelOptions = async ({ preferredModel = currentModel.value } = {
       ? sharedModel
       : hasLamaModel
         ? "lama"
-        : imageModelOptions.value[0]?.value || nextModel;
+        : imageModelOptions.value.find(isOptionAvailable)?.value || nextModel;
   }
 
   if (nextModel !== currentModel.value) {
+    const previousModel = currentModel.value;
     currentModel.value = nextModel;
+    if (previousModel === "mat" && nextModel !== "mat") {
+      $q.notify({ type: "warning", message: MAT_CUDA_FALLBACK_MESSAGE, position: "top" });
+    }
   }
   appStateStore.setSharedCurrentModel?.(currentModel.value);
 
@@ -2751,6 +2928,7 @@ const syncLayoutDrawers = () => {
       "select-all": handleLeftListSelectAll,
       "invert-selection": handleInvertSelection,
       "delete-selected": confirmDeleteSelected,
+      "visible-range-change": handleLeftFileVisibleRangeChange,
     },
   });
 
@@ -3138,6 +3316,10 @@ onBeforeRouteLeave(async (to, from, next) => {
 onUnmounted(async () => {
   setImageProcessingGuard(false);
   clearSamSmartSelectionOverlay();
+  if (samVisiblePreloadTimer) {
+    window.clearTimeout(samVisiblePreloadTimer);
+    samVisiblePreloadTimer = 0;
+  }
   unregisterImageE2ETestBridge();
   layoutFooter?.clearPageFooter?.(imagePageFooterOwner);
   layoutDrawers?.clearPageDrawer?.("left", imagePageLeftDrawerOwner);

@@ -122,7 +122,7 @@
                 <q-input v-model="localConfig.general.modelDir" label="模型目录" readonly>
                   <template #append><q-btn round dense flat icon="folder" @click="selectModelPath" /></template>
                 </q-input>
-                <q-select v-model="localConfig.general.defaultModel" label="默认模型" :options="['lama']" />
+                <q-select v-model="localConfig.general.defaultModel" label="默认模型" emit-value map-options :options="defaultBackendModelOptions" />
               </div>
             </q-tab-panel>
 
@@ -355,6 +355,72 @@
                       </div>
 
                       <div class="mini-block">
+                        <div class="text-subtitle2 text-weight-medium q-mb-sm">智能选区渲染缓存</div>
+                        <div class="grid">
+                          <q-toggle
+                            v-model="localConfig.masking.samRenderCacheEnabled"
+                            label="启用渲染缓存"
+                            data-testid="global-settings-sam-render-cache-enabled"
+                          />
+                          <q-toggle
+                            v-model="localConfig.masking.samLazyRenderDisabledCandidates"
+                            label="未启用候选懒渲染"
+                            data-testid="global-settings-sam-lazy-render-disabled-candidates"
+                          />
+                          <q-toggle
+                            v-model="localConfig.masking.samRenderCachePreloadVisibleList"
+                            label="预热左栏可见图片"
+                            data-testid="global-settings-sam-preload-visible-list"
+                          />
+                        </div>
+                        <div class="grid q-mt-sm">
+                          <q-input
+                            v-model.number="localConfig.masking.samRenderCacheMaxContexts"
+                            label="最近图片缓存数量"
+                            type="number"
+                            :min="1"
+                            :max="50"
+                            dense
+                            outlined
+                            data-testid="global-settings-sam-render-cache-max-contexts"
+                          />
+                          <q-input
+                            v-model.number="localConfig.masking.samRenderCacheMaxMemoryMb"
+                            label="缓存内存上限（MB）"
+                            type="number"
+                            :min="32"
+                            :max="1024"
+                            dense
+                            outlined
+                            data-testid="global-settings-sam-render-cache-max-memory"
+                          />
+                          <q-input
+                            v-model.number="localConfig.masking.samRenderCacheLargeImageLongSide"
+                            label="大图长边阈值"
+                            type="number"
+                            :min="1024"
+                            :max="12000"
+                            dense
+                            outlined
+                            data-testid="global-settings-sam-render-cache-large-side"
+                          />
+                          <q-input
+                            v-model.number="localConfig.masking.samRenderCacheNeighborPreloadCount"
+                            label="相邻图片预热数量"
+                            type="number"
+                            :min="0"
+                            :max="10"
+                            dense
+                            outlined
+                            data-testid="global-settings-sam-neighbor-preload-count"
+                          />
+                        </div>
+                        <div class="text-caption text-grey-7 q-mt-xs">
+                          缓存仅保存在当前程序会话中，用于减少多图切换时 SAM 蒙版重新渲染等待；超过数量、内存或大图阈值后会自动淘汰，不影响原始候选数据。
+                        </div>
+                      </div>
+
+                      <div class="mini-block">
                         <div class="text-subtitle2 text-weight-medium q-mb-sm">图片输出格式与质量</div>
                         <div class="grid">
                           <q-select
@@ -512,6 +578,7 @@ const modelRegistryStore = useModelRegistryStore();
 const globalLoadingState = inject("globalLoadingState", ref({ showing: false }));
 
 const launchModeOptions = [{ label: "CUDA 加速", value: "cuda" }, { label: "CPU 模式", value: "cpu" }];
+const MAT_CUDA_FALLBACK_MESSAGE = "MAT 需要 CUDA，当前已自动切换为 LaMa。";
 const imageProcessingOptions = [
   {
     label: "自动（推荐）",
@@ -650,6 +717,14 @@ const videoSamDefaultModelOptions = computed(() =>
     .filter((model) => model.family === "sam2" && String(model.modelVersion || "SAM2.1").includes("SAM2.1"))
     .map(buildSamDefaultModelOption)
 );
+const defaultBackendModelOptions = computed(() => [
+  { label: "LaMa", value: "lama" },
+  {
+    label: "MAT",
+    value: "mat",
+    disable: localConfig.value.general?.launchMode !== "cuda",
+  },
+]);
 const mergedConfig = computed(() => ConfigManager.mergeWithDefault(localConfig.value));
 const shortcutErrors = computed(() => validateShortcutConfig(localConfig.value.shortcuts));
 const validationErrors = computed(() => {
@@ -705,6 +780,20 @@ const ensureTempCleanupConfig = () => {
     ...DEFAULT_TEMP_CLEANUP,
     ...(localConfig.value.fileManagement.tempCleanup || {}),
   };
+};
+const fallbackMatDefaultModelIfNeeded = ({ notify = false } = {}) => {
+  if (
+    localConfig.value.general?.defaultModel !== "mat" ||
+    localConfig.value.general?.launchMode === "cuda"
+  ) {
+    return false;
+  }
+
+  localConfig.value.general.defaultModel = "lama";
+  if (notify) {
+    $q.notify({ type: "warning", message: MAT_CUDA_FALLBACK_MESSAGE, position: "top" });
+  }
+  return true;
 };
 const restoreShortcutDefault = (actionId) => { const definition = getShortcutDefinition(actionId); if (!definition) return; localConfig.value.shortcuts = { ...localConfig.value.shortcuts, [actionId]: [...definition.defaultKeys] }; if (recordingShortcutId.value === actionId) stopShortcutRecording(); };
 const restoreAllShortcutDefaults = () => { localConfig.value.shortcuts = createDefaultShortcuts(); stopShortcutRecording(); };
@@ -859,6 +948,7 @@ const doSaveSettings = async () => {
   saving.value = true;
   try {
     stopShortcutRecording();
+    fallbackMatDefaultModelIfNeeded({ notify: true });
     const serializableConfig = buildSerializableConfig(localConfig.value);
     const backendPathValidation = await validateBackendPaths({
       backendProjectPath: serializableConfig.general?.backendProjectPath || "",
@@ -954,6 +1044,12 @@ watch(() => configStore.config, (newConfig) => {
   }
 }, { deep: true });
 watch(() => localConfig.value.general.backendPort, (port) => { validatePort(port); }, { immediate: true });
+watch(
+  () => [localConfig.value.general?.launchMode, localConfig.value.general?.defaultModel],
+  () => {
+    fallbackMatDefaultModelIfNeeded({ notify: true });
+  }
+);
 
 onMounted(() => {
   window.addEventListener("keydown", handleRecordingKeydown, true);

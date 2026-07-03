@@ -264,7 +264,7 @@
                                       "
                                     />
                                     <q-input
-                                      v-if="isLamaModel"
+                                      v-if="currentModelRequiresMask"
                                       :model-value="objectItem.expandPx ?? objectItem.autoExpandPx ?? 0"
                                       type="number"
                                       dense
@@ -816,6 +816,9 @@ const lastOutputIsPreview = ref(false);
 const exportFpsMode = ref("source");
 const previewTrialSeconds = ref(3);
 const currentModel = ref("lama");
+const VIDEO_PROCESSING_MODEL_IDS = ["lama", "mat", "slbr"];
+const MASK_INPAINT_MODEL_IDS = ["lama", "mat"];
+const MAT_CUDA_FALLBACK_MESSAGE = "MAT 需要 CUDA，当前已自动切换为 LaMa。";
 const modelParameterValues = ref({});
 const resourceManageTab = ref("info");
 const videoEditorSections = ref({
@@ -1031,7 +1034,7 @@ const timelineOptions = computed(() => ({
 const timelineControlsDisabled = computed(
   () => !videoStore.hasVideoFile || isProcessing.value
 );
-const isLamaModel = computed(() => currentModel.value === "lama");
+const isLamaModel = computed(() => MASK_INPAINT_MODEL_IDS.includes(currentModel.value));
 const isEditableStandardMask = (mask) =>
   Boolean(mask && mask.type !== "samVideo" && mask.editable !== false);
 const hasEditableStandardMaskTrack = computed(() =>
@@ -1060,7 +1063,7 @@ const isFullscreenLamaViewportMode = computed(
   () =>
     Boolean(
       isPreviewFullscreen.value &&
-        isLamaModel.value &&
+        currentModelRequiresMask.value &&
         videoStore.hasVideoFile &&
         selectedMaskIsEditableStandard.value &&
         !samVideoState.running &&
@@ -1248,7 +1251,7 @@ const handleModelRegistryUpdated = async () => {
 
 const handleGlobalModelSwitch = (event) => {
   const modelId = event?.detail?.modelId;
-  if (!modelId || !["lama", "slbr"].includes(modelId)) return;
+  if (!modelId || !VIDEO_PROCESSING_MODEL_IDS.includes(modelId)) return;
   void loadVideoModelOptions({ preferredModel: modelId }).then(() => {
     if (videoModelOptions.value.some((option) => option.value === modelId)) {
       handleModelChange(modelId);
@@ -1284,6 +1287,18 @@ const currentModelMetadata = computed(() => {
       corruptFiles: [],
     };
   }
+  if (currentModel.value === "mat") {
+    return {
+      id: "mat",
+      label: "MAT 去除模型",
+      installed: false,
+      available: false,
+      requiresMask: true,
+      parameters: {},
+      parameterHelp: "MAT 需要 CUDA，并使用当前蒙版进行视频逐帧修复。",
+      corruptFiles: [],
+    };
+  }
   return {
     id: "lama",
     label: "Lama去除模型",
@@ -1298,11 +1313,13 @@ const currentModelRequiresMask = computed(() => currentModelMetadata.value.requi
 const isSlbrModel = computed(() => currentModel.value === "slbr");
 const videoModelOptions = computed(() => {
   const options = modelRegistryStore.imageModels
-    .filter((model) => ["lama", "slbr"].includes(model.id))
+    .filter((model) => VIDEO_PROCESSING_MODEL_IDS.includes(model.id))
     .map((model) => ({
       label: model.label || model.id,
       value: model.id,
       installed: model.installed,
+      available: model.available !== false,
+      deviceCompatible: model.deviceCompatible !== false,
     }));
 
   if (!options.some((option) => option.value === "lama")) {
@@ -1318,6 +1335,16 @@ const videoModelOptions = computed(() => {
       label: "透明水印去除模型 SLBR",
       value: "slbr",
       installed: false,
+    });
+  }
+
+  if (!options.some((option) => option.value === "mat")) {
+    options.push({
+      label: "MAT 去除模型",
+      value: "mat",
+      installed: false,
+      available: false,
+      deviceCompatible: false,
     });
   }
 
@@ -1365,7 +1392,8 @@ const getCurrentModelOptionsPayload = () => {
 const loadVideoModelOptions = async ({ preferredModel = currentModel.value } = {}) => {
   await modelRegistryStore.loadModels();
   const availableVideoModels = videoModelOptions.value;
-  const selectableModels = availableVideoModels;
+  const isOptionAvailable = (option) => option?.available !== false;
+  const selectableModels = availableVideoModels.filter(isOptionAvailable);
   const sharedModel = String(appStateStore.getSharedCurrentModel?.() || "").trim();
   const hasPreferredModel = selectableModels.some((option) => option.value === preferredModel);
   const hasCurrentModel = selectableModels.some((option) => option.value === currentModel.value);
@@ -1381,22 +1409,77 @@ const loadVideoModelOptions = async ({ preferredModel = currentModel.value } = {
         ? "lama"
         : selectableModels[0]?.value || "lama";
   }
+  const previousModel = currentModel.value;
   currentModel.value = nextModel;
   appStateStore.setSharedCurrentModel?.(nextModel);
+  if (previousModel === "mat" && nextModel !== "mat") {
+    $q.notify({ type: "warning", message: MAT_CUDA_FALLBACK_MESSAGE, position: "top" });
+  }
   ensureModelParameterDefaults();
 };
 const handleModelChange = (model) => {
   if (!model || model === currentModel.value) return;
+  const option = videoModelOptions.value.find((item) => item.value === model);
+  if (option && option.available === false) {
+    const fallback = videoModelOptions.value.find((item) => item.value === "lama" && item.available !== false);
+    if (model === "mat" && fallback) {
+      currentModel.value = "lama";
+      appStateStore.setSharedCurrentModel?.("lama");
+      ensureModelParameterDefaults();
+      $q.notify({ type: "warning", message: MAT_CUDA_FALLBACK_MESSAGE, position: "top" });
+      syncTimelineRowsFromStore();
+      return;
+    }
+  }
   currentModel.value = model;
   appStateStore.setSharedCurrentModel?.(model);
   ensureModelParameterDefaults();
-  const option = videoModelOptions.value.find((item) => item.value === model);
   $q.notify({
     type: "info",
     message: `已切换到${option?.label || model}`,
     position: "top",
   });
   syncTimelineRowsFromStore();
+};
+const isMaskInpaintModel = (modelId = currentModel.value) => (
+  MASK_INPAINT_MODEL_IDS.includes(String(modelId || "").trim().toLowerCase())
+);
+const ensureBackendVideoModel = async (modelId = currentModel.value) => {
+  const requestedModel = String(modelId || "lama").trim().toLowerCase();
+  if (!isMaskInpaintModel(requestedModel)) return true;
+
+  try {
+    const response = await modelRegistryStore.switchModel(requestedModel);
+    const activeModel = String(response?.currentModel || requestedModel).trim().toLowerCase();
+    if (activeModel !== requestedModel) {
+      handleModelChange(activeModel);
+      if (requestedModel === "mat") {
+        $q.notify({ type: "warning", message: MAT_CUDA_FALLBACK_MESSAGE, position: "top" });
+      }
+    }
+    return true;
+  } catch (error) {
+    if (requestedModel === "mat") {
+      handleModelChange("lama");
+      try {
+        await modelRegistryStore.switchModel("lama");
+      } catch (fallbackError) {
+        console.warn("Failed to switch backend video model to lama after MAT fallback:", fallbackError);
+      }
+      $q.notify({
+        type: "warning",
+        message: error?.message || MAT_CUDA_FALLBACK_MESSAGE,
+        position: "top",
+      });
+      return true;
+    }
+    $q.notify({
+      type: "negative",
+      message: error?.message || "视频模型切换失败",
+      position: "top",
+    });
+    return false;
+  }
 };
 const openModelManagement = (modelId = currentModel.value) => {
   globalSettings?.open?.({
@@ -3454,7 +3537,7 @@ const handleDocumentFullscreenChange = async () => {
   } else {
     resetFullscreenViewport();
     fullscreenMaskPreviewVisible.value = true;
-    if (isLamaModel.value || selectedMaskIsSamVideo.value) {
+    if (currentModelRequiresMask.value || selectedMaskIsSamVideo.value) {
       showFullscreenDrawingToolbar.value = selectedMaskIsSamVideo.value
         ? true
         : Boolean(videoStore.maskTool.drawingEnabled);
@@ -5890,6 +5973,7 @@ const prepareBatchArtifacts = async ({
     const maskPath = window.electron.ipcRenderer.joinPath(paths.masksDir, maskName);
     const outputPath = window.electron.ipcRenderer.joinPath(paths.resultsDir, resultName);
 
+    const frameRequiresMask = isMaskInpaintModel(modelId);
     const shouldProcessFrame =
       modelId !== "slbr" ||
       shouldProcessFrameWithSlbr({
@@ -5899,12 +5983,12 @@ const prepareBatchArtifacts = async ({
       });
     const [frameCaptureResult, maskBlob] = await Promise.all([
       extractor.capture(ts),
-      modelId === "lama" ? maskRenderer.render(ts) : Promise.resolve(null),
+      frameRequiresMask ? maskRenderer.render(ts) : Promise.resolve(null),
     ]);
     const frameBlob = frameCaptureResult?.blob || frameCaptureResult;
 
     await saveBlobToPath(frameBlob, framePath);
-    if (modelId === "lama") {
+    if (frameRequiresMask) {
       await saveBlobToPath(maskBlob, maskPath);
     }
 
@@ -5928,12 +6012,12 @@ const prepareBatchArtifacts = async ({
       batchItems.push({
         frame_index: frameIndex,
         image_path: framePath,
-        ...(modelId === "lama" ? { mask_path: maskPath } : {}),
+        ...(frameRequiresMask ? { mask_path: maskPath } : {}),
         output_path: outputPath,
       });
     }
     batchArtifactPaths.push(
-      ...[framePath, modelId === "lama" ? maskPath : "", outputPath].filter(Boolean)
+      ...[framePath, frameRequiresMask ? maskPath : "", outputPath].filter(Boolean)
     );
     batchResultPaths.push(outputPath);
   }
@@ -6004,9 +6088,9 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
       ? null
       : Math.max(1, Number(previewTrialSeconds || 0));
   const isPreviewTrial = normalizedPreviewTrialSeconds !== null;
-  const requestedModelId = currentModel.value || "lama";
-  const requestedModelOptions = getCurrentModelOptionsPayload();
-  const requestedProcessingRanges =
+  let requestedModelId = currentModel.value || "lama";
+  let requestedModelOptions = getCurrentModelOptionsPayload();
+  let requestedProcessingRanges =
     requestedModelId === "slbr" ? getEnabledProcessingRanges() : [];
 
   if (backendEngineValue.value.runDisabled) {
@@ -6015,6 +6099,16 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
     }
     return;
   }
+
+  const backendModelReady = await ensureBackendVideoModel(requestedModelId);
+  if (!backendModelReady) return;
+  requestedModelId = currentModel.value || "lama";
+  requestedModelOptions = getCurrentModelOptionsPayload();
+  requestedProcessingRanges =
+    requestedModelId === "slbr" ? getEnabledProcessingRanges() : [];
+  const requestedModelLabel =
+    videoModelOptions.value.find((option) => option.value === requestedModelId)?.label ||
+    requestedModelId.toUpperCase();
 
   const backendPathValidation = await validateBackendPathsForConfig(
     configStore.config.general || {}
@@ -6188,7 +6282,7 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
       masksDir: paths.masksDir,
       resultsDir: paths.resultsDir,
       segmentsDir: paths.segmentsDir,
-      hasMask: requestedModelId === "lama",
+      hasMask: isMaskInpaintModel(requestedModelId),
       hasSamAssets: videoStore.masks.some((mask) => mask?.type === "samVideo"),
       frameCount: Math.max(1, totalFrames - resumeStartFrame),
     });
@@ -6284,7 +6378,10 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
           updateBatchProcessingUi({
             batchNumber: currentTask.descriptor.batchNumber,
             totalBatches,
-            stageLabel: requestedModelId === "slbr" ? "正在生成帧与判断范围" : "正在生成帧与蒙版",
+            stageLabel:
+              requestedModelId === "slbr"
+                ? "正在生成帧与判断范围"
+                : `正在使用 ${requestedModelLabel} 生成帧与蒙版`,
             batchDurations,
             pipelineBatchDurations,
             remainingBatchCount: getActiveStageRemainingBatchCount({
@@ -6339,7 +6436,7 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
               stageLabel:
                 requestedModelId === "slbr" && currentBatch.batchItems.length === 0
                   ? "当前批次不在处理范围内，直接复用原视频帧"
-                  : "正在提交后端批次",
+                  : `正在使用 ${requestedModelLabel} 处理第 ${currentBatch.batchNumber}/${totalBatches} 批`,
               batchDurations,
               pipelineBatchDurations,
               remainingBatchCount: getActiveStageRemainingBatchCount({
@@ -6860,7 +6957,7 @@ const createCombinedMaskRenderer = async ({ masks, width, height, modelId = curr
   const anchor = getVideoCenterAnchor(width, height);
   const samFrameImageCache = new Map();
   const SAM_FRAME_IMAGE_CACHE_LIMIT = 72;
-  const shouldAutoExpandSamVideoMasks = String(modelId || "").toLowerCase() === "lama";
+  const shouldAutoExpandSamVideoMasks = isMaskInpaintModel(modelId);
 
   const getSamFrameCacheKey = ({
     maskId,

@@ -806,6 +806,12 @@ const modelTreeNodes = computed(() => {
           models: imageModels.filter((model) => model.id === "lama" || model.family === "lama"),
         }),
         createModelGroupNode({
+          id: "image-mat",
+          label: "MAT",
+          icon: "auto_awesome",
+          models: imageModels.filter((model) => model.id === "mat" || model.family === "mat"),
+        }),
+        createModelGroupNode({
           id: "image-slbr",
           label: "SLBR",
           icon: "layers_clear",
@@ -817,8 +823,8 @@ const modelTreeNodes = computed(() => {
           icon: "more_horiz",
           models: imageModels.filter(
             (model) =>
-              !["lama", "slbr"].includes(model.id) &&
-              !["lama", "slbr"].includes(model.family)
+              !["lama", "mat", "slbr"].includes(model.id) &&
+              !["lama", "mat", "slbr"].includes(model.family)
           ),
         }),
       ].filter((node) => node.children.length > 0),

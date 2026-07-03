@@ -425,19 +425,21 @@ const getSamFrameCacheKey = ({
   previewColor = "",
   previewAlpha = 1,
   expandPx = null,
-} = {}) =>
-  [
+} = {}) => {
+  const autoExpandForMaskInpaint = ["lama", "mat"].includes(
+    String(modelId || "").toLowerCase()
+  );
+  return [
     maskId,
     frameIndex,
     objectId,
-    String(modelId || "").toLowerCase() === "lama" ? "lama-expanded" : "original",
-    String(modelId || "").toLowerCase() === "lama"
-      ? normalizeSamObjectExpandPx(expandPx)
-      : "auto",
+    autoExpandForMaskInpaint ? "lama-expanded" : "original",
+    autoExpandForMaskInpaint ? normalizeSamObjectExpandPx(expandPx) : "auto",
     maskPath || maskSignature,
     previewColor,
     Number(previewAlpha || 0).toFixed(3),
   ].join(":");
+};
 
 const buildSamFrameIndex = (samFrames = []) =>
   samFrames
@@ -525,7 +527,7 @@ const createPreviewMaskImage = async (image, { color, alpha, expandPx = null } =
     data[index + 2] = 255;
     data[index + 3] = isMaskPixel ? 255 : 0;
   }
-  if (String(props.currentModel || "").toLowerCase() === "lama") {
+  if (["lama", "mat"].includes(String(props.currentModel || "").toLowerCase())) {
     imageData = expandSamMaskImageDataForLama(imageData, {
       imageWidth: width,
       imageHeight: height,

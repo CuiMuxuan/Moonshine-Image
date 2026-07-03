@@ -40,6 +40,7 @@
       :virtual-scroll-item-size="72"
       type="list"
       class="file-list"
+      @virtual-scroll="handleVirtualScroll"
       v-slot="{ item: file }"
     >
       <q-item
@@ -126,6 +127,7 @@ const emit = defineEmits([
   "select-all",
   "invert-selection",
   "delete-selected",
+  "visible-range-change",
 ]);
 
 const $q = useQuasar();
@@ -133,6 +135,26 @@ const $q = useQuasar();
 const filteredFiles = computed(() =>
   props.files.filter((file) => file.type && file.type.startsWith("image/"))
 );
+
+const emitVisibleRange = (range = {}) => {
+  const from = Math.max(0, Number(range.from ?? range.index ?? 0));
+  const to = Math.min(
+    filteredFiles.value.length - 1,
+    Math.max(from, Number(range.to ?? range.index ?? from))
+  );
+  if (to < from) return;
+  emit("visible-range-change", {
+    from,
+    to,
+    index: Number(range.index ?? from),
+    direction: range.direction || "",
+    fileIds: filteredFiles.value.slice(from, to + 1).map((file) => file.id).filter(Boolean),
+  });
+};
+
+const handleVirtualScroll = (range = {}) => {
+  emitVisibleRange(range);
+};
 
 const listClass = computed(() =>
   $q.dark.isActive ? "file-list--dark" : "file-list--light"

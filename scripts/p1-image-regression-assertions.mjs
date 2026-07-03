@@ -80,6 +80,16 @@ function runAssertions() {
     pattern: /validateConfig\(mergeConfigForStrictValidation\(newConfig\)\)[\s\S]*const sanitizedConfig = sanitizeAppConfig\(newConfig\)/,
   });
   assertPattern({
+    file: "src/config/ConfigManager.js",
+    description: "Frontend config allows MAT as a default model only when CUDA launch mode is active",
+    pattern: /DEFAULT_MODEL_IDS = Object\.freeze\(\["lama", "mat"\]\)[\s\S]*normalizeDefaultModel[\s\S]*model === "mat" && launchMode !== "cuda" \? "lama" : model[\s\S]*默认模型必须是 lama 或 mat[\s\S]*defaultModel: normalizeDefaultModel/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Electron config sanitization falls back from default MAT to LaMa outside CUDA mode",
+    pattern: /DEFAULT_BACKEND_MODEL_IDS = Object\.freeze\(\["lama", "mat"\]\)[\s\S]*normalizeDefaultBackendModel[\s\S]*model === "mat" && launchMode !== "cuda" \? "lama" : model[\s\S]*merged\.general\.defaultModel = normalizeDefaultBackendModel/,
+  });
+  assertPattern({
     file: "src/shared/appConfigSchema.js",
     description: "Shared config schema includes versioned temp cleanup defaults",
     pattern: /CONFIG_SCHEMA_VERSION[\s\S]*DEFAULT_TEMP_CLEANUP[\s\S]*tempCleanup:\s*\{ \.\.\.DEFAULT_TEMP_CLEANUP \}/,
@@ -112,7 +122,7 @@ function runAssertions() {
   assertPattern({
     file: "src/shared/appConfigSchema.js",
     description: "Shared config schema keeps version and page-level default SAM model settings",
-    pattern: /CONFIG_SCHEMA_VERSION = 7[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*defaultSamModel:\s*"sam_vit_b"[\s\S]*defaultSam2Model:\s*"sam2_1_hiera_large"[\s\S]*defaultSam3Model:\s*"sam3_1_multiplex"[\s\S]*imageSmartSelectionDefaultModel:\s*"sam_vit_b"[\s\S]*videoSmartSelectionDefaultModel:\s*"sam2_1_hiera_large"[\s\S]*masking:\s*\{[\s\S]*DEFAULT_MASKING_CONFIG/,
+    pattern: /CONFIG_SCHEMA_VERSION = 8[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*defaultSamModel:\s*"sam_vit_b"[\s\S]*defaultSam2Model:\s*"sam2_1_hiera_large"[\s\S]*defaultSam3Model:\s*"sam3_1_multiplex"[\s\S]*imageSmartSelectionDefaultModel:\s*"sam_vit_b"[\s\S]*videoSmartSelectionDefaultModel:\s*"sam2_1_hiera_large"[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4[\s\S]*masking:\s*\{[\s\S]*DEFAULT_MASKING_CONFIG/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",
@@ -153,6 +163,16 @@ function runAssertions() {
   });
   assertPattern({
     file: "server/moonshine_server/moonshine/model_registry.py",
+    description: "Model registry includes MAT as a CUDA-only mask image/video processing model with project download sources",
+    pattern: /(?=[\s\S]*MAT_LICENSE = \{[\s\S]*"name": "CC BY-NC 4\.0"[\s\S]*仅限非商业用途)(?=[\s\S]*"id": "mat"[\s\S]*"family": "mat"[\s\S]*"modelVersion": "MAT")(?=[\s\S]*"requiresMask": True)(?=[\s\S]*"url": f"\{HF_MODEL_REPO_BASE_URL\}\/mat\/Places_512_FullData_G\.pth")(?=[\s\S]*"url": MANUAL_MODEL_SOURCE_URL)(?=[\s\S]*"path": "mat\/Places_512_FullData_G\.pth")(?=[\s\S]*"size": 250619359)(?=[\s\S]*"sha256": "0512e37ebba3986b0355130b2e2c1f95736d0778ac82e91b1212b4b21c231312")(?=[\s\S]*"license": MAT_LICENSE)(?=[\s\S]*"recommendedDevice": "cuda")(?=[\s\S]*"minimumVram": 6144)(?=[\s\S]*"recommendedVram": 8192)(?=[\s\S]*"scopes": \["selected", "batch", "folder", "video"\])[\s\S]*/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/model/mat.py",
+    description: "MAT runtime loads only the project model file and rejects non-CUDA execution",
+    pattern: /(?=[\s\S]*MAT_MODEL_FILE = "mat\/Places_512_FullData_G\.pth")(?=[\s\S]*def _resolve_mat_model_path\(\) -> str:[\s\S]*root_path = _root_model_path\(MAT_MODEL_FILE\)[\s\S]*if root_path\.is_file\(\):[\s\S]*return str\(root_path\)[\s\S]*raise FileNotFoundError)(?=[\s\S]*def init_model\(self, device, \*\*kwargs\):[\s\S]*"cuda" not in str\(device\)\.lower\(\) or not torch\.cuda\.is_available\(\)[\s\S]*MAT requires CUDA)(?=[\s\S]*load_model\(G, _resolve_mat_model_path\(\), device, None\))(?=[\s\S]*def is_downloaded\(\) -> bool:[\s\S]*return _root_model_path\(MAT_MODEL_FILE\)\.is_file\(\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/moonshine/model_registry.py",
     description: "Model registry tracks SAM2.1 variants under the sam2 folder and no longer exposes old SAM2 checkpoints",
     pattern: /(?=[\s\S]*"id": "sam2_1_hiera_tiny"[\s\S]*"modelVersion": "SAM2\.1"[\s\S]*"path": "sam2\/sam2\.1_hiera_tiny\.pt")(?=[\s\S]*"id": "sam2_1_hiera_small"[\s\S]*"path": "sam2\/sam2\.1_hiera_small\.pt")(?=[\s\S]*"id": "sam2_1_hiera_base_plus"[\s\S]*"path": "sam2\/sam2\.1_hiera_base_plus\.pt")(?=[\s\S]*"id": "sam2_1_hiera_large"[\s\S]*"path": "sam2\/sam2\.1_hiera_large\.pt")(?![\s\S]*"id": "sam2_hiera_)[\s\S]*/,
   });
@@ -169,7 +189,7 @@ function runAssertions() {
   assertPattern({
     file: "server/moonshine_server/moonshine/model_registry.py",
     description: "Model registry exposes license metadata and generic legacy migration status",
-    pattern: /(?=[\s\S]*SAM1_LICENSE)(?=[\s\S]*SAM2_LICENSE)(?=[\s\S]*SAM3_LICENSE)(?=[\s\S]*def _model_license_metadata)(?=[\s\S]*"license": manifest_item\.get\("license"\) or _model_license_metadata\(manifest_item\))(?=[\s\S]*"legacyDetected")(?=[\s\S]*"migrationTarget")[\s\S]*/,
+    pattern: /(?=[\s\S]*MAT_LICENSE)(?=[\s\S]*SAM1_LICENSE)(?=[\s\S]*SAM2_LICENSE)(?=[\s\S]*SAM3_LICENSE)(?=[\s\S]*def _model_license_metadata)(?=[\s\S]*"license": manifest_item\.get\("license"\) or _model_license_metadata\(manifest_item\))(?=[\s\S]*"legacyDetected")(?=[\s\S]*"migrationTarget")[\s\S]*/,
   });
   assertPattern({
     file: "server/moonshine_server/api.py",
@@ -369,6 +389,11 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/pages/IndexPage.vue",
+    description: "Successful mask-required runs clear SAM sessions and render cache for processed image ids",
+    pattern: /(?=[\s\S]*import \{ deleteSamImageSessions, getSamImageSessionStore \} from "src\/services\/SamImageSessionStore")(?=[\s\S]*const currentFileId = fileManagerStore\.currentFile\?\.id \|\| "")(?=[\s\S]*editorRef\.value\?\.clearSamContextSession\?\.\(currentFileId\))(?=[\s\S]*const backgroundIds = currentProcessed[\s\S]*uniqueIds\.filter\(\(fileId\) => fileId !== currentFileId\))(?=[\s\S]*clearSamRenderCacheContext\(fileId,\s*getSamImageSessionStore\(\)\))(?=[\s\S]*deleteSamImageSessions\(backgroundIds\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/IndexPage.vue",
     description: "Folder mode can stage loaded latest image results and append output paths back to history",
     pattern: /buildStagedFolderInputs[\s\S]*resolveLatestImageInput\(loadedFile,\s*"path"[\s\S]*appendFolderResultsToLoadedFiles[\s\S]*addProcessingResult/,
   });
@@ -386,6 +411,11 @@ function runAssertions() {
     file: "src/components/global/ModelManagementPanel.vue",
     description: "Model management panel provides a Quasar model tree with SAM grouping, runtime, license, and legacy feedback",
     pattern: /(?=[\s\S]*<q-tree)(?=[\s\S]*modelTreeNodes)(?=[\s\S]*图片处理模型)(?=[\s\S]*智能选区模型)(?=[\s\S]*SAM1)(?=[\s\S]*SAM2)(?=[\s\S]*SAM3)(?=[\s\S]*handleModelTreeSelected)(?=[\s\S]*runtimeNotice)(?=[\s\S]*发布与许可证)(?=[\s\S]*getModelWarning)(?=[\s\S]*legacyDetected)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/components/global/ModelManagementPanel.vue",
+    description: "Model management tree exposes MAT as its own image-processing group",
+    pattern: /(?=[\s\S]*id: "image-mat")(?=[\s\S]*label: "MAT")(?=[\s\S]*models: imageModels\.filter\(\(model\) => model\.id === "mat" \|\| model\.family === "mat"\))(?=[\s\S]*!\["lama", "mat", "slbr"\]\.includes\(model\.id\))[\s\S]*/,
   });
   assertPattern({
     file: "src/components/global/ModelManagementPanel.vue",
@@ -441,6 +471,21 @@ function runAssertions() {
     file: "src/stores/modelRegistry.js",
     description: "Model registry store defaults every model status request to the configured model directory",
     pattern: /useConfigStore[\s\S]*const configStore = useConfigStore\(\)[\s\S]*withConfiguredModelDir = \(options = \{\}\) =>[\s\S]*generalConfig\.modelDir[\s\S]*ModelRegistryService\.getModels\(withConfiguredModelDir\(options\)\)[\s\S]*ModelRegistryService\.refreshModels\(withConfiguredModelDir\(options\)\)[\s\S]*ModelRegistryService\.verifyModel\([\s\S]*withConfiguredModelDir\(options\)[\s\S]*ModelRegistryService\.startModelDownload\([\s\S]*withConfiguredModelDir\(options\)/,
+  });
+  assertPattern({
+    file: "src/components/global/GlobalSettings.vue",
+    description: "Global settings exposes MAT as a default backend model but disables and falls back outside CUDA mode",
+    pattern: /defaultBackendModelOptions = computed\(\(\) => \[[\s\S]*\{ label: "LaMa", value: "lama" \}[\s\S]*label: "MAT"[\s\S]*value: "mat"[\s\S]*disable: localConfig\.value\.general\?\.launchMode !== "cuda"[\s\S]*fallbackMatDefaultModelIfNeeded[\s\S]*localConfig\.value\.general\.defaultModel = "lama"[\s\S]*MAT_CUDA_FALLBACK_MESSAGE/,
+  });
+  assertPattern({
+    file: "src/components/global/BackendManager.vue",
+    description: "Backend manager exposes MAT startup model only for CUDA and falls back to LaMa with a visible warning",
+    pattern: /backendModelOptions = \[[\s\S]*\{ label: "LaMa", value: "lama" \}[\s\S]*\{ label: "MAT", value: "mat" \}[\s\S]*disable: option\.value === "mat" && backendConfig\.device !== "cuda"[\s\S]*fallbackMatDefaultModelIfNeeded[\s\S]*backendConfig\.model = "lama"[\s\S]*addTerminalLog\(MAT_CUDA_FALLBACK_MESSAGE, "warning"\)/,
+  });
+  assertPattern({
+    file: "src/pages/IndexPage.vue",
+    description: "Image page switches backend mask-inpaint models and falls MAT back to LaMa with user-readable progress copy",
+    pattern: /MASK_INPAINT_MODEL_IDS = \["lama", "mat"\][\s\S]*ensureBackendInpaintModel[\s\S]*modelRegistryStore\.switchModel\(requestedModel\)[\s\S]*handleModelChange\("lama", \{ notify: false \}\)[\s\S]*MAT_CUDA_FALLBACK_MESSAGE[\s\S]*正在使用 \$\{modelLabel\} 处理图片 0\/\$\{filesToProcess\.length\}/,
   });
   assertPattern({
     file: "server/moonshine_server/moonshine/sam_service.py",
@@ -711,6 +756,46 @@ function runAssertions() {
     file: "src/components/image/ImageMasker.vue",
     description: "Image masker routes SAM image switching through the stable composite path",
     pattern: /(?=[\s\S]*rerenderSamContextCandidates = async \(contextId = getSamContextId\(\)\)[\s\S]*contextId !== getSamContextId\(\)[\s\S]*!\(contextId === activeSamContextId\.value && hasActiveSamCandidateLayer\(\)\)[\s\S]*restoreSamContextSession\(\)[\s\S]*hasActiveSamCandidateLayer\(\)[\s\S]*renderSamCandidates\(\{ pushHistory: false \}\))(?=[\s\S]*if \(hasSamContextCandidates\(\)\) \{[\s\S]*scheduleStableMaskComposite\(\)[\s\S]*return;[\s\S]*if \(!props\.mask\))(?=[\s\S]*updateMask = \(newMask\)[\s\S]*hasSamContextCandidates\(\)[\s\S]*scheduleStableMaskComposite\(\))(?=[\s\S]*props\.mask[\s\S]*hasSamContextCandidates\(\)[\s\S]*scheduleStableMaskComposite\(\))(?=[\s\S]*props\.samContextId, props\.samImage, props\.samImageType[\s\S]*scheduleStableMaskComposite\(\))(?=[\s\S]*props\.toolState[\s\S]*scheduleStableMaskComposite\(\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/services/SamImageRenderCache.js",
+    description: "SAM image render cache evicts only rendered cache while preserving original SAM candidates",
+    pattern: /(?=[\s\S]*clearSamCandidateRenderCache = \(candidate = \{\}\) => \{[\s\S]*delete candidate\.renderedMask;[\s\S]*delete candidate\.renderedMaskMeta;)(?=[\s\S]*clearSamSessionRenderCache = \(session = \{\}\) => \{[\s\S]*for \(const candidate of session\.candidates \|\| \[\]\)[\s\S]*clearSamCandidateRenderCache\(candidate\))(?=[\s\S]*evictSamRenderCache[\s\S]*clearSamRenderCacheContext)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/services/SamImageRenderCache.js",
+    description: "SAM image render cache does not retain disabled or oversized contexts in the LRU table",
+    pattern: /(?=[\s\S]*touchSamRenderCacheContext = \(\{[\s\S]*const canKeep = shouldKeepSamRenderedCache)(?=[\s\S]*if \(!config\.enabled\) \{[\s\S]*evictSamRenderCache\(\{ sessionStore, maskingConfig: config \}\);[\s\S]*return null;)(?=[\s\S]*if \(!canKeep\) \{[\s\S]*clearSamRenderCacheContext\(normalizedContextId, sessionStore\);[\s\S]*return null;)[\s\S]*/,
+  });
+  assertAbsentPattern({
+    file: "src/services/SamImageRenderCache.js",
+    description: "SAM image render cache does not keep unused whole-cache or preload-cancel exports",
+    pattern: /export const (clearSamRenderCache|cancelSamRenderPreload) =/,
+  });
+  assertPattern({
+    file: "src/components/image/ImageMasker.vue",
+    description: "Image masker preserves rendered cache only when cache policy allows and session dimensions are known",
+    pattern: /(?=[\s\S]*cloneSamCandidates = \(items = \[\], \{ preserveRenderCache = false \} = \{\}\)[\s\S]*delete nextCandidate\.renderedMask[\s\S]*delete nextCandidate\.renderedMaskMeta)(?=[\s\S]*canPreserveSamRenderCache[\s\S]*shouldKeepSamRenderedCache)(?=[\s\S]*resolveSamSessionDimensions = \(session = \{\}\)[\s\S]*session\.width[\s\S]*session\.height)(?=[\s\S]*saveSamContextSession[\s\S]*width:\s*Math\.max\(0, Number\(maskCanvas\.value\?\.width \|\| store\.imageWidth \|\| 0\)\)[\s\S]*height:\s*Math\.max\(0, Number\(maskCanvas\.value\?\.height \|\| store\.imageHeight \|\| 0\)\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/components/image/ImageMasker.vue",
+    description: "Image masker lazily renders inactive SAM candidates and generates previews on demand",
+    pattern: /(?=[\s\S]*@mouseenter="prepareSamCandidatePreview\(candidate\.localId\)")(?=[\s\S]*const prepareSamCandidatePreview = async \(localId\) => \{(?:(?!bumpSamCandidatesRevision)[\s\S])*resolveSamCandidateMaskForRendering\(candidate[\s\S]*saveSamContextSession\(\);[\s\S]*\};)(?=[\s\S]*for \(const candidate of samCandidates\.value\)[\s\S]*if \(!candidate\.enabled\) continue)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/components/image/ImageMasker.vue",
+    description: "Image masker consumes SAM render preload queue off the visible canvas during idle time",
+    pattern: /(?=[\s\S]*dequeueSamRenderPreload)(?=[\s\S]*preloadSamRenderContext = async \(contextId = "", priority = "visible"\)[\s\S]*normalizedContextId === getSamContextId\(\)[\s\S]*return false)(?=[\s\S]*resolveSamCandidateMaskForRendering\(candidate,[\s\S]*contextId: normalizedContextId)(?=[\s\S]*touchSamRenderCacheContext\(\{[\s\S]*contextId: normalizedContextId)(?=[\s\S]*flushSamRenderPreloadQueue = async \(\{ maxItems = 6, maxSucceeded = 2 \} = \{\}\)[\s\S]*let attempted = 0;[\s\S]*let succeeded = 0;[\s\S]*attempted < maxAttempts && succeeded < successLimit[\s\S]*succeeded \+= 1)(?=[\s\S]*requestIdleCallback)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/IndexPage.vue",
+    description: "Image page queues visible and neighbor SAM render preloads without directly touching the visible canvas",
+    pattern: /(?=[\s\S]*enqueueNeighborSamRenderPreload = \(\) => \{[\s\S]*normalizeSamRenderCacheConfig[\s\S]*cacheConfig\.neighborPreloadCount[\s\S]*enqueueSamRenderPreloadIds)(?=[\s\S]*handleLeftFileVisibleRangeChange = \(range = \{\}\) => \{[\s\S]*cacheConfig\.preloadVisibleList[\s\S]*window\.setTimeout\(\(\) => \{[\s\S]*enqueueSamRenderPreloadIds\(fileIds, "visible"\))(?=[\s\S]*clearSamRenderPreloadQueue\(\{ priority: "visible" \}\))(?=[\s\S]*scheduleSamRenderPreloadFlush)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/IndexPage.vue",
+    description: "Image page exposes SAM render debug stats only through the test bridge or dev-only debug alias",
+    pattern: /(?=[\s\S]*getSamRenderStats: \(\) => editorRef\.value\?\.getSamRenderStats\?\.\(\) \|\| null)(?=[\s\S]*flushSamRenderPreloadQueue: async \(options = \{\}\) =>)(?=[\s\S]*if \(import\.meta\.env\.DEV \|\| window\.__MOONSHINE_ENABLE_DEBUG_BRIDGE__\) \{[\s\S]*window\.__moonshineDebug)[\s\S]*/,
   });
   assertPattern({
     file: "src/components/image/ImageMasker.vue",

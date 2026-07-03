@@ -649,7 +649,7 @@ const controlButtonSize = computed(() =>
   normalizeButtonSize(configStore.config.ui?.buttonSize)
 );
 const isSlbrModel = computed(() => props.currentModel === "slbr");
-const isLamaModel = computed(() => String(props.currentModel || "").toLowerCase() === "lama");
+const isLamaModel = computed(() => ["lama", "mat"].includes(String(props.currentModel || "").toLowerCase()));
 const DEFAULT_SECTION_STATE = Object.freeze({
   brush: true,
   range: false,
