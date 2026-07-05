@@ -3,13 +3,18 @@ import {
   normalizeShortcutConfig,
 } from "../utils/shortcutConfig.js";
 
-export const CONFIG_SCHEMA_VERSION = 8;
+export const CONFIG_SCHEMA_VERSION = 9;
 
 export const DEFAULT_THEME_MODE = "light";
 export const DEFAULT_UI_BUTTON_SIZE = "sm";
 export const UI_BUTTON_SIZE_OPTIONS = Object.freeze(["xs", "sm", "md"]);
 export const IMAGE_PROCESSING_METHOD_OPTIONS = Object.freeze(["auto", "path", "base64"]);
 export const VIDEO_PROCESSING_ENGINE_OPTIONS = Object.freeze(["auto", "webav", "ffmpeg"]);
+export const VIDEO_TEMPORAL_ENHANCEMENT_MODES = Object.freeze([
+  "conservative",
+  "balanced",
+  "strong",
+]);
 export const IMAGE_OUTPUT_NAMING_MODES = Object.freeze(["original", "prefixUuid"]);
 export const IMAGE_OUTPUT_FORMAT_OPTIONS = Object.freeze([
   "auto",
@@ -49,6 +54,21 @@ export const DEFAULT_TEMP_CLEANUP = Object.freeze({
   includeImages: true,
   includeVideos: true,
   keepRecentFailures: true,
+});
+
+export const DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT = Object.freeze({
+  enabled: false,
+  mode: "conservative",
+  stabilizeMask: true,
+  stabilizeResult: true,
+  textureCache: true,
+  diagnostics: false,
+  sceneChangeThreshold: 0.35,
+  maskIouThreshold: 0.45,
+  centerShiftThreshold: 0.08,
+  blendStrength: 0.25,
+  cacheTtlFrames: 12,
+  minMaskArea: 16,
 });
 
 export const DEFAULT_MASKING_CONFIG = Object.freeze({
@@ -130,6 +150,7 @@ export const createDefaultAppConfig = () => ({
     failureRetentionCount: 3,
     proxyMaxSide: 1280,
     previewTrialSeconds: 3,
+    temporalEnhancement: { ...DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT },
   },
 });
 

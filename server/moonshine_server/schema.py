@@ -448,11 +448,43 @@ class MoonshineSamTextPredictRequest(BaseModel):
     prompt_noun: Optional[dict] = None
 
 
+class VideoTemporalObjectRef(BaseModel):
+    object_key: str = Field(..., min_length=1)
+    source: Optional[str] = Field(None)
+    mask_id: Optional[str] = Field(None)
+    object_id: Optional[int] = Field(None)
+    mask_path: Optional[str] = Field(None)
+
+
 class VideoBatchFrameItem(BaseModel):
     frame_index: int = Field(..., ge=0)
     image_path: str
     mask_path: Optional[str] = None
     output_path: str
+    temporal_objects: List[VideoTemporalObjectRef] = Field(default_factory=list)
+
+
+class VideoTemporalEnhancementOptions(BaseModel):
+    enabled: bool = Field(False)
+    mode: Literal["conservative", "balanced", "strong"] = Field("conservative")
+    stabilize_mask: bool = Field(True)
+    stabilize_result: bool = Field(True)
+    texture_cache: bool = Field(True)
+    diagnostics: bool = Field(False)
+    scene_change_threshold: float = Field(0.35, ge=0, le=1)
+    mask_iou_threshold: float = Field(0.45, ge=0, le=1)
+    center_shift_threshold: float = Field(0.08, ge=0, le=1)
+    blend_strength: float = Field(0.25, ge=0, le=1)
+    cache_ttl_frames: int = Field(12, ge=1, le=120)
+    min_mask_area: int = Field(16, ge=1)
+    diagnostics_path: Optional[str] = Field(None)
+    state_path: Optional[str] = Field(None)
+    cache_dir: Optional[str] = Field(None)
+    config_signature: Optional[str] = Field(None)
+    source_fingerprint: Optional[str] = Field(None)
+    video_width: Optional[int] = Field(None, ge=1)
+    video_height: Optional[int] = Field(None, ge=1)
+    fps: Optional[float] = Field(None, gt=0)
 
 
 class VideoBatchInpaintOptions(BaseModel):
@@ -465,6 +497,7 @@ class VideoBatchInpaintOptions(BaseModel):
     total_batches: Optional[int] = Field(None, ge=1)
     failure_root: Optional[str] = Field(None)
     failure_retention: int = Field(3, ge=1, le=50)
+    temporal_enhancement: Optional[VideoTemporalEnhancementOptions] = Field(None)
 
 
 class VideoBatchInpaintRequest(BaseModel):

@@ -14,6 +14,7 @@ import {
   DEFAULT_TEMP_CLEANUP,
   DEFAULT_THEME_MODE,
   DEFAULT_UI_BUTTON_SIZE,
+  DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT,
   DEFAULT_VIDEO_BRUSH,
   IMAGE_PROCESSING_METHOD_OPTIONS,
   IMAGE_OUTPUT_FORMAT_OPTIONS,
@@ -22,6 +23,7 @@ import {
   isTypeCompatible,
   migrateLegacyConfigShape,
   UI_BUTTON_SIZE_OPTIONS,
+  VIDEO_TEMPORAL_ENHANCEMENT_MODES,
   VIDEO_PROCESSING_ENGINE_OPTIONS,
 } from "src/shared/appConfigSchema";
 
@@ -55,6 +57,74 @@ const normalizeButtonSize = (value) =>
 const normalizeBoolean = (value, fallback = true) =>
   typeof value === "boolean" ? value : fallback;
 
+const normalizeFloat = (value, fallback, min, max = Number.MAX_SAFE_INTEGER) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return clamp(numeric, min, max);
+};
+
+const normalizeVideoTemporalEnhancementConfig = (config = {}) => ({
+  enabled: normalizeBoolean(
+    config.enabled,
+    DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT.enabled
+  ),
+  mode: VIDEO_TEMPORAL_ENHANCEMENT_MODES.includes(config.mode)
+    ? config.mode
+    : DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT.mode,
+  stabilizeMask: normalizeBoolean(
+    config.stabilizeMask,
+    DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT.stabilizeMask
+  ),
+  stabilizeResult: normalizeBoolean(
+    config.stabilizeResult,
+    DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT.stabilizeResult
+  ),
+  textureCache: normalizeBoolean(
+    config.textureCache,
+    DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT.textureCache
+  ),
+  diagnostics: normalizeBoolean(
+    config.diagnostics,
+    DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT.diagnostics
+  ),
+  sceneChangeThreshold: normalizeFloat(
+    config.sceneChangeThreshold,
+    DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT.sceneChangeThreshold,
+    0,
+    1
+  ),
+  maskIouThreshold: normalizeFloat(
+    config.maskIouThreshold,
+    DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT.maskIouThreshold,
+    0,
+    1
+  ),
+  centerShiftThreshold: normalizeFloat(
+    config.centerShiftThreshold,
+    DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT.centerShiftThreshold,
+    0,
+    1
+  ),
+  blendStrength: normalizeFloat(
+    config.blendStrength,
+    DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT.blendStrength,
+    0,
+    1
+  ),
+  cacheTtlFrames: normalizeInteger(
+    config.cacheTtlFrames,
+    DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT.cacheTtlFrames,
+    1,
+    120
+  ),
+  minMaskArea: normalizeInteger(
+    config.minMaskArea,
+    DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT.minMaskArea,
+    1,
+    1000000
+  ),
+});
+
 const DEFAULT_MODEL_IDS = Object.freeze(["lama", "mat"]);
 const normalizeDefaultModel = (value, launchMode = "cuda") => {
   const normalized = String(value || "").trim().toLowerCase();
@@ -83,6 +153,7 @@ export {
   DEFAULT_THEME_MODE,
   DEFAULT_UI_BUTTON_SIZE,
   DEFAULT_VIDEO_BRUSH,
+  DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT,
   DEFAULT_TEMP_CLEANUP,
   DEFAULT_IMAGE_OUTPUT_QUALITY,
   DEFAULT_MASKING_CONFIG,
@@ -94,7 +165,9 @@ export {
   normalizeBrushConfig,
   normalizeButtonSize,
   normalizeThemeMode,
+  normalizeVideoTemporalEnhancementConfig,
   UI_BUTTON_SIZE_OPTIONS,
+  VIDEO_TEMPORAL_ENHANCEMENT_MODES,
 };
 
 export class ConfigManager {
@@ -384,6 +457,53 @@ export class ConfigManager {
       errors.push("视频样片试跑时长仅支持 3 秒或 10 秒。");
     }
 
+    const temporalEnhancement = video.temporalEnhancement || {};
+    [
+      { key: "enabled", name: "视频处理增强" },
+      { key: "stabilizeMask", name: "视频 Mask 时序稳定" },
+      { key: "stabilizeResult", name: "视频修复结果稳定" },
+      { key: "textureCache", name: "视频纹理缓存" },
+      { key: "diagnostics", name: "视频增强诊断日志" },
+    ].forEach(({ key, name }) => {
+      if (typeof temporalEnhancement[key] !== "boolean") {
+        errors.push(`${name}必须是布尔值。`);
+      }
+    });
+    if (!VIDEO_TEMPORAL_ENHANCEMENT_MODES.includes(temporalEnhancement.mode)) {
+      errors.push("视频处理增强模式无效。");
+    }
+    [
+      { key: "sceneChangeThreshold", min: 0, max: 1, name: "场景变化阈值" },
+      { key: "maskIouThreshold", min: 0, max: 1, name: "mask IoU 下限" },
+      { key: "centerShiftThreshold", min: 0, max: 1, name: "中心位移上限" },
+      { key: "blendStrength", min: 0, max: 1, name: "融合强度" },
+    ].forEach((field) => {
+      const value = temporalEnhancement[field.key];
+      if (
+        typeof value !== "number" ||
+        Number.isNaN(value) ||
+        value < field.min ||
+        value > field.max
+      ) {
+        errors.push(`${field.name}必须在 ${field.min}-${field.max} 范围内。`);
+      }
+    });
+    [
+      { key: "cacheTtlFrames", min: 1, max: 120, name: "纹理缓存寿命" },
+      { key: "minMaskArea", min: 1, max: 1000000, name: "最小 mask 面积" },
+    ].forEach((field) => {
+      const value = temporalEnhancement[field.key];
+      if (
+        typeof value !== "number" ||
+        Number.isNaN(value) ||
+        !Number.isInteger(value) ||
+        value < field.min ||
+        value > field.max
+      ) {
+        errors.push(`${field.name}必须是 ${field.min}-${field.max} 范围内的整数。`);
+      }
+    });
+
     errors.push(...validateShortcutConfig(config.shortcuts));
 
     return errors;
@@ -585,6 +705,9 @@ export class ConfigManager {
       )
         ? String(merged.video.frameExtractionFormat).toLowerCase()
         : "jpg",
+      temporalEnhancement: normalizeVideoTemporalEnhancementConfig(
+        merged.video?.temporalEnhancement
+      ),
     };
 
     merged.shortcuts = normalizeShortcutConfig(merged.shortcuts);
@@ -605,6 +728,12 @@ export class ConfigManager {
         ...merged.video,
         ...userConfig.video,
       };
+      if (this.isPlainObject(userConfig.video.temporalEnhancement)) {
+        merged.video.temporalEnhancement = {
+          ...DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT,
+          ...userConfig.video.temporalEnhancement,
+        };
+      }
     }
     if (this.isPlainObject(userConfig?.general)) {
       merged.general = {

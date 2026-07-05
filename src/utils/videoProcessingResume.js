@@ -67,6 +67,7 @@ export const buildProcessingConfigSnapshot = ({
   videoHeight = 0,
   videoDuration = 0,
   defaultModel = "",
+  temporalEnhancement = null,
 } = {}) => {
   const comparisonPayload = {
     fps: normalizeNumber(fps, 4),
@@ -85,13 +86,28 @@ export const buildProcessingConfigSnapshot = ({
     masks: buildMaskComparisonState(masks),
     processingRanges: buildRangeComparisonState(processingRanges),
   };
+  const normalizedTemporalEnhancement =
+    temporalEnhancement &&
+    typeof temporalEnhancement === "object" &&
+    !Array.isArray(temporalEnhancement) &&
+    temporalEnhancement.enabled === true
+      ? temporalEnhancement
+      : null;
 
-  return {
+  if (normalizedTemporalEnhancement) {
+    comparisonPayload.temporalEnhancement = normalizedTemporalEnhancement;
+  }
+
+  const snapshot = {
     ...comparisonPayload,
     maskCount: comparisonPayload.masks.length,
     processingRangeCount: comparisonPayload.processingRanges.length,
     signature: hashString(JSON.stringify(comparisonPayload)),
   };
+  if (normalizedTemporalEnhancement) {
+    snapshot.temporalEnhancement = normalizedTemporalEnhancement;
+  }
+  return snapshot;
 };
 
 export const hasProcessingConfigMismatch = (leftSnapshot, rightSnapshot) =>

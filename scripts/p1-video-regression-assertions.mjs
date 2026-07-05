@@ -266,6 +266,16 @@ function runAssertions() {
     description: "Video page can retry WebAV export stages through FFmpeg",
     pattern: /runWithVideoProcessingEngine[\s\S]*exportProcessedBatchSegmentWithFfmpeg[\s\S]*finalizeProcessedVideoWithFfmpeg/,
   });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "WebAV segment encoding prefers software video encoding to avoid hardware color shifts",
+    pattern: /WEBAV_VIDEO_ENCODER_OPTIONS = Object\.freeze\(\{[\s\S]*__unsafe_hardwareAcceleration__:\s*"prefer-software"[\s\S]*new Combinator\(\{[\s\S]*\.\.\.WEBAV_VIDEO_ENCODER_OPTIONS/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Explicit WebAV engine failures fall back to FFmpeg at the export stage",
+    pattern: /if \(engine === "webav"\) \{[\s\S]*try \{[\s\S]*return await webav\(\);[\s\S]*catch \(error\) \{[\s\S]*notifyVideoFfmpegFallback\(stageLabel, error\)[\s\S]*return await ffmpeg\(\);/,
+  });
 
   logSection("Video Progress Feedback");
   assertPattern({
@@ -317,8 +327,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
-    description: "Video batch artifact staging renders, saves, and posts masks only for mask inpaint models including MAT",
-    pattern: /(?=[\s\S]*const frameRequiresMask = isMaskInpaintModel\(modelId\))(?=[\s\S]*frameRequiresMask \? maskRenderer\.render\(ts\) : Promise\.resolve\(null\))(?=[\s\S]*if \(frameRequiresMask\) \{[\s\S]*await saveBlobToPath\(maskBlob, maskPath\))(?=[\s\S]*\.\.\.\(frameRequiresMask \? \{ mask_path: maskPath \} : \{\}\))(?=[\s\S]*\.\.\.\[framePath, frameRequiresMask \? maskPath : "", outputPath\]\.filter\(Boolean\))[\s\S]*/,
+    description: "Video batch artifact staging renders masks only for mask inpaint models and posts reusable mask paths",
+    pattern: /(?=[\s\S]*const frameRequiresMask = isMaskInpaintModel\(modelId\))(?=[\s\S]*const maskPathBySignature = new Map\(\))(?=[\s\S]*frameRequiresMask \? maskRenderer\.render\(ts\) : Promise\.resolve\(null\))(?=[\s\S]*normalizeMaskRenderResult\(maskRenderResult\))(?=[\s\S]*maskPathBySignature\.get\(signature\))(?=[\s\S]*\.\.\.\(frameRequiresMask \? \{ mask_path: frameMaskPath \} : \{\}\))[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -329,6 +339,100 @@ function runAssertions() {
     file: "server/moonshine_server/api.py",
     description: "Backend video batch keeps SLBR in the no-mask branch and sends LaMa/MAT through ModelManager mask inpaint",
     pattern: /(?=[\s\S]*model_id = str\(req\.model_id or "lama"\)\.strip\(\)\.lower\(\) or "lama")(?=[\s\S]*if model_id == "slbr":[\s\S]*slbr_runner = self\._get_slbr_runner\(\))(?=[\s\S]*if model_id == "slbr":[\s\S]*slbr_runner\.infer_bgr)(?=[\s\S]*else:[\s\S]*mask = self\._load_mask_from_path)(?=[\s\S]*processed_bgr = self\.model_manager\(image, mask, inpaint_req\))[\s\S]*/,
+  });
+
+  logSection("Video Mask IO Optimization");
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video temporary masks remain JPG while mask signatures can reuse shared JPG files",
+    pattern: /(?=[\s\S]*const maskName = `mask_\$\{String\(frameIndex\)\.padStart\(6, "0"\)\}\.jpg`)(?=[\s\S]*mimeType: "image\/jpeg")(?=[\s\S]*`mask_shared_\$\{sanitizeMaskSignatureForFileName\(signature\)\}\.jpg`)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Frontend skips backend work for empty mask frames while keeping result frame paths complete",
+    pattern: /(?=[\s\S]*if \(!maskArtifact\?\.hasMask\) \{[\s\S]*skippedEmptyMaskCount \+= 1[\s\S]*skipBackendReason = "empty-mask"[\s\S]*await saveBlobToPath\(cloneBlobForOutput\(frameBlob\), outputPath\))(?=[\s\S]*if \(\(modelId !== "slbr" \|\| shouldProcessFrame\) && !skipBackendReason\))(?=[\s\S]*const batchSkipsBackend = currentBatch\.batchItems\.length === 0)(?=[\s\S]*validateVideoBatchResponse[\s\S]*batch\.batchResultPaths)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Batch-local identical binary masks reuse the same maskPath by signature",
+    pattern: /(?=[\s\S]*signature: `\$\{canvas\.width\}x\$\{canvas\.height\}_\$\{signatureHash)(?=[\s\S]*const maskPathBySignature = new Map\(\))(?=[\s\S]*const reusableMaskPath = signature \? maskPathBySignature\.get\(signature\) : "")(?=[\s\S]*maskPathBySignature\.set\(signature, frameMaskPath\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/api.py",
+    description: "Backend caches decoded video mask_path reads inside one batch request",
+    pattern: /(?=[\s\S]*mask_cache = \{\})(?=[\s\S]*mask_cache_key = \([\s\S]*os\.path\.abspath\(item\.mask_path\)[\s\S]*bool\(req\.options\.keep_mask_grayscale\))(?=[\s\S]*cached_mask = mask_cache\.get\(mask_cache_key\))(?=[\s\S]*mask_cache\[mask_cache_key\] = cached_mask)(?=[\s\S]*mask = cached_mask\.copy\(\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/api.py",
+    description: "Backend still thresholds JPG video masks before model inference",
+    pattern: /def _load_mask_from_path\(mask_path: str, keep_grayscale: bool\):[\s\S]*cv2\.cvtColor\(mask_image, cv2\.COLOR_BGR2GRAY\)[\s\S]*np\.where\(mask > 127, 255, 0\)\.astype\(np\.uint8\)/,
+  });
+
+  logSection("Video Temporal Enhancement");
+  assertPattern({
+    file: "src/shared/appConfigSchema.js",
+    description: "Shared config defaults video temporal enhancement to disabled",
+    pattern: /DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT = Object\.freeze\(\{[\s\S]*enabled: false[\s\S]*mode: "conservative"[\s\S]*temporalEnhancement: \{ \.\.\.DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT \}/,
+  });
+  assertPattern({
+    file: "src/components/global/GlobalSettings.vue",
+    description: "Global settings exposes the default-off video temporal enhancement controls",
+    pattern: /(?=[\s\S]*v-model="localConfig\.video\.temporalEnhancement\.enabled")(?=[\s\S]*global-settings-video-temporal-enhancement-enabled)(?=[\s\S]*v-model="localConfig\.video\.temporalEnhancement\.mode")(?=[\s\S]*videoTemporalEnhancementModeOptions)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video processing request only sends temporal enhancement options when enabled and records them in the config snapshot",
+    pattern: /(?=[\s\S]*getEnabledVideoTemporalEnhancementConfig[\s\S]*return config\.enabled \? config : null)(?=[\s\S]*temporalEnhancement: getEnabledVideoTemporalEnhancementConfig\(\))(?=[\s\S]*temporalEnhancementRequest[\s\S]*\? \{ temporal_enhancement: temporalEnhancementRequest \}[\s\S]*: \{\})[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Temporal enhancement request carries persistence paths, source fingerprint, config signature, and video shape",
+    pattern: /(?=[\s\S]*const buildVideoTemporalEnhancementRequest = \(\{[\s\S]*statePath = ""[\s\S]*cacheDir = ""[\s\S]*configSignature = ""[\s\S]*sourceFingerprint = ""[\s\S]*videoWidth = 0[\s\S]*videoHeight = 0[\s\S]*fps = 0)(?=[\s\S]*state_path: statePath)(?=[\s\S]*cache_dir: cacheDir)(?=[\s\S]*config_signature: configSignature)(?=[\s\S]*source_fingerprint: sourceFingerprint)(?=[\s\S]*video_width: Math\.max)(?=[\s\S]*video_height: Math\.max)(?=[\s\S]*fps: Math\.max)(?=[\s\S]*temporalStatePath)(?=[\s\S]*temporalCacheDir)(?=[\s\S]*ensure-directory", temporalCacheDir)(?=[\s\S]*configSignature: effectiveSnapshot\.signature)(?=[\s\S]*sourceFingerprint: fingerprintInfo\.fingerprint)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video batch frames pass temporal object keys for standard masks and SAM video objects",
+    pattern: /(?=[\s\S]*const buildTemporalObjectRefsForTime = \(timestamp\) =>)(?=[\s\S]*object_key: `sam:\$\{maskId\}:\$\{objectId\}`)(?=[\s\S]*source: "sam")(?=[\s\S]*object_id: objectId)(?=[\s\S]*object_key: `mask:\$\{maskId\}`)(?=[\s\S]*source: "mask")(?=[\s\S]*temporalEnhancementEnabled)(?=[\s\S]*renderTemporalObjects\(ts, objectCandidates\))(?=[\s\S]*mask_path: objectMaskPath)(?=[\s\S]*temporal_objects: temporalObjects)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video processing stages per-object temporal mask files only for enabled temporal enhancement",
+    pattern: /(?=[\s\S]*const objectMasksDir = window\.electron\.ipcRenderer\.joinPath\([\s\S]*"object_masks")(?=[\s\S]*ensure-directory", objectMasksDir)(?=[\s\S]*renderTemporalObjects: async \(time, temporalObjects = \[\]\))(?=[\s\S]*renderTemporalObjectMask\(time, item\))(?=[\s\S]*object_mask_\$\{String\(frameIndex\)\.padStart)(?=[\s\S]*paths\.objectMasksDir)(?=[\s\S]*await saveBlobToPath\(objectItem\.blob, objectMaskPath\))(?=[\s\S]*temporalObjects\.map\(\(item\) => item\?\.mask_path \|\| ""\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/schema.py",
+    description: "Backend schema accepts optional disabled-by-default temporal enhancement options",
+    pattern: /class VideoTemporalEnhancementOptions\(BaseModel\):[\s\S]*enabled: bool = Field\(False\)[\s\S]*mode: Literal\["conservative", "balanced", "strong"\][\s\S]*temporal_enhancement: Optional\[VideoTemporalEnhancementOptions\] = Field\(None\)/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/schema.py",
+    description: "Backend schema accepts temporal persistence fields and per-frame temporal object refs",
+    pattern: /(?=[\s\S]*class VideoTemporalObjectRef\(BaseModel\):[\s\S]*object_key: str = Field\(\.\.\., min_length=1\)[\s\S]*mask_id: Optional\[str\][\s\S]*object_id: Optional\[int\][\s\S]*mask_path: Optional\[str\] = Field\(None\))(?=[\s\S]*class VideoBatchFrameItem\(BaseModel\):[\s\S]*temporal_objects: List\[VideoTemporalObjectRef\] = Field\(default_factory=list\))(?=[\s\S]*state_path: Optional\[str\] = Field\(None\))(?=[\s\S]*cache_dir: Optional\[str\] = Field\(None\))(?=[\s\S]*config_signature: Optional\[str\] = Field\(None\))(?=[\s\S]*source_fingerprint: Optional\[str\] = Field\(None\))(?=[\s\S]*video_width: Optional\[int\] = Field\(None, ge=1\))(?=[\s\S]*video_height: Optional\[int\] = Field\(None, ge=1\))(?=[\s\S]*fps: Optional\[float\] = Field\(None, gt=0\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/api.py",
+    description: "Backend applies temporal enhancement only after independent frame repair and falls back safely on errors",
+    pattern: /(?=[\s\S]*is_temporal_enhancement_enabled\([\s\S]*req\.options\.temporal_enhancement[\s\S]*\))(?=[\s\S]*processed_bgr = self\.model_manager\(image, mask, inpaint_req\)\.astype)(?=[\s\S]*temporal_enhancer\.enhance_frame)(?=[\s\S]*"skip_reason": "enhancement-error")(?=[\s\S]*self\._save_processed_frame\([\s\S]*processed_bgr\.astype\(np\.uint8\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/api.py",
+    description: "Backend passes temporal object refs and finalizes temporal persistence without interrupting video processing",
+    pattern: /(?=[\s\S]*temporal_objects=getattr\(item, "temporal_objects", None\))(?=[\s\S]*if temporal_enhancer is not None:[\s\S]*temporal_enhancer\.finalize_batch\(\))(?=[\s\S]*temporal enhancement finalize skipped)[\s\S]*/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/video_temporal_enhancement.py",
+    description: "Temporal enhancer persists cross-batch state atomically and restores object-level texture cache safely",
+    pattern: /(?=[\s\S]*STATE_VERSION = 1)(?=[\s\S]*DEFAULT_OBJECT_KEY = "default")(?=[\s\S]*def _write_json_atomic\(path: str, payload: Dict\[str, Any\]\) -> None:[\s\S]*temporary_path = f"\{path\}\.tmp"[\s\S]*os\.replace\(temporary_path, path\))(?=[\s\S]*state_path)(?=[\s\S]*cache_dir)(?=[\s\S]*_load_previous_from_state)(?=[\s\S]*_persist_previous_state)(?=[\s\S]*objects_dir)(?=[\s\S]*objectKey)(?=[\s\S]*_load_object_cache)(?=[\s\S]*_persist_object_cache)(?=[\s\S]*def finalize_batch\(self\) -> None:)[\s\S]*/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/video_temporal_enhancement.py",
+    description: "Temporal enhancer reads per-object mask paths and updates precise object texture cache before combo fallback",
+    pattern: /(?=[\s\S]*def _read_binary_mask_from_path\(mask_path: str, expected_shape: Tuple\[int, int\]\) -> Optional\[np\.ndarray\])(?=[\s\S]*mask = cv2\.imread\(mask_path, cv2\.IMREAD_GRAYSCALE\))(?=[\s\S]*return np\.where\(mask > 127, 255, 0\)\.astype\(np\.uint8\))(?=[\s\S]*def _normalize_temporal_object_refs\(self, temporal_objects: Optional\[Any\]\) -> list:)(?=[\s\S]*"mask_path": _string\(item\.get\("mask_path"\) or item\.get\("maskPath"\)\))(?=[\s\S]*def _update_precise_object_texture_cache)(?=[\s\S]*object_mask = _read_binary_mask_from_path\(mask_path, mask_shape\))(?=[\s\S]*self\.texture_cache\[object_key\])(?=[\s\S]*precise_updates = self\._update_precise_object_texture_cache)(?=[\s\S]*if precise_updates > 0:[\s\S]*return)[\s\S]*/,
+  });
+  assertPattern({
+    file: "scripts/verify_video_temporal_enhancement_3s.py",
+    description: "3-second real-video temporal verification compares enhancement off/on and precise object-cache effectiveness",
+    pattern: /(?=[\s\S]*DEFAULT_VIDEO_PATH = Path\(r"C:\\Users\\cjh02\\Downloads\\生成看板娘呼吸动画视频 \(5\)\.mp4"\))(?=[\s\S]*duration_seconds=args\.duration)(?=[\s\S]*run_task\(frames, video_info, work_dir \/ "off", False, "off"\))(?=[\s\S]*run_task\(frames, video_info, work_dir \/ "on", True, "on"\))(?=[\s\S]*enabled_minus_disabled_ms)(?=[\s\S]*precise_object_cache_effective)(?=[\s\S]*video-temporal-object-cache-3s-report\.md)[\s\S]*/,
   });
   assertPattern({
     file: "server/moonshine_server/moonshine/sam_service.py",
@@ -553,7 +657,7 @@ function runAssertions() {
   assertAbsentPattern({
     file: "src/pages/VideoPage.vue",
     description: "SAM video asset persistence must not accept inline/base64 mask writeback",
-    pattern: /dataUrlToMaskJpegBlob|dataUrlToBlob|imageBlobToElement|item\?\.mask|const maskData = item\.mask|maskSignature: getMaskDataSignature|保存 SAM 视频蒙版资产失败/,
+    pattern: /dataUrlToMaskJpegBlob|dataUrlToBlob|imageBlobToElement|item\?\.mask(?!_path)|const maskData = item\.mask|maskSignature: getMaskDataSignature|保存 SAM 视频蒙版资产失败/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",

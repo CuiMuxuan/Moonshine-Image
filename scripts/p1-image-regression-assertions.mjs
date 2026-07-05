@@ -122,7 +122,7 @@ function runAssertions() {
   assertPattern({
     file: "src/shared/appConfigSchema.js",
     description: "Shared config schema keeps version and page-level default SAM model settings",
-    pattern: /CONFIG_SCHEMA_VERSION = 8[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*defaultSamModel:\s*"sam_vit_b"[\s\S]*defaultSam2Model:\s*"sam2_1_hiera_large"[\s\S]*defaultSam3Model:\s*"sam3_1_multiplex"[\s\S]*imageSmartSelectionDefaultModel:\s*"sam_vit_b"[\s\S]*videoSmartSelectionDefaultModel:\s*"sam2_1_hiera_large"[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4[\s\S]*masking:\s*\{[\s\S]*DEFAULT_MASKING_CONFIG/,
+    pattern: /CONFIG_SCHEMA_VERSION = 9[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*defaultSamModel:\s*"sam_vit_b"[\s\S]*defaultSam2Model:\s*"sam2_1_hiera_large"[\s\S]*defaultSam3Model:\s*"sam3_1_multiplex"[\s\S]*imageSmartSelectionDefaultModel:\s*"sam_vit_b"[\s\S]*videoSmartSelectionDefaultModel:\s*"sam2_1_hiera_large"[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4[\s\S]*masking:\s*\{[\s\S]*DEFAULT_MASKING_CONFIG/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",

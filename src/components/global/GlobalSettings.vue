@@ -486,6 +486,143 @@
                       </div>
 
                       <div class="mini-block">
+                        <div class="row items-center q-mb-sm">
+                          <div class="text-subtitle2 text-weight-medium">视频处理增强</div>
+                          <q-space />
+                          <q-btn
+                            outline
+                            dense
+                            no-caps
+                            color="primary"
+                            icon="restart_alt"
+                            label="恢复默认"
+                            class="settings-action-button"
+                            @click="resetVideoTemporalEnhancement"
+                          />
+                        </div>
+                        <div class="settings-toggle-grid">
+                          <div class="startup-preference startup-preference--compact">
+                            <div class="startup-preference-label">启用增强</div>
+                            <q-toggle
+                              v-model="localConfig.video.temporalEnhancement.enabled"
+                              color="primary"
+                              data-testid="global-settings-video-temporal-enhancement-enabled"
+                            />
+                          </div>
+                          <div class="startup-preference startup-preference--compact">
+                            <div class="startup-preference-label">Mask 稳定</div>
+                            <q-toggle
+                              v-model="localConfig.video.temporalEnhancement.stabilizeMask"
+                              color="primary"
+                              :disable="!localConfig.video.temporalEnhancement.enabled"
+                            />
+                          </div>
+                          <div class="startup-preference startup-preference--compact">
+                            <div class="startup-preference-label">结果稳定</div>
+                            <q-toggle
+                              v-model="localConfig.video.temporalEnhancement.stabilizeResult"
+                              color="primary"
+                              :disable="!localConfig.video.temporalEnhancement.enabled"
+                            />
+                          </div>
+                          <div class="startup-preference startup-preference--compact">
+                            <div class="startup-preference-label">纹理缓存</div>
+                            <q-toggle
+                              v-model="localConfig.video.temporalEnhancement.textureCache"
+                              color="primary"
+                              :disable="!localConfig.video.temporalEnhancement.enabled"
+                            />
+                          </div>
+                          <div class="startup-preference startup-preference--compact">
+                            <div class="startup-preference-label">诊断日志</div>
+                            <q-toggle
+                              v-model="localConfig.video.temporalEnhancement.diagnostics"
+                              color="primary"
+                              :disable="!localConfig.video.temporalEnhancement.enabled"
+                            />
+                          </div>
+                          <q-select
+                            v-model="localConfig.video.temporalEnhancement.mode"
+                            label="增强模式"
+                            :options="videoTemporalEnhancementModeOptions"
+                            emit-value
+                            map-options
+                            outlined
+                            dense
+                            :disable="!localConfig.video.temporalEnhancement.enabled"
+                            data-testid="global-settings-video-temporal-enhancement-mode"
+                          />
+                        </div>
+                        <div class="grid q-mt-sm">
+                          <q-input
+                            v-model.number="localConfig.video.temporalEnhancement.sceneChangeThreshold"
+                            label="场景变化阈值"
+                            type="number"
+                            :min="0"
+                            :max="1"
+                            :step="0.01"
+                            outlined
+                            dense
+                            :disable="!localConfig.video.temporalEnhancement.enabled"
+                          />
+                          <q-input
+                            v-model.number="localConfig.video.temporalEnhancement.maskIouThreshold"
+                            label="Mask IoU 下限"
+                            type="number"
+                            :min="0"
+                            :max="1"
+                            :step="0.01"
+                            outlined
+                            dense
+                            :disable="!localConfig.video.temporalEnhancement.enabled"
+                          />
+                          <q-input
+                            v-model.number="localConfig.video.temporalEnhancement.centerShiftThreshold"
+                            label="中心位移上限"
+                            type="number"
+                            :min="0"
+                            :max="1"
+                            :step="0.01"
+                            outlined
+                            dense
+                            :disable="!localConfig.video.temporalEnhancement.enabled"
+                          />
+                          <q-input
+                            v-model.number="localConfig.video.temporalEnhancement.blendStrength"
+                            label="融合强度"
+                            type="number"
+                            :min="0"
+                            :max="1"
+                            :step="0.01"
+                            outlined
+                            dense
+                            :disable="!localConfig.video.temporalEnhancement.enabled"
+                          />
+                          <q-input
+                            v-model.number="localConfig.video.temporalEnhancement.cacheTtlFrames"
+                            label="缓存寿命（帧）"
+                            type="number"
+                            :min="1"
+                            :max="120"
+                            :step="1"
+                            outlined
+                            dense
+                            :disable="!localConfig.video.temporalEnhancement.enabled"
+                          />
+                          <q-input
+                            v-model.number="localConfig.video.temporalEnhancement.minMaskArea"
+                            label="最小 Mask 面积"
+                            type="number"
+                            :min="1"
+                            :step="1"
+                            outlined
+                            dense
+                            :disable="!localConfig.video.temporalEnhancement.enabled"
+                          />
+                        </div>
+                      </div>
+
+                      <div class="mini-block">
                         <div class="text-subtitle2 text-weight-medium q-mb-sm">智能选区默认模型</div>
                         <q-select
                           v-model="localConfig.masking.videoSmartSelectionDefaultModel"
@@ -566,7 +703,7 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
 import { useQuasar } from "quasar";
 import ModelManagementPanel from "src/components/global/ModelManagementPanel.vue";
-import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_MASKING_CONFIG, DEFAULT_TEMP_CLEANUP, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, UI_BUTTON_SIZE_OPTIONS, VIDEO_PROCESSING_ENGINE_OPTIONS } from "src/config/ConfigManager";
+import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_MASKING_CONFIG, DEFAULT_TEMP_CLEANUP, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT, UI_BUTTON_SIZE_OPTIONS, VIDEO_PROCESSING_ENGINE_OPTIONS, VIDEO_TEMPORAL_ENHANCEMENT_MODES } from "src/config/ConfigManager";
 import { createDefaultShortcuts, formatShortcutKeys, getShortcutDefinition, getShortcutTokenFromKeyboardEvent, getShortcutsByGroup, normalizeShortcutKeys, SHORTCUT_GROUP_META, SHORTCUT_GROUPS, validateShortcutConfig } from "src/utils/shortcutConfig";
 import { useAppStateStore } from "src/stores/appState";
 import { useConfigStore } from "src/stores/config";
@@ -631,6 +768,15 @@ const videoProcessingEngineOptions = VIDEO_PROCESSING_ENGINE_OPTIONS.map((value)
   value,
   label: videoProcessingEngineOptionMeta[value]?.label || value,
   description: videoProcessingEngineOptionMeta[value]?.description || "",
+}));
+const videoTemporalEnhancementModeMeta = {
+  conservative: "保守",
+  balanced: "均衡",
+  strong: "强力",
+};
+const videoTemporalEnhancementModeOptions = VIDEO_TEMPORAL_ENHANCEMENT_MODES.map((value) => ({
+  value,
+  label: videoTemporalEnhancementModeMeta[value] || value,
 }));
 const previewTrialOptions = [{ label: "3 秒", value: 3 }, { label: "10 秒", value: 10 }];
 const fallbackSamModels = [
@@ -780,6 +926,7 @@ const stopShortcutRecording = () => { recordingShortcutId.value = ""; recordingK
 const resetThemeColors = () => { localConfig.value.ui.brandColors = { ...DEFAULT_BRAND_COLORS }; };
 const resetButtonSize = () => { localConfig.value.ui.buttonSize = DEFAULT_UI_BUTTON_SIZE; };
 const resetBrushDefaults = () => { localConfig.value.advanced.imageBrushDefault = { ...DEFAULT_IMAGE_BRUSH }; localConfig.value.advanced.videoBrushDefault = { ...DEFAULT_VIDEO_BRUSH }; };
+const resetVideoTemporalEnhancement = () => { localConfig.value.video.temporalEnhancement = { ...DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT }; };
 const ensureTempCleanupConfig = () => {
   if (!localConfig.value.fileManagement) {
     localConfig.value.fileManagement = {};

@@ -61,6 +61,10 @@ from moonshine_server.image_output import (
 )
 from moonshine_server.model.utils import torch_gc
 from moonshine_server.model_manager import ModelManager
+from moonshine_server.video_temporal_enhancement import (
+    VideoTemporalEnhancer,
+    is_temporal_enhancement_enabled,
+)
 from moonshine_server.plugins import build_plugins, RealESRGANUpscaler
 from moonshine_server.plugins.base_plugin import BasePlugin
 from moonshine_server.plugins.remove_bg import RemoveBG
@@ -1637,6 +1641,8 @@ class Api:
         gc_interval = 8
         slbr_runner = None
         slbr_options = None
+        mask_cache = {}
+        temporal_enhancer = None
         if model_id == "slbr":
             slbr_runner = self._get_slbr_runner()
             slbr_options = self._normalize_moonshine_options(req.options.model_options)
@@ -1645,6 +1651,13 @@ class Api:
                 self.model_manager.switch(model_id)
             except RuntimeError as error:
                 raise HTTPException(status_code=422, detail=str(error))
+        if model_id in {"lama", "mat"} and is_temporal_enhancement_enabled(
+            req.options.temporal_enhancement
+        ):
+            temporal_enhancer = VideoTemporalEnhancer(
+                req.options.temporal_enhancement,
+                batch_id=batch_id,
+            )
 
         logger.info(
             f"[{batch_id}] start video batch: {total_frames} frame(s), "
@@ -1684,9 +1697,17 @@ class Api:
                         }
                     )
                 else:
-                    mask = self._load_mask_from_path(
-                        item.mask_path, req.options.keep_mask_grayscale
+                    mask_cache_key = (
+                        os.path.abspath(item.mask_path),
+                        bool(req.options.keep_mask_grayscale),
                     )
+                    cached_mask = mask_cache.get(mask_cache_key)
+                    if cached_mask is None:
+                        cached_mask = self._load_mask_from_path(
+                            item.mask_path, req.options.keep_mask_grayscale
+                        )
+                        mask_cache[mask_cache_key] = cached_mask
+                    mask = cached_mask.copy()
 
                     if image.shape[:2] != mask.shape[:2]:
                         mask = cv2.resize(
@@ -1718,18 +1739,46 @@ class Api:
                         )
                         continue
 
-                    processed_bgr = self.model_manager(image, mask, inpaint_req)
+                    processed_bgr = self.model_manager(image, mask, inpaint_req).astype(
+                        np.uint8
+                    )
+                    temporal_decision = None
+                    if temporal_enhancer is not None:
+                        try:
+                            processed_bgr, temporal_decision = (
+                                temporal_enhancer.enhance_frame(
+                                    frame_index=item.frame_index,
+                                    image_rgb=image,
+                                    mask=mask,
+                                    independent_bgr=processed_bgr,
+                                    output_path=item.output_path,
+                                    temporal_objects=getattr(item, "temporal_objects", None),
+                                )
+                            )
+                        except Exception as enhancement_error:
+                            logger.exception(
+                                f"[{batch_id}] temporal enhancement fallback for "
+                                f"frame {item.frame_index}: {str(enhancement_error)}"
+                            )
+                            temporal_decision = {
+                                "enabled": True,
+                                "applied": False,
+                                "fallback": True,
+                                "skip_reason": "enhancement-error",
+                                "error": str(enhancement_error),
+                            }
                     self._save_processed_frame(
                         item.output_path, processed_bgr.astype(np.uint8), alpha_channel
                     )
 
-                    results.append(
-                        {
-                            "frame_index": item.frame_index,
-                            "output_path": item.output_path,
-                            "success": True,
-                        }
-                    )
+                    result_item = {
+                        "frame_index": item.frame_index,
+                        "output_path": item.output_path,
+                        "success": True,
+                    }
+                    if temporal_decision is not None:
+                        result_item["temporal_enhancement"] = temporal_decision
+                    results.append(result_item)
 
             except Exception as error:
                 should_gc = True
@@ -1761,6 +1810,15 @@ class Api:
                     torch_gc()
 
         torch_gc()
+
+        if temporal_enhancer is not None:
+            try:
+                temporal_enhancer.finalize_batch()
+            except Exception as temporal_finalize_error:
+                logger.exception(
+                    f"[{batch_id}] temporal enhancement finalize skipped: "
+                    f"{str(temporal_finalize_error)}"
+                )
 
         failure_snapshot_dir = None
         if len(failed_items) > 0:

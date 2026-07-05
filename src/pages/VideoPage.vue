@@ -841,6 +841,7 @@ import { useConfiguredShortcuts } from "src/composables/useConfiguredShortcuts";
 import { useModelRegistryStore } from "src/stores/modelRegistry";
 import { useRuntimeDiagnosticsStore } from "src/stores/runtimeDiagnostics";
 import { useVideoManagerStore } from "src/stores/videoManager";
+import { normalizeVideoTemporalEnhancementConfig } from "src/config/ConfigManager";
 import { submitVideoBatchInpaint } from "src/services/VideoProcessingService";
 import {
   createSamVideoPropagationJob,
@@ -2780,6 +2781,42 @@ const getLocalFileUrl = (filePath) => {
     : `file://${encodeURI(normalizedPath)}`;
 };
 
+const MASK_SIGNATURE_FNV_OFFSET_BASIS = 0x811c9dc5;
+const MASK_SIGNATURE_FNV_PRIME = 0x01000193;
+
+const updateMaskSignatureHash = (hash, value) => {
+  const byteValue = Number(value || 0) & 0xff;
+  hash ^= byteValue;
+  return Math.imul(hash, MASK_SIGNATURE_FNV_PRIME) >>> 0;
+};
+
+const updateMaskSignatureWithDimension = (hash, value) => {
+  const dimension = Math.max(0, Math.floor(Number(value || 0)));
+  return [0, 8, 16, 24].reduce(
+    (nextHash, shift) => updateMaskSignatureHash(nextHash, dimension >> shift),
+    hash
+  );
+};
+
+const sanitizeMaskSignatureForFileName = (signature = "") =>
+  String(signature || "")
+    .replace(/[^a-z0-9_-]/gi, "_")
+    .slice(0, 96);
+
+const normalizeMaskRenderResult = (renderResult) => {
+  if (renderResult && typeof renderResult === "object" && "blob" in renderResult) {
+    return renderResult;
+  }
+  return {
+    blob: renderResult,
+    hasMask: Boolean(renderResult),
+    nonZeroPixelCount: null,
+    signature: "",
+  };
+};
+
+const cloneBlobForOutput = (blob) => blob.slice(0, blob.size, blob.type);
+
 const encodeMaskImageAsJpegBlob = async (imageSource, width, height) => {
   const canvas =
     typeof OffscreenCanvas !== "undefined"
@@ -2792,18 +2829,34 @@ const encodeMaskImageAsJpegBlob = async (imageSource, width, height) => {
   ctx.drawImage(imageSource, 0, 0, canvas.width, canvas.height);
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imageData.data;
+  let signatureHash = MASK_SIGNATURE_FNV_OFFSET_BASIS;
+  let nonZeroPixelCount = 0;
+  signatureHash = updateMaskSignatureWithDimension(signatureHash, canvas.width);
+  signatureHash = updateMaskSignatureWithDimension(signatureHash, canvas.height);
   for (let index = 0; index < data.length; index += 4) {
     const maskValue = data[index + 3] > 0 ? 255 : 0;
+    if (maskValue > 0) {
+      nonZeroPixelCount += 1;
+    }
+    signatureHash = updateMaskSignatureHash(signatureHash, maskValue);
     data[index] = maskValue;
     data[index + 1] = maskValue;
     data[index + 2] = maskValue;
     data[index + 3] = 255;
   }
   ctx.putImageData(imageData, 0, 0);
-  return canvasToBlob(canvas, {
+  const blob = await canvasToBlob(canvas, {
     mimeType: "image/jpeg",
     quality: 0.92,
   });
+  return {
+    blob,
+    hasMask: nonZeroPixelCount > 0,
+    nonZeroPixelCount,
+    signature: `${canvas.width}x${canvas.height}_${signatureHash
+      .toString(16)
+      .padStart(8, "0")}`,
+  };
 };
 
 const createBinaryAlphaMaskBitmap = async (
@@ -4641,6 +4694,88 @@ const computeVideoFileFingerprint = async (filePath) => {
   return result.data;
 };
 
+const getEnabledVideoTemporalEnhancementConfig = () => {
+  const config = normalizeVideoTemporalEnhancementConfig(
+    configStore.config.video?.temporalEnhancement || {}
+  );
+  return config.enabled ? config : null;
+};
+
+const buildVideoTemporalEnhancementRequest = ({
+  diagnosticsPath = "",
+  statePath = "",
+  cacheDir = "",
+  configSignature = "",
+  sourceFingerprint = "",
+  videoWidth = 0,
+  videoHeight = 0,
+  fps = 0,
+} = {}) => {
+  const config = getEnabledVideoTemporalEnhancementConfig();
+  if (!config) return null;
+
+  return {
+    enabled: true,
+    mode: config.mode,
+    stabilize_mask: config.stabilizeMask,
+    stabilize_result: config.stabilizeResult,
+    texture_cache: config.textureCache,
+    diagnostics: config.diagnostics,
+    scene_change_threshold: config.sceneChangeThreshold,
+    mask_iou_threshold: config.maskIouThreshold,
+    center_shift_threshold: config.centerShiftThreshold,
+    blend_strength: config.blendStrength,
+    cache_ttl_frames: config.cacheTtlFrames,
+    min_mask_area: config.minMaskArea,
+    diagnostics_path: config.diagnostics ? diagnosticsPath : "",
+    state_path: statePath,
+    cache_dir: cacheDir,
+    config_signature: configSignature,
+    source_fingerprint: sourceFingerprint,
+    video_width: Math.max(1, Math.round(Number(videoWidth || 0))),
+    video_height: Math.max(1, Math.round(Number(videoHeight || 0))),
+    fps: Math.max(0.001, Number(fps || 0)),
+  };
+};
+
+const isTemporalMaskActiveAt = (mask, timestamp) => {
+  if (!mask || mask.enabled === false) return false;
+  const startTime = Math.max(0, Number(mask.startTime || 0));
+  const endTime = Math.max(startTime, Number(mask.endTime || videoStore.videoDuration || 0));
+  return timestamp >= startTime && timestamp <= endTime;
+};
+
+const buildTemporalObjectRefsForTime = (timestamp) => {
+  const refs = [];
+  videoStore.masks.forEach((mask) => {
+    if (!isTemporalMaskActiveAt(mask, timestamp)) return;
+    const maskId = String(mask.id || "").trim();
+    if (!maskId) return;
+
+    if (mask.type === "samVideo") {
+      (mask.samObjects || [])
+        .filter((item) => item?.enabled !== false && Number(item?.objectId || 0) > 0)
+        .forEach((item) => {
+          const objectId = Math.round(Number(item.objectId));
+          refs.push({
+            object_key: `sam:${maskId}:${objectId}`,
+            source: "sam",
+            mask_id: maskId,
+            object_id: objectId,
+          });
+        });
+      return;
+    }
+
+    refs.push({
+      object_key: `mask:${maskId}`,
+      source: "mask",
+      mask_id: maskId,
+    });
+  });
+  return refs;
+};
+
 const buildCurrentProcessingConfigSnapshot = ({ fps, batchSize, frameFormat }) =>
   buildProcessingConfigSnapshot({
     fps,
@@ -4655,6 +4790,7 @@ const buildCurrentProcessingConfigSnapshot = ({ fps, batchSize, frameFormat }) =
     videoHeight: videoStore.videoHeight,
     videoDuration: videoStore.videoDuration,
     defaultModel: configStore.config.general?.defaultModel || "",
+    temporalEnhancement: getEnabledVideoTemporalEnhancementConfig(),
   });
 
 const getConfiguredPreviewTrialSeconds = () => {
@@ -5181,7 +5317,10 @@ const createSkippedVideoBatchResponse = (batch) => ({
     output_path: outputPath,
     success: true,
     skipped: true,
-    skip_reason: "outside-processing-range",
+    skip_reason:
+      Number(batch.skippedEmptyMaskCount || 0) >= batch.batchFrameCount
+        ? "empty-mask"
+        : "outside-processing-range",
   })),
 });
 
@@ -5641,6 +5780,10 @@ const getConfiguredVideoProcessingEngine = () => {
   return ["auto", "webav", "ffmpeg"].includes(mode) ? mode : "auto";
 };
 
+const WEBAV_VIDEO_ENCODER_OPTIONS = Object.freeze({
+  __unsafe_hardwareAcceleration__: "prefer-software",
+});
+
 const invokeVideoFfmpegIpc = async (channel, payload = {}) => {
   if (!window.electron?.ipcRenderer?.invoke) {
     throw new Error("当前环境无法调用 FFmpeg");
@@ -5674,7 +5817,14 @@ const runWithVideoProcessingEngine = async ({ stageLabel, webav, ffmpeg }) => {
     return await ffmpeg();
   }
   if (engine === "webav") {
-    return await webav();
+    try {
+      return await webav();
+    } catch (error) {
+      notifyVideoFfmpegFallback(stageLabel, error);
+      updateProcessingUi(`${stageLabel} WebAV 失败，正在切换 FFmpeg 兜底`, processingProgress.value);
+      await flushProcessingUiFrame();
+      return await ffmpeg();
+    }
   }
 
   try {
@@ -5971,6 +6121,7 @@ const exportProcessedBatchSegmentWithWebAv = async ({
     bitrate: 5_000_000,
     videoCodec: "avc1.42E032",
     audio: false,
+    ...WEBAV_VIDEO_ENCODER_OPTIONS,
   });
 
   let unbindProgress = null;
@@ -6473,6 +6624,10 @@ const prepareBatchArtifacts = async ({
   const batchArtifactPaths = [];
   const batchResultPaths = [];
   const frameDecodeFallbacks = [];
+  const maskPathBySignature = new Map();
+  const temporalEnhancementEnabled = Boolean(getEnabledVideoTemporalEnhancementConfig());
+  let skippedEmptyMaskCount = 0;
+  let skippedOutsideRangeCount = 0;
 
   for (let frameIndex = start; frameIndex < end; frameIndex += 1) {
     if (reportProgress) {
@@ -6508,19 +6663,82 @@ const prepareBatchArtifacts = async ({
         fps,
         ranges: processingRanges,
       });
-    const [frameCaptureResult, maskBlob] = await Promise.all([
+    const [frameCaptureResult, maskRenderResult] = await Promise.all([
       extractor.capture(ts),
       frameRequiresMask ? maskRenderer.render(ts) : Promise.resolve(null),
     ]);
     const frameBlob = frameCaptureResult?.blob || frameCaptureResult;
+    const maskArtifact = frameRequiresMask
+      ? normalizeMaskRenderResult(maskRenderResult)
+      : null;
+    let frameMaskPath = "";
+    let skipBackendReason = "";
+    let temporalObjects = [];
 
     await saveBlobToPath(frameBlob, framePath);
     if (frameRequiresMask) {
-      await saveBlobToPath(maskBlob, maskPath);
+      if (!maskArtifact?.hasMask) {
+        skippedEmptyMaskCount += 1;
+        skipBackendReason = "empty-mask";
+        await saveBlobToPath(cloneBlobForOutput(frameBlob), outputPath);
+      } else {
+        const signature = String(maskArtifact.signature || "").trim();
+        const reusableMaskPath = signature ? maskPathBySignature.get(signature) : "";
+        if (reusableMaskPath) {
+          frameMaskPath = reusableMaskPath;
+        } else {
+          const sharedMaskName = signature
+            ? `mask_shared_${sanitizeMaskSignatureForFileName(signature)}.jpg`
+            : maskName;
+          frameMaskPath = signature
+            ? window.electron.ipcRenderer.joinPath(paths.masksDir, sharedMaskName)
+            : maskPath;
+          await saveBlobToPath(maskArtifact.blob, frameMaskPath);
+          if (signature) {
+            maskPathBySignature.set(signature, frameMaskPath);
+          }
+        }
+        if (
+          temporalEnhancementEnabled &&
+          typeof maskRenderer?.renderTemporalObjects === "function"
+        ) {
+          const objectCandidates = buildTemporalObjectRefsForTime(ts);
+          const renderedObjects = await maskRenderer.renderTemporalObjects(ts, objectCandidates);
+          for (const objectItem of renderedObjects) {
+            if (!objectItem?.hasMask || !objectItem?.blob) continue;
+            const objectKey = String(
+              objectItem.object_key || objectItem.objectKey || ""
+            ).trim();
+            if (!objectKey) continue;
+            const objectMaskName = `object_mask_${String(frameIndex).padStart(
+              6,
+              "0"
+            )}_${sanitizeMaskSignatureForFileName(objectKey)}.jpg`;
+            const objectMaskPath = window.electron.ipcRenderer.joinPath(
+              paths.objectMasksDir,
+              objectMaskName
+            );
+            await saveBlobToPath(objectItem.blob, objectMaskPath);
+            temporalObjects.push({
+              object_key: objectKey,
+              source: objectItem.source || "",
+              mask_id: objectItem.mask_id || objectItem.maskId || "",
+              ...(Number(objectItem.object_id || objectItem.objectId || 0) > 0
+                ? { object_id: Math.round(Number(objectItem.object_id || objectItem.objectId)) }
+                : {}),
+              mask_path: objectMaskPath,
+            });
+          }
+        } else if (temporalEnhancementEnabled) {
+          temporalObjects = buildTemporalObjectRefsForTime(ts);
+        }
+      }
     }
 
     if (modelId === "slbr" && !shouldProcessFrame) {
-      await saveBlobToPath(frameBlob.slice(0, frameBlob.size, frameBlob.type), outputPath);
+      skippedOutsideRangeCount += 1;
+      skipBackendReason = "outside-processing-range";
+      await saveBlobToPath(cloneBlobForOutput(frameBlob), outputPath);
     }
 
     if (frameCaptureResult?.degraded) {
@@ -6535,16 +6753,22 @@ const prepareBatchArtifacts = async ({
       });
     }
 
-    if (modelId !== "slbr" || shouldProcessFrame) {
+    if ((modelId !== "slbr" || shouldProcessFrame) && !skipBackendReason) {
       batchItems.push({
         frame_index: frameIndex,
         image_path: framePath,
-        ...(frameRequiresMask ? { mask_path: maskPath } : {}),
+        ...(frameRequiresMask ? { mask_path: frameMaskPath } : {}),
         output_path: outputPath,
+        ...(temporalObjects.length > 0 ? { temporal_objects: temporalObjects } : {}),
       });
     }
     batchArtifactPaths.push(
-      ...[framePath, frameRequiresMask ? maskPath : "", outputPath].filter(Boolean)
+      ...[
+        framePath,
+        frameRequiresMask ? frameMaskPath : "",
+        ...temporalObjects.map((item) => item?.mask_path || ""),
+        outputPath,
+      ].filter(Boolean)
     );
     batchResultPaths.push(outputPath);
   }
@@ -6556,6 +6780,8 @@ const prepareBatchArtifacts = async ({
     batchArtifactPaths,
     batchResultPaths,
     frameDecodeFallbacks,
+    skippedEmptyMaskCount,
+    skippedOutsideRangeCount,
   };
 };
 
@@ -6801,6 +7027,16 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
       resumeTaskMeta,
     });
     frameDecodeFallbackReportPath = paths.frameDecodeFallbackReportPath || "";
+    const temporalEnhancementRequest = buildVideoTemporalEnhancementRequest({
+      diagnosticsPath: paths.temporalDiagnosticsPath,
+      statePath: paths.temporalStatePath,
+      cacheDir: paths.temporalCacheDir,
+      configSignature: effectiveSnapshot.signature,
+      sourceFingerprint: fingerprintInfo.fingerprint,
+      videoWidth: videoStore.videoWidth,
+      videoHeight: videoStore.videoHeight,
+      fps,
+    });
     await ensureVideoProcessingDiskSpace({
       sourcePath,
       tempBase: paths.tempBase,
@@ -6961,8 +7197,8 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
               batchNumber: currentBatch.batchNumber,
               totalBatches,
               stageLabel:
-                requestedModelId === "slbr" && currentBatch.batchItems.length === 0
-                  ? "当前批次不在处理范围内，直接复用原视频帧"
+                currentBatch.batchItems.length === 0
+                  ? "当前批次无需后端处理，直接复用原视频帧"
                   : `正在使用 ${requestedModelLabel} 处理第 ${currentBatch.batchNumber}/${totalBatches} 批`,
               batchDurations,
               pipelineBatchDurations,
@@ -6972,14 +7208,15 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
               }),
               progress: currentBatch.batchProgressBase + currentBatch.batchProgressSpan * 0.45,
               phase:
-                requestedModelId === "slbr" && currentBatch.batchItems.length === 0
+                currentBatch.batchItems.length === 0
                   ? VIDEO_PROCESSING_PHASES.STAGING
                   : VIDEO_PROCESSING_PHASES.BACKEND,
             });
             await flushProcessingUiFrame();
 
+            const batchSkipsBackend = currentBatch.batchItems.length === 0;
             const data =
-              requestedModelId === "slbr" && currentBatch.batchItems.length === 0
+              batchSkipsBackend
                 ? createSkippedVideoBatchResponse(currentBatch)
                 : await submitVideoBatchInpaint({
                     model_id: requestedModelId,
@@ -6993,6 +7230,9 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
                       batch_id: `batch_${currentBatch.start}_${currentBatch.end}`,
                       batch_number: currentBatch.batchNumber,
                       total_batches: totalBatches,
+                      ...(temporalEnhancementRequest
+                        ? { temporal_enhancement: temporalEnhancementRequest }
+                        : {}),
                       inpaint: {
                         prompt: "",
                         negative_prompt: "",
@@ -7229,6 +7469,7 @@ const prepareTaskPaths = async ({
 
   const framesDir = window.electron.ipcRenderer.joinPath(taskRoot, "frames");
   const masksDir = window.electron.ipcRenderer.joinPath(taskRoot, "masks");
+  const objectMasksDir = window.electron.ipcRenderer.joinPath(taskRoot, "object_masks");
   const resultsDir = window.electron.ipcRenderer.joinPath(taskRoot, "results");
   const segmentsDir = window.electron.ipcRenderer.joinPath(taskRoot, "segments");
   const failureRoot = window.electron.ipcRenderer.joinPath(
@@ -7239,13 +7480,27 @@ const prepareTaskPaths = async ({
     failureRoot,
     `${taskRoot.split(/[\\/]/).pop()}_frontend_decode_fallbacks.json`
   );
+  const temporalDiagnosticsPath = window.electron.ipcRenderer.joinPath(
+    taskRoot,
+    "temporal_diagnostics.jsonl"
+  );
+  const temporalStatePath = window.electron.ipcRenderer.joinPath(
+    taskRoot,
+    "temporal_state.json"
+  );
+  const temporalCacheDir = window.electron.ipcRenderer.joinPath(
+    taskRoot,
+    "temporal_cache"
+  );
 
   await window.electron.ipcRenderer.invoke("ensure-directory", taskRoot);
   await window.electron.ipcRenderer.invoke("ensure-directory", framesDir);
   await window.electron.ipcRenderer.invoke("ensure-directory", masksDir);
+  await window.electron.ipcRenderer.invoke("ensure-directory", objectMasksDir);
   await window.electron.ipcRenderer.invoke("ensure-directory", resultsDir);
   await window.electron.ipcRenderer.invoke("ensure-directory", segmentsDir);
   await window.electron.ipcRenderer.invoke("ensure-directory", failureRoot);
+  await window.electron.ipcRenderer.invoke("ensure-directory", temporalCacheDir);
 
   return {
     taskId,
@@ -7255,10 +7510,14 @@ const prepareTaskPaths = async ({
     taskRoot,
     framesDir,
     masksDir,
+    objectMasksDir,
     resultsDir,
     segmentsDir,
     failureRoot,
     frameDecodeFallbackReportPath,
+    temporalDiagnosticsPath,
+    temporalStatePath,
+    temporalCacheDir,
   };
 };
 
@@ -7633,7 +7892,93 @@ const createCombinedMaskRenderer = async ({ masks, width, height, modelId = curr
     })
   );
 
+  const renderTemporalObjectMask = async (time, target = {}) => {
+    const targetKey = String(target.object_key || target.objectKey || "").trim();
+    const targetMaskId = String(target.mask_id || target.maskId || "").trim();
+    const targetObjectId = Math.round(Number(target.object_id || target.objectId || 0));
+    ctx.clearRect(0, 0, width, height);
+
+    for (const asset of assets) {
+      const assetMaskId = String(asset.mask.id || "").trim();
+      if (asset.mask.type === "samVideo") {
+        if (!asset.mask.enabled || targetObjectId <= 0) continue;
+        if (
+          targetMaskId &&
+          targetMaskId !== assetMaskId &&
+          targetKey !== `sam:${assetMaskId}:${targetObjectId}`
+        ) {
+          continue;
+        }
+        const state = getInterpolatedMaskTransform(asset.mask, time);
+        if (!state || !asset.samFrames?.length) continue;
+        const enabledObject = (asset.mask.samObjects || []).find(
+          (item) => Number(item.objectId) === targetObjectId && item.enabled !== false
+        );
+        if (!enabledObject) continue;
+        const nearestFrame = findNearestSamFrame(asset, time);
+        const nearestMask = nearestFrame?.masks?.find(
+          (item) => Number(item.objectId) === targetObjectId
+        );
+        if (!nearestFrame || !nearestMask) continue;
+        const image = await loadSamFrameMaskImage({
+          maskId: asset.mask.id,
+          frameIndex: nearestFrame.frameIndex,
+          objectId: nearestMask.objectId,
+          maskPath: nearestMask.maskPath,
+          maskSignature: nearestMask.maskSignature,
+          expandPx: normalizeSamVideoExpandPx(
+            enabledObject.expandPx,
+            enabledObject.autoExpandPx
+          ),
+        });
+        if (image) {
+          ctx.drawImage(image, 0, 0, width, height);
+        }
+        continue;
+      }
+
+      if (!asset.image) continue;
+      if (
+        targetMaskId &&
+        targetMaskId !== assetMaskId &&
+        targetKey !== `mask:${assetMaskId}`
+      ) {
+        continue;
+      }
+      if (!targetMaskId && targetKey && targetKey !== `mask:${assetMaskId}`) {
+        continue;
+      }
+      const state = getInterpolatedMaskTransform(asset.mask, time);
+      if (!state) continue;
+      ctx.save();
+      ctx.translate(anchor.x + state.x, anchor.y + state.y);
+      ctx.scale(state.scaleX ?? state.scale ?? 1, state.scaleY ?? state.scale ?? 1);
+      ctx.translate(-anchor.x, -anchor.y);
+      ctx.drawImage(asset.image, 0, 0, width, height);
+      ctx.restore();
+    }
+
+    ctx.save();
+    ctx.globalCompositeOperation = "source-in";
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
+
+    return encodeMaskImageAsJpegBlob(canvas, width, height);
+  };
+
   return {
+    renderTemporalObjects: async (time, temporalObjects = []) => {
+      const results = [];
+      for (const item of temporalObjects) {
+        const renderResult = await renderTemporalObjectMask(time, item);
+        results.push({
+          ...item,
+          ...renderResult,
+        });
+      }
+      return results;
+    },
     render: async (time) => {
       ctx.clearRect(0, 0, width, height);
 
