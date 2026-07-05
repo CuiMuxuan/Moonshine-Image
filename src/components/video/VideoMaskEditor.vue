@@ -98,7 +98,7 @@
       class="sam-track-hint"
       :class="$q.dark.isActive ? 'text-amber-2' : 'text-grey-9'"
     >
-      智能选区轨道使用 SAM2.1 点选/框选传播生成，默认占满全部视频时长，范围和关键帧不可编辑。
+      智能选区轨道使用 SAM 点选/框选或文本传播生成，默认占满全部视频时长，范围和关键帧不可编辑。
     </q-banner>
 
     <q-expansion-item
@@ -142,16 +142,78 @@
                       <q-tooltip>关闭</q-tooltip>
                     </q-btn>
                   </div>
-                  <div class="video-sam-settings-item">
-                    <div class="text-caption text-grey-7">当前点选/框选模型</div>
-                    <div class="text-body2">SAM2.1 视频传播</div>
-                  </div>
-                  <q-separator />
-                  <div class="video-sam-settings-item is-disabled">
-                    <div class="text-caption text-grey-7">SAM3 文本视频智选</div>
-                    <div class="text-body2">后续支持：文本找目标后自动进行视频传播。</div>
-                    <q-chip dense square color="grey-5" text-color="white">暂未启用</q-chip>
-                  </div>
+                  <q-select
+                    :model-value="samVideoModelId"
+                    dense
+                    outlined
+                    emit-value
+                    map-options
+                    :options="samVideoModelOptions"
+                    label="智能选区模型"
+                    data-testid="video-sam-model-select"
+                    :disable="disabled || samVideoRunning"
+                    @update:model-value="emit('update:sam-video-model-id', $event)"
+                  />
+                  <template v-if="samVideoSupportsText">
+                    <q-separator />
+                    <q-input
+                      :model-value="samVideoTextPrompt"
+                      dense
+                      outlined
+                      clearable
+                      label="文本智选"
+                      placeholder="输入目标，例如 person"
+                      data-testid="video-sam-text-input"
+                      :disable="disabled || samVideoRunning"
+                      @update:model-value="emit('update:sam-video-text-prompt', $event)"
+                    />
+                    <div class="sam-lexicon-row">
+                      <q-select
+                        :model-value="samVideoTextColor"
+                        dense
+                        outlined
+                        clearable
+                        emit-value
+                        map-options
+                        :options="samVideoTextColorOptions"
+                        label="颜色"
+                        class="sam-lexicon-select"
+                        :disable="disabled || samVideoRunning"
+                        @update:model-value="emit('update:sam-video-text-color', $event)"
+                      />
+                      <q-select
+                        :model-value="samVideoTextNoun"
+                        dense
+                        outlined
+                        clearable
+                        use-input
+                        emit-value
+                        map-options
+                        :options="samVideoTextNounOptions"
+                        label="目标"
+                        class="sam-lexicon-select"
+                        :disable="disabled || samVideoRunning"
+                        @update:model-value="emit('update:sam-video-text-noun', $event)"
+                        @filter="
+                          (value, update) => emit('filter-sam-video-text-nouns', value, update)
+                        "
+                      />
+                    </div>
+                    <div v-if="samVideoGeneratedPromptText" class="text-caption text-grey-7">
+                      {{ samVideoGeneratedPromptText }}
+                    </div>
+                    <q-btn
+                      color="primary"
+                      icon="manage_search"
+                      label="文本智选"
+                      no-caps
+                      unelevated
+                      data-testid="video-sam-text-run-button"
+                      :loading="samVideoRunning"
+                      :disable="disabled || !canRunSamVideoText"
+                      @click="emit('run-sam-video-text')"
+                    />
+                  </template>
                 </div>
               </q-menu>
             </q-btn>
@@ -160,9 +222,9 @@
               text-color="white"
               icon="ads_click"
               data-testid="video-sam-select-tool-button"
-              :disable="disabled || samVideoRunning"
+              :disable="disabled || samVideoRunning || (!samVideoSupportsPoint && !samVideoSupportsBox)"
             >
-              <q-tooltip>点选/框选对象：单击点选，拖拽框选</q-tooltip>
+              <q-tooltip>{{ samVideoSelectToolTooltip }}</q-tooltip>
             </q-btn>
             <q-btn
               icon="clear"
@@ -634,9 +696,63 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  samVideoModelOptions: {
+    type: Array,
+    default: () => [],
+  },
+  samVideoModelId: {
+    type: String,
+    default: "",
+  },
+  samVideoSupportsPoint: {
+    type: Boolean,
+    default: true,
+  },
+  samVideoSupportsBox: {
+    type: Boolean,
+    default: true,
+  },
+  samVideoSupportsText: {
+    type: Boolean,
+    default: false,
+  },
+  samVideoTextPrompt: {
+    type: String,
+    default: "",
+  },
+  samVideoTextColor: {
+    type: String,
+    default: "",
+  },
+  samVideoTextNoun: {
+    type: String,
+    default: "",
+  },
+  samVideoTextColorOptions: {
+    type: Array,
+    default: () => [],
+  },
+  samVideoTextNounOptions: {
+    type: Array,
+    default: () => [],
+  },
+  samVideoGeneratedPromptText: {
+    type: String,
+    default: "",
+  },
+  canRunSamVideoText: {
+    type: Boolean,
+    default: false,
+  },
 });
 const emit = defineEmits([
   "update:sectionState",
+  "update:sam-video-model-id",
+  "update:sam-video-text-prompt",
+  "update:sam-video-text-color",
+  "update:sam-video-text-noun",
+  "filter-sam-video-text-nouns",
+  "run-sam-video-text",
   "run-sam-video-selection",
   "clear-sam-video-result",
   "remove-sam-video-object",
@@ -650,6 +766,14 @@ const controlButtonSize = computed(() =>
 );
 const isSlbrModel = computed(() => props.currentModel === "slbr");
 const isLamaModel = computed(() => ["lama", "mat"].includes(String(props.currentModel || "").toLowerCase()));
+const samVideoSelectToolTooltip = computed(() => {
+  if (props.samVideoSupportsPoint && props.samVideoSupportsBox) {
+    return "点选/框选对象：单击点选，拖拽框选";
+  }
+  if (props.samVideoSupportsBox) return "框选对象：拖拽框选";
+  if (props.samVideoSupportsPoint) return "点选对象：单击点选";
+  return "当前模型不支持点选/框选对象";
+});
 const DEFAULT_SECTION_STATE = Object.freeze({
   brush: true,
   range: false,
@@ -1136,6 +1260,37 @@ const setProcessingRangeEndFromCurrentTime = () => {
 
 .sam-object-expand-input :deep(input) {
   padding: 0;
+}
+
+.video-sam-settings-panel {
+  min-width: 260px;
+  max-width: min(360px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.video-sam-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.video-sam-settings-title {
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.sam-lexicon-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.sam-lexicon-select :deep(.q-field__control) {
+  min-height: 36px;
 }
 
 .sam-smart-tool-body {

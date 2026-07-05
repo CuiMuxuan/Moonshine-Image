@@ -65,6 +65,7 @@ export const DEFAULT_MASKING_CONFIG = Object.freeze({
   samLazyRenderDisabledCandidates: true,
   samRenderCachePreloadVisibleList: true,
   samRenderCacheNeighborPreloadCount: 4,
+  samReleaseBeforeProcessing: true,
 });
 
 export const createDefaultAppConfig = () => ({

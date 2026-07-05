@@ -182,16 +182,86 @@
                                 <q-tooltip>关闭</q-tooltip>
                               </q-btn>
                             </div>
+                            <q-select
+                              v-model="samVideoSessionModelId"
+                              dense
+                              outlined
+                              emit-value
+                              map-options
+                              :options="samVideoModelOptions"
+                              label="智能选区模型"
+                              data-testid="video-sam-fullscreen-model-select"
+                              :disable="samVideoState.running"
+                            />
                             <div class="video-sam-settings-item">
-                              <div class="text-caption text-grey-7">当前点选/框选模型</div>
-                              <div class="text-body2">SAM2.1 视频传播</div>
+                              <div class="text-caption text-grey-7">点选/框选能力</div>
+                              <div class="text-body2">
+                                {{
+                                  activeSamVideoSupportsPoint && activeSamVideoSupportsBox
+                                    ? "支持点选和框选"
+                                    : activeSamVideoSupportsBox
+                                    ? "支持框选"
+                                    : activeSamVideoSupportsPoint
+                                    ? "支持点选"
+                                    : "当前模型不支持点选/框选"
+                                }}
+                              </div>
                             </div>
-                            <q-separator />
-                            <div class="video-sam-settings-item is-disabled">
-                              <div class="text-caption text-grey-7">SAM3 文本视频智选</div>
-                              <div class="text-body2">后续支持：文本找目标后自动进行视频传播。</div>
-                              <q-chip dense square color="grey-5" text-color="white">暂未启用</q-chip>
-                            </div>
+                            <template v-if="activeSamVideoSupportsText">
+                              <q-separator />
+                              <q-input
+                                v-model="samVideoTextPrompt"
+                                dense
+                                outlined
+                                clearable
+                                label="文本智选"
+                                placeholder="输入目标，例如 person"
+                                data-testid="video-sam-fullscreen-text-input"
+                                :disable="samVideoState.running"
+                              />
+                              <div class="sam-lexicon-row">
+                                <q-select
+                                  v-model="samVideoTextColor"
+                                  dense
+                                  outlined
+                                  clearable
+                                  emit-value
+                                  map-options
+                                  :options="samVideoTextColorOptions"
+                                  label="颜色"
+                                  class="sam-lexicon-select"
+                                  :disable="samVideoState.running"
+                                />
+                                <q-select
+                                  v-model="samVideoTextNoun"
+                                  dense
+                                  outlined
+                                  clearable
+                                  use-input
+                                  emit-value
+                                  map-options
+                                  :options="samVideoTextNounOptions"
+                                  label="目标"
+                                  class="sam-lexicon-select"
+                                  :disable="samVideoState.running"
+                                  @filter="filterSamVideoTextNounOptions"
+                                />
+                              </div>
+                              <div v-if="samVideoGeneratedPromptText" class="text-caption text-grey-7">
+                                {{ samVideoGeneratedPromptText }}
+                              </div>
+                              <q-btn
+                                color="primary"
+                                icon="manage_search"
+                                label="文本智选"
+                                no-caps
+                                unelevated
+                                data-testid="video-sam-fullscreen-text-run-button"
+                                :loading="samVideoState.running"
+                                :disable="!canRunSamVideoTextPropagation"
+                                @click="runSamVideoTextPropagation"
+                              />
+                            </template>
                           </div>
                         </q-menu>
                       </q-btn>
@@ -199,11 +269,12 @@
                         color="primary"
                         text-color="white"
                         icon="ads_click"
-                        aria-label="点选/框选对象：单击点选，拖拽框选"
-                        title="点选/框选对象：单击点选，拖拽框选"
+                        :disable="!activeSamVideoSupportsPoint && !activeSamVideoSupportsBox"
+                        :aria-label="samVideoSelectToolTooltip"
+                        :title="samVideoSelectToolTooltip"
                         data-testid="video-sam-fullscreen-select-tool-button"
                       >
-                        <q-tooltip>点选/框选对象：单击点选，拖拽框选</q-tooltip>
+                        <q-tooltip>{{ samVideoSelectToolTooltip }}</q-tooltip>
                       </q-btn>
                       <q-btn
                         icon="format_list_bulleted"
@@ -491,7 +562,25 @@
               :sam-video-error="samVideoState.error"
               :has-sam-video-result="hasSelectedSamVideoState"
               :can-run-sam-video="canRunSamVideoPropagation"
+              :sam-video-model-options="samVideoModelOptions"
+              :sam-video-model-id="activeSamVideoModelId"
+              :sam-video-supports-point="activeSamVideoSupportsPoint"
+              :sam-video-supports-box="activeSamVideoSupportsBox"
+              :sam-video-supports-text="activeSamVideoSupportsText"
+              :sam-video-text-prompt="samVideoTextPrompt"
+              :sam-video-text-color="samVideoTextColor"
+              :sam-video-text-noun="samVideoTextNoun"
+              :sam-video-text-color-options="samVideoTextColorOptions"
+              :sam-video-text-noun-options="samVideoTextNounOptions"
+              :sam-video-generated-prompt-text="samVideoGeneratedPromptText"
+              :can-run-sam-video-text="canRunSamVideoTextPropagation"
               @update:section-state="videoEditorSections = $event"
+              @update:sam-video-model-id="samVideoSessionModelId = $event"
+              @update:sam-video-text-prompt="samVideoTextPrompt = $event"
+              @update:sam-video-text-color="samVideoTextColor = $event"
+              @update:sam-video-text-noun="samVideoTextNoun = $event"
+              @filter-sam-video-text-nouns="filterSamVideoTextNounOptions"
+              @run-sam-video-text="runSamVideoTextPropagation"
               @run-sam-video-selection="runSamVideoPropagation"
               @clear-sam-video-result="clearSelectedSamVideoResult"
               @remove-sam-video-object="removeSelectedSamVideoObject"
@@ -703,6 +792,32 @@
         </q-card-section>
       </q-card>
     </div>
+
+    <q-dialog v-model="samCpuRiskDialogOpen" persistent class="sam-cpu-risk-dialog">
+      <q-card class="sam-cpu-risk-card">
+        <q-card-section>
+          <div class="text-subtitle1 text-weight-medium">CPU 运行风险确认</div>
+          <div class="q-mt-sm text-body2">
+            本功能建议使用CUDA启动，当前使用CPU启动，可能导致使用过程中CPU资源占用过多、设备卡顿明显等现象，您确认使用CPU启动吗？
+          </div>
+          <q-checkbox
+            v-model="samCpuRiskAcknowledged"
+            class="q-mt-md"
+            dense
+            label="我已知晓，且承诺自行承担风险。"
+          />
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="取消" @click="resolveSamCpuRiskDialog(false)" />
+          <q-btn
+            color="primary"
+            label="确认"
+            :disable="!samCpuRiskAcknowledged"
+            @click="resolveSamCpuRiskDialog(true)"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
   </q-page>
 </template>
 
@@ -724,6 +839,7 @@ import { useConfigStore } from "src/stores/config";
 import { useAppStateStore } from "src/stores/appState";
 import { useConfiguredShortcuts } from "src/composables/useConfiguredShortcuts";
 import { useModelRegistryStore } from "src/stores/modelRegistry";
+import { useRuntimeDiagnosticsStore } from "src/stores/runtimeDiagnostics";
 import { useVideoManagerStore } from "src/stores/videoManager";
 import { submitVideoBatchInpaint } from "src/services/VideoProcessingService";
 import {
@@ -731,6 +847,10 @@ import {
   getSamVideoPropagationJob,
   getSamVideoPropagationJobResult,
 } from "src/services/SamPredictionService";
+import {
+  buildSam3LexiconPrompt,
+  loadSam3Lexicon,
+} from "src/services/SamLexiconService";
 import { MASK_TOOL_MODES } from "src/utils/maskTool";
 import {
   formatSeconds,
@@ -779,6 +899,7 @@ const videoStore = useVideoManagerStore();
 const configStore = useConfigStore();
 const appStateStore = useAppStateStore();
 const modelRegistryStore = useModelRegistryStore();
+const runtimeDiagnosticsStore = useRuntimeDiagnosticsStore();
 const loadingControl = inject("loadingControl", null);
 const backendRunningState = inject("backendRunning", ref(false));
 const backendEngine = inject("backendEngine", ref({}));
@@ -827,6 +948,15 @@ const videoEditorSections = ref({
   keyframes: true,
   processingRange: true,
 });
+const samVideoSessionModelId = ref("");
+const samVideoTextPrompt = ref("");
+const samVideoTextColor = ref("");
+const samVideoTextNoun = ref("");
+const samVideoTextLexicon = ref({ colors: [], nouns: [] });
+const samVideoTextFilteredNouns = ref([]);
+const samCpuRiskDialogOpen = ref(false);
+const samCpuRiskAcknowledged = ref(false);
+let samCpuRiskDialogResolve = null;
 const samVideoState = reactive({
   running: false,
   progress: 0,
@@ -961,11 +1091,149 @@ const canOpenOutput = computed(
     (processingSucceeded.value ||
       (Boolean(videoStore.currentSourceIsReplacement) && videoStore.videoHistory.length > 0))
 );
-const defaultSamVideoModelId = computed(
-  () =>
+const getSamEnabledCapability = (model, ...capabilities) => {
+  const enabledCapabilities = model?.enabledCapabilities;
+  if (!enabledCapabilities || typeof enabledCapabilities !== "object") return null;
+  return capabilities.some((capability) => enabledCapabilities[capability] === true);
+};
+const samVideoRuntimeDevice = computed(() => {
+  if (configStore.config.general?.launchMode !== "cuda") {
+    return "cpu";
+  }
+  if (!runtimeDiagnosticsStore.hasCudaStatus || runtimeDiagnosticsStore.cudaRefreshing) {
+    return "cuda";
+  }
+  return runtimeDiagnosticsStore.cudaAvailable ? "cuda" : "cpu";
+});
+const isSam3VideoModel = (model = {}) => String(model.family || "").toLowerCase() === "sam3";
+const getRuntimeSamVideoCapabilities = (model = {}) => {
+  const capabilities = { ...(model.enabledCapabilities || {}) };
+  if (isSam3VideoModel(model) && samVideoRuntimeDevice.value !== "cuda") {
+    capabilities.videoPoint = false;
+    capabilities.videoBox = false;
+    capabilities.videoText = false;
+    capabilities.videoPropagate = false;
+  }
+  return capabilities;
+};
+const supportsVideoSmartSelection = (model) => {
+  const runtimeModel = {
+    ...model,
+    enabledCapabilities: getRuntimeSamVideoCapabilities(model),
+  };
+  const canPropagate = getSamEnabledCapability(runtimeModel, "videoPropagate");
+  const hasVideoPrompt = getSamEnabledCapability(runtimeModel, "videoPoint", "videoBox", "videoText");
+  if (canPropagate !== null || hasVideoPrompt !== null) {
+    return Boolean(canPropagate && hasVideoPrompt);
+  }
+  return model?.family === "sam2";
+};
+const samVideoModelOptions = computed(() =>
+  modelRegistryStore.installedMaskModels
+    .filter((model) => supportsVideoSmartSelection(model))
+    .map((model) => ({
+      label: model.label || model.id,
+      value: model.id,
+      family: model.family,
+      enabledCapabilities: getRuntimeSamVideoCapabilities(model),
+    }))
+);
+const defaultSamVideoModelId = computed(() => {
+  const configured =
     configStore.config.masking?.videoSmartSelectionDefaultModel ||
     configStore.config.masking?.defaultSam2Model ||
-    "sam2_1_hiera_large"
+    "sam2_1_hiera_large";
+  if (samVideoModelOptions.value.some((option) => option.value === configured)) {
+    return configured;
+  }
+  return samVideoModelOptions.value[0]?.value || configured;
+});
+const activeSamVideoModelId = computed(() => {
+  const selected = String(samVideoSessionModelId.value || "").trim();
+  if (samVideoModelOptions.value.some((option) => option.value === selected)) {
+    return selected;
+  }
+  return defaultSamVideoModelId.value;
+});
+const activeSamVideoModelOption = computed(
+  () =>
+    samVideoModelOptions.value.find((option) => option.value === activeSamVideoModelId.value) ||
+    null
+);
+const activeSamVideoCapabilities = computed(() => activeSamVideoModelOption.value?.enabledCapabilities || {});
+const activeSamVideoSupportsPoint = computed(
+  () => activeSamVideoCapabilities.value.videoPoint === true
+);
+const activeSamVideoSupportsBox = computed(
+  () => activeSamVideoCapabilities.value.videoBox === true
+);
+const activeSamVideoSupportsText = computed(
+  () => activeSamVideoCapabilities.value.videoText === true
+);
+const activeSamVideoSupportsPropagate = computed(
+  () => activeSamVideoCapabilities.value.videoPropagate === true
+);
+const samVideoSelectToolTooltip = computed(() => {
+  if (activeSamVideoSupportsPoint.value && activeSamVideoSupportsBox.value) {
+    return "点选/框选对象：单击点选，拖拽框选";
+  }
+  if (activeSamVideoSupportsBox.value) {
+    return "框选对象：拖拽框选";
+  }
+  if (activeSamVideoSupportsPoint.value) {
+    return "点选对象：单击点选";
+  }
+  return "当前模型不支持点选/框选对象";
+});
+const samVideoTextColorOptions = computed(() =>
+  (samVideoTextLexicon.value.colors || []).map((entry) => ({
+    label: `${entry.zh} / ${entry.en}`,
+    value: entry.zh,
+  }))
+);
+const samVideoTextNounOptions = computed(() =>
+  (samVideoTextFilteredNouns.value.length
+    ? samVideoTextFilteredNouns.value
+    : samVideoTextLexicon.value.nouns || []
+  ).map((entry) => ({
+    label: `${entry.zh} / ${entry.en}`,
+    value: entry.zh,
+  }))
+);
+const selectedSamVideoTextColorEntry = computed(
+  () =>
+    (samVideoTextLexicon.value.colors || []).find(
+      (entry) => entry.zh === samVideoTextColor.value
+    ) || null
+);
+const selectedSamVideoTextNounEntry = computed(
+  () =>
+    (samVideoTextLexicon.value.nouns || []).find(
+      (entry) => entry.zh === samVideoTextNoun.value
+    ) || null
+);
+const samVideoTextPromptSpec = computed(() =>
+  buildSam3LexiconPrompt({
+    text: samVideoTextPrompt.value,
+    color: selectedSamVideoTextColorEntry.value,
+    noun: selectedSamVideoTextNounEntry.value,
+  })
+);
+const samVideoGeneratedPromptText = computed(() => {
+  const spec = samVideoTextPromptSpec.value;
+  if (!spec.text || spec.source === "manual") return "";
+  const prefix = spec.source === "lexicon-color" ? "仅颜色：" : "将检索：";
+  return `${prefix}${spec.text}${spec.warning ? ` · ${spec.warning}` : ""}`;
+});
+const canRunSamVideoTextPropagation = computed(
+  () =>
+    videoStore.hasVideoFile &&
+    Boolean(videoStore.videoFile) &&
+    activeSamVideoSupportsPropagate.value &&
+    activeSamVideoSupportsText.value &&
+    !isProcessing.value &&
+    !samVideoState.running &&
+    Boolean(samVideoTextPromptSpec.value.text)
 );
 
 const normalizeSamVideoExpandPx = (value, fallback = 0) =>
@@ -1034,7 +1302,6 @@ const timelineOptions = computed(() => ({
 const timelineControlsDisabled = computed(
   () => !videoStore.hasVideoFile || isProcessing.value
 );
-const isLamaModel = computed(() => MASK_INPAINT_MODEL_IDS.includes(currentModel.value));
 const isEditableStandardMask = (mask) =>
   Boolean(mask && mask.type !== "samVideo" && mask.editable !== false);
 const hasEditableStandardMaskTrack = computed(() =>
@@ -1534,23 +1801,37 @@ const checkLocalFileExists = async (filePath) => {
 };
 
 const samVideoMissingLocalPathMessage =
-  "当前视频没有后端可读取的本地文件路径。请通过“选择视频文件”重新导入本地视频，避免使用仅浏览器临时可见的 blob/会话文件后再运行 SAM2.1 智能选区。";
+  "当前视频没有后端可读取的本地文件路径。请通过“选择视频文件”重新导入本地视频，避免使用仅浏览器临时可见的 blob/会话文件后再运行 SAM 智能选区。";
+
+const isSamVideoPromptSupportedByActiveModel = (prompt = {}) => {
+  if (prompt.box) return activeSamVideoSupportsBox.value;
+  if (Array.isArray(prompt.points) && prompt.points.length > 0) {
+    return activeSamVideoSupportsPoint.value;
+  }
+  return false;
+};
+const selectedSamVideoHasUnsupportedPrompt = computed(() =>
+  selectedSamVideoPromptObjects.value.some((item) => !isSamVideoPromptSupportedByActiveModel(item))
+);
 
 const canRunSamVideoPropagation = computed(
   () =>
     videoStore.hasVideoFile &&
     Boolean(videoStore.videoFile) &&
     selectedMaskIsSamVideo.value &&
+    activeSamVideoSupportsPropagate.value &&
+    (activeSamVideoSupportsPoint.value || activeSamVideoSupportsBox.value) &&
     !isProcessing.value &&
     !samVideoState.running &&
-    selectedSamVideoPromptObjects.value.length > 0
+    selectedSamVideoPromptObjects.value.length > 0 &&
+    !selectedSamVideoHasUnsupportedPrompt.value
 );
 
 const samVideoSelectionActionTooltip = computed(() => {
   if (!videoStore.hasVideoFile) return "请先打开视频文件";
   if (isProcessing.value) return "视频处理中暂不能创建智能选区轨道";
-  if (samVideoState.running) return "SAM2.1 视频传播正在运行";
-  return "新建一条空的 SAM2.1 智能选区轨道";
+  if (samVideoState.running) return "SAM 视频传播正在运行";
+  return "新建一条空的 SAM 智能选区轨道";
 });
 
 const canRunSamVideoSelectionFromMaskList = computed(
@@ -1595,6 +1876,22 @@ const getNextSamVideoObjectId = () => {
 const addSamVideoPromptToSelectedTrack = ({ point = null, box = null } = {}) => {
   if (!selectedMaskIsSamVideo.value || !videoStore.selectedMaskId) {
     $q.notify({ type: "warning", message: "请先创建并选中智能选区轨道", timeout: 2500 });
+    return null;
+  }
+  if (point && !activeSamVideoSupportsPoint.value) {
+    $q.notify({
+      type: "warning",
+      message: "当前 SAM 视频模型不支持点选新建对象，请改用框选或文本智选。",
+      timeout: 3000,
+    });
+    return null;
+  }
+  if (box && !activeSamVideoSupportsBox.value) {
+    $q.notify({
+      type: "warning",
+      message: "当前 SAM 视频模型不支持框选对象，请切换模型或使用文本智选。",
+      timeout: 3000,
+    });
     return null;
   }
   const prompt = {
@@ -1958,7 +2255,7 @@ const getSamVideoJobStageText = (job = {}, directionLabel = "") => {
   if (phase === "completed") return `${prefix}传播完成`;
   if (phase === "failed") return `${prefix}传播失败`;
   if (phase === "canceled") return `${prefix}传播已取消`;
-  return `${prefix}${job.message || "等待 SAM2.1 视频传播"}`;
+  return `${prefix}${job.message || "等待 SAM 视频传播"}`;
 };
 
 const applySamVideoJobProgress = (job = {}, directionLabel = "") => {
@@ -1973,7 +2270,7 @@ const runSamVideoPropagationJob = async (request, directionLabel) => {
   let job = createResponse?.data || createResponse;
   const taskId = job?.taskId || job?.task_id;
   if (!taskId) {
-    throw new Error("SAM2.1 视频传播任务没有返回有效 taskId");
+    throw new Error("SAM 视频传播任务没有返回有效 taskId");
   }
   applySamVideoJobProgress(job, directionLabel);
 
@@ -1985,39 +2282,101 @@ const runSamVideoPropagationJob = async (request, directionLabel) => {
   }
 
   if (job.status === "failed") {
-    throw new Error(job.error || job.message || "SAM2.1 视频传播任务失败");
+    throw new Error(job.error || job.message || "SAM 视频传播任务失败");
   }
   if (job.status === "canceled") {
-    throw new Error(job.message || "SAM2.1 视频传播任务已取消");
+    throw new Error(job.message || "SAM 视频传播任务已取消");
   }
 
   const resultResponse = await getSamVideoPropagationJobResult(taskId);
   return resultResponse?.data || resultResponse;
 };
 
+const resolveSamCpuRiskDialog = (confirmed) => {
+  const resolver = samCpuRiskDialogResolve;
+  samCpuRiskDialogResolve = null;
+  samCpuRiskDialogOpen.value = false;
+  resolver?.(Boolean(confirmed && samCpuRiskAcknowledged.value));
+};
+
+const requestSamVideoCpuRiskConfirmation = async (modelId) => {
+  const normalizedModelId = String(modelId || "").trim();
+  const modelOption =
+    samVideoModelOptions.value.find((option) => option.value === normalizedModelId) ||
+    activeSamVideoModelOption.value;
+  const family =
+    modelOption?.family ||
+    (["sam3", "sam3_1_multiplex"].includes(normalizedModelId) ? "sam3" : "");
+  if (family !== "sam3" || samVideoRuntimeDevice.value === "cuda") {
+    return true;
+  }
+  if (samCpuRiskDialogOpen.value) {
+    return false;
+  }
+  samCpuRiskAcknowledged.value = false;
+  samCpuRiskDialogOpen.value = true;
+  return new Promise((resolve) => {
+    samCpuRiskDialogResolve = resolve;
+  });
+};
+
+const filterSamVideoTextNounOptions = (value, update) => {
+  update(() => {
+    const keyword = String(value || "").trim().toLowerCase();
+    const nouns = samVideoTextLexicon.value.nouns || [];
+    samVideoTextFilteredNouns.value = keyword
+      ? nouns.filter((entry) =>
+          [entry.zh, entry.en, entry.category]
+            .filter(Boolean)
+            .some((item) => String(item).toLowerCase().includes(keyword))
+        )
+      : nouns;
+  });
+};
+
+const refreshSamVideoTextLexicon = async () => {
+  try {
+    const lexicon = await loadSam3Lexicon();
+    samVideoTextLexicon.value = lexicon;
+    samVideoTextFilteredNouns.value = lexicon.nouns || [];
+  } catch (error) {
+    samVideoTextLexicon.value = { colors: [], nouns: [] };
+    samVideoTextFilteredNouns.value = [];
+    console.warn("Failed to load SAM3 video lexicon:", error);
+  }
+};
+
 const runSamVideoPropagation = async () => {
   const targetMaskId = videoStore.selectedMaskId;
   const promptObjects = selectedSamVideoPromptObjects.value.map((item) => ({ ...item }));
   const previousAssetPaths = collectSamVideoMaskAssetPaths(videoStore.selectedMask);
+  const modelId = activeSamVideoModelId.value;
   if (!canRunSamVideoPropagation.value) {
     samVideoState.message = !videoStore.hasVideoFile
       ? "请先导入视频"
       : !selectedMaskIsSamVideo.value
       ? "请先选择智能选区轨道"
+      : selectedSamVideoHasUnsupportedPrompt.value
+      ? "当前 SAM 视频模型不支持待选对象中的点选/框选类型"
       : promptObjects.length === 0
       ? "请先在预览画面点选或框选至少一个对象"
-      : "当前无法运行 SAM2.1 视频智能选区";
+      : "当前无法运行 SAM 视频智能选区";
     samVideoState.error = samVideoState.message;
+    return null;
+  }
+
+  if (!(await requestSamVideoCpuRiskConfirmation(modelId))) {
+    samVideoState.message = "已取消 SAM 视频智能选区。";
     return null;
   }
 
   samVideoState.running = true;
   samVideoState.progress = 0;
   samVideoState.error = "";
-  samVideoState.message = "正在准备 SAM2.1 视频传播";
+  samVideoState.message = "正在准备 SAM 视频传播";
   samVideoState.lastResultSummary = null;
   samVideoState.lastTrackId = "";
-  updateSamVideoGlobalLoadingOverlay("准备阶段：正在启动 SAM2.1 视频智能选区任务", samVideoState.progress);
+  updateSamVideoGlobalLoadingOverlay("准备阶段：正在启动 SAM 视频智能选区任务", samVideoState.progress);
 
   try {
     const sourcePath = await ensureSamVideoSourcePath();
@@ -2036,7 +2395,7 @@ const runSamVideoPropagation = async () => {
     const commonRequest = {
       inputType: "videoPath",
       videoPath: sourcePath,
-      modelId: defaultSamVideoModelId.value,
+      modelId,
       frameIndex,
       maxFrames: null,
       objects: promptObjects.map((item) => ({
@@ -2103,10 +2462,161 @@ const runSamVideoPropagation = async () => {
     }
     samVideoState.lastTrackId = track?.id || "";
     samVideoState.message = track
-      ? `SAM2.1 已更新 ${track.name}，共 ${result?.frames?.length || 0} 帧`
-      : updateResult.error || `SAM2.1 已返回 ${result?.frames?.length || 0} 帧，但没有可用蒙版`;
+      ? `SAM 已更新 ${track.name}，共 ${result?.frames?.length || 0} 帧`
+      : updateResult.error || `SAM 已返回 ${result?.frames?.length || 0} 帧，但没有可用蒙版`;
     return result;
   } catch (error) {
+    samVideoState.progress = 0;
+    samVideoState.error = error?.message || String(error);
+    samVideoState.message = samVideoState.error;
+    $q.notify({
+      type: "negative",
+      message: samVideoState.error,
+      timeout: 5000,
+    });
+    return null;
+  } finally {
+    samVideoState.running = false;
+    hideGlobalLoadingOverlay();
+  }
+};
+
+const runSamVideoTextPropagation = async () => {
+  const modelId = activeSamVideoModelId.value;
+  const promptSpec = samVideoTextPromptSpec.value;
+  if (!canRunSamVideoTextPropagation.value) {
+    samVideoState.message = !videoStore.hasVideoFile
+      ? "请先导入视频"
+      : !activeSamVideoSupportsText.value
+      ? "当前 SAM 视频模型不支持文本智选"
+      : !promptSpec.text
+      ? "请输入文本提示或选择颜色/目标"
+      : "当前无法运行 SAM 文本视频智选";
+    samVideoState.error = samVideoState.message;
+    return null;
+  }
+
+  if (!(await requestSamVideoCpuRiskConfirmation(modelId))) {
+    samVideoState.message = "已取消 SAM 文本视频智选。";
+    return null;
+  }
+
+  const targetTrack = videoStore.createEmptySamVideoMaskTrack();
+  syncTimelineRowsFromStore();
+  const targetMaskId = targetTrack?.id || videoStore.selectedMaskId;
+  if (!targetMaskId) {
+    samVideoState.error = "创建 SAM 视频轨道失败。";
+    samVideoState.message = samVideoState.error;
+    return null;
+  }
+
+  samVideoState.running = true;
+  samVideoState.progress = 0;
+  samVideoState.error = "";
+  samVideoState.message = "正在准备 SAM 文本视频智选";
+  samVideoState.lastResultSummary = null;
+  samVideoState.lastTrackId = "";
+  updateSamVideoGlobalLoadingOverlay("准备阶段：正在启动 SAM 文本视频智选任务", samVideoState.progress);
+
+  try {
+    const sourcePath = await ensureSamVideoSourcePath();
+    const assetRoot = await buildSamVideoMaskAssetRoot({
+      sourcePath,
+      trackId: targetMaskId,
+      runId: `run_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+    });
+    const forwardMaskOutputDir = window.electron.ipcRenderer.joinPath(assetRoot, "forward");
+    const backwardMaskOutputDir = window.electron.ipcRenderer.joinPath(assetRoot, "backward");
+    await window.electron.ipcRenderer.invoke("ensure-directory", forwardMaskOutputDir);
+    await window.electron.ipcRenderer.invoke("ensure-directory", backwardMaskOutputDir);
+
+    const frameIndex = getCurrentSamVideoFrameIndex();
+    const commonRequest = {
+      inputType: "videoPath",
+      videoPath: sourcePath,
+      modelId,
+      frameIndex,
+      maxFrames: null,
+      text: promptSpec.text,
+      language: promptSpec.language || "auto",
+      promptSource: promptSpec.source || "manual",
+      promptColor: promptSpec.color || null,
+      promptNoun: promptSpec.noun || null,
+      responseType: "path",
+    };
+    const forwardResponse = await runSamVideoPropagationJob({
+      ...commonRequest,
+      reverse: false,
+      maskOutputDir: forwardMaskOutputDir,
+    }, "正向传播");
+    const backwardResponse = await runSamVideoPropagationJob({
+      ...commonRequest,
+      reverse: true,
+      maskOutputDir: backwardMaskOutputDir,
+    }, "反向传播");
+    const normalizePathMaskFrame = (result = {}, side = "") => ({
+      ...result,
+      frames: (result.frames || []).map((frame) => ({
+        ...frame,
+        masks: (frame.masks || []).map((item) => ({
+          objectId: item.objectId,
+          maskPath: item.maskPath || "",
+          maskAssetId: item.maskAssetId || "",
+          maskSignature: item.maskSignature || "",
+          maskSize: Number(item.maskSize || 0),
+          side,
+        })),
+      })),
+    });
+    const mergedResult = mergeSamVideoPropagationResults({
+      forward: normalizePathMaskFrame(forwardResponse, "forward"),
+      backward: normalizePathMaskFrame(backwardResponse, "backward"),
+      promptObjects: [],
+      frameIndex,
+    });
+    let result = await persistSamVideoMaskAssets({
+      result: mergedResult,
+      trackId: targetMaskId,
+      sourcePath,
+      assetRoot,
+      onProgress: ({ current, total }) => {
+        const progress = total > 0 ? Math.max(0, Math.min(1, current / total)) : 0;
+        samVideoState.progress = progress;
+        const countText = total > 0 ? ` ${current}/${total}` : "";
+        samVideoState.message = `缓存阶段 · 写入本地蒙版资产${countText}`;
+        updateSamVideoGlobalLoadingOverlay(samVideoState.message, progress);
+      },
+    });
+    result = await hydrateSamVideoObjectExpandDefaults(result);
+    samVideoState.lastResultSummary = summarizeSamVideoResult(result);
+    samVideoState.progress = 1;
+    updateSamVideoGlobalLoadingOverlay("完成阶段：正在写入智能选区轨道", 1);
+    const updateResult = videoStore.updateSamVideoMaskTrackResult(targetMaskId, result);
+    const track = updateResult.mask || null;
+    if (!track) {
+      videoStore.removeMask(targetMaskId);
+      syncTimelineRowsFromStore();
+      const emptyReason =
+        result?.diagnostics?.emptyResultReason ||
+        forwardResponse?.diagnostics?.emptyResultReason ||
+        backwardResponse?.diagnostics?.emptyResultReason ||
+        updateResult.error ||
+        "SAM 文本视频智选未检测到目标。";
+      samVideoState.error = emptyReason;
+      samVideoState.message = emptyReason;
+      await cleanupSamVideoMaskAssetPaths(collectSamVideoMaskAssetPaths(result));
+      $q.notify({ type: "warning", message: emptyReason, timeout: 4500 });
+      return result;
+    }
+    syncTimelineRowsFromStore();
+    samVideoState.lastTrackId = track.id || "";
+    samVideoState.message = `SAM 文本智选已生成 ${track.name}，共 ${result?.frames?.length || 0} 帧`;
+    return result;
+  } catch (error) {
+    if (targetMaskId) {
+      videoStore.removeMask(targetMaskId);
+      syncTimelineRowsFromStore();
+    }
     samVideoState.progress = 0;
     samVideoState.error = error?.message || String(error);
     samVideoState.message = samVideoState.error;
@@ -3079,6 +3589,23 @@ watch(
       samVideoCandidateMenuOpen.value = false;
     }
   }
+);
+
+watch(
+  () => defaultSamVideoModelId.value,
+  (modelId) => {
+    if (!samVideoSessionModelId.value && modelId) {
+      samVideoSessionModelId.value = modelId;
+      return;
+    }
+    if (
+      samVideoSessionModelId.value &&
+      !samVideoModelOptions.value.some((option) => option.value === samVideoSessionModelId.value)
+    ) {
+      samVideoSessionModelId.value = modelId;
+    }
+  },
+  { immediate: true }
 );
 
 const handlePlayPause = () => canvasPlayerRef.value?.togglePlayPause();
@@ -7642,6 +8169,7 @@ onMounted(async () => {
   applyVideoBrushDefaults();
   await restoreVideoUiState(appStateStore.restoreUIState("video") || {});
   await loadVideoModelOptions({ preferredModel: currentModel.value });
+  await refreshSamVideoTextLexicon();
   canPersistVideoUiState = true;
   persistVideoUiStateToAppState();
   await nextTick();
@@ -7856,6 +8384,26 @@ onUnmounted(() => {
 .video-sam-candidate-panel {
   min-width: 260px;
   max-width: min(360px, calc(100vw - 32px));
+}
+
+.video-sam-settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sam-lexicon-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.sam-lexicon-select :deep(.q-field__control) {
+  min-height: 36px;
+}
+
+.sam-cpu-risk-card {
+  width: min(420px, calc(100vw - 32px));
 }
 
 .video-sam-object-expand-input {

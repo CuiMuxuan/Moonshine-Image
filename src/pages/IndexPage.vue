@@ -36,6 +36,7 @@
             :sam-text-supported="samTextSupported"
             :sam-text-available="samTextAvailable"
             :sam-text-model-id="defaultSamTextModelId"
+            :sam-runtime-device="samRuntimeDevice"
             :sam-text-batch-target-count="selectedSamTextBatchFiles.length"
             :sam-text-batch-state="samTextBatchState"
             :sam-image="samImagePayload.image"
@@ -78,6 +79,7 @@ import { useConfigStore } from "src/stores/config";
 import { useAppStateStore } from "src/stores/appState";
 import { useFileManagerStore } from "src/stores/fileManager";
 import { useRuntimeUiStore } from "src/stores/runtimeUi";
+import { useRuntimeDiagnosticsStore } from "src/stores/runtimeDiagnostics";
 import { useModelRegistryStore } from "src/stores/modelRegistry";
 import { useConfiguredShortcuts } from "src/composables/useConfiguredShortcuts";
 import InpaintService from "src/services/ImageProcessingService";
@@ -115,6 +117,7 @@ const configStore = useConfigStore();
 const appStateStore = useAppStateStore();
 const fileManagerStore = useFileManagerStore();
 const runtimeUiStore = useRuntimeUiStore();
+const runtimeDiagnosticsStore = useRuntimeDiagnosticsStore();
 const modelRegistryStore = useModelRegistryStore();
 const MASK_INPAINT_MODEL_IDS = ["lama", "mat"];
 const MAT_CUDA_FALLBACK_MESSAGE = "MAT 需要 CUDA，当前已自动切换为 LaMa。";
@@ -171,8 +174,7 @@ const modelParameterValues = ref({});
 const editorRef = ref(null);
 const isImageLoaded = ref(false);
 const showingOriginal = ref(false);
-const cudaAvailable = ref(false);
-const cudaInfo = ref({});
+const cudaAvailable = computed(() => runtimeDiagnosticsStore.cudaAvailable);
 const dontShowMaxHistoryWarning = ref(false);
 const isElectron = ref(false);
 const resourcesPath = ref("");
@@ -447,23 +449,50 @@ const currentModelRequiresMask = computed(() =>
 const isSmartSelectionMode = computed(
   () => Boolean(showMaskTools.value && currentModelRequiresMask.value && maskMode.value === "smart")
 );
+const samTextSupportedModelIds = ["sam3_1_multiplex", "sam3"];
+const getSamEnabledCapability = (model, ...capabilities) => {
+  const enabledCapabilities = model?.enabledCapabilities;
+  if (!enabledCapabilities || typeof enabledCapabilities !== "object") return null;
+  return capabilities.some((capability) => enabledCapabilities[capability] === true);
+};
+const supportsImagePointBox = (model) => {
+  const capabilityValue = getSamEnabledCapability(model, "imagePoint", "imageBox");
+  if (capabilityValue !== null) return capabilityValue;
+  if (model?.id === "sam3_1_multiplex") return false;
+  return ["sam", "sam2", "sam3"].includes(model?.family);
+};
+const supportsImageText = (model) => {
+  const capabilityValue = getSamEnabledCapability(model, "imageText");
+  if (capabilityValue !== null) return capabilityValue;
+  return model?.family === "sam3" && samTextSupportedModelIds.includes(model?.id);
+};
+const samRuntimeDevice = computed(() => {
+  if (configStore.config.general?.launchMode !== "cuda") {
+    return "cpu";
+  }
+  if (!runtimeDiagnosticsStore.hasCudaStatus || runtimeDiagnosticsStore.cudaRefreshing) {
+    return "cuda";
+  }
+  return cudaAvailable.value ? "cuda" : "cpu";
+});
 const samPointBoxModelOptions = computed(() =>
   modelRegistryStore.installedMaskModels
-    .filter((model) => ["sam", "sam2"].includes(model.family))
+    .filter((model) => supportsImagePointBox(model))
     .map((model) => ({
       label: model.family === "sam2" ? `${model.label || model.id}（SAM2.1）` : model.label || model.id,
       value: model.id,
       family: model.family,
+      enabledCapabilities: model.enabledCapabilities || null,
     }))
 );
 const samPointBoxAvailable = computed(() => samPointBoxModelOptions.value.length > 0);
-const samTextSupportedModelIds = ["sam3_1_multiplex", "sam3"];
 const buildSamTextModelOption = (modelId) => {
   const textModel = modelRegistryStore.maskModels.find((model) => model.id === modelId);
   return {
     label: textModel?.label || modelId,
     value: modelId,
     family: textModel?.family || "sam3",
+    enabledCapabilities: textModel?.enabledCapabilities || null,
   };
 };
 const configuredImageSamModelId = computed(
@@ -482,7 +511,7 @@ const samTextAvailable = computed(() =>
     samCapabilities.value?.text?.enabled ??
     modelRegistryStore.installedMaskModels.some(
       (model) =>
-        model.family === "sam3" &&
+        supportsImageText(model) &&
         samTextSupportedModelIds.includes(model.id)
     )
   )
@@ -504,7 +533,7 @@ const defaultSamTextModelId = computed(() => {
   const capabilityDefault = samCapabilities.value?.text?.defaultModelId;
   if (capabilityDefault) return capabilityDefault;
   const installedIds = modelRegistryStore.installedMaskModels
-    .filter((model) => model.family === "sam3")
+    .filter((model) => supportsImageText(model))
     .map((model) => model.id);
   if (installedIds.includes("sam3_1_multiplex")) return "sam3_1_multiplex";
   if (installedIds.includes("sam3")) return "sam3";
@@ -513,7 +542,7 @@ const defaultSamTextModelId = computed(() => {
 const samTextModelOptions = computed(() => {
   const modelIds = new Set();
   modelRegistryStore.installedMaskModels
-    .filter((model) => model.family === "sam3" && samTextSupportedModelIds.includes(model.id))
+    .filter((model) => supportsImageText(model) && samTextSupportedModelIds.includes(model.id))
     .forEach((model) => modelIds.add(model.id));
   if (samTextSupportedModelIds.includes(defaultSamTextModelId.value)) {
     modelIds.add(defaultSamTextModelId.value);
@@ -799,6 +828,83 @@ const getFileCurrentMaskDataUrl = (file) => {
       : `data:image/png;base64,${mask.data}`;
   }
   return "";
+};
+
+const normalizeImageSourceDataUrl = (source = {}) => {
+  const displayUrl = typeof source?.displayUrl === "string" ? source.displayUrl.trim() : "";
+  if (displayUrl) return displayUrl;
+  const data = typeof source?.data === "string" ? source.data.trim() : "";
+  if (!data) return "";
+  if (data.startsWith("data:")) return data;
+  const mimeType = source.mimeType || source.mime_type || "image/png";
+  return `data:${mimeType};base64,${data}`;
+};
+
+const addSamImageSourceContextIds = (contextIds, source = {}) => {
+  if (!contextIds || !source || typeof source !== "object") return;
+  const type = String(source.type || "").trim();
+  const data = typeof source.data === "string" ? source.data.trim() : "";
+
+  if (type === "path") {
+    if (data) {
+      contextIds.add(`path:${data}`);
+    }
+    return;
+  }
+
+  if (type === "base64") {
+    const dataUrl = normalizeImageSourceDataUrl(source);
+    if (dataUrl) {
+      contextIds.add(`base64:${dataUrl}`);
+    }
+    if (data) {
+      contextIds.add(`base64:${data}`);
+    }
+    return;
+  }
+
+  if (type && data) {
+    contextIds.add(`${type}:${data}`);
+  }
+};
+
+const collectSamContextIdsForFile = (file) => {
+  const contextIds = new Set();
+  const fileId = String(file?.id || "").trim();
+  if (fileId) {
+    contextIds.add(fileId);
+  }
+
+  addSamImageSourceContextIds(contextIds, file?.image);
+  if (Array.isArray(file?.history)) {
+    file.history.forEach((historyItem) => {
+      addSamImageSourceContextIds(contextIds, historyItem);
+    });
+  }
+  return [...contextIds].filter(Boolean);
+};
+
+const collectSamContextIdsForFileIds = (fileIds = []) => {
+  const contextIds = new Set();
+  fileIds.forEach((fileId) => {
+    const file = fileManagerStore.files.find((item) => item.id === fileId);
+    collectSamContextIdsForFile(file || { id: fileId }).forEach((contextId) => {
+      contextIds.add(contextId);
+    });
+  });
+  return [...contextIds].filter(Boolean);
+};
+
+const collectProtectedSamContextIds = (processedFileIds = []) => {
+  const processedIdSet = new Set(processedFileIds.map((fileId) => String(fileId || "").trim()));
+  const protectedContextIds = new Set();
+  fileManagerStore.files.forEach((file) => {
+    if (!file?.id || processedIdSet.has(file.id)) return;
+    collectSamContextIdsForFile(file).forEach((contextId) => {
+      protectedContextIds.add(contextId);
+    });
+  });
+  return protectedContextIds;
 };
 
 const resolveSamTextImageInput = async (file, context) => {
@@ -1175,25 +1281,27 @@ const restoreMaskUiState = (maskUiState = {}) => {
   setMaskDrawingMode(false, { persist: false });
 };
 
-const clearMasksForProcessedFileIds = (processedFileIds = []) => {
+const clearMasksForProcessedFileIds = async (processedFileIds = []) => {
   const uniqueIds = [...new Set(processedFileIds.filter(Boolean))];
   const currentFileId = fileManagerStore.currentFile?.id || "";
   const currentProcessed = uniqueIds.includes(currentFileId);
+  const contextIds = collectSamContextIdsForFileIds(uniqueIds);
+  const protectedContextIds = collectProtectedSamContextIds(uniqueIds);
+  const removableContextIds = contextIds.filter((contextId) => !protectedContextIds.has(contextId));
+
+  if (currentProcessed) {
+    await editorRef.value?.clearSamContextSession?.(currentFileId, { emit: false });
+  }
+
+  const sessionStore = getSamImageSessionStore();
+  removableContextIds.forEach((contextId) => {
+    clearSamRenderCacheContext(contextId, sessionStore);
+  });
+  deleteSamImageSessions(removableContextIds);
+
   uniqueIds.forEach((fileId) => {
     fileManagerStore.updateFileMask(fileId, null);
   });
-
-  if (currentProcessed) {
-    void editorRef.value?.clearSamContextSession?.(currentFileId);
-  }
-
-  const backgroundIds = currentProcessed
-    ? uniqueIds.filter((fileId) => fileId !== currentFileId)
-    : uniqueIds;
-  backgroundIds.forEach((fileId) => {
-    clearSamRenderCacheContext(fileId, getSamImageSessionStore());
-  });
-  deleteSamImageSessions(backgroundIds);
 };
 
 const getImageFileIds = () =>
@@ -1247,7 +1355,7 @@ const handleLeftFileVisibleRangeChange = (range = {}) => {
 
 const finalizeSuccessfulMaskRun = async (maskUiState, options = {}) => {
   if (Array.isArray(options.processedFileIds)) {
-    clearMasksForProcessedFileIds(options.processedFileIds);
+    await clearMasksForProcessedFileIds(options.processedFileIds);
   }
   await nextTick();
   restoreMaskUiState(maskUiState);
@@ -2231,8 +2339,7 @@ const openCurrentSavePath = async () => {
 };
 
 const handleCudaStatusChanged = (status) => {
-  cudaAvailable.value = status.available;
-  cudaInfo.value = status.info;
+  runtimeDiagnosticsStore.setCudaStatus(status?.info || {}, status?.sessionKey || "");
 };
 // 撤销处理
 const undoProcessing = () => {
@@ -2387,6 +2494,38 @@ const registerImageE2ETestBridge = () => {
       await editorRef.value?.clearSamContextSession?.(contextId);
       return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
     },
+    runSamTextBatchPrediction: async (payload = {}) => {
+      await runSamTextBatchPrediction(payload);
+      return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
+    },
+    getSamContextIdsForFile: (fileId) => {
+      const file = fileManagerStore.files.find((item) => item.id === fileId);
+      return collectSamContextIdsForFile(file || { id: fileId });
+    },
+    setSamSession: (contextId, session = {}) => {
+      const normalizedContextId = String(contextId || "").trim();
+      if (!normalizedContextId) return false;
+      getSamImageSessionStore().set(normalizedContextId, session);
+      return true;
+    },
+    hasSamSession: (contextId) =>
+      getSamImageSessionStore().has(String(contextId || "").trim()),
+    getCurrentCanvasMaskDataUrl: () => editorRef.value?.getMaskData?.() || "",
+    getSamSessionSummary: (contextId) => {
+      const normalizedContextId = String(contextId || "").trim();
+      const session = getSamImageSessionStore().get(normalizedContextId);
+      return {
+        exists: Boolean(session),
+        candidateCount: Array.isArray(session?.candidates) ? session.candidates.length : 0,
+        enabledCandidateCount: Array.isArray(session?.candidates)
+          ? session.candidates.filter((candidate) => candidate?.enabled && candidate?.mask).length
+          : 0,
+        hasBaseSnapshot: Boolean(session?.baseSnapshot),
+        hasBaseSnapshotDataUrl: Boolean(session?.baseSnapshotDataUrl),
+        width: Number(session?.width || 0),
+        height: Number(session?.height || 0),
+      };
+    },
     getSamRenderStats: () => editorRef.value?.getSamRenderStats?.() || null,
     resetSamRenderStats: () => editorRef.value?.resetSamRenderStats?.(),
     getSamRenderCacheSnapshot: () => editorRef.value?.getSamRenderCacheSnapshot?.() || null,
@@ -2412,6 +2551,7 @@ const registerImageE2ETestBridge = () => {
       samTextSupported: samTextSupported.value,
       samTextAvailable: samTextAvailable.value,
       defaultSamTextModelId: defaultSamTextModelId.value,
+      samRuntimeDevice: samRuntimeDevice.value,
       selectedSamTextBatchCount: selectedSamTextBatchFiles.value.length,
       samTextBatchState: { ...samTextBatchState.value },
       showMaskTools: showMaskTools.value,

@@ -174,8 +174,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
-    description: "SAM2 propagation polls real-progress jobs and writes bidirectional results back into the selected SAM video track",
-    pattern: /(?=[\s\S]*runSamVideoSelectionFromMaskList[\s\S]*createEmptySamVideoMaskTrack)(?=[\s\S]*const targetMaskId = videoStore\.selectedMaskId)(?=[\s\S]*runSamVideoPropagationJob[\s\S]*reverse: false)(?=[\s\S]*runSamVideoPropagationJob[\s\S]*reverse: true)(?=[\s\S]*getSamVideoPropagationJobResult)(?=[\s\S]*updateSamVideoMaskTrackResult\(targetMaskId, result\))(?=[\s\S]*SAM2\.1 已更新)/,
+    description: "SAM video propagation polls real-progress jobs and writes bidirectional results back into the selected SAM video track",
+    pattern: /(?=[\s\S]*runSamVideoSelectionFromMaskList[\s\S]*createEmptySamVideoMaskTrack)(?=[\s\S]*const targetMaskId = videoStore\.selectedMaskId)(?=[\s\S]*runSamVideoPropagationJob[\s\S]*reverse: false)(?=[\s\S]*runSamVideoPropagationJob[\s\S]*reverse: true)(?=[\s\S]*getSamVideoPropagationJobResult)(?=[\s\S]*updateSamVideoMaskTrackResult\(targetMaskId, result\))(?=[\s\S]*SAM 已更新)/,
   });
   assertPattern({
     file: "src/components/video/ResourceManage.vue",
@@ -389,7 +389,7 @@ function runAssertions() {
   assertPattern({
     file: "src/shared/appConfigSchema.js",
     description: "Shared config schema owns SAM render cache defaults",
-    pattern: /CONFIG_SCHEMA_VERSION = 8[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4/,
+    pattern: /CONFIG_SCHEMA_VERSION = 8[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4[\s\S]*samReleaseBeforeProcessing:\s*true/,
   });
   assertPattern({
     file: "src/config/ConfigManager.js",
@@ -424,12 +424,12 @@ function runAssertions() {
   assertPattern({
     file: "src/config/ConfigManager.js",
     description: "Config manager validates and normalizes SAM render cache settings",
-    pattern: /SAM 渲染缓存图片数量[\s\S]*SAM 渲染缓存内存上限[\s\S]*SAM 渲染缓存大图长边阈值[\s\S]*SAM 相邻图片预热数量[\s\S]*samRenderCacheEnabled:\s*normalizeBoolean[\s\S]*samRenderCacheMaxContexts:\s*normalizeInteger[\s\S]*samRenderCacheNeighborPreloadCount:\s*normalizeInteger/,
+    pattern: /SAM 渲染缓存图片数量[\s\S]*SAM 渲染缓存内存上限[\s\S]*SAM 渲染缓存大图长边阈值[\s\S]*SAM 相邻图片预热数量[\s\S]*samReleaseBeforeProcessing[\s\S]*samRenderCacheEnabled:\s*normalizeBoolean[\s\S]*samRenderCacheMaxContexts:\s*normalizeInteger[\s\S]*samReleaseBeforeProcessing:\s*normalizeBoolean[\s\S]*samRenderCacheNeighborPreloadCount:\s*normalizeInteger/,
   });
   assertPattern({
     file: "src/components/global/GlobalSettings.vue",
     description: "Global settings exposes SAM smart selection render cache controls in image processing settings",
-    pattern: /智能选区渲染缓存[\s\S]*global-settings-sam-render-cache-enabled[\s\S]*global-settings-sam-lazy-render-disabled-candidates[\s\S]*global-settings-sam-preload-visible-list[\s\S]*global-settings-sam-render-cache-max-contexts[\s\S]*global-settings-sam-neighbor-preload-count/,
+    pattern: /智能选区渲染缓存[\s\S]*global-settings-sam-render-cache-enabled[\s\S]*global-settings-sam-lazy-render-disabled-candidates[\s\S]*global-settings-sam-preload-visible-list[\s\S]*global-settings-sam-release-before-processing[\s\S]*global-settings-sam-render-cache-max-contexts[\s\S]*global-settings-sam-neighbor-preload-count/,
   });
   assertPattern({
     file: "src/stores/appState.js",
@@ -584,6 +584,21 @@ function runAssertions() {
     pattern: /tile_size:\s*int\s*=\s*Field\(384,\s*ge=1\)[\s\S]*tile_batch:\s*int\s*=\s*Field\(4,\s*ge=1,\s*le=32\)/,
   });
   assertPattern({
+    file: "server/moonshine_server/schema.py",
+    description: "Backend config carries SAM release-before-processing policy",
+    pattern: /class ApiConfig\(BaseModel\):[\s\S]*sam_release_before_processing:\s*bool\s*=\s*True/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/cli.py",
+    description: "Backend CLI exposes SAM release-before-processing switch",
+    pattern: /sam_release_before_processing:\s*bool\s*=\s*Option\([\s\S]*Release cached SAM predictors before running image\/video processing models[\s\S]*sam_release_before_processing=sam_release_before_processing/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Electron passes SAM release-before-processing policy to backend startup",
+    pattern: /samReleaseBeforeProcessing[\s\S]*--no-sam-release-before-processing[\s\S]*--sam-release-before-processing/,
+  });
+  assertPattern({
     file: "server/moonshine_server/api.py",
     description: "Backend video batch API has slbr branch",
     pattern: /if model_id == "slbr":[\s\S]*infer_bgr\(/,
@@ -597,6 +612,26 @@ function runAssertions() {
     file: "server/moonshine_server/moonshine/model_registry.py",
     description: "Model registry normalizes capability scores on a 10-point decimal scale",
     pattern: /round\(max\(0\.0,\s*min\(10\.0,\s*value\)\),\s*1\)/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/moonshine/model_registry.py",
+    description: "SAM registry exposes fine-grained official and enabled capabilities for image and video adapters",
+    pattern: /(?=[\s\S]*SAM_FINE_GRAINED_CAPABILITY_KEYS\s*=\s*\()(?=[\s\S]*"imagePoint")(?=[\s\S]*"imageBox")(?=[\s\S]*"imageText")(?=[\s\S]*"videoPoint")(?=[\s\S]*"videoBox")(?=[\s\S]*"videoText")(?=[\s\S]*"videoPropagate")(?=[\s\S]*SAM3_OFFICIAL_CAPABILITIES)(?=[\s\S]*SAM3_ENABLED_CAPABILITIES)(?=[\s\S]*officialCapabilities)(?=[\s\S]*enabledCapabilities)(?=[\s\S]*capabilityNotes)[\s\S]*/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/moonshine/sam_service.py",
+    description: "SAM capability API filters point, text, and video models by fine-grained enabledCapabilities",
+    pattern: /(?=[\s\S]*def capabilities\(self\) -> dict:)(?=[\s\S]*has_enabled_capability)(?=[\s\S]*"imagePoint", "imageBox")(?=[\s\S]*"videoPropagate")(?=[\s\S]*"videoPoint", "videoBox", "videoText")(?=[\s\S]*"imageText")[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/IndexPage.vue",
+    description: "Image SAM model options read fine-grained imagePoint/imageBox/imageText capability flags with legacy fallback",
+    pattern: /(?=[\s\S]*getSamEnabledCapability)(?=[\s\S]*supportsImagePointBox)(?=[\s\S]*"imagePoint", "imageBox")(?=[\s\S]*supportsImageText)(?=[\s\S]*"imageText")[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video SAM default model selection reads fine-grained video capability flags with legacy fallback",
+    pattern: /(?=[\s\S]*supportsVideoSmartSelection)(?=[\s\S]*"videoPropagate")(?=[\s\S]*"videoPoint", "videoBox", "videoText")(?=[\s\S]*samVideoModelOptions)(?=[\s\S]*defaultSamVideoModelId)[\s\S]*/,
   });
 
   logSection("Fullscreen Drawing Guards");

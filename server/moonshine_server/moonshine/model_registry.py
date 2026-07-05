@@ -24,6 +24,85 @@ MODEL_CAPABILITY_KEYS = (
     "stability",
 )
 
+SAM_FINE_GRAINED_CAPABILITY_KEYS = (
+    "imagePoint",
+    "imageBox",
+    "imageText",
+    "videoPoint",
+    "videoBox",
+    "videoText",
+    "videoPropagate",
+)
+
+SAM_CAPABILITY_EMPTY = {key: False for key in SAM_FINE_GRAINED_CAPABILITY_KEYS}
+SAM1_IMAGE_CAPABILITIES = {
+    **SAM_CAPABILITY_EMPTY,
+    "imagePoint": True,
+    "imageBox": True,
+}
+SAM2_1_CAPABILITIES = {
+    **SAM1_IMAGE_CAPABILITIES,
+    "videoPoint": True,
+    "videoBox": True,
+    "videoPropagate": True,
+}
+SAM3_OFFICIAL_CAPABILITIES = {
+    **SAM_CAPABILITY_EMPTY,
+    "imagePoint": True,
+    "imageBox": True,
+    "imageText": True,
+    "videoPoint": True,
+    "videoBox": True,
+    "videoText": True,
+    "videoPropagate": True,
+}
+SAM3_ENABLED_CAPABILITIES = {
+    **SAM_CAPABILITY_EMPTY,
+    "imagePoint": True,
+    "imageBox": True,
+    "imageText": True,
+    "videoBox": True,
+    "videoText": True,
+    "videoPropagate": True,
+}
+SAM3_1_MULTIPLEX_ENABLED_CAPABILITIES = {
+    **SAM3_ENABLED_CAPABILITIES,
+    "imagePoint": False,
+    "imageBox": False,
+}
+SAM3_CAPABILITY_NOTES = {
+    "imagePoint": (
+        "官方 SAM1-task 示例通过 build_sam3_image_model(enable_inst_interactivity=True) "
+        "和 model.predict_inst(point_coords=...) 支持图片点选；本项目通过独立 SAM3 图片 adapter 接入。"
+    ),
+    "imageBox": (
+        "官方图片示例通过 Sam3Processor.add_geometric_prompt() 支持归一化框选；"
+        "本项目点/框统一通过 SAM3 instance interactivity adapter 接入。"
+    ),
+    "videoPoint": (
+        "官方视频示例中的点提示需要 obj_id，更适合作为已有对象恢复/修正；"
+        "本轮不开放 SAM3/SAM3.1 点选新建对象入口。"
+    ),
+    "videoBox": (
+        "官方视频 predictor 的 add_prompt 支持 bounding_boxes；本项目通过独立 SAM3 视频 adapter 接入。"
+    ),
+    "videoText": (
+        "官方视频 predictor 的 add_prompt 支持 text；本项目通过独立 SAM3 视频 adapter 接入。"
+    ),
+    "videoPropagate": "官方视频 predictor 支持传播；本项目通过任务式视频传播接口接入。",
+}
+SAM3_1_MULTIPLEX_CAPABILITY_NOTES = {
+    **SAM3_CAPABILITY_NOTES,
+    "imagePoint": (
+        "sam3.1_multiplex.pt 当前缺少图片 instance interactivity 权重，"
+        "不开放图片点选入口；图片点选请使用 SAM3/SAM2.1/SAM1。"
+    ),
+    "imageBox": (
+        "sam3.1_multiplex.pt 当前缺少图片 instance interactivity 权重，"
+        "不开放图片框选入口；图片框选请使用 SAM3/SAM2.1/SAM1。"
+    ),
+}
+
 HF_MODEL_REPO_BASE_URL = "https://huggingface.co/CuiMuxuan/moonshine-models/resolve/main"
 MANUAL_MODEL_SOURCE_URL = "https://pan.quark.cn/s/2e51ec70c7b9"
 MANUAL_MODEL_INSTALL_HINT = (
@@ -474,7 +553,7 @@ MODEL_MANIFEST = (
         "size": 156008466,
         "sha256": "7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69",
         "recommendedDevice": "cuda",
-        "recommendedVram": 4096,
+        "recommendedVram": 1024,
         "runCapabilities": {
             "scopes": ["currentImage", "videoFrames"],
             "maskPrompts": ["point", "box", "mask"],
@@ -529,7 +608,7 @@ MODEL_MANIFEST = (
         "size": 184416285,
         "sha256": "6d1aa6f30de5c92224f8172114de081d104bbd23dd9dc5c58996f0cad5dc4d38",
         "recommendedDevice": "cuda",
-        "recommendedVram": 6144,
+        "recommendedVram": 2048,
         "runCapabilities": {
             "scopes": ["currentImage", "videoFrames"],
             "maskPrompts": ["point", "box", "mask"],
@@ -584,7 +663,7 @@ MODEL_MANIFEST = (
         "size": 323606802,
         "sha256": "a2345aede8715ab1d5d31b4a509fb160c5a4af1970f199d9054ccfb746c004c5",
         "recommendedDevice": "cuda",
-        "recommendedVram": 8192,
+        "recommendedVram": 4096,
         "runCapabilities": {
             "scopes": ["currentImage", "videoFrames"],
             "maskPrompts": ["point", "box", "mask"],
@@ -639,7 +718,7 @@ MODEL_MANIFEST = (
         "size": 898083611,
         "sha256": "2647878d5dfa5098f2f8649825738a9345572bae2d4350a2468587ece47dd318",
         "recommendedDevice": "cuda",
-        "recommendedVram": 12288,
+        "recommendedVram": 6144,
         "runCapabilities": {
             "scopes": ["currentImage", "videoFrames"],
             "maskPrompts": ["point", "box", "mask"],
@@ -698,7 +777,7 @@ MODEL_MANIFEST = (
         "recommendedVram": 16384,
         "runCapabilities": {
             "scopes": ["currentImage", "selectedImages"],
-            "maskPrompts": ["text"],
+            "maskPrompts": ["point", "box", "text"],
             "languages": ["zh-CN", "en"],
             "outputRequired": False,
         },
@@ -755,7 +834,7 @@ MODEL_MANIFEST = (
         "recommendedVram": 16384,
         "runCapabilities": {
             "scopes": ["currentImage", "selectedImages", "videoFrames"],
-            "maskPrompts": ["text", "point"],
+            "maskPrompts": ["point", "box", "text"],
             "languages": ["zh-CN", "en"],
             "outputRequired": False,
         },
@@ -789,6 +868,52 @@ def _normalize_capabilities(capabilities: Optional[dict]) -> dict:
             value = 0.0
         result[key] = round(max(0.0, min(10.0, value)), 1)
     return result
+
+
+def _normalize_sam_capabilities(capabilities: Optional[dict]) -> dict:
+    source = capabilities or {}
+    return {
+        key: bool(source.get(key, False))
+        for key in SAM_FINE_GRAINED_CAPABILITY_KEYS
+    }
+
+
+def _sam_model_capability_metadata(model: dict) -> dict:
+    family = str(model.get("family") or "").lower()
+    if family == "sam":
+        return {
+            "officialCapabilities": _normalize_sam_capabilities(SAM1_IMAGE_CAPABILITIES),
+            "enabledCapabilities": _normalize_sam_capabilities(SAM1_IMAGE_CAPABILITIES),
+            "capabilityNotes": {},
+        }
+    if family == "sam2":
+        return {
+            "officialCapabilities": _normalize_sam_capabilities(SAM2_1_CAPABILITIES),
+            "enabledCapabilities": _normalize_sam_capabilities(SAM2_1_CAPABILITIES),
+            "capabilityNotes": {},
+        }
+    if family == "sam3":
+        is_sam3_1_multiplex = str(model.get("id") or "") == "sam3_1_multiplex"
+        enabled_capabilities = (
+            SAM3_1_MULTIPLEX_ENABLED_CAPABILITIES
+            if is_sam3_1_multiplex
+            else SAM3_ENABLED_CAPABILITIES
+        )
+        capability_notes = (
+            SAM3_1_MULTIPLEX_CAPABILITY_NOTES
+            if is_sam3_1_multiplex
+            else SAM3_CAPABILITY_NOTES
+        )
+        return {
+            "officialCapabilities": _normalize_sam_capabilities(SAM3_OFFICIAL_CAPABILITIES),
+            "enabledCapabilities": _normalize_sam_capabilities(enabled_capabilities),
+            "capabilityNotes": {
+                key: value
+                for key, value in capability_notes.items()
+                if key in SAM_FINE_GRAINED_CAPABILITY_KEYS
+            },
+        }
+    return {}
 
 
 def _safe_relative_path(value: str) -> Path:
@@ -965,6 +1090,7 @@ def build_model_status(model_dir: Path, cuda_info: Optional[dict] = None) -> lis
 
         item = {
             **manifest_item,
+            **_sam_model_capability_metadata(manifest_item),
             "license": manifest_item.get("license") or _model_license_metadata(manifest_item),
             "files": file_statuses,
             "installed": installed,

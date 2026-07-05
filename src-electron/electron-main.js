@@ -1984,6 +1984,10 @@ function sanitizeAppConfig(config = {}) {
     String(merged.masking?.videoSmartSelectionDefaultModel || "").trim() ||
     String(merged.masking?.defaultSam2Model || "").trim() ||
     DEFAULT_MASKING_CONFIG.videoSmartSelectionDefaultModel;
+  merged.masking.samReleaseBeforeProcessing = normalizeBoolean(
+    merged.masking?.samReleaseBeforeProcessing,
+    DEFAULT_MASKING_CONFIG.samReleaseBeforeProcessing
+  );
   merged.shortcuts = normalizeShortcutConfig(merged.shortcuts);
   if (isLegacyDefaultModelDir(merged.general.modelDir)) {
     merged.general.modelDir = getDefaultModelDir();
@@ -2060,7 +2064,8 @@ function validateConfig(config) {
       typeof config.masking.defaultSam2Model !== "string" ||
       typeof config.masking.defaultSam3Model !== "string" ||
       typeof config.masking.imageSmartSelectionDefaultModel !== "string" ||
-      typeof config.masking.videoSmartSelectionDefaultModel !== "string"
+      typeof config.masking.videoSmartSelectionDefaultModel !== "string" ||
+      typeof config.masking.samReleaseBeforeProcessing !== "boolean"
     ) {
       return false;
     }
@@ -4438,6 +4443,11 @@ ipcMain.handle("start-backend-service", async (event, config) => {
       `--device=${config.device}`,
       `--port=${portResolution.port}`,
     ];
+    args.push(
+      config?.samReleaseBeforeProcessing === false
+        ? "--no-sam-release-before-processing"
+        : "--sam-release-before-processing"
+    );
 
     if (isBundledBackendMode(global.projectPath)) {
       const bundledResult = await ensureBundledRuntimeReady((message, type = "info") => {

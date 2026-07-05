@@ -36,6 +36,7 @@
         :sam-text-supported="samTextSupported"
         :sam-text-available="samTextAvailable"
         :sam-text-model-id="samTextModelId"
+        :sam-runtime-device="samRuntimeDevice"
         :sam-text-batch-target-count="samTextBatchTargetCount"
         :sam-text-batch-state="samTextBatchState"
         :sam-image="samImage"
@@ -134,6 +135,10 @@ const props = defineProps({
   samTextModelId: {
     type: String,
     default: "sam3",
+  },
+  samRuntimeDevice: {
+    type: String,
+    default: "cpu",
   },
   samTextBatchTargetCount: {
     type: Number,
@@ -514,8 +519,8 @@ provide(
     isMaskerReady: () => Boolean(maskerRef.value?.isReady?.()),
     appendExternalSamTextResult: (payload) =>
       maskerRef.value?.appendExternalSamTextResult?.(payload),
-    clearSamContextSession: (contextId) =>
-      maskerRef.value?.clearSamContextSession?.(contextId),
+    clearSamContextSession: (contextId, options) =>
+      maskerRef.value?.clearSamContextSession?.(contextId, options),
     scheduleSamRenderPreloadFlush: () =>
       maskerRef.value?.scheduleSamRenderPreloadFlush?.(),
     flushSamRenderPreloadQueue: (options) =>
@@ -523,6 +528,7 @@ provide(
     getSamRenderStats: () => maskerRef.value?.getSamRenderStats?.(),
     resetSamRenderStats: () => maskerRef.value?.resetSamRenderStats?.(),
     getSamRenderCacheSnapshot: () => maskerRef.value?.getSamRenderCacheSnapshot?.(),
+    getMaskData: () => maskerRef.value?.getMaskData?.() || "",
   })
 );
 
@@ -535,8 +541,8 @@ defineExpose({
   isMaskerReady: () => Boolean(maskerRef.value?.isReady?.()),
   appendExternalSamTextResult: (payload) =>
     maskerRef.value?.appendExternalSamTextResult?.(payload),
-  clearSamContextSession: (contextId) =>
-    maskerRef.value?.clearSamContextSession?.(contextId),
+  clearSamContextSession: (contextId, options) =>
+    maskerRef.value?.clearSamContextSession?.(contextId, options),
   scheduleSamRenderPreloadFlush: () =>
     maskerRef.value?.scheduleSamRenderPreloadFlush?.(),
   flushSamRenderPreloadQueue: (options) =>
@@ -544,6 +550,7 @@ defineExpose({
   getSamRenderStats: () => maskerRef.value?.getSamRenderStats?.(),
   resetSamRenderStats: () => maskerRef.value?.resetSamRenderStats?.(),
   getSamRenderCacheSnapshot: () => maskerRef.value?.getSamRenderCacheSnapshot?.(),
+  getMaskData: () => maskerRef.value?.getMaskData?.() || "",
 });
 </script>
 

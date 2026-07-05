@@ -60,6 +60,11 @@ const buildSamVideoPayload = (request = {}) => {
     points: normalizePoints(request.points),
     box: normalizeBox(request.box),
     objects,
+    text: String(request.text || "").trim() || null,
+    language: request.language || "auto",
+    prompt_source: request.prompt_source || request.promptSource || "manual",
+    prompt_color: request.prompt_color || request.promptColor || null,
+    prompt_noun: request.prompt_noun || request.promptNoun || null,
     max_frames: request.max_frames ?? request.maxFrames ?? null,
     reverse: Boolean(request.reverse),
     offload_video_to_cpu:
@@ -118,7 +123,7 @@ export const propagateSamVideo = async (request = {}) => {
     });
   } catch (error) {
     if (error.response || error.request) {
-      throw new Error(classifyMoonshineError(error, "SAM2.1 视频传播失败").message);
+      throw new Error(classifyMoonshineError(error, "SAM 视频传播失败").message);
     }
     throw error;
   }
@@ -137,7 +142,7 @@ export const createSamVideoPropagationJob = async (request = {}) => {
     );
   } catch (error) {
     if (error.response || error.request) {
-      throw new Error(classifyMoonshineError(error, "启动 SAM2.1 视频传播任务失败").message);
+      throw new Error(classifyMoonshineError(error, "启动 SAM 视频传播任务失败").message);
     }
     throw error;
   }
@@ -148,7 +153,7 @@ export const getSamVideoPropagationJob = async (taskId) => {
     return await api.get(`/api/v1/moonshine/sam/video/propagate/jobs/${encodeURIComponent(taskId)}`);
   } catch (error) {
     if (error.response || error.request) {
-      throw new Error(classifyMoonshineError(error, "读取 SAM2.1 视频传播进度失败").message);
+      throw new Error(classifyMoonshineError(error, "读取 SAM 视频传播进度失败").message);
     }
     throw error;
   }
@@ -161,7 +166,7 @@ export const getSamVideoPropagationJobResult = async (taskId) => {
     );
   } catch (error) {
     if (error.response || error.request) {
-      throw new Error(classifyMoonshineError(error, "读取 SAM2.1 视频传播结果失败").message);
+      throw new Error(classifyMoonshineError(error, "读取 SAM 视频传播结果失败").message);
     }
     throw error;
   }
@@ -174,7 +179,7 @@ export const cancelSamVideoPropagationJob = async (taskId) => {
     );
   } catch (error) {
     if (error.response || error.request) {
-      throw new Error(classifyMoonshineError(error, "取消 SAM2.1 视频传播任务失败").message);
+      throw new Error(classifyMoonshineError(error, "取消 SAM 视频传播任务失败").message);
     }
     throw error;
   }
@@ -186,7 +191,7 @@ export const predictSamText = async (request = {}) => {
     const payload = {
       image: normalizeImagePayload(request.image, imageType),
       image_type: imageType,
-      model_id: request.model_id || request.modelId || "sam3",
+      model_id: request.model_id || request.modelId || "sam3_1_multiplex",
       text: String(request.text || "").trim(),
       language: request.language || "auto",
       prompt_source: request.prompt_source || request.promptSource || "manual",

@@ -47,6 +47,12 @@ const torchVersion = "2.11.0";
 const torchvisionVersion = "0.26.0";
 const defaultCu126TorchWheelPath =
   "C:\\Users\\cjh02\\Downloads\\torch-2.11.0+cu126-cp312-cp312-win_amd64.whl";
+const condaPackPythonWarnings = [
+  process.env.PYTHONWARNINGS,
+  "ignore:pkg_resources is deprecated as an API:UserWarning",
+]
+  .filter(Boolean)
+  .join(",");
 const torchFlavorConfig = {
   cpu: {
     indexUrl: "https://download.pytorch.org/whl/cpu",
@@ -650,7 +656,11 @@ function materializeRuntimeDirectory() {
     "--output",
     runtimeEnvPath,
     "--force",
-  ]);
+  ], {
+    env: {
+      PYTHONWARNINGS: condaPackPythonWarnings,
+    },
+  });
 
   const expectedPythonPath = path.join(
     runtimeEnvPath,

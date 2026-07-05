@@ -83,6 +83,11 @@ export default defineConfig((ctx) => {
       // distDir
       // viteVuePluginOptions: {},
       extendViteConf(viteConf) {
+        viteConf.build = {
+          ...(viteConf.build || {}),
+          chunkSizeWarningLimit: 600,
+        };
+
         if (!ctx.dev) {
           return;
         }

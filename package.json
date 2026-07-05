@@ -60,6 +60,17 @@
     "postcss": "^8.4.14",
     "vite-plugin-checker": "^0.8.0"
   },
+  "overrides": {
+    "anymatch": {
+      "picomatch": "2.3.2"
+    },
+    "micromatch": {
+      "picomatch": "2.3.2"
+    },
+    "readdirp": {
+      "picomatch": "2.3.2"
+    }
+  },
   "engines": {
     "node": "^28 || ^26 || ^24 || ^22 || ^20 || ^18",
     "npm": ">= 6.13.4"

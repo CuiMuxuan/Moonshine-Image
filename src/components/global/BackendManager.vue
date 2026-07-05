@@ -608,7 +608,9 @@ const backendConfig = reactive({
   device: configStore.config.general.launchMode || "cuda",
   model: configStore.config.general.defaultModel || "lama",
   projectPath: configStore.config.general.backendProjectPath || "",
-  modelDir: configStore.config.general.modelDir || ""
+  modelDir: configStore.config.general.modelDir || "",
+  samReleaseBeforeProcessing:
+    configStore.config.masking?.samReleaseBeforeProcessing !== false,
 });
 
 // 选项
@@ -1293,6 +1295,8 @@ watch(
     backendConfig.model = newConfig.general.defaultModel || "lama";
     backendConfig.projectPath = newConfig.general.backendProjectPath || "";
     backendConfig.modelDir = newConfig.general.modelDir || "";
+    backendConfig.samReleaseBeforeProcessing =
+      newConfig.masking?.samReleaseBeforeProcessing !== false;
     fallbackMatDefaultModelIfNeeded();
   },
   { deep: true }
@@ -2125,6 +2129,7 @@ const startService = async () => {
         device: backendConfig.device,
         model: backendConfig.model,
         modelDir: backendConfig.modelDir || "",
+        samReleaseBeforeProcessing: backendConfig.samReleaseBeforeProcessing,
       }
     );
 

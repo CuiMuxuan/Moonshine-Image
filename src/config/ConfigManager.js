@@ -221,9 +221,10 @@ export class ConfigManager {
       "samRenderCacheEnabled",
       "samLazyRenderDisabledCandidates",
       "samRenderCachePreloadVisibleList",
+      "samReleaseBeforeProcessing",
     ].forEach((key) => {
       if (config.masking?.[key] !== undefined && typeof config.masking[key] !== "boolean") {
-        errors.push("SAM 渲染缓存开关必须是布尔值。");
+        errors.push("SAM 开关配置必须是布尔值。");
       }
     });
 
@@ -556,6 +557,10 @@ export class ConfigManager {
       samRenderCachePreloadVisibleList: normalizeBoolean(
         merged.masking?.samRenderCachePreloadVisibleList,
         DEFAULT_MASKING_CONFIG.samRenderCachePreloadVisibleList
+      ),
+      samReleaseBeforeProcessing: normalizeBoolean(
+        merged.masking?.samReleaseBeforeProcessing,
+        DEFAULT_MASKING_CONFIG.samReleaseBeforeProcessing
       ),
       samRenderCacheNeighborPreloadCount: normalizeInteger(
         merged.masking?.samRenderCacheNeighborPreloadCount,

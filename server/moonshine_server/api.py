@@ -339,21 +339,14 @@ class Api:
         runtime_flavor = str(os.getenv("MOONSHINE_RUNTIME_FLAVOR") or "external").strip().lower()
         model_bundle = str(os.getenv("MOONSHINE_MODEL_BUNDLE") or "external-models").strip().lower()
         packaged_runtime = os.getenv("MOONSHINE_PACKAGED_RUNTIME") in {"1", "true", "yes"}
-        cuda_ready = bool(cuda_info.get("cuda_available")) and cuda_info.get("cuda_compatible") is not False
-        sam3_runtime_supported = runtime_flavor in {"cu126", "cu130"} or (
-            runtime_flavor == "external" and cuda_ready
-        )
+        sam3_runtime_supported = runtime_flavor in {"external", "cpu", "cu126", "cu130"}
         return {
             "runtimeFlavor": runtime_flavor,
             "modelBundle": model_bundle,
             "packagedRuntime": packaged_runtime,
             "pythonTarget": "3.12",
             "sam3TextSupportedByPackage": sam3_runtime_supported,
-            "sam3TextPackageReason": (
-                "SAM3 文本智能选区仅在 CUDA 运行时中作为高级能力开放。"
-                if runtime_flavor == "cpu"
-                else ""
-            ),
+            "sam3TextPackageReason": "" if sam3_runtime_supported else "当前运行包未声明 SAM3/SAM3.1 文本智能选区能力。",
             "externalModels": model_bundle == "external-models",
             "bundledModels": model_bundle == "bundled-models",
         }
@@ -454,12 +447,10 @@ class Api:
             )
         except SamServiceError as error:
             raise HTTPException(status_code=422, detail=str(error))
-        finally:
-            torch_gc()
         return JSONResponse(content=jsonable_encoder(result))
 
     def api_moonshine_sam_video_propagate(self, req: MoonshineSamVideoPropagateRequest):
-        """Run SAM2 video propagation on a JPEG frame directory or local video path."""
+        """Run SAM video propagation on a JPEG frame directory or local video path."""
         try:
             result = self._get_sam_service().propagate_video(
                 frame_dir=req.frame_dir,
@@ -471,6 +462,11 @@ class Api:
                 points=req.points,
                 box=req.box,
                 objects=req.objects,
+                text=req.text,
+                language=req.language,
+                prompt_source=req.prompt_source,
+                prompt_color=req.prompt_color,
+                prompt_noun=req.prompt_noun,
                 max_frames=req.max_frames,
                 reverse=req.reverse,
                 offload_video_to_cpu=req.offload_video_to_cpu,
@@ -480,8 +476,6 @@ class Api:
             )
         except SamServiceError as error:
             raise HTTPException(status_code=422, detail=str(error))
-        finally:
-            torch_gc()
         return JSONResponse(content=jsonable_encoder(result))
 
     def _run_sam_video_propagate_task(self, task_id: str):
@@ -500,6 +494,11 @@ class Api:
                 points=req.points,
                 box=req.box,
                 objects=req.objects,
+                text=req.text,
+                language=req.language,
+                prompt_source=req.prompt_source,
+                prompt_color=req.prompt_color,
+                prompt_noun=req.prompt_noun,
                 max_frames=req.max_frames,
                 reverse=req.reverse,
                 offload_video_to_cpu=req.offload_video_to_cpu,
@@ -514,13 +513,11 @@ class Api:
         except SamServiceError as error:
             sam_video_task_manager.fail_task(task_id, str(error))
         except Exception as error:
-            logger.exception("SAM2 video propagation task failed")
+            logger.exception("SAM video propagation task failed")
             sam_video_task_manager.fail_task(task_id, str(error))
-        finally:
-            torch_gc()
 
     def api_moonshine_sam_video_propagate_job_create(self, req: MoonshineSamVideoPropagateRequest):
-        """Start a background SAM2 video propagation task."""
+        """Start a background SAM video propagation task."""
         task = sam_video_task_manager.create_task(req)
         worker = threading.Thread(
             target=self._run_sam_video_propagate_task,
@@ -534,25 +531,25 @@ class Api:
     def api_moonshine_sam_video_propagate_job(self, task_id: str):
         task = sam_video_task_manager.get_task(task_id)
         if not task:
-            raise HTTPException(status_code=404, detail="SAM2 video propagation task not found")
+            raise HTTPException(status_code=404, detail="SAM video propagation task not found")
         return JSONResponse(content=jsonable_encoder(task.to_dict()))
 
     def api_moonshine_sam_video_propagate_job_result(self, task_id: str):
         task = sam_video_task_manager.get_task(task_id)
         if not task:
-            raise HTTPException(status_code=404, detail="SAM2 video propagation task not found")
+            raise HTTPException(status_code=404, detail="SAM video propagation task not found")
         if task.status == "failed":
             raise HTTPException(status_code=422, detail=task.error or task.message)
         if task.status == "canceled":
             raise HTTPException(status_code=409, detail=task.message)
         if task.status != "completed" or task.result is None:
-            raise HTTPException(status_code=409, detail="SAM2 video propagation task is not complete")
+            raise HTTPException(status_code=409, detail="SAM video propagation task is not complete")
         return JSONResponse(content=jsonable_encoder(task.result))
 
     def api_moonshine_sam_video_propagate_job_cancel(self, task_id: str):
         task = sam_video_task_manager.cancel_task(task_id)
         if not task:
-            raise HTTPException(status_code=404, detail="SAM2 video propagation task not found")
+            raise HTTPException(status_code=404, detail="SAM video propagation task not found")
         return JSONResponse(content=jsonable_encoder(task.to_dict()))
 
     def api_moonshine_sam_text_predict(self, req: MoonshineSamTextPredictRequest):
@@ -570,8 +567,6 @@ class Api:
             )
         except SamServiceError as error:
             raise HTTPException(status_code=422, detail=str(error))
-        finally:
-            torch_gc()
         return JSONResponse(content=jsonable_encoder(result))
 
     def _model_dir(self) -> Path:
@@ -589,6 +584,7 @@ class Api:
         if next_model_dir == current_model_dir:
             return
         logger.info(f"Switch model directory: {current_model_dir} -> {next_model_dir}")
+        self._release_sam_runtime(reason="model_dir_changed", force=True)
         next_model_dir.mkdir(exist_ok=True, parents=True)
         os.environ["XDG_CACHE_HOME"] = str(next_model_dir)
         os.environ["TORCH_HOME"] = str(next_model_dir)
@@ -621,6 +617,33 @@ class Api:
             service = SamService(self._model_dir(), sam_device)
             self._sam_services[key] = service
         return service
+
+    def _release_sam_runtime(self, *, reason: str, force: bool = False):
+        if not force and not getattr(self.config, "sam_release_before_processing", True):
+            return
+        if not self._sam_services:
+            return
+        if not force and sam_video_task_manager.has_active_tasks():
+            logger.info(f"Skip SAM runtime release: reason={reason}, active SAM video task is running")
+            return
+        released_totals = {
+            "predictors": 0,
+            "sam3ImagePredictors": 0,
+            "videoPredictors": 0,
+            "textPredictors": 0,
+            "imageCache": 0,
+            "sam3ImageCache": 0,
+            "textImageCache": 0,
+        }
+        for service in list(self._sam_services.values()):
+            released = service.release()
+            for key, value in released.items():
+                released_totals[key] = released_totals.get(key, 0) + int(value or 0)
+        if any(released_totals.values()):
+            logger.info(f"Release SAM runtime: reason={reason}, released={released_totals}")
+
+    def _release_sam_runtime_before_processing(self, reason: str = "before_processing"):
+        self._release_sam_runtime(reason=reason, force=False)
 
     def _get_moonshine_runner(self, model_id: str):
         if model_id == "slbr":
@@ -883,6 +906,7 @@ class Api:
                 detail=f"Image size({image.shape[:2]}) and mask size({mask.shape[:2]}) not match.",
             )
         start = time.time()
+        self._release_sam_runtime_before_processing("single_image_inpaint")
         try:
             rgb_np_img = self.model_manager(image, mask, req)
         finally:
@@ -1122,6 +1146,7 @@ class Api:
 
     def api_moonshine_image_process(self, req: MoonshineImageProcessRequest):
         """Process images through no-mask Moonshine image models."""
+        self._release_sam_runtime_before_processing("moonshine_image_process")
         runner = self._get_moonshine_runner(req.model_id)
         options = self._normalize_moonshine_options(req.options)
         results = []
@@ -1215,6 +1240,7 @@ class Api:
                 detail="Empty data list",
             )
 
+        self._release_sam_runtime_before_processing("batch_inpaint")
         results = []
 
         # Create one InpaintRequest and reuse the shared batch params.
@@ -1332,6 +1358,7 @@ class Api:
         """Process images from an image folder and masks from a mask folder.
         This wraps the existing batch_processing.batch_inpaint workflow."""
         try:
+            self._release_sam_runtime_before_processing("batch_inpaint_by_folder")
             from moonshine_server.batch_processing import batch_inpaint
             
             # Resolve request paths.
@@ -1388,6 +1415,7 @@ class Api:
         """Process a folder through a no-mask Moonshine image model."""
         start_time = time.time()
         try:
+            self._release_sam_runtime_before_processing("moonshine_image_process_folder")
             runner = self._get_moonshine_runner(req.model_id)
             options = self._normalize_moonshine_options(req.options)
             image_path = Path(req.image_folder)
@@ -1600,6 +1628,7 @@ class Api:
         total_frames = len(req.frames)
         batch_id = getattr(req.options, "batch_id", "") or f"video_batch_{int(start_time)}"
         model_id = str(req.model_id or "lama").strip().lower() or "lama"
+        self._release_sam_runtime_before_processing("video_batch_inpaint")
         batch_number = max(1, int(getattr(req.options, "batch_number", 1) or 1))
         total_batches = max(
             batch_number,

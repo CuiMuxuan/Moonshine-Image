@@ -1,6 +1,8 @@
 import base64
 import contextlib
+import gc
 import hashlib
+import inspect
 import importlib.metadata
 import importlib.util
 import io
@@ -17,10 +19,12 @@ import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+from loguru import logger
 from PIL import Image
 
 from moonshine_server.helper import decode_base64_to_image, numpy_to_bytes
 from moonshine_server.disk_space import DEFAULT_DISK_SPACE_SAFETY_BYTES, ensure_disk_space
+from moonshine_server.model.utils import torch_gc
 from moonshine_server.moonshine.model_registry import build_model_status
 from moonshine_server.plugins.segment_anything import SamPredictor, sam_model_registry
 from moonshine_server.plugins.segment_anything2.build_sam import (
@@ -68,6 +72,7 @@ SAM3_OPTIONAL_MODULES = {
 }
 
 SAM3_TEXT_MODEL_IDS = {"sam3", "sam3_1_multiplex"}
+SAM3_VIDEO_MODEL_IDS = {"sam3", "sam3_1_multiplex"}
 SAM3_TEXT_DEFAULT_MODEL_ID = "sam3_1_multiplex"
 SAM3_TEXT_PENDING_MODELS = {}
 SAM3_1_MISSING_KEYS_WARNING = (
@@ -144,9 +149,11 @@ class SamService:
         self.model_dir = Path(model_dir).expanduser().resolve()
         self.device = self._resolve_device(device)
         self._predictors = {}
+        self._sam3_image_predictors = {}
         self._video_predictors = {}
         self._text_predictors = {}
         self._image_cache = {}
+        self._sam3_image_cache = {}
         self._text_image_cache = {}
         self._lock = RLock()
 
@@ -161,8 +168,17 @@ class SamService:
         model = next((item for item in self._build_status() if item.get("id") == model_id), None)
         if model is None:
             raise SamServiceError(f"Unknown SAM model: {model_id}")
-        if model.get("family") not in POINT_BOX_FAMILIES:
-            raise SamServiceError(f"Only SAM1/SAM2.1 point/box prediction is enabled now: {model_id}")
+        enabled_capabilities = model.get("enabledCapabilities") or {}
+        supports_point_box = bool(
+            enabled_capabilities.get("imagePoint") or enabled_capabilities.get("imageBox")
+        )
+        if not supports_point_box:
+            if str(model_id or "") == "sam3_1_multiplex":
+                raise SamServiceError(
+                    "SAM3.1 Multiplex 当前仅开放图片文本智选和视频传播；"
+                    "图片点选/框选请切换到 SAM3、SAM2.1 或 SAM1。"
+                )
+            raise SamServiceError(f"Image point/box prediction is not enabled for this SAM model: {model_id}")
         if not model.get("installed"):
             missing = ", ".join(model.get("missingFiles") or [])
             raise SamServiceError(f"SAM model is not installed: {model_id}. Missing: {missing}")
@@ -253,12 +269,12 @@ class SamService:
                 "numpy": numpy_status,
             },
             "reason": None
-            if runtime_ready and device_ready
-            else self._sam3_runtime_reason(required_modules, numpy_status, device_ready),
+            if runtime_ready
+            else self._sam3_runtime_reason(required_modules, numpy_status),
         }
 
     @staticmethod
-    def _sam3_runtime_reason(required_modules: dict, numpy_status: dict, device_ready: bool) -> str:
+    def _sam3_runtime_reason(required_modules: dict, numpy_status: dict) -> str:
         issues = []
         if required_modules["missing"]:
             issues.append("missing modules: " + ", ".join(required_modules["missing"]))
@@ -266,10 +282,6 @@ class SamService:
             issues.append(
                 f"numpy {numpy_status['version']} does not satisfy "
                 f"{numpy_status['requirement']}"
-            )
-        if not device_ready:
-            issues.append(
-                "SAM3 text smart selection currently requires CUDA with bfloat16 autocast"
             )
         return "; ".join(issues)
 
@@ -282,27 +294,41 @@ class SamService:
             "modelBundle": model_bundle,
             "packagedRuntime": os.getenv("MOONSHINE_PACKAGED_RUNTIME") in {"1", "true", "yes"},
             "pythonTarget": "3.12",
-            "sam3TextSupportedByPackage": runtime_flavor in {"external", "cu126", "cu130"},
-            "sam3TextPackageReason": (
-                "当前是 CPU 发布包，SAM3/SAM3.1 文本智能选区不会作为可用能力开放。"
-                if runtime_flavor == "cpu"
-                else ""
-            ),
+            "sam3TextSupportedByPackage": runtime_flavor in {"external", "cpu", "cu126", "cu130"},
+            "sam3TextPackageReason": "",
         }
 
     def capabilities(self) -> dict:
         models = [item for item in self._build_status() if item.get("type") == "mask"]
+        def has_enabled_capability(model: dict, *capabilities: str) -> bool:
+            enabled_capabilities = model.get("enabledCapabilities") or {}
+            return any(bool(enabled_capabilities.get(capability)) for capability in capabilities)
+
         point_box_models = [
             item
             for item in models
-            if item.get("family") in POINT_BOX_FAMILIES and item.get("installed")
+            if item.get("installed")
+            and has_enabled_capability(item, "imagePoint", "imageBox")
         ]
         video_models = [
             item
             for item in models
-            if item.get("family") == "sam2" and item.get("installed")
+            if item.get("installed")
+            and has_enabled_capability(item, "videoPropagate")
+            and has_enabled_capability(item, "videoPoint", "videoBox", "videoText")
         ]
-        text_models = [item for item in models if item.get("family") in TEXT_FAMILIES]
+        video_prompt_types = []
+        if any(has_enabled_capability(item, "videoPoint") for item in video_models):
+            video_prompt_types.append("point")
+        if any(has_enabled_capability(item, "videoBox") for item in video_models):
+            video_prompt_types.append("box")
+        if any(has_enabled_capability(item, "videoText") for item in video_models):
+            video_prompt_types.append("text")
+        text_models = [
+            item
+            for item in models
+            if has_enabled_capability(item, "imageText")
+        ]
         default_point_box_model = next(
             (item.get("id") for item in point_box_models if item.get("id") == "sam_vit_b"),
             point_box_models[0].get("id") if point_box_models else None,
@@ -319,7 +345,6 @@ class SamService:
             for item in installed_text_models
             if item.get("id") in SAM3_TEXT_MODEL_IDS
             and sam3_runtime_status["runtimeReady"]
-            and sam3_runtime_status["deviceReady"]
             and release_runtime["sam3TextSupportedByPackage"]
         ]
         pending_text_models = [
@@ -358,28 +383,29 @@ class SamService:
             "models": models,
             "pointBox": {
                 "enabled": bool(point_box_models),
-                "families": sorted(POINT_BOX_FAMILIES),
+                "families": sorted({item.get("family") for item in point_box_models if item.get("family")}),
                 "models": point_box_models,
                 "defaultModelId": default_point_box_model,
                 "promptTypes": ["point", "box"],
             },
             "video": {
                 "enabled": bool(video_models),
-                "families": ["sam2"],
+                "families": sorted({item.get("family") for item in video_models if item.get("family")}),
                 "models": video_models,
                 "defaultModelId": default_video_model,
-                "promptTypes": ["point", "box"],
+                "promptTypes": video_prompt_types,
                 "inputTypes": ["jpegFrameDirectory", "videoPath"],
                 "supportsMp4": True,
                 "supportsMultipleObjects": True,
                 "reason": (
-                    "SAM2.1 video predictor accepts JPEG frame directories and local video paths. "
-                    "Video paths are staged to JPEG frames with OpenCV before propagation."
+                    "SAM video predictors accept JPEG frame directories or local video paths. "
+                    "SAM2.1 stages video paths to JPEG frames; SAM3/SAM3.1 uses the official "
+                    "session predictor and returns the same path-backed mask result shape."
                 ),
             },
             "text": {
                 "enabled": bool(runnable_text_models),
-                "families": sorted(TEXT_FAMILIES),
+                "families": sorted({item.get("family") for item in text_models if item.get("family")}),
                 "models": text_models,
                 "defaultModelId": next(
                     (
@@ -407,7 +433,7 @@ class SamService:
                     if release_runtime["sam3TextPackageReason"]
                     else (
                         "SAM3 text smart selection is available only after the "
-                        "SAM3 package, CUDA runtime, and a managed models/sam3 checkpoint are ready. "
+                        "SAM3 package and a managed models/sam3 checkpoint are ready. "
                         f"{sam3_runtime_status['reason'] or ''}".strip()
                     )
                 ),
@@ -420,6 +446,45 @@ class SamService:
         if not resolved_path:
             raise SamServiceError(f"SAM checkpoint path is unavailable: {model.get('id')}")
         return Path(resolved_path)
+
+    def release(self, model_id: Optional[str] = None) -> dict:
+        normalized_model_id = str(model_id or "").strip()
+        released = {
+            "predictors": 0,
+            "sam3ImagePredictors": 0,
+            "videoPredictors": 0,
+            "textPredictors": 0,
+            "imageCache": 0,
+            "sam3ImageCache": 0,
+            "textImageCache": 0,
+        }
+
+        def should_release(cache_key) -> bool:
+            if not normalized_model_id:
+                return True
+            if isinstance(cache_key, tuple) and cache_key:
+                return str(cache_key[0]) == normalized_model_id
+            return str(cache_key) == normalized_model_id
+
+        with self._lock:
+            for cache_name, counter_name in (
+                ("_predictors", "predictors"),
+                ("_sam3_image_predictors", "sam3ImagePredictors"),
+                ("_video_predictors", "videoPredictors"),
+                ("_text_predictors", "textPredictors"),
+                ("_image_cache", "imageCache"),
+                ("_sam3_image_cache", "sam3ImageCache"),
+                ("_text_image_cache", "textImageCache"),
+            ):
+                cache = getattr(self, cache_name)
+                for cache_key in list(cache.keys()):
+                    if should_release(cache_key):
+                        cache.pop(cache_key, None)
+                        released[counter_name] += 1
+
+        gc.collect()
+        torch_gc()
+        return released
 
     def _get_predictor(self, model_id: str):
         cache_key = (model_id, self.device)
@@ -446,15 +511,67 @@ class SamService:
         self._predictors[cache_key] = predictor
         return predictor
 
-    def _get_sam2_model_status(self, model_id: str) -> dict:
+    def _get_sam3_image_predictor(self, model_id: str):
+        cache_key = (model_id, self.device)
+        predictor = self._sam3_image_predictors.get(cache_key)
+        if predictor is not None:
+            return predictor
+
+        model = self._get_model_status(model_id)
+        if model.get("family") != "sam3":
+            raise SamServiceError(f"SAM3 image adapter cannot load model: {model_id}")
+        checkpoint_path = self._get_checkpoint_path(model)
+        runtime_status = self._sam3_runtime_status()
+        if not runtime_status["runtimeReady"]:
+            reason = runtime_status["reason"] or "SAM3 runtime is not ready"
+            raise SamServiceError(f"SAM3 image smart selection is not ready: {reason}")
+        try:
+            from sam3.model.sam3_image_processor import Sam3Processor
+            from sam3.model_builder import build_sam3_image_model
+        except ImportError as error:
+            raise SamServiceError(
+                "SAM3 package is not installed in the current Python runtime. "
+                "Install the official SAM3 package into the Moonshine runtime before "
+                "using SAM3 image smart selection."
+            ) from error
+
+        sam3_model = build_sam3_image_model(
+            device=self.device,
+            checkpoint_path=str(checkpoint_path),
+            load_from_HF=False,
+            enable_inst_interactivity=True,
+            compile=False,
+        )
+        predictor = {
+            "model": sam3_model,
+            "processor": Sam3Processor(sam3_model, device=self.device),
+        }
+        self._sam3_image_predictors[cache_key] = predictor
+        return predictor
+
+    def _get_video_model_status(self, model_id: str) -> dict:
         model = next((item for item in self._build_status() if item.get("id") == model_id), None)
         if model is None:
-            raise SamServiceError(f"Unknown SAM2.1 model: {model_id}")
-        if model.get("family") != "sam2":
-            raise SamServiceError(f"Only SAM2.1 video propagation is enabled now: {model_id}")
+            raise SamServiceError(f"Unknown SAM video model: {model_id}")
+        if model.get("family") not in {"sam2", "sam3"}:
+            raise SamServiceError(f"Video propagation is not supported for this SAM model: {model_id}")
+        enabled_capabilities = model.get("enabledCapabilities") or {}
+        if not enabled_capabilities.get("videoPropagate"):
+            raise SamServiceError(f"Video propagation is not enabled for this SAM model: {model_id}")
+        if not any(
+            enabled_capabilities.get(key)
+            for key in ("videoPoint", "videoBox", "videoText")
+        ):
+            raise SamServiceError(f"No video prompt type is enabled for this SAM model: {model_id}")
         if not model.get("installed"):
             missing = ", ".join(model.get("missingFiles") or [])
-            raise SamServiceError(f"SAM2.1 model is not installed: {model_id}. Missing: {missing}")
+            raise SamServiceError(f"SAM video model is not installed: {model_id}. Missing: {missing}")
+        return model
+
+    def _get_sam2_model_status(self, model_id: str) -> dict:
+        model = self._get_video_model_status(model_id)
+        if model.get("family") != "sam2":
+            raise SamServiceError(f"Only SAM2.1 video predictor can load this path: {model_id}")
         return model
 
     def _get_video_predictor(self, model_id: str):
@@ -477,12 +594,75 @@ class SamService:
         self._video_predictors[cache_key] = predictor
         return predictor
 
+    def _get_sam3_video_predictor(self, model_id: str):
+        cache_key = (model_id, self.device, "sam3-video")
+        predictor = self._video_predictors.get(cache_key)
+        if predictor is not None:
+            return predictor
+
+        model = self._get_video_model_status(model_id)
+        if model.get("family") != "sam3":
+            raise SamServiceError(f"SAM3 video adapter cannot load model: {model_id}")
+        if model_id not in SAM3_VIDEO_MODEL_IDS:
+            raise SamServiceError(f"Unsupported SAM3 video model id: {model_id}")
+
+        runtime_status = self._sam3_runtime_status()
+        if not runtime_status["runtimeReady"]:
+            reason = runtime_status["reason"] or "SAM3 runtime is not ready"
+            raise SamServiceError(f"SAM3 video smart selection is not ready: {reason}")
+        if self.device != "cuda" or not torch.cuda.is_available():
+            raise SamServiceError(
+                "SAM3/SAM3.1 视频智能选区当前依赖官方 CUDA 视频 predictor。"
+                "请使用 CUDA 启动后端后再运行视频文本/框选传播。"
+            )
+
+        checkpoint_path = self._get_checkpoint_path(model)
+        try:
+            from sam3.model_builder import build_sam3_predictor
+        except ImportError as error:
+            raise SamServiceError(
+                "SAM3 package is not installed in the current Python runtime. "
+                "Install the official SAM3 package into the Moonshine runtime before "
+                "using SAM3 video smart selection."
+            ) from error
+
+        self._configure_sam3_attention_compatibility()
+        version = "sam3.1" if model_id == "sam3_1_multiplex" else "sam3"
+        predictor = build_sam3_predictor(
+            checkpoint_path=str(checkpoint_path),
+            version=version,
+            compile=False,
+            warm_up=False,
+            use_fa3=False,
+            async_loading_frames=True,
+        )
+        init_state = getattr(getattr(predictor, "model", None), "init_state", None)
+        if init_state is not None:
+            signature = inspect.signature(init_state)
+            accepts_kwargs = any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in signature.parameters.values()
+            )
+            if not accepts_kwargs:
+                accepted_kwargs = set(signature.parameters)
+
+                def init_state_compat(*args, **kwargs):
+                    filtered_kwargs = {
+                        key: value for key, value in kwargs.items() if key in accepted_kwargs
+                    }
+                    return init_state(*args, **filtered_kwargs)
+
+                predictor.model.init_state = init_state_compat
+        self._video_predictors[cache_key] = predictor
+        return predictor
+
     def _get_text_model_status(self, model_id: str) -> dict:
         model = next((item for item in self._build_status() if item.get("id") == model_id), None)
         if model is None:
             raise SamServiceError(f"Unknown SAM3 model: {model_id}")
-        if model.get("family") not in TEXT_FAMILIES:
-            raise SamServiceError(f"Only SAM3 text smart selection is enabled on this route: {model_id}")
+        enabled_capabilities = model.get("enabledCapabilities") or {}
+        if not enabled_capabilities.get("imageText"):
+            raise SamServiceError(f"Image text smart selection is not enabled for this SAM model: {model_id}")
         if model_id not in SAM3_TEXT_MODEL_IDS:
             raise SamServiceError(f"Unsupported SAM3 text model id: {model_id}")
         if not model.get("installed"):
@@ -490,7 +670,7 @@ class SamService:
             raise SamServiceError(f"SAM3 text model is not installed: {model_id}. Missing: {missing}")
 
         runtime_status = self._sam3_runtime_status()
-        if not runtime_status["runtimeReady"] or not runtime_status["deviceReady"]:
+        if not runtime_status["runtimeReady"]:
             reason = runtime_status["reason"] or "SAM3 runtime is not ready"
             raise SamServiceError(f"SAM3 text smart selection is not ready: {reason}")
         return model
@@ -533,7 +713,26 @@ class SamService:
         sam2_transformer.OLD_GPU = False
 
     @staticmethod
-    def _format_runtime_error(error: RuntimeError) -> str:
+    def _configure_sam3_attention_compatibility():
+        try:
+            from torch.nn.attention import SDPBackend, sdpa_kernel
+            from sam3.model import decoder as sam3_decoder
+        except Exception:
+            logger.debug("SAM3 attention compatibility patch is unavailable.", exc_info=True)
+            return
+
+        current_sdpa_kernel = getattr(sam3_decoder, "sdpa_kernel", None)
+        if getattr(current_sdpa_kernel, "_moonshine_math_sdp", False):
+            return
+
+        def moonshine_math_sdpa_kernel(_backends=None):
+            return sdpa_kernel(SDPBackend.MATH)
+
+        moonshine_math_sdpa_kernel._moonshine_math_sdp = True
+        sam3_decoder.sdpa_kernel = moonshine_math_sdpa_kernel
+
+    @staticmethod
+    def _format_runtime_error(error: RuntimeError, model_id: Optional[str] = None) -> str:
         message = str(error)
         lower_message = message.lower()
         if "out of memory" in lower_message:
@@ -542,6 +741,11 @@ class SamService:
                 "或改用 CPU/更大显存的 CUDA 运行时。"
             )
         if "no available kernel" in lower_message or "flash attention" in lower_message:
+            if str(model_id or "").startswith("sam3"):
+                return (
+                    "SAM3/SAM3.1 CUDA attention kernel 不可用。当前运行时已优先使用稳定 math SDP，"
+                    "若仍失败，请切换 CPU 或更新 PyTorch/CUDA 运行时。"
+                )
             return (
                 "SAM2.1 CUDA attention kernel 不可用。当前运行时已优先使用稳定 math SDP，"
                 "若仍失败，请切换 CPU 或更新 PyTorch/CUDA 运行时。"
@@ -549,6 +753,15 @@ class SamService:
         if "cuda" in lower_message and "not available" in lower_message:
             return "当前 CUDA 不可用，SAM 已无法在 CUDA 上推理。请切换 CPU 或检查运行时。"
         return f"SAM 推理失败：{message}"
+
+    @staticmethod
+    def _is_sam3_video_tracker_exhausted_error(error: RuntimeError) -> bool:
+        message = str(error).lower()
+        return (
+            "expanded size of the tensor" in message
+            and "existing size (0)" in message
+            and "tensor sizes:" in message
+        )
 
     @staticmethod
     def _load_image(image: str, image_type: str) -> tuple[np.ndarray, str]:
@@ -782,6 +995,632 @@ class SamService:
             "height": height or None,
         }
 
+    @staticmethod
+    def _read_video_metadata(video_path: Path) -> dict:
+        capture = cv2.VideoCapture(str(video_path))
+        if not capture.isOpened():
+            raise SamServiceError(f"Failed to open video for SAM propagation: {video_path}")
+        try:
+            return {
+                "frameCount": int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0),
+                "fps": round(float(capture.get(cv2.CAP_PROP_FPS) or 0.0), 3) or None,
+                "width": int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0),
+                "height": int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0),
+            }
+        finally:
+            capture.release()
+
+    @staticmethod
+    def _sam3_video_output_ids(outputs: dict, mask_count: int) -> list[int]:
+        object_ids = outputs.get("out_obj_ids") if isinstance(outputs, dict) else None
+        if object_ids is None:
+            return list(range(1, mask_count + 1))
+        if torch.is_tensor(object_ids):
+            object_ids = object_ids.detach().cpu().reshape(-1).tolist()
+        else:
+            object_ids = np.asarray(object_ids).reshape(-1).tolist()
+        normalized = []
+        for index, value in enumerate(object_ids):
+            try:
+                normalized.append(max(1, int(value)))
+            except (TypeError, ValueError):
+                normalized.append(index + 1)
+        if len(normalized) < mask_count:
+            normalized.extend(range(len(normalized) + 1, mask_count + 1))
+        return normalized[:mask_count]
+
+    @classmethod
+    def _sam3_video_masks(cls, outputs: dict) -> list:
+        if not isinstance(outputs, dict):
+            return []
+        masks = outputs.get("out_binary_masks")
+        if masks is None:
+            return []
+        if torch.is_tensor(masks):
+            if masks.dim() == 2:
+                return [masks]
+            return [masks[index] for index in range(int(masks.shape[0]))]
+        mask_array = np.asarray(masks)
+        if mask_array.ndim == 2:
+            return [mask_array]
+        return [mask_array[index] for index in range(int(mask_array.shape[0]))]
+
+    @classmethod
+    def _sam3_video_mask_to_numpy(cls, mask, height: int, width: int) -> np.ndarray:
+        mask_np = cls._sam3_mask_to_numpy(mask)
+        target_height = int(height or mask_np.shape[0] or 1)
+        target_width = int(width or mask_np.shape[1] or 1)
+        if mask_np.shape[:2] != (target_height, target_width):
+            mask_np = cv2.resize(mask_np, (target_width, target_height), interpolation=cv2.INTER_NEAREST)
+        return mask_np
+
+    @staticmethod
+    def _normalize_sam3_video_box(box, *, width: int, height: int) -> list[list[float]]:
+        if box is None:
+            return []
+        safe_width = max(1.0, float(width or 1))
+        safe_height = max(1.0, float(height or 1))
+        x = float(box.x if hasattr(box, "x") else box["x"])
+        y = float(box.y if hasattr(box, "y") else box["y"])
+        box_width = float(box.width if hasattr(box, "width") else box["width"])
+        box_height = float(box.height if hasattr(box, "height") else box["height"])
+        x0 = max(0.0, min(safe_width, x))
+        y0 = max(0.0, min(safe_height, y))
+        x1 = max(0.0, min(safe_width, x + box_width))
+        y1 = max(0.0, min(safe_height, y + box_height))
+        normalized_width = max(1.0, x1 - x0)
+        normalized_height = max(1.0, y1 - y0)
+        if x0 >= safe_width or y0 >= safe_height:
+            raise SamServiceError("SAM3 video box prompt is outside the video frame.")
+        return [[
+            x0 / safe_width,
+            y0 / safe_height,
+            min(1.0, normalized_width / safe_width),
+            min(1.0, normalized_height / safe_height),
+        ]]
+
+    @staticmethod
+    def _estimate_propagation_frame_count(
+        *, frame_count: int, frame_index: int, max_frames: Optional[int], reverse: bool
+    ) -> int:
+        total = max(1, int(frame_count or 1))
+        start = max(0, min(total - 1, int(frame_index or 0)))
+        available = start + 1 if reverse else total - start
+        if max_frames is not None:
+            available = min(available, max(1, int(max_frames)))
+        return max(1, available)
+
+    @torch.inference_mode()
+    def _propagate_sam3_video(
+        self,
+        *,
+        frame_dir: Optional[str],
+        video_path: Optional[str],
+        input_type: str,
+        model_id: str,
+        frame_index: int,
+        object_id: int,
+        points: list,
+        box,
+        objects: Optional[list],
+        text: Optional[str],
+        language: str,
+        prompt_source: str,
+        prompt_color: Optional[dict],
+        prompt_noun: Optional[dict],
+        max_frames: Optional[int],
+        reverse: bool,
+        offload_video_to_cpu: bool,
+        offload_state_to_cpu: bool,
+        response_type: str,
+        mask_output_dir: Optional[str],
+        progress_callback: Optional[Callable[..., None]],
+    ) -> dict:
+        prompt = str(text or "").strip()
+        has_geometric_prompt = bool(objects or points or box is not None)
+        if prompt and has_geometric_prompt:
+            raise SamServiceError("SAM3 video text and point/box prompts must be run separately.")
+        if not prompt and not has_geometric_prompt:
+            raise SamServiceError("At least one SAM3 video text or box prompt is required.")
+
+        normalized_input_type = (
+            "videoPath" if str(input_type or "").strip() == "videoPath" else "jpegFrameDirectory"
+        )
+        normalized_response_type = "path" if str(response_type or "").strip() == "path" else "base64"
+        mask_output_path = None
+        if normalized_response_type == "path":
+            if not mask_output_dir:
+                raise SamServiceError("mask_output_dir is required when SAM3 response_type is path.")
+            mask_output_path = Path(mask_output_dir).expanduser().resolve()
+            mask_output_path.mkdir(parents=True, exist_ok=True)
+
+        source_video_path = None
+        source_video_hash = None
+        staged_video_info = None
+        if normalized_input_type == "videoPath":
+            if not video_path:
+                raise SamServiceError("video_path is required for SAM3 videoPath input.")
+            source_video_path = Path(video_path).expanduser().resolve()
+            if not source_video_path.is_file():
+                raise SamServiceError(f"SAM3 video file not found: {source_video_path}")
+            resource_path = source_video_path
+            source_video_hash = self._file_hash(source_video_path)
+            video_info = self._read_video_metadata(source_video_path)
+            frame_dir_hash = source_video_hash
+        else:
+            if not frame_dir:
+                raise SamServiceError("frame_dir is required for SAM3 JPEG frame directory input.")
+            resource_path = Path(frame_dir).expanduser().resolve()
+            if not resource_path.is_dir():
+                raise SamServiceError(f"SAM3 video input must be a JPEG frame directory: {resource_path}")
+            frame_names = sorted(
+                item.name
+                for item in resource_path.iterdir()
+                if item.suffix.lower() in {".jpg", ".jpeg"}
+            )
+            if not frame_names:
+                raise SamServiceError(f"SAM3 video frame directory has no JPEG frames: {resource_path}")
+            with Image.open(resource_path / frame_names[0]) as first_frame:
+                width, height = first_frame.convert("RGB").size
+            video_info = {
+                "frameCount": len(frame_names),
+                "fps": None,
+                "width": int(width),
+                "height": int(height),
+            }
+            frame_dir_hash = self._frame_dir_hash(resource_path)
+
+        frame_count = max(1, int(video_info.get("frameCount") or 1))
+        width = max(1, int(video_info.get("width") or 1))
+        height = max(1, int(video_info.get("height") or 1))
+        safe_frame_index = max(0, min(frame_count - 1, int(frame_index or 0)))
+        estimated_output_frame_count = self._estimate_propagation_frame_count(
+            frame_count=frame_count,
+            frame_index=safe_frame_index,
+            max_frames=max_frames,
+            reverse=reverse,
+        )
+        normalized_prompt_source = str(prompt_source or "manual").strip() or "manual"
+        is_lexicon_prompt = normalized_prompt_source.startswith("lexicon")
+        prompt_candidates = (
+            [
+                {
+                    "text": prompt,
+                    "source": normalized_prompt_source,
+                    "language": "en",
+                    "originalLanguage": language,
+                }
+            ]
+            if prompt and is_lexicon_prompt
+            else self._normalize_text_prompts(prompt, language)
+            if prompt
+            else []
+        )
+        normalized_objects = []
+        if not prompt:
+            normalized_objects = self._normalize_video_objects(
+                objects=objects,
+                object_id=object_id,
+                points=points,
+                box=box,
+            )
+            if any(item.get("points") for item in normalized_objects):
+                raise SamServiceError(
+                    "SAM3/SAM3.1 video point prompts are not enabled for new object creation. "
+                    "Use a box prompt or text smart selection."
+                )
+
+        total_started_at = time.perf_counter()
+        frames = []
+        object_map = {}
+        predictor = None
+        session_id = None
+        used_prompt = prompt_candidates[0] if prompt_candidates else None
+        early_stop_reason = None
+        seen_frame_indices = set()
+
+        try:
+            with self._lock:
+                predictor = self._get_sam3_video_predictor(model_id)
+                def sam3_video_autocast():
+                    return (
+                        torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+                        if self.device == "cuda"
+                        else contextlib.nullcontext()
+                    )
+
+                self._emit_progress(
+                    progress_callback,
+                    status="frame_loading",
+                    phase="frame_loading",
+                    message=f"正在启动 SAM3 视频会话 0/{frame_count}",
+                    current=0,
+                    total=frame_count,
+                    progress=0,
+                )
+                session_response = predictor.handle_request(
+                    {
+                        "type": "start_session",
+                        "resource_path": str(resource_path),
+                        "offload_video_to_cpu": offload_video_to_cpu,
+                        "offload_state_to_cpu": offload_state_to_cpu,
+                    }
+                )
+                session_id = session_response.get("session_id")
+                if not session_id:
+                    raise SamServiceError("SAM3 video predictor did not return a session id.")
+                self._emit_progress(
+                    progress_callback,
+                    status="frame_loading",
+                    phase="frame_loading",
+                    message=f"SAM3 视频会话已加载 {frame_count}/{frame_count}",
+                    current=frame_count,
+                    total=frame_count,
+                    progress=1,
+                )
+
+                prompt_response = None
+                if prompt:
+                    self._emit_progress(
+                        progress_callback,
+                        status="prompt_encoding",
+                        phase="prompt_encoding",
+                        message="正在注册 SAM3 文本提示",
+                        current=0,
+                        total=max(1, len(prompt_candidates)),
+                        progress=0,
+                    )
+                    for index, candidate in enumerate(prompt_candidates, start=1):
+                        if index > 1:
+                            predictor.handle_request(
+                                {"type": "reset_session", "session_id": session_id}
+                            )
+                        with sam3_video_autocast():
+                            prompt_response = predictor.handle_request(
+                                {
+                                    "type": "add_prompt",
+                                    "session_id": session_id,
+                                    "frame_index": safe_frame_index,
+                                    "text": candidate["text"],
+                                }
+                            )
+                        used_prompt = candidate
+                        prompt_outputs = prompt_response.get("outputs") or {}
+                        prompt_masks = self._sam3_video_masks(prompt_outputs)
+                        self._emit_progress(
+                            progress_callback,
+                            status="prompt_encoding",
+                            phase="prompt_encoding",
+                            message=f"已尝试 SAM3 文本提示 {index}/{len(prompt_candidates)}",
+                            current=index,
+                            total=len(prompt_candidates),
+                        )
+                        if prompt_masks:
+                            break
+                else:
+                    boxes = []
+                    box_labels = []
+                    for item in normalized_objects:
+                        if item.get("box") is None:
+                            continue
+                        boxes.extend(
+                            self._normalize_sam3_video_box(
+                                item["box"],
+                                width=width,
+                                height=height,
+                            )
+                        )
+                        box_labels.append(1)
+                    if not boxes:
+                        raise SamServiceError("SAM3 video box prompt is required.")
+                    self._emit_progress(
+                        progress_callback,
+                        status="prompt_encoding",
+                        phase="prompt_encoding",
+                        message=f"正在注册 {len(boxes)} 个 SAM3 框选提示",
+                        current=0,
+                        total=len(boxes),
+                        progress=0,
+                    )
+                    with sam3_video_autocast():
+                        prompt_response = predictor.handle_request(
+                            {
+                                "type": "add_prompt",
+                                "session_id": session_id,
+                                "frame_index": safe_frame_index,
+                                "bounding_boxes": boxes,
+                                "bounding_box_labels": box_labels,
+                                "rel_coordinates": True,
+                            }
+                        )
+                    self._emit_progress(
+                        progress_callback,
+                        status="prompt_encoding",
+                        phase="prompt_encoding",
+                        message=f"已注册 {len(boxes)} 个 SAM3 框选提示",
+                        current=len(boxes),
+                        total=len(boxes),
+                        progress=1,
+                    )
+
+                prompt_outputs = (prompt_response or {}).get("outputs") or {}
+                prompt_masks = self._sam3_video_masks(prompt_outputs)
+                prompt_object_ids = self._sam3_video_output_ids(prompt_outputs, len(prompt_masks))
+                for obj_id in prompt_object_ids:
+                    object_map[int(obj_id)] = {
+                        "objectId": int(obj_id),
+                        "pointCount": 0,
+                        "hasBox": not prompt,
+                        "promptType": "text" if prompt else "box",
+                        "text": prompt if prompt else None,
+                        "modelText": used_prompt["text"] if used_prompt else None,
+                    }
+
+                if not prompt_object_ids:
+                    empty_reason = (
+                        "SAM3 video text smart selection did not find a matching target."
+                        if prompt
+                        else "SAM3 video box prompt did not return a trackable object."
+                    )
+                    total_ms = (time.perf_counter() - total_started_at) * 1000
+                    return {
+                        "modelId": model_id,
+                        "frameDirHash": frame_dir_hash,
+                        "frameCount": frame_count,
+                        "width": width,
+                        "height": height,
+                        "objectCount": 0,
+                        "objects": [],
+                        "frames": [],
+                        "input": {
+                            "type": normalized_input_type,
+                            "frameDir": str(resource_path) if normalized_input_type == "jpegFrameDirectory" else None,
+                            "videoPath": str(source_video_path) if source_video_path is not None else None,
+                            "videoHash": source_video_hash,
+                            "staged": False,
+                            "stagedFrameCount": staged_video_info.get("frameCount")
+                            if staged_video_info
+                            else None,
+                            "fps": video_info.get("fps"),
+                            "responseType": normalized_response_type,
+                            "maskOutputDir": str(mask_output_path) if mask_output_path is not None else None,
+                            "frameIndex": safe_frame_index,
+                            "promptType": "text" if prompt else "box",
+                            "text": prompt,
+                            "promptSource": normalized_prompt_source,
+                        },
+                        "diagnostics": {
+                            "emptyResultReason": empty_reason,
+                            "usedPrompt": used_prompt,
+                        },
+                        "performance": {
+                            "device": self.device,
+                            "totalMs": round(total_ms, 2),
+                            "offloadVideoToCpu": offload_video_to_cpu,
+                            "offloadStateToCpu": offload_state_to_cpu,
+                        },
+                    }
+
+                prompt_frame_masks = []
+                if normalized_response_type == "path":
+                    self._ensure_video_mask_disk_space(
+                        output_dir=mask_output_path,
+                        width=width,
+                        height=height,
+                        remaining_frames=1,
+                        object_count=len(prompt_object_ids),
+                    )
+                for mask_index, obj_id in enumerate(prompt_object_ids):
+                    if mask_index >= len(prompt_masks):
+                        continue
+                    mask_np = self._sam3_video_mask_to_numpy(
+                        prompt_masks[mask_index],
+                        height,
+                        width,
+                    )
+                    if normalized_response_type == "path":
+                        prompt_frame_masks.append(
+                            self._save_video_mask(
+                                mask_np,
+                                mask_output_path,
+                                safe_frame_index,
+                                int(obj_id),
+                            )
+                        )
+                    else:
+                        prompt_frame_masks.append(
+                            {
+                                "objectId": int(obj_id),
+                                "mask": self._mask_to_data_url(mask_np),
+                            }
+                        )
+                if prompt_frame_masks:
+                    frames.append({"frameIndex": safe_frame_index, "masks": prompt_frame_masks})
+                    seen_frame_indices.add(safe_frame_index)
+
+                if normalized_response_type == "path":
+                    self._ensure_video_mask_disk_space(
+                        output_dir=mask_output_path,
+                        width=width,
+                        height=height,
+                        remaining_frames=estimated_output_frame_count,
+                        object_count=len(prompt_object_ids),
+                    )
+                self._emit_progress(
+                    progress_callback,
+                    status="propagating",
+                    phase="propagating",
+                    message=f"正在传播 SAM3 视频蒙版 0/{estimated_output_frame_count}",
+                    current=0,
+                    total=estimated_output_frame_count,
+                    progress=0,
+                )
+                stream_request = {
+                    "type": "propagate_in_video",
+                    "session_id": session_id,
+                    "propagation_direction": "backward" if reverse else "forward",
+                    "start_frame_index": safe_frame_index,
+                    "max_frame_num_to_track": max_frames,
+                }
+                try:
+                    with sam3_video_autocast():
+                        response_stream = predictor.handle_stream_request(stream_request)
+                        for response in response_stream:
+                            out_frame_index = int(response.get("frame_index", safe_frame_index))
+                            if out_frame_index in seen_frame_indices:
+                                self._emit_progress(
+                                    progress_callback,
+                                    status="propagating",
+                                    phase="propagating",
+                                    message=(
+                                        f"正在传播 SAM3 视频蒙版 "
+                                        f"{len(frames)}/{estimated_output_frame_count}"
+                                    ),
+                                    current=len(frames),
+                                    total=estimated_output_frame_count,
+                                )
+                                continue
+                            outputs = response.get("outputs") if isinstance(response, dict) else None
+                            if outputs is None and isinstance(response, dict):
+                                outputs = response
+                            masks = self._sam3_video_masks(outputs or {})
+                            object_ids = self._sam3_video_output_ids(outputs or {}, len(masks))
+                            frame_masks = []
+                            if normalized_response_type == "path":
+                                self._ensure_video_mask_disk_space(
+                                    output_dir=mask_output_path,
+                                    width=width,
+                                    height=height,
+                                    remaining_frames=max(1, estimated_output_frame_count - len(frames)),
+                                    object_count=max(1, len(object_ids)),
+                                )
+                            for mask_index, obj_id in enumerate(object_ids):
+                                mask_np = self._sam3_video_mask_to_numpy(masks[mask_index], height, width)
+                                object_map.setdefault(
+                                    int(obj_id),
+                                    {
+                                        "objectId": int(obj_id),
+                                        "pointCount": 0,
+                                        "hasBox": not prompt,
+                                        "promptType": "text" if prompt else "box",
+                                        "text": prompt if prompt else None,
+                                        "modelText": used_prompt["text"] if used_prompt else None,
+                                    },
+                                )
+                                if normalized_response_type == "path":
+                                    frame_masks.append(
+                                        self._save_video_mask(
+                                            mask_np,
+                                            mask_output_path,
+                                            out_frame_index,
+                                            int(obj_id),
+                                        )
+                                    )
+                                else:
+                                    frame_masks.append(
+                                        {
+                                            "objectId": int(obj_id),
+                                            "mask": self._mask_to_data_url(mask_np),
+                                        }
+                                    )
+                            if frame_masks:
+                                frames.append({"frameIndex": out_frame_index, "masks": frame_masks})
+                                seen_frame_indices.add(out_frame_index)
+                            self._emit_progress(
+                                progress_callback,
+                                status="propagating",
+                                phase="propagating",
+                                message=f"正在传播 SAM3 视频蒙版 {len(frames)}/{estimated_output_frame_count}",
+                                current=len(frames),
+                                total=estimated_output_frame_count,
+                            )
+                except RuntimeError as error:
+                    if not frames or not self._is_sam3_video_tracker_exhausted_error(error):
+                        raise
+                    early_stop_reason = (
+                        "SAM3/SAM3.1 video propagation stopped early because the "
+                        "official tracker no longer had an active object bucket."
+                    )
+                    logger.info(
+                        f"SAM3 video propagation stopped early: model={model_id}, "
+                        f"frames={len(frames)}/{estimated_output_frame_count}"
+                    )
+                self._emit_progress(
+                    progress_callback,
+                    status="writing_masks",
+                    phase="writing_masks",
+                    message=f"SAM3 蒙版写入完成 {len(frames)}/{estimated_output_frame_count}",
+                    current=len(frames),
+                    total=estimated_output_frame_count,
+                    progress=1,
+                )
+        except RuntimeError as error:
+            raise SamServiceError(self._format_runtime_error(error, model_id=model_id)) from error
+        finally:
+            if predictor is not None and session_id:
+                try:
+                    predictor.handle_request(
+                        {
+                            "type": "close_session",
+                            "session_id": session_id,
+                            "run_gc_collect": False,
+                        }
+                    )
+                except Exception:
+                    logger.debug(f"Failed to close SAM3 video session: {session_id}", exc_info=True)
+
+        total_ms = (time.perf_counter() - total_started_at) * 1000
+        return {
+            "modelId": model_id,
+            "frameDirHash": frame_dir_hash,
+            "frameCount": frame_count,
+            "width": width,
+            "height": height,
+            "objectCount": len(object_map),
+            "objects": [
+                object_map[key]
+                for key in sorted(object_map.keys())
+            ],
+            "frames": frames,
+            "prompt": {
+                "type": "text" if prompt else "box",
+                "text": prompt,
+                "language": language,
+                "source": normalized_prompt_source,
+                "color": prompt_color,
+                "noun": prompt_noun,
+                "modelText": used_prompt["text"] if used_prompt else None,
+                "modelLanguage": used_prompt["language"] if used_prompt else None,
+                "normalization": used_prompt["source"] if used_prompt else None,
+            },
+            "input": {
+                "type": normalized_input_type,
+                "frameDir": str(resource_path) if normalized_input_type == "jpegFrameDirectory" else None,
+                "videoPath": str(source_video_path) if source_video_path is not None else None,
+                "videoHash": source_video_hash,
+                "staged": False,
+                "stagedFrameCount": staged_video_info.get("frameCount")
+                if staged_video_info
+                else None,
+                "fps": video_info.get("fps"),
+                "responseType": normalized_response_type,
+                "maskOutputDir": str(mask_output_path) if mask_output_path is not None else None,
+                "frameIndex": safe_frame_index,
+                "promptType": "text" if prompt else "box",
+                "text": prompt,
+                "promptSource": normalized_prompt_source,
+            },
+            "diagnostics": {
+                "earlyStopReason": early_stop_reason,
+            },
+            "performance": {
+                "device": self.device,
+                "totalMs": round(total_ms, 2),
+                "offloadVideoToCpu": offload_video_to_cpu,
+                "offloadStateToCpu": offload_state_to_cpu,
+            },
+        }
+
     @classmethod
     def _normalize_video_objects(
         cls,
@@ -844,6 +1683,11 @@ class SamService:
 
     @staticmethod
     def _sam3_mask_to_numpy(mask_tensor) -> np.ndarray:
+        if not torch.is_tensor(mask_tensor):
+            mask_array = np.asarray(mask_tensor)
+            if mask_array.ndim == 3 and mask_array.shape[0] == 1:
+                mask_array = mask_array[0]
+            return (mask_array.astype(np.float32) > 0.5).astype(np.uint8) * 255
         mask = mask_tensor.detach()
         if mask.dim() == 3 and mask.shape[0] == 1:
             mask = mask.squeeze(0)
@@ -899,6 +1743,134 @@ class SamService:
             )
         return prompts
 
+    @staticmethod
+    def _score_to_float(scores, index: int) -> Optional[float]:
+        if scores is None:
+            return None
+        try:
+            if torch.is_tensor(scores):
+                if index >= int(scores.shape[0]):
+                    return None
+                return float(scores[index].detach().float().cpu().item())
+            score_array = np.asarray(scores).reshape(-1)
+            if index >= int(score_array.shape[0]):
+                return None
+            return float(score_array[index])
+        except (TypeError, ValueError, IndexError):
+            return None
+
+    @torch.inference_mode()
+    def _predict_sam3_image(
+        self,
+        *,
+        image: str,
+        image_type: str,
+        model_id: str,
+        points: list,
+        box,
+        multimask_output: bool,
+    ) -> dict:
+        total_started_at = time.perf_counter()
+        load_image_ms = 0.0
+        set_image_ms = 0.0
+        predict_ms = 0.0
+        image_cache_hit = False
+        model_cache_key = (model_id, self.device)
+        model_cached = model_cache_key in self._sam3_image_predictors
+
+        try:
+            with self._lock:
+                predictor_bundle = self._get_sam3_image_predictor(model_id)
+                model = predictor_bundle["model"]
+                processor = predictor_bundle["processor"]
+
+                load_image_started_at = time.perf_counter()
+                rgb_np_img, image_hash = self._load_image(image, image_type)
+                load_image_ms = (time.perf_counter() - load_image_started_at) * 1000
+
+                cached_image = self._sam3_image_cache.get(model_cache_key)
+                image_cache_hit = (
+                    cached_image is not None
+                    and cached_image.get("imageHash") == image_hash
+                    and cached_image.get("state") is not None
+                )
+
+                autocast_context = (
+                    torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+                    if self.device == "cuda"
+                    else contextlib.nullcontext()
+                )
+                with autocast_context:
+                    if image_cache_hit:
+                        state = cached_image["state"]
+                    else:
+                        set_image_started_at = time.perf_counter()
+                        state = processor.set_image(Image.fromarray(rgb_np_img))
+                        set_image_ms = (time.perf_counter() - set_image_started_at) * 1000
+                        self._sam3_image_cache[model_cache_key] = {
+                            "imageHash": image_hash,
+                            "state": state,
+                        }
+
+                    point_coords, point_labels = self._normalize_points(points)
+                    box_array = self._normalize_box(box)
+                    box_prompt = box_array[None, :] if box_array is not None else None
+                    predict_started_at = time.perf_counter()
+                    masks, scores, logits = model.predict_inst(
+                        state,
+                        point_coords=point_coords,
+                        point_labels=point_labels,
+                        box=box_prompt,
+                        multimask_output=multimask_output,
+                    )
+                    predict_ms = (time.perf_counter() - predict_started_at) * 1000
+        except RuntimeError as error:
+            raise SamServiceError(self._format_runtime_error(error, model_id=model_id)) from error
+        except ValueError as error:
+            raise SamServiceError(str(error)) from error
+
+        mask_count = int(masks.shape[0]) if hasattr(masks, "shape") else len(masks or [])
+        encode_started_at = time.perf_counter()
+        candidates = []
+        for index in range(mask_count):
+            binary_mask = self._sam3_mask_to_numpy(masks[index])
+            candidates.append(
+                {
+                    "id": f"{model_id}-{image_hash[:12]}-image-{index}",
+                    "index": index,
+                    "mask": self._mask_to_data_url(binary_mask),
+                    "score": self._score_to_float(scores, index),
+                    "promptType": "box" if box is not None else "point",
+                }
+            )
+        candidates = self._sort_candidates_by_score(candidates)
+        encode_ms = (time.perf_counter() - encode_started_at) * 1000
+        total_ms = (time.perf_counter() - total_started_at) * 1000
+
+        return {
+            "modelId": model_id,
+            "imageHash": image_hash,
+            "width": int(rgb_np_img.shape[1]),
+            "height": int(rgb_np_img.shape[0]),
+            "candidates": candidates,
+            "logitsShape": list(logits.shape) if hasattr(logits, "shape") else None,
+            "performance": {
+                "device": self.device,
+                "modelCached": model_cached,
+                "imageCacheHit": image_cache_hit,
+                "autocast": "cuda.bfloat16" if self.device == "cuda" else None,
+                "imageMegapixels": round(
+                    float(rgb_np_img.shape[0] * rgb_np_img.shape[1]) / 1_000_000,
+                    3,
+                ),
+                "loadImageMs": round(load_image_ms, 2),
+                "setImageMs": round(set_image_ms, 2),
+                "predictMs": round(predict_ms, 2),
+                "encodeMs": round(encode_ms, 2),
+                "totalMs": round(total_ms, 2),
+            },
+        }
+
     @torch.inference_mode()
     def predict(
         self,
@@ -912,6 +1884,16 @@ class SamService:
     ) -> dict:
         if not points and box is None:
             raise SamServiceError("At least one point or box prompt is required.")
+        model_status = self._get_model_status(model_id)
+        if model_status.get("family") == "sam3":
+            return self._predict_sam3_image(
+                image=image,
+                image_type=image_type,
+                model_id=model_id,
+                points=points,
+                box=box,
+                multimask_output=multimask_output,
+            )
 
         total_started_at = time.perf_counter()
         load_image_ms = 0.0
@@ -948,7 +1930,7 @@ class SamService:
                 )
                 predict_ms = (time.perf_counter() - predict_started_at) * 1000
         except RuntimeError as error:
-            raise SamServiceError(self._format_runtime_error(error)) from error
+            raise SamServiceError(self._format_runtime_error(error, model_id=model_id)) from error
 
         encode_started_at = time.perf_counter()
         candidates = []
@@ -1002,6 +1984,11 @@ class SamService:
         points: list,
         box,
         objects: Optional[list] = None,
+        text: Optional[str] = None,
+        language: str = "auto",
+        prompt_source: str = "manual",
+        prompt_color: Optional[dict] = None,
+        prompt_noun: Optional[dict] = None,
         max_frames: Optional[int],
         reverse: bool,
         offload_video_to_cpu: bool,
@@ -1010,6 +1997,32 @@ class SamService:
         mask_output_dir: Optional[str] = None,
         progress_callback: Optional[Callable[..., None]] = None,
     ) -> dict:
+        model_status = self._get_video_model_status(model_id)
+        if model_status.get("family") == "sam3":
+            return self._propagate_sam3_video(
+                frame_dir=frame_dir,
+                video_path=video_path,
+                input_type=input_type,
+                model_id=model_id,
+                frame_index=frame_index,
+                object_id=object_id,
+                points=points,
+                box=box,
+                objects=objects,
+                text=text,
+                language=language,
+                prompt_source=prompt_source,
+                prompt_color=prompt_color,
+                prompt_noun=prompt_noun,
+                max_frames=max_frames,
+                reverse=reverse,
+                offload_video_to_cpu=offload_video_to_cpu,
+                offload_state_to_cpu=offload_state_to_cpu,
+                response_type=response_type,
+                mask_output_dir=mask_output_dir,
+                progress_callback=progress_callback,
+            )
+
         self._emit_progress(
             progress_callback,
             status="queued",
@@ -1233,7 +2246,7 @@ class SamService:
                     progress=1,
                 )
         except RuntimeError as error:
-            raise SamServiceError(self._format_runtime_error(error)) from error
+            raise SamServiceError(self._format_runtime_error(error, model_id=model_id)) from error
         finally:
             if staging_root is not None:
                 shutil.rmtree(staging_root, ignore_errors=True)
@@ -1366,7 +2379,7 @@ class SamService:
                         if output is None:
                             output = candidate_output
         except RuntimeError as error:
-            raise SamServiceError(self._format_runtime_error(error)) from error
+            raise SamServiceError(self._format_runtime_error(error, model_id=model_id)) from error
         except ValueError as error:
             raise SamServiceError(str(error)) from error
 

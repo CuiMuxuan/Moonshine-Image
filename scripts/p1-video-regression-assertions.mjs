@@ -30,6 +30,26 @@ function assertAbsentPattern({ file, description, pattern }) {
   console.log(`PASS  ${description}`);
 }
 
+function assertFunctionBodyAbsent({ file, functionName, description, forbidden }) {
+  const content = readText(file);
+  const marker = `    def ${functionName}(`;
+  const start = content.indexOf(marker);
+  if (start < 0) {
+    throw new Error(`Assertion failed: ${description}\nFile: ${file}\nMissing function: ${functionName}`);
+  }
+  const nextFunction = content.indexOf("\n    def ", start + marker.length);
+  const body = content.slice(start, nextFunction < 0 ? content.length : nextFunction);
+  const found = forbidden.find((pattern) =>
+    pattern instanceof RegExp ? pattern.test(body) : body.includes(pattern)
+  );
+  if (found) {
+    throw new Error(
+      `Assertion failed: ${description}\nFile: ${file}\nFunction: ${functionName}\nForbidden: ${found}`
+    );
+  }
+  console.log(`PASS  ${description}`);
+}
+
 function assertOrder({ file, description, before, after }) {
   const content = readText(file);
   const beforeIndex = content.indexOf(before);
@@ -309,6 +329,64 @@ function runAssertions() {
     file: "server/moonshine_server/api.py",
     description: "Backend video batch keeps SLBR in the no-mask branch and sends LaMa/MAT through ModelManager mask inpaint",
     pattern: /(?=[\s\S]*model_id = str\(req\.model_id or "lama"\)\.strip\(\)\.lower\(\) or "lama")(?=[\s\S]*if model_id == "slbr":[\s\S]*slbr_runner = self\._get_slbr_runner\(\))(?=[\s\S]*if model_id == "slbr":[\s\S]*slbr_runner\.infer_bgr)(?=[\s\S]*else:[\s\S]*mask = self\._load_mask_from_path)(?=[\s\S]*processed_bgr = self\.model_manager\(image, mask, inpaint_req\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/moonshine/sam_service.py",
+    description: "SAM service can explicitly release cached predictors and image states before processing models run",
+    pattern: /(?=[\s\S]*def release\(self, model_id: Optional\[str\] = None\) -> dict:)(?=[\s\S]*"_predictors", "predictors")(?=[\s\S]*"_sam3_image_predictors", "sam3ImagePredictors")(?=[\s\S]*"_video_predictors", "videoPredictors")(?=[\s\S]*"_text_predictors", "textPredictors")(?=[\s\S]*"_image_cache", "imageCache")(?=[\s\S]*"_sam3_image_cache", "sam3ImageCache")(?=[\s\S]*"_text_image_cache", "textImageCache")(?=[\s\S]*gc\.collect\(\))(?=[\s\S]*torch_gc\(\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/api.py",
+    description: "Backend releases SAM runtime before image and video processing models run, but skips active SAM video jobs",
+    pattern: /(?=[\s\S]*def _release_sam_runtime\(self, \*, reason: str, force: bool = False\):)(?=[\s\S]*sam_release_before_processing)(?=[\s\S]*sam_video_task_manager\.has_active_tasks\(\))(?=[\s\S]*service\.release\(\))(?=[\s\S]*def api_inpaint[\s\S]*_release_sam_runtime_before_processing\("single_image_inpaint"\)[\s\S]*self\.model_manager)(?=[\s\S]*def api_batch_inpaint[\s\S]*_release_sam_runtime_before_processing\("batch_inpaint"\)[\s\S]*self\.model_manager)(?=[\s\S]*def api_video_batch_inpaint[\s\S]*_release_sam_runtime_before_processing\("video_batch_inpaint"\)[\s\S]*if model_id == "slbr")[\s\S]*/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/moonshine/sam_video_tasks.py",
+    description: "SAM video task manager exposes active-task state so processing cannot unload a running predictor",
+    pattern: /def has_active_tasks\(self\) -> bool:[\s\S]*task\.status not in \{"completed", "failed", "canceled"\}/,
+  });
+  assertAbsentPattern({
+    file: "server/moonshine_server/api.py",
+    description: "SAM video sync propagation endpoint keeps cached predictors after completion",
+    pattern: /def api_moonshine_sam_video_propagate[\s\S]*?finally:\s*\r?\n\s*torch_gc\(\)[\s\S]*?return JSONResponse\(content=jsonable_encoder\(result\)\)/,
+  });
+  assertAbsentPattern({
+    file: "server/moonshine_server/api.py",
+    description: "SAM video background job keeps cached predictors after completion",
+    pattern: /def _run_sam_video_propagate_task[\s\S]*?finally:\s*\r?\n\s*torch_gc\(\)[\s\S]*?def api_moonshine_sam_video_propagate_job_create/,
+  });
+  for (const functionName of [
+    "api_moonshine_sam_predict",
+    "api_moonshine_sam_text_predict",
+    "api_moonshine_sam_video_propagate",
+    "_run_sam_video_propagate_task",
+  ]) {
+    assertFunctionBodyAbsent({
+      file: "server/moonshine_server/api.py",
+      functionName,
+      description: `${functionName} keeps SAM predictors loaded after SAM completion`,
+      forbidden: [/_release_sam_runtime/, /service\.release\(/, /torch_gc\(\)/],
+    });
+  }
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video SAM3 CPU risk gating uses global CUDA diagnostics cache",
+    pattern: /(?=[\s\S]*import \{ useRuntimeDiagnosticsStore \} from "src\/stores\/runtimeDiagnostics")(?=[\s\S]*const runtimeDiagnosticsStore = useRuntimeDiagnosticsStore\(\))(?=[\s\S]*const samVideoRuntimeDevice = computed\(\(\) => \{[\s\S]*configStore\.config\.general\?\.launchMode !== "cuda"[\s\S]*!runtimeDiagnosticsStore\.hasCudaStatus \|\| runtimeDiagnosticsStore\.cudaRefreshing[\s\S]*runtimeDiagnosticsStore\.cudaAvailable \? "cuda" : "cpu"[\s\S]*requestSamVideoCpuRiskConfirmation[\s\S]*samVideoRuntimeDevice\.value === "cuda")[\s\S]*/,
+  });
+  assertAbsentPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video SAM3 CPU risk gating no longer reads stale model registry CUDA status",
+    pattern: /modelRegistryStore\.cuda\?\.cuda_available/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/moonshine/sam_service.py",
+    description: "SAM3.1 video propagation writes prompt-frame masks before streaming and records graceful early-stop diagnostics",
+    pattern: /(?=[\s\S]*seen_frame_indices = set\(\))(?=[\s\S]*prompt_frame_masks = \[\])(?=[\s\S]*_save_video_mask\([\s\S]*safe_frame_index[\s\S]*int\(obj_id\))(?=[\s\S]*frames\.append\(\{"frameIndex": safe_frame_index, "masks": prompt_frame_masks\}\))(?=[\s\S]*_is_sam3_video_tracker_exhausted_error)(?=[\s\S]*earlyStopReason)/,
+  });
+  assertPattern({
+    file: "scripts/verify_sam3_video_smoke.py",
+    description: "SAM3 video smoke can optionally verify real MP4 videoPath input with a bounded box propagation case",
+    pattern: /(?=[\s\S]*"--video-path")(?=[\s\S]*build_default_video_box)(?=[\s\S]*input_type="videoPath")(?=[\s\S]*"real_video_box")(?=[\s\S]*--video-max-frames)[\s\S]*/,
   });
 
   logSection("SAM2 Video Workflow");
@@ -595,7 +673,7 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "Fullscreen SAM smart-selection toolbar provides native tooltips for fullscreen mode",
-    pattern: /(?=[\s\S]*data-testid="video-sam-fullscreen-settings-button")(?=[\s\S]*aria-label="智能选区设置")(?=[\s\S]*title="智能选区设置")(?=[\s\S]*data-testid="video-sam-fullscreen-select-tool-button")(?=[\s\S]*aria-label="点选\/框选对象：单击点选，拖拽框选")(?=[\s\S]*title="点选\/框选对象：单击点选，拖拽框选")(?=[\s\S]*data-testid="video-sam-fullscreen-candidate-button")(?=[\s\S]*aria-label="候选蒙版列表")(?=[\s\S]*title="候选蒙版列表")(?=[\s\S]*aria-label="清空提示、候选对象和传播结果")(?=[\s\S]*title="清空提示、候选对象和传播结果")(?=[\s\S]*aria-label="运行智能选区")(?=[\s\S]*title="运行智能选区")(?=[\s\S]*aria-label="重置视图")(?=[\s\S]*title="重置视图")(?=[\s\S]*data-testid="video-sam-fullscreen-hold-hide-button")(?=[\s\S]*aria-label="按住隐藏全部蒙版")(?=[\s\S]*title="按住隐藏全部蒙版")[\s\S]*/,
+    pattern: /(?=[\s\S]*data-testid="video-sam-fullscreen-settings-button")(?=[\s\S]*aria-label="智能选区设置")(?=[\s\S]*title="智能选区设置")(?=[\s\S]*data-testid="video-sam-fullscreen-select-tool-button")(?=[\s\S]*:aria-label="samVideoSelectToolTooltip")(?=[\s\S]*:title="samVideoSelectToolTooltip")(?=[\s\S]*<q-tooltip>\{\{ samVideoSelectToolTooltip \}\}<\/q-tooltip>)(?=[\s\S]*data-testid="video-sam-fullscreen-candidate-button")(?=[\s\S]*aria-label="候选蒙版列表")(?=[\s\S]*title="候选蒙版列表")(?=[\s\S]*aria-label="清空提示、候选对象和传播结果")(?=[\s\S]*title="清空提示、候选对象和传播结果")(?=[\s\S]*aria-label="运行智能选区")(?=[\s\S]*title="运行智能选区")(?=[\s\S]*aria-label="重置视图")(?=[\s\S]*title="重置视图")(?=[\s\S]*data-testid="video-sam-fullscreen-hold-hide-button")(?=[\s\S]*aria-label="按住隐藏全部蒙版")(?=[\s\S]*title="按住隐藏全部蒙版")[\s\S]*/,
   });
   assertAbsentPattern({
     file: "src/pages/VideoPage.vue",
@@ -605,7 +683,7 @@ function runAssertions() {
   assertPattern({
     file: "src/components/video/VideoMaskEditor.vue",
     description: "Video mask editor treats SAM smart-selection as a special mask track with smart tools and candidate object list",
-    pattern: /(?=[\s\S]*videoStore\.selectedMask\?\.type === 'samVideo')(?=[\s\S]*label="轨道名称")(?=[\s\S]*智能选区轨道使用 SAM2\.1 点选\/框选传播生成)(?=[\s\S]*data-testid="video-sam-smart-tool-section")(?=[\s\S]*sam-video-tool-group)(?=[\s\S]*data-testid="video-sam-settings-button")(?=[\s\S]*data-testid="video-sam-select-tool-button")(?=[\s\S]*data-testid="video-sam-clear-result-button")(?=[\s\S]*清空提示、候选对象和传播结果)(?=[\s\S]*运行智能选区)(?=[\s\S]*data-testid="video-sam-prompt-list")(?=[\s\S]*data-testid="video-sam-candidate-list-section")(?=[\s\S]*候选蒙版列表)(?=[\s\S]*setSamVideoObjectEnabled)(?=[\s\S]*@click\.stop)(?=[\s\S]*remove-sam-video-object)[\s\S]*/,
+    pattern: /(?=[\s\S]*videoStore\.selectedMask\?\.type === 'samVideo')(?=[\s\S]*label="轨道名称")(?=[\s\S]*智能选区轨道使用 SAM 点选\/框选或文本传播生成)(?=[\s\S]*data-testid="video-sam-smart-tool-section")(?=[\s\S]*sam-video-tool-group)(?=[\s\S]*data-testid="video-sam-settings-button")(?=[\s\S]*data-testid="video-sam-select-tool-button")(?=[\s\S]*data-testid="video-sam-clear-result-button")(?=[\s\S]*清空提示、候选对象和传播结果)(?=[\s\S]*运行智能选区)(?=[\s\S]*data-testid="video-sam-prompt-list")(?=[\s\S]*data-testid="video-sam-candidate-list-section")(?=[\s\S]*候选蒙版列表)(?=[\s\S]*setSamVideoObjectEnabled)(?=[\s\S]*@click\.stop)(?=[\s\S]*remove-sam-video-object)[\s\S]*/,
   });
   assertPattern({
     file: "src/components/video/VideoPreviewOverlay.vue",

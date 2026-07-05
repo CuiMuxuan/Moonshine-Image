@@ -65,12 +65,23 @@ function assert(condition, message) {
   }
 }
 
+function resolveSpawnCommand(command, args = []) {
+  if (isWindows && /\.cmd$/i.test(command)) {
+    return {
+      command: process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", command, ...args],
+    };
+  }
+  return { command, args };
+}
+
 function runCommand({ label, command, args = [] }) {
   console.log(`\n=== ${label} ===`);
-  const result = spawnSync(command, args, {
+  const spawnRequest = resolveSpawnCommand(command, args);
+  const result = spawnSync(spawnRequest.command, spawnRequest.args, {
     cwd: repoRoot,
     stdio: "inherit",
-    shell: isWindows && /\.cmd$/i.test(command),
+    shell: false,
   });
 
   if (result.error) {

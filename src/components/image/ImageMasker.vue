@@ -7,6 +7,7 @@
   >
     <canvas
       ref="maskCanvas"
+      data-testid="image-mask-canvas"
       class="absolute"
       :class="{
         'cursor-none':
@@ -173,11 +174,11 @@
         <div class="sam-toolbar-controls">
           <div class="sam-tool-main-group">
             <q-btn
-              :color="props.samAvailable || props.samTextAvailable ? 'positive' : 'grey-6'"
+              :color="selectedSamModelHasRunnableFeature ? 'positive' : 'grey-6'"
               text-color="white"
               icon="center_focus_strong"
               :loading="samPredicting"
-              :disable="!props.samImage || (!props.samAvailable && !props.samTextAvailable)"
+              :disable="!props.samImage || !selectedSamModelHasRunnableFeature"
               :size="toolbarButtonSize"
               class="sam-control-button sam-control-button-status"
             >
@@ -243,11 +244,11 @@
                     options-dense
                     label="默认模型"
                     class="sam-model-select"
-                    :disable="samPredicting || (!props.samAvailable && !props.samTextAvailable)"
+                    :disable="samPredicting || !resolvedSamModelOptions.length"
                     @update:model-value="updateSelectedSamModel"
                   />
                   <div v-else class="sam-empty-state">
-                    请先在模型管理中安装 SAM1/SAM2.1 点选模型；文本选区需安装 SAM3 文本模型。
+                    请先在模型管理中安装支持图片点选/框选或文本智选的 SAM 模型。
                   </div>
                   <div class="sam-settings-hint">{{ samStatusText }}</div>
                   <div v-if="samAutoExpandNotice" class="sam-auto-expand-notice">
@@ -345,6 +346,7 @@
                         color="primary"
                         icon="image_search"
                         label="检索当前图片"
+                        data-testid="sam-text-current-button"
                         :disable="!canRunSamTextPrediction"
                         :loading="samTextPredicting"
                         @click="runSamTextPrediction"
@@ -355,6 +357,7 @@
                         color="primary"
                         icon="select_all"
                         label="检索选中图片"
+                        data-testid="sam-text-batch-button"
                         :disable="!canRunSamBatchTextPrediction"
                         :loading="samTextBatchRunning"
                         @click="requestSamTextBatchPrediction"
@@ -508,6 +511,32 @@
         </div>
       </q-bar>
     </div>
+
+    <q-dialog v-model="samCpuRiskDialogOpen" persistent class="sam-cpu-risk-dialog">
+      <q-card class="sam-cpu-risk-card">
+        <q-card-section>
+          <div class="text-subtitle1 text-weight-medium">CPU 运行风险确认</div>
+          <div class="q-mt-sm text-body2">
+            本功能建议使用CUDA启动，当前使用CPU启动，可能导致使用过程中CPU资源占用过多、设备卡顿明显等现象，您确认使用CPU启动吗？
+          </div>
+          <q-checkbox
+            v-model="samCpuRiskAcknowledged"
+            class="q-mt-md"
+            dense
+            label="我已知晓，且承诺自行承担风险。"
+          />
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn flat label="取消" @click="resolveSamCpuRiskDialog(false)" />
+          <q-btn
+            color="primary"
+            label="确认"
+            :disable="!samCpuRiskAcknowledged"
+            @click="resolveSamCpuRiskDialog(true)"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
   </div>
 </template>
 
@@ -624,6 +653,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  samRuntimeDevice: {
+    type: String,
+    default: "cpu",
+  },
   samImage: {
     type: String,
     default: "",
@@ -638,7 +671,7 @@ const props = defineProps({
   },
   samTextModelId: {
     type: String,
-    default: "sam3",
+    default: "sam3_1_multiplex",
   },
   samTextBatchTargetCount: {
     type: Number,
@@ -812,6 +845,9 @@ const samPointerStart = ref(null);
 const samDragPoint = ref(null);
 const samPredicting = ref(false);
 const samTextPredicting = ref(false);
+const samCpuRiskDialogOpen = ref(false);
+const samCpuRiskAcknowledged = ref(false);
+let samCpuRiskDialogResolve = null;
 const samTextPrompt = ref("");
 const samTextColor = ref("");
 const samTextNoun = ref("");
@@ -964,13 +1000,18 @@ const samEraseTooltip = computed(() => {
 });
 
 const samStatusText = computed(() => {
-  if (!props.samAvailable && !props.samTextAvailable) {
-    return "请先安装 SAM1/SAM2.1 点选模型或 SAM3 文本模型";
+  if (!props.samImage) return "请先选择图片";
+  if (!selectedSamModelHasRunnableFeature.value) {
+    return "请先安装支持图片点选/框选或文本智选的 SAM 模型";
   }
   if (samPredicting.value) return "正在加载模型或计算图片特征";
   if (samToolMode.value === SAM_TOOL_MODES.ERASE) return "拖动擦除智能选区结果";
   if (samCandidates.value.length) return `${samCandidates.value.length} 个候选`;
-  if (selectedSamModelSupportsText.value) return "输入文本提示后检索当前图片";
+  if (selectedSamModelSupportsPointBox.value && selectedSamModelCanRunText.value) {
+    return "单击点选，拖拽框选；也可在设置中使用文本智选";
+  }
+  if (selectedSamModelSupportsPointBox.value) return "单击点选，拖拽框选";
+  if (selectedSamModelCanRunText.value) return "当前模型只能文本智选，请在设置中输入文本提示";
   return "单击点选，拖拽框选";
 });
 
@@ -998,6 +1039,9 @@ const samToolToggleIcon = computed(() =>
 );
 
 const samToolToggleTooltip = computed(() => {
+  if (!selectedSamModelSupportsPointBox.value && selectedSamModelCanRunText.value) {
+    return "当前模型只能文本智选，请在设置中输入文本提示";
+  }
   if (samToolMode.value === SAM_TOOL_MODES.ERASE) {
     return "当前为擦除智能选区，点击切回点选/框选";
   }
@@ -1077,6 +1121,7 @@ const normalizeSamModelOptions = (items = []) =>
       label: item.label || item.id || item.value,
       value: item.value || item.id,
       family: item.family || "",
+      enabledCapabilities: item.enabledCapabilities || null,
       disable: Boolean(item.disable),
     }));
 
@@ -1107,9 +1152,27 @@ const selectedSamModelFamily = computed(() =>
   selectedSamModelOption.value?.family ||
   (["sam3", "sam3_1_multiplex"].includes(effectiveSamModelId.value) ? "sam3" : "")
 );
-const selectedSamModelSupportsText = computed(() => selectedSamModelFamily.value === "sam3");
-const selectedSamModelSupportsPointBox = computed(() =>
-  ["sam", "sam2"].includes(selectedSamModelFamily.value)
+const selectedSamEnabledCapabilities = computed(
+  () => selectedSamModelOption.value?.enabledCapabilities || null
+);
+const selectedSamModelSupportsText = computed(() => {
+  const capabilities = selectedSamEnabledCapabilities.value;
+  if (capabilities) return capabilities.imageText === true;
+  return selectedSamModelFamily.value === "sam3";
+});
+const selectedSamModelSupportsPointBox = computed(() => {
+  const capabilities = selectedSamEnabledCapabilities.value;
+  if (capabilities) {
+    return capabilities.imagePoint === true || capabilities.imageBox === true;
+  }
+  if (effectiveSamModelId.value === "sam3_1_multiplex") return false;
+  return ["sam", "sam2", "sam3"].includes(selectedSamModelFamily.value);
+});
+const selectedSamModelCanRunText = computed(
+  () => selectedSamModelSupportsText.value && Boolean(props.samTextAvailable)
+);
+const selectedSamModelHasRunnableFeature = computed(
+  () => selectedSamModelSupportsPointBox.value || selectedSamModelCanRunText.value
 );
 const canRunSamTextPrediction = computed(
   () =>
@@ -1155,7 +1218,36 @@ const getTextModelId = () => {
   if (selectedSamModelSupportsText.value && effectiveSamModelId.value) {
     return effectiveSamModelId.value;
   }
-  return props.samTextModelId || "sam3";
+  return props.samTextModelId || "sam3_1_multiplex";
+};
+
+const resolveSamCpuRiskDialog = (confirmed) => {
+  const resolver = samCpuRiskDialogResolve;
+  samCpuRiskDialogResolve = null;
+  samCpuRiskDialogOpen.value = false;
+  resolver?.(Boolean(confirmed && samCpuRiskAcknowledged.value));
+};
+
+const requestSamCpuRiskConfirmation = async (modelId) => {
+  const normalizedModelId = String(modelId || "").trim();
+  const selectedOption =
+    resolvedSamModelOptions.value.find((option) => option.value === normalizedModelId) ||
+    selectedSamModelOption.value;
+  const family =
+    selectedOption?.family ||
+    (["sam3", "sam3_1_multiplex"].includes(normalizedModelId) ? "sam3" : "");
+  const runtimeDevice = String(props.samRuntimeDevice || "cpu").toLowerCase();
+  if (family !== "sam3" || runtimeDevice === "cuda") {
+    return true;
+  }
+  if (samCpuRiskDialogOpen.value) {
+    return false;
+  }
+  samCpuRiskAcknowledged.value = false;
+  samCpuRiskDialogOpen.value = true;
+  return new Promise((resolve) => {
+    samCpuRiskDialogResolve = resolve;
+  });
 };
 
 const rememberExecutedSamModel = (modelId) => {
@@ -1990,6 +2082,13 @@ const resolveCurrentSamBaseSnapshot = async () => {
   if (samBaseSnapshotDataUrl.value) {
     return dataUrlToImageData(samBaseSnapshotDataUrl.value, width, height);
   }
+  if (hasSamCandidateLayer()) {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const canvasContext = canvas.getContext("2d", { willReadFrequently: true });
+    return canvasContext ? canvasContext.getImageData(0, 0, width, height) : null;
+  }
   return null;
 };
 
@@ -2292,12 +2391,12 @@ const formatSamCreatedAt = (value) => {
 
 const runSamPrediction = async ({ point = null, box = null } = {}) => {
   if (!props.samImage || samPredicting.value) return;
-  if (!selectedSamModelSupportsPointBox.value || !props.samAvailable || !effectiveSamModelId.value) {
+  if (!selectedSamModelSupportsPointBox.value || !effectiveSamModelId.value) {
     $q.notify({
       type: "warning",
       message: selectedSamModelSupportsText.value
-        ? "当前 SAM3 模型不支持点选/框选，请使用文本智选"
-        : "请先在模型管理中安装 SAM1/SAM2.1 点选模型",
+        ? "当前模型不支持点选/框选，可在设置中使用文本智选"
+        : "当前 SAM 模型不支持点选/框选",
       position: "top",
     });
     return;
@@ -2305,6 +2404,9 @@ const runSamPrediction = async ({ point = null, box = null } = {}) => {
   closeSamToolbarPopups();
   ensureSamBaseSnapshot();
   const runModelId = effectiveSamModelId.value;
+  if (!(await requestSamCpuRiskConfirmation(runModelId))) {
+    return;
+  }
   rememberExecutedSamModel(runModelId);
   samPredicting.value = true;
   try {
@@ -2369,6 +2471,9 @@ const runSamTextPrediction = async () => {
   closeSamToolbarPopups();
   ensureSamBaseSnapshot();
   const runModelId = getTextModelId();
+  if (!(await requestSamCpuRiskConfirmation(runModelId))) {
+    return;
+  }
   rememberExecutedSamModel(runModelId);
   samPredicting.value = true;
   samTextPredicting.value = true;
@@ -2414,15 +2519,19 @@ const runSamTextPrediction = async () => {
   }
 };
 
-const requestSamTextBatchPrediction = () => {
+const requestSamTextBatchPrediction = async () => {
   const promptSpec = samTextPromptSpec.value;
   const prompt = promptSpec.text;
   if (!canRunSamBatchTextPrediction.value || !prompt) return;
   closeSamToolbarPopups();
+  const runModelId = getTextModelId();
+  if (!(await requestSamCpuRiskConfirmation(runModelId))) {
+    return;
+  }
   emit("sam-text-batch-request", {
     text: prompt,
     language: promptSpec.language,
-    modelId: getTextModelId(),
+    modelId: runModelId,
     promptSource: promptSpec.source,
     promptColor: promptSpec.color,
     promptNoun: promptSpec.noun,
@@ -2568,7 +2677,8 @@ const clearSamCandidates = async () => {
   saveSamContextSession();
 };
 
-const clearSamContextSession = async (contextId = getSamContextId()) => {
+const clearSamContextSession = async (contextId = getSamContextId(), options = {}) => {
+  const { emit = true } = options || {};
   const targetContextId = buildSamContextId(contextId);
   if (!targetContextId) return false;
   clearSamRenderCacheContext(targetContextId, samSessionByContext);
@@ -2594,7 +2704,9 @@ const clearSamContextSession = async (contextId = getSamContextId()) => {
   if (ctx.value && maskCanvas.value) {
     ctx.value.clearRect(0, 0, maskCanvas.value.width, maskCanvas.value.height);
     saveInitialState();
-    emitMask();
+    if (emit) {
+      emitMask();
+    }
   }
   return true;
 };
@@ -3478,9 +3590,15 @@ watch(
   async () => {
     saveSamContextSession();
     restoreSamContextSession();
+    pendingMaskSyncDataUrl.value = "";
+    lastEmittedMaskDataUrl.value = "";
     await nextTick();
     if (samCandidates.value.length && ctx.value && maskCanvas.value) {
       scheduleStableMaskComposite();
+      return;
+    }
+    if (ctx.value && maskCanvas.value) {
+      updateMask(props.mask);
     }
   },
   { immediate: true }
@@ -3799,6 +3917,11 @@ defineExpose({
   line-height: 1.4;
   color: rgba(5, 95, 70, 0.96);
   background: rgba(16, 185, 129, 0.12);
+}
+
+.sam-cpu-risk-card {
+  width: min(420px, calc(100vw - 32px));
+  border-radius: 8px;
 }
 
 .sam-auto-expand-notice {

@@ -97,6 +97,7 @@ class ApiConfig(BaseModel):
     disable_nsfw_checker: bool
     local_files_only: bool
     cpu_textencoder: bool
+    sam_release_before_processing: bool = True
     device: Device
     input: Optional[Path]
     mask_dir: Optional[Path]
@@ -390,23 +391,28 @@ class SamVideoObjectPrompt(BaseModel):
 class MoonshineSamVideoPropagateRequest(BaseModel):
     input_type: Literal["jpegFrameDirectory", "videoPath"] = Field(
         "jpegFrameDirectory",
-        description="SAM2.1 video input kind",
+        description="SAM video input kind",
     )
     frame_dir: Optional[str] = Field(None, description="Directory containing JPEG video frames")
     video_path: Optional[str] = Field(None, description="Local video path to stage as JPEG frames")
-    model_id: str = Field("sam2_1_hiera_large", description="SAM2.1 model id")
+    model_id: str = Field("sam2_1_hiera_large", description="SAM video model id")
     frame_index: int = Field(0, ge=0)
     object_id: int = Field(1, ge=1)
     points: List[SamPromptPoint] = Field(default_factory=list)
     box: Optional[SamPromptBox] = None
     objects: List[SamVideoObjectPrompt] = Field(default_factory=list)
+    text: Optional[str] = Field(None, description="SAM3/SAM3.1 video text prompt")
+    language: Literal["auto", "zh", "en"] = Field("auto")
+    prompt_source: str = Field("manual")
+    prompt_color: Optional[dict] = None
+    prompt_noun: Optional[dict] = None
     max_frames: Optional[int] = Field(None, ge=1)
     reverse: bool = Field(False)
     offload_video_to_cpu: bool = Field(True)
     offload_state_to_cpu: bool = Field(True)
     response_type: Literal["base64", "path"] = Field(
         "base64",
-        description="Return SAM2.1 masks as base64 data URLs or local file paths",
+        description="Return SAM video masks as base64 data URLs or local file paths",
     )
     mask_output_dir: Optional[str] = Field(
         None,
@@ -421,8 +427,13 @@ class MoonshineSamVideoPropagateRequest(BaseModel):
             raise ValueError("video_path is required when input_type is videoPath")
         if values.response_type == "path" and not values.mask_output_dir:
             raise ValueError("mask_output_dir is required when response_type is path")
-        if not values.objects and not values.points and values.box is None:
-            raise ValueError("At least one point or box prompt is required")
+        if (
+            not values.objects
+            and not values.points
+            and values.box is None
+            and not str(values.text or "").strip()
+        ):
+            raise ValueError("At least one point, box, or text prompt is required")
         return values
 
 

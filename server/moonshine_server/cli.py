@@ -117,6 +117,10 @@ def start(
     disable_nsfw_checker: bool = Option(False, help="Compatibility option; ignored by erase models."),
     cpu_textencoder: bool = Option(False, help="Compatibility option; ignored by erase models."),
     local_files_only: bool = Option(False, help="Run without downloading remote model files."),
+    sam_release_before_processing: bool = Option(
+        True,
+        help="Release cached SAM predictors before running image/video processing models.",
+    ),
     device: Device = Option(Device.cpu),
     input: Optional[Path] = Option(None, help=INPUT_HELP),
     mask_dir: Optional[Path] = Option(
@@ -204,6 +208,7 @@ def start(
         disable_nsfw_checker=disable_nsfw_checker,
         local_files_only=local_files_only,
         cpu_textencoder=cpu_textencoder if device == Device.cuda else False,
+        sam_release_before_processing=sam_release_before_processing,
         device=device,
         input=input,
         mask_dir=mask_dir,

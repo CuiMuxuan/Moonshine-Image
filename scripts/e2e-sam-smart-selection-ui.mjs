@@ -17,6 +17,7 @@ const isWindows = process.platform === "win32";
 const npmCommand = isWindows ? "npm.cmd" : "npm";
 const distDir = path.join(repoRoot, "dist", "spa");
 const indexHtmlPath = path.join(distDir, "index.html");
+let lastSamPredictRequest = null;
 
 const tinyPngBytes = Uint8Array.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
@@ -73,12 +74,23 @@ function assert(condition, message) {
   }
 }
 
+function resolveSpawnCommand(command, args = []) {
+  if (isWindows && /\.cmd$/i.test(command)) {
+    return {
+      command: process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", command, ...args],
+    };
+  }
+  return { command, args };
+}
+
 function runCommand({ label, command, args = [] }) {
   console.log(`\n=== ${label} ===`);
-  const result = spawnSync(command, args, {
+  const spawnRequest = resolveSpawnCommand(command, args);
+  const result = spawnSync(spawnRequest.command, spawnRequest.args, {
     cwd: repoRoot,
     stdio: "inherit",
-    shell: isWindows && /\.cmd$/i.test(command),
+    shell: false,
   });
 
   if (result.error) {
@@ -89,6 +101,24 @@ function runCommand({ label, command, args = [] }) {
   if (result.status !== 0) {
     throw new Error(`Command failed (${label}): ${command} ${args.join(" ")}`);
   }
+}
+
+function waitForCondition(predicate, timeoutMs, description) {
+  const startedAt = Date.now();
+  return new Promise((resolve, reject) => {
+    const poll = () => {
+      if (predicate()) {
+        resolve();
+        return;
+      }
+      if (Date.now() - startedAt > timeoutMs) {
+        reject(new Error(`Timed out waiting for ${description}`));
+        return;
+      }
+      setTimeout(poll, 50);
+    };
+    poll();
+  });
 }
 
 function ensureBuildArtifacts() {
@@ -197,7 +227,7 @@ function createMockConfig() {
     schemaVersion: 5,
     general: {
       backendPort: 8091,
-      launchMode: "cpu",
+      launchMode: "cuda",
       modelDir: "",
       backendProjectPath: "C:\\Moonshine-E2E",
       defaultModel: "lama",
@@ -221,7 +251,7 @@ function createMockConfig() {
       defaultSam1Model: "sam_vit_b",
       defaultSam2Model: "sam2_1_hiera_large",
       defaultSam3Model: "sam3_1_multiplex",
-      imageSmartSelectionDefaultModel: "sam_vit_b",
+      imageSmartSelectionDefaultModel: "sam3",
       videoSmartSelectionDefaultModel: "sam2_1_hiera_large",
     },
     fileManagement: {
@@ -329,7 +359,7 @@ async function installApiMocks(page) {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ cuda_available: false, device: "cpu" }),
+      body: JSON.stringify({ cuda_available: true, torch_cuda_available: true, cuda_device_count: 1, device: "cuda" }),
     });
   });
   await page.route("**/api/v1/moonshine/models**", async (route) => {
@@ -339,7 +369,7 @@ async function installApiMocks(page) {
       body: JSON.stringify({
         currentModel: "lama",
         modelDir: "C:\\Moonshine-E2E\\models",
-        cuda: { cuda_available: false },
+        cuda: { cuda_available: true, torch_cuda_available: true, cuda_device_count: 1 },
         models: [
           {
             id: "lama",
@@ -358,6 +388,15 @@ async function installApiMocks(page) {
             type: "mask",
             installed: true,
             available: true,
+            enabledCapabilities: {
+              imagePoint: true,
+              imageBox: true,
+              imageText: false,
+              videoPoint: false,
+              videoBox: false,
+              videoText: false,
+              videoPropagate: false,
+            },
             runCapabilities: {
               scopes: ["currentImage"],
               maskPrompts: ["point", "box"],
@@ -371,6 +410,15 @@ async function installApiMocks(page) {
             type: "mask",
             installed: true,
             available: true,
+            enabledCapabilities: {
+              imagePoint: true,
+              imageBox: true,
+              imageText: false,
+              videoPoint: true,
+              videoBox: true,
+              videoText: false,
+              videoPropagate: true,
+            },
             runCapabilities: {
               scopes: ["currentImage", "videoFrames"],
               maskPrompts: ["point", "box", "mask"],
@@ -384,9 +432,18 @@ async function installApiMocks(page) {
             type: "mask",
             installed: true,
             available: true,
+            enabledCapabilities: {
+              imagePoint: true,
+              imageBox: true,
+              imageText: true,
+              videoPoint: false,
+              videoBox: true,
+              videoText: true,
+              videoPropagate: true,
+            },
             runCapabilities: {
-              scopes: ["currentImage", "selectedImages"],
-              maskPrompts: ["text"],
+              scopes: ["currentImage", "selectedImages", "videoFrames"],
+              maskPrompts: ["point", "box", "text"],
             },
           },
           {
@@ -397,6 +454,15 @@ async function installApiMocks(page) {
             type: "mask",
             installed: true,
             available: true,
+            enabledCapabilities: {
+              imagePoint: false,
+              imageBox: false,
+              imageText: true,
+              videoPoint: false,
+              videoBox: true,
+              videoText: true,
+              videoPropagate: true,
+            },
             runCapabilities: {
               scopes: ["currentImage", "selectedImages", "videoFrames"],
               maskPrompts: ["text"],
@@ -423,6 +489,62 @@ async function installApiMocks(page) {
           implementedModelIds: ["sam3", "sam3_1_multiplex"],
           pendingModels: [],
           promptTypes: ["text"],
+        },
+      }),
+    });
+  });
+  await page.route("**/api/v1/moonshine/sam/predict", async (route) => {
+    const body = route.request().postDataJSON?.() || {};
+    lastSamPredictRequest = body;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        modelId: body.model_id || "sam3_1_multiplex",
+        imageHash: "e2e-sam-pointbox",
+        width: 1,
+        height: 1,
+        prompt: {
+          type: body.box ? "box" : "point",
+          points: body.points || [],
+          box: body.box || null,
+        },
+        candidates: [
+          {
+            id: "e2e-pointbox-candidate-0",
+            index: 0,
+            mask: `data:image/png;base64,${solidMaskPngBase64}`,
+            score: 0.93,
+            box: { x: 0, y: 0, width: 1, height: 1, x0: 0, y0: 0, x1: 1, y1: 1 },
+            promptType: body.box ? "box" : "point",
+            prompt: {
+              type: body.box ? "box" : "point",
+              points: body.points || [],
+              box: body.box || null,
+            },
+          },
+          {
+            id: "e2e-pointbox-candidate-1",
+            index: 1,
+            mask: `data:image/png;base64,${solidMaskPngBase64}`,
+            score: 0.82,
+            box: { x: 0, y: 0, width: 1, height: 1, x0: 0, y0: 0, x1: 1, y1: 1 },
+            promptType: body.box ? "box" : "point",
+          },
+          {
+            id: "e2e-pointbox-candidate-2",
+            index: 2,
+            mask: `data:image/png;base64,${solidMaskPngBase64}`,
+            score: 0.71,
+            box: { x: 0, y: 0, width: 1, height: 1, x0: 0, y0: 0, x1: 1, y1: 1 },
+            promptType: body.box ? "box" : "point",
+          },
+        ],
+        performance: {
+          device: "cuda",
+          imageCacheHit: false,
+          imageMegapixels: 0.01,
+          totalMs: 10,
         },
       }),
     });
@@ -499,6 +621,7 @@ async function collectSamPanelState(page) {
       textPanelVisible: Boolean(textPanel),
       textPanelText: textPanel?.textContent || "",
       promptVisible: Boolean(prompt),
+      promptValue: input?.value || "",
       promptPlaceholder: input?.getAttribute("placeholder") || "",
       promptDisabled:
         Boolean(input?.disabled) ||
@@ -525,14 +648,613 @@ async function collectSamPanelState(page) {
 }
 
 async function openSamTextMenu(page) {
-  const prompt = page.locator('[data-testid="sam-text-settings-section"] .sam-text-prompt');
-  if (!(await prompt.isVisible().catch(() => false))) {
-    await page.locator('[data-testid="sam-settings-button"]').click();
+  const isPromptVisible = async () =>
+    page.evaluate(() =>
+      Array.from(document.querySelectorAll('[data-testid="sam-text-settings-section"] .sam-text-prompt'))
+        .some((item) => item.getClientRects().length > 0)
+    );
+  const clickVisibleSettingsButton = async () => {
+    const rect = await page.evaluate(() => {
+      const button = Array.from(document.querySelectorAll('[data-testid="sam-settings-button"]'))
+        .find((item) => item.getClientRects().length > 0);
+      if (!button) return null;
+      const { left, top, width, height } = button.getBoundingClientRect();
+      return {
+        x: left + width / 2,
+        y: top + height / 2,
+        width,
+        height,
+      };
+    });
+    if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+    await page.mouse.click(rect.x, rect.y);
+    return true;
+  };
+  try {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (await isPromptVisible()) return;
+      await page.waitForFunction(
+        () =>
+          Array.from(document.querySelectorAll('[data-testid="sam-settings-button"]'))
+            .some((button) => button.getClientRects().length > 0),
+        null,
+        { timeout: 10000 }
+      );
+      await clickVisibleSettingsButton();
+      try {
+        await page.waitForFunction(
+          () =>
+            Array.from(document.querySelectorAll('[data-testid="sam-text-settings-section"] .sam-text-prompt'))
+              .some((item) => item.getClientRects().length > 0),
+          null,
+          { timeout: 1500 }
+        );
+        return;
+      } catch (error) {
+        await page.waitForTimeout(150);
+      }
+    }
+    await page.waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll('[data-testid="sam-text-settings-section"] .sam-text-prompt'))
+          .some((item) => item.getClientRects().length > 0),
+      null,
+      { timeout: 10000 }
+    );
+  } catch (error) {
+    const debugState = await page.evaluate(() => ({
+      snapshot: window.__MOONSHINE_IMAGE_TEST__?.getSnapshot?.(),
+      settingsButtonCount: document.querySelectorAll('[data-testid="sam-settings-button"]').length,
+      visibleSettingsButtonCount: Array.from(document.querySelectorAll('[data-testid="sam-settings-button"]'))
+        .filter((button) => button.getClientRects().length > 0).length,
+      promptCount: document.querySelectorAll('[data-testid="sam-text-settings-section"] .sam-text-prompt').length,
+      visiblePromptCount: Array.from(
+        document.querySelectorAll('[data-testid="sam-text-settings-section"] .sam-text-prompt')
+      ).filter((item) => item.getClientRects().length > 0).length,
+      panelText: document.querySelector(".sam-toolbar")?.textContent || "",
+    }));
+    throw new Error(`Failed to open SAM text menu: ${JSON.stringify(debugState)}`);
   }
-  await page.waitForSelector('[data-testid="sam-text-settings-section"] .sam-text-prompt', {
-    state: "visible",
-    timeout: 10000,
+}
+
+async function fillSamTextPrompt(page, value) {
+  try {
+    await page.waitForFunction(
+      () =>
+        Array.from(
+          document.querySelectorAll('[data-testid="sam-text-settings-section"] .sam-text-prompt input')
+        ).some((input) => input.getClientRects().length > 0 && !input.disabled),
+      null,
+      { timeout: 10000 }
+    );
+  } catch (error) {
+    const debugState = await page.evaluate(() => ({
+      snapshot: window.__MOONSHINE_IMAGE_TEST__?.getSnapshot?.(),
+      inputCount: document.querySelectorAll('[data-testid="sam-text-settings-section"] .sam-text-prompt input').length,
+      visibleInputCount: Array.from(
+        document.querySelectorAll('[data-testid="sam-text-settings-section"] .sam-text-prompt input')
+      ).filter((input) => input.getClientRects().length > 0 && !input.disabled).length,
+    }));
+    throw new Error(`Failed to fill SAM text prompt: ${JSON.stringify(debugState)}`);
+  }
+  await page.evaluate((nextValue) => {
+    const input = Array.from(
+      document.querySelectorAll('[data-testid="sam-text-settings-section"] .sam-text-prompt input')
+    ).find((item) => item.getClientRects().length > 0 && !item.disabled);
+    if (!input) return;
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value"
+    )?.set;
+    setter?.call(input, nextValue);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }, value);
+}
+
+async function drawManualMaskStrokeOnCanvas(page) {
+  const maskCanvas = page.locator('[data-testid="image-mask-canvas"]');
+  await maskCanvas.waitFor({ state: "visible", timeout: 10000 });
+  const canvasBox = await maskCanvas.boundingBox();
+  assert(
+    canvasBox && canvasBox.width > 0 && canvasBox.height > 0,
+    "Image mask canvas should be visible before drawing a regression mask."
+  );
+  const x = canvasBox.x + canvasBox.width / 2;
+  const y = canvasBox.y + canvasBox.height / 2;
+  const dx = Math.max(1, Math.min(12, canvasBox.width / 4));
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + dx, y, { steps: 2 });
+  await page.mouse.up();
+}
+
+async function clickSamTextBatchButton(page) {
+  try {
+    await page.waitForFunction(
+      () => {
+        const button = Array.from(document.querySelectorAll('[data-testid="sam-text-batch-button"]'))
+          .find((item) => item.getClientRects().length > 0);
+        return (
+          button &&
+          !button.classList.contains("disabled") &&
+          button.getAttribute("aria-disabled") !== "true" &&
+          !button.hasAttribute("disabled")
+        );
+      },
+      null,
+      { timeout: 10000 }
+    );
+  } catch (error) {
+    const debugState = await page.evaluate(() => ({
+      snapshot: window.__MOONSHINE_IMAGE_TEST__?.getSnapshot?.(),
+      buttonCount: document.querySelectorAll('[data-testid="sam-text-batch-button"]').length,
+      visibleButtonCount: Array.from(document.querySelectorAll('[data-testid="sam-text-batch-button"]'))
+        .filter((button) => button.getClientRects().length > 0).length,
+      buttonStates: Array.from(document.querySelectorAll('[data-testid="sam-text-batch-button"]'))
+        .map((button) => ({
+          text: button.textContent || "",
+          visible: button.getClientRects().length > 0,
+          disabled:
+            Boolean(button.classList.contains("disabled")) ||
+            button.getAttribute("aria-disabled") === "true" ||
+            Boolean(button.hasAttribute("disabled")),
+        })),
+    }));
+    throw new Error(`Failed to click SAM text batch button: ${JSON.stringify(debugState)}`);
+  }
+  await page.evaluate(() => {
+    const button = Array.from(document.querySelectorAll('[data-testid="sam-text-batch-button"]'))
+      .find((item) => item.getClientRects().length > 0);
+    button?.click();
   });
+}
+
+async function runBatchMixedMaskCleanupRegression(page) {
+  const setup = await page.evaluate(async ({ bytes, maskDataUrl }) => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    bridge.clearSelection();
+    const ids = [];
+    for (const name of ["A", "B", "3", "4"]) {
+      const file = new File([new Uint8Array(bytes)], `Moonshine-SAM-Batch-${name}.png`, {
+        type: "image/png",
+        lastModified: Date.now(),
+      });
+      const fileData = await bridge.addFile(file);
+      ids.push(fileData.id);
+    }
+    bridge.setCurrentModel("lama");
+    bridge.setCurrentFile(ids[0]);
+    bridge.setMask(ids[0], maskDataUrl);
+    bridge.setMask(ids[1], maskDataUrl);
+    ids.forEach((fileId) => bridge.toggleSelectionById(fileId));
+    bridge.setMaskMode("smart");
+    return {
+      ids,
+      snapshot: bridge.getSnapshot(),
+    };
+  }, {
+    bytes: Array.from(tinyPngBytes),
+    maskDataUrl: `data:image/png;base64,${solidMaskPngBase64}`,
+  });
+
+  assert(setup.ids.length === 4, "Batch cleanup regression should create four images.");
+  assert(
+    setup.snapshot.selectedSamTextBatchCount === 4,
+    "Batch cleanup regression should select only the four new images."
+  );
+  assert(
+    setup.snapshot.maskStates.filter((state) => setup.ids.includes(state.id) && state.hasMask)
+      .length === 2,
+    "Batch cleanup regression should start with two manual masks."
+  );
+
+  await page.evaluate(() =>
+    window.__MOONSHINE_IMAGE_TEST__?.runSamTextBatchPrediction?.({
+      text: "red rectangle",
+      language: "auto",
+      modelId: "sam3",
+      promptSource: "manual",
+    })
+  );
+  try {
+    await page.waitForFunction(
+      () => {
+        const snapshot = window.__MOONSHINE_IMAGE_TEST__?.getSnapshot?.();
+        return (
+          snapshot?.samTextBatchState?.running === false &&
+          snapshot?.samTextBatchState?.total === 4 &&
+          snapshot?.samTextBatchState?.success === 4 &&
+          snapshot?.samTextBatchState?.failed === 0
+        );
+      },
+      null,
+      { timeout: 15000 }
+    );
+  } catch (error) {
+    const debugState = await page.evaluate((ids) => {
+      const snapshot = window.__MOONSHINE_IMAGE_TEST__?.getSnapshot?.();
+      const button = document.querySelector('[data-testid="sam-text-batch-button"]');
+      return {
+        ids,
+        snapshot,
+        buttonText: button?.textContent || "",
+        buttonDisabled:
+          Boolean(button?.classList.contains("disabled")) ||
+          button?.getAttribute("aria-disabled") === "true" ||
+          Boolean(button?.hasAttribute("disabled")),
+      };
+    }, setup.ids);
+    throw new Error(`Four-image SAM batch did not finish as expected: ${JSON.stringify(debugState)}`);
+  }
+
+  const afterSamBatch = await page.evaluate((ids) => {
+    const snapshot = window.__MOONSHINE_IMAGE_TEST__?.getSnapshot?.();
+    return {
+      maskStates: snapshot.maskStates.filter((state) => ids.includes(state.id)),
+      selectedSamTextBatchCount: snapshot.selectedSamTextBatchCount,
+    };
+  }, setup.ids);
+  assert(
+    afterSamBatch.maskStates.every((state) => state.hasMask),
+    "SAM selected-images text search should write a mask for every regression image."
+  );
+
+  const afterFinalize = await page.evaluate(async (ids) => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    await bridge.finalizeSuccessfulMaskRun(ids);
+    return bridge.getSnapshot().maskStates.filter((state) => ids.includes(state.id));
+  }, setup.ids);
+  assert(
+    afterFinalize.every((state) => !state.hasMask),
+    "Successful batch processing should clear stored masks for every regression image."
+  );
+
+  for (const fileId of setup.ids) {
+    const currentState = await page.evaluate(async (id) => {
+      const bridge = window.__MOONSHINE_IMAGE_TEST__;
+      bridge.setCurrentFile(id);
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      return bridge.getSnapshot();
+    }, fileId);
+    assert(
+      !currentState.currentHasMask,
+      `Processed image ${fileId} should not restore a manual or SAM mask after switching back.`
+    );
+  }
+}
+
+async function runUnselectedSamFallbackPreservationRegression(page) {
+  const setup = await page.evaluate(async ({ bytes, maskDataUrl }) => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    bridge.clearSelection();
+    const ids = [];
+    for (const name of ["Selected-A", "Selected-B", "Unselected-3", "Unselected-4"]) {
+      const file = new File([new Uint8Array(bytes)], `Moonshine-SAM-Preserve-${name}.png`, {
+        type: "image/png",
+        lastModified: Date.now(),
+      });
+      const fileData = await bridge.addFile(file);
+      ids.push(fileData.id);
+    }
+    bridge.setCurrentModel("lama");
+    ids.forEach((fileId) => bridge.setMask(fileId, maskDataUrl));
+    bridge.toggleSelectionById(ids[0]);
+    bridge.toggleSelectionById(ids[1]);
+
+    const fallbackContextId = bridge
+      .getSamContextIdsForFile(ids[2])
+      .find((contextId) => contextId.startsWith("base64:") || contextId.startsWith("path:"));
+    bridge.setSamSession(fallbackContextId, {
+      candidates: [
+        {
+          localId: "unselected-shared-fallback-candidate",
+          enabled: true,
+          mask: maskDataUrl,
+          source: "text",
+          score: 0.91,
+          createdAt: new Date().toISOString(),
+        },
+      ],
+      baseSnapshotDataUrl: maskDataUrl,
+      width: 1,
+      height: 1,
+      operationIndex: 1,
+    });
+
+    return {
+      ids,
+      fallbackContextId,
+      beforeHasFallbackSession: bridge.hasSamSession(fallbackContextId),
+      snapshot: bridge.getSnapshot(),
+    };
+  }, {
+    bytes: Array.from(tinyPngBytes),
+    maskDataUrl: `data:image/png;base64,${solidMaskPngBase64}`,
+  });
+
+  assert(
+    setup.beforeHasFallbackSession,
+    "Regression setup should seed a shared fallback SAM session for unselected images."
+  );
+  assert(
+    setup.snapshot.selectedFileIds.length === 2 &&
+      setup.snapshot.selectedFileIds.includes(setup.ids[0]) &&
+      setup.snapshot.selectedFileIds.includes(setup.ids[1]),
+    "Regression setup should select only A and B."
+  );
+
+  const afterFinalize = await page.evaluate(async ({ ids, fallbackContextId }) => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    await bridge.finalizeSuccessfulMaskRun(ids.slice(0, 2));
+    return {
+      hasFallbackSession: bridge.hasSamSession(fallbackContextId),
+      snapshot: bridge.getSnapshot(),
+    };
+  }, setup);
+
+  assert(
+    afterFinalize.hasFallbackSession,
+    "Processing selected images must not delete SAM fallback sessions still referenced by unselected images."
+  );
+  const states = new Map(afterFinalize.snapshot.maskStates.map((state) => [state.id, state.hasMask]));
+  assert(!states.get(setup.ids[0]) && !states.get(setup.ids[1]), "Selected A/B masks should be cleared.");
+  assert(states.get(setup.ids[2]) && states.get(setup.ids[3]), "Unselected 3/4 masks should be preserved.");
+}
+
+async function runMaskLifecycleMatrixRegression(page) {
+  const setup = await page.evaluate(async ({ bytes, maskDataUrl }) => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    bridge.clearSelection();
+    bridge.setCurrentModel("lama");
+    const files = {};
+    const createFile = async ({ key, label, selected, manual, sam }) => {
+      const file = new File([new Uint8Array(bytes)], `Moonshine-SAM-Matrix-${label}.png`, {
+        type: "image/png",
+        lastModified: Date.now(),
+      });
+      const fileData = await bridge.addFile(file);
+      if (manual || sam) {
+        bridge.setMask(fileData.id, maskDataUrl);
+      }
+      if (sam) {
+        bridge.setSamSession(fileData.id, {
+          candidates: [
+            {
+              localId: `${key}-candidate`,
+              enabled: true,
+              mask: maskDataUrl,
+              source: "text",
+              score: 0.91,
+              createdAt: new Date().toISOString(),
+            },
+          ],
+          baseSnapshotDataUrl: manual ? maskDataUrl : "",
+          width: 1,
+          height: 1,
+          operationIndex: 1,
+        });
+      }
+      if (selected) {
+        bridge.toggleSelectionById(fileData.id);
+      }
+      files[key] = {
+        id: fileData.id,
+        selected,
+        manual,
+        sam,
+      };
+    };
+
+    await createFile({
+      key: "selectedManualOnly",
+      label: "Selected-Manual-Only",
+      selected: true,
+      manual: true,
+      sam: false,
+    });
+    await createFile({
+      key: "selectedSamOnly",
+      label: "Selected-SAM-Only",
+      selected: true,
+      manual: false,
+      sam: true,
+    });
+    await createFile({
+      key: "selectedMixed",
+      label: "Selected-Mixed",
+      selected: true,
+      manual: true,
+      sam: true,
+    });
+    await createFile({
+      key: "unselectedManualOnly",
+      label: "Unselected-Manual-Only",
+      selected: false,
+      manual: true,
+      sam: false,
+    });
+    await createFile({
+      key: "unselectedSamOnly",
+      label: "Unselected-SAM-Only",
+      selected: false,
+      manual: false,
+      sam: true,
+    });
+    await createFile({
+      key: "unselectedMixed",
+      label: "Unselected-Mixed",
+      selected: false,
+      manual: true,
+      sam: true,
+    });
+
+    return {
+      files,
+      snapshot: bridge.getSnapshot(),
+    };
+  }, {
+    bytes: Array.from(tinyPngBytes),
+    maskDataUrl: `data:image/png;base64,${solidMaskPngBase64}`,
+  });
+
+  const selectedIds = Object.values(setup.files)
+    .filter((file) => file.selected)
+    .map((file) => file.id);
+  assert(selectedIds.length === 3, "Matrix setup should select three processed images.");
+  assert(
+    setup.snapshot.selectedFileIds.length === 3 &&
+      selectedIds.every((fileId) => setup.snapshot.selectedFileIds.includes(fileId)),
+    "Matrix setup should select only the three processed images."
+  );
+
+  const afterFinalize = await page.evaluate(async ({ files, selectedIds }) => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    await bridge.finalizeSuccessfulMaskRun(selectedIds);
+    const snapshot = bridge.getSnapshot();
+    const maskStates = new Map(snapshot.maskStates.map((state) => [state.id, state.hasMask]));
+    return Object.fromEntries(
+      Object.entries(files).map(([key, file]) => [
+        key,
+        {
+          hasMask: Boolean(maskStates.get(file.id)),
+          session: bridge.getSamSessionSummary(file.id),
+        },
+      ])
+    );
+  }, {
+    files: setup.files,
+    selectedIds,
+  });
+
+  for (const key of ["selectedManualOnly", "selectedSamOnly", "selectedMixed"]) {
+    assert(!afterFinalize[key].hasMask, `${key} mask should be cleared after successful processing.`);
+    assert(!afterFinalize[key].session.exists, `${key} SAM session should be cleared after successful processing.`);
+  }
+
+  assert(afterFinalize.unselectedManualOnly.hasMask, "Unselected manual-only mask should be preserved.");
+  assert(
+    !afterFinalize.unselectedManualOnly.session.exists,
+    "Unselected manual-only image should not gain a SAM session."
+  );
+  assert(afterFinalize.unselectedSamOnly.hasMask, "Unselected SAM-only composite mask should be preserved.");
+  assert(afterFinalize.unselectedSamOnly.session.exists, "Unselected SAM-only session should be preserved.");
+  assert(
+    afterFinalize.unselectedSamOnly.session.enabledCandidateCount === 1 &&
+      !afterFinalize.unselectedSamOnly.session.hasBaseSnapshotDataUrl,
+    "Unselected SAM-only session should keep candidates without inventing a manual base layer."
+  );
+  assert(afterFinalize.unselectedMixed.hasMask, "Unselected mixed mask should be preserved.");
+  assert(afterFinalize.unselectedMixed.session.exists, "Unselected mixed SAM session should be preserved.");
+  assert(
+    afterFinalize.unselectedMixed.session.enabledCandidateCount === 1 &&
+      afterFinalize.unselectedMixed.session.hasBaseSnapshotDataUrl,
+    "Unselected mixed session should keep both SAM candidates and the manual base layer."
+  );
+
+  const afterSwitchingUnselected = await page.evaluate(async ({ files }) => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    const keys = ["unselectedManualOnly", "unselectedSamOnly", "unselectedMixed"];
+    const waitForCanvasMask = async (timeoutMs = 1200) => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        if (bridge.getCurrentCanvasMaskDataUrl()) {
+          return true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      }
+      return Boolean(bridge.getCurrentCanvasMaskDataUrl());
+    };
+    const result = {};
+    for (const key of keys) {
+      bridge.setCurrentFile(files[key].id);
+      const canvasHasMask = await waitForCanvasMask();
+      const snapshot = bridge.getSnapshot();
+      result[key] = {
+        currentHasMask: snapshot.currentHasMask,
+        canvasHasMask,
+        session: bridge.getSamSessionSummary(files[key].id),
+      };
+    }
+    return result;
+  }, {
+    files: setup.files,
+  });
+
+  assert(
+    afterSwitchingUnselected.unselectedManualOnly.currentHasMask &&
+      afterSwitchingUnselected.unselectedManualOnly.canvasHasMask,
+    "Switching back to unselected manual-only image should keep its mask visible on canvas."
+  );
+  assert(
+    afterSwitchingUnselected.unselectedSamOnly.currentHasMask &&
+      afterSwitchingUnselected.unselectedSamOnly.canvasHasMask &&
+      afterSwitchingUnselected.unselectedSamOnly.session.enabledCandidateCount === 1,
+    "Switching back to unselected SAM-only image should keep its smart candidate visible on canvas."
+  );
+  assert(
+    afterSwitchingUnselected.unselectedMixed.currentHasMask &&
+      afterSwitchingUnselected.unselectedMixed.canvasHasMask &&
+      afterSwitchingUnselected.unselectedMixed.session.enabledCandidateCount === 1 &&
+      afterSwitchingUnselected.unselectedMixed.session.hasBaseSnapshotDataUrl,
+    "Switching back to unselected mixed image should keep both manual base and smart candidate state visible."
+  );
+
+  await page.evaluate((fileId) => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    bridge.setCurrentFile(fileId);
+    bridge.setMaskMode("manual");
+  }, setup.files.unselectedSamOnly.id);
+  await drawManualMaskStrokeOnCanvas(page);
+  await page.waitForFunction(
+    (fileId) => {
+      const bridge = window.__MOONSHINE_IMAGE_TEST__;
+      return Boolean(bridge?.getSamSessionSummary?.(fileId)?.hasBaseSnapshotDataUrl);
+    },
+    setup.files.unselectedSamOnly.id,
+    { timeout: 5000 }
+  );
+
+  const afterPostFinalizeManualEdit = await page.evaluate(async ({ editedId, switchAwayId }) => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    const waitForCanvasMask = async (timeoutMs = 1200) => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        if (bridge.getCurrentCanvasMaskDataUrl()) {
+          return true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      }
+      return Boolean(bridge.getCurrentCanvasMaskDataUrl());
+    };
+    const beforeSwitchSession = bridge.getSamSessionSummary(editedId);
+    bridge.setCurrentFile(switchAwayId);
+    await waitForCanvasMask();
+    bridge.setCurrentFile(editedId);
+    const canvasHasMask = await waitForCanvasMask();
+    return {
+      beforeSwitchSession,
+      afterSwitchSession: bridge.getSamSessionSummary(editedId),
+      canvasHasMask,
+      snapshot: bridge.getSnapshot(),
+    };
+  }, {
+    editedId: setup.files.unselectedSamOnly.id,
+    switchAwayId: setup.files.unselectedManualOnly.id,
+  });
+  assert(
+    afterPostFinalizeManualEdit.beforeSwitchSession.hasBaseSnapshotDataUrl &&
+      afterPostFinalizeManualEdit.afterSwitchSession.hasBaseSnapshotDataUrl,
+    "Manual edits made after processing on an unselected SAM-only image should be stored as its SAM base layer."
+  );
+  assert(
+    afterPostFinalizeManualEdit.snapshot.currentHasMask &&
+      afterPostFinalizeManualEdit.canvasHasMask,
+    "Manual edits made after processing on an unselected SAM-only image should remain visible after switching away and back."
+  );
 }
 
 async function runSamSmartSelectionUiTest(page) {
@@ -540,7 +1262,7 @@ async function runSamSmartSelectionUiTest(page) {
   await page.waitForSelector('[data-testid="image-page"]', { timeout: 60000 });
   await waitForImageBridge(page);
 
-  const snapshotAfterUpload = await page.evaluate(async (bytes) => {
+  const snapshotAfterUpload = await page.evaluate(async ({ bytes, maskDataUrl }) => {
     const file = new File([new Uint8Array(bytes)], "Moonshine-SAM-E2E.png", {
       type: "image/png",
       lastModified: Date.now(),
@@ -548,10 +1270,15 @@ async function runSamSmartSelectionUiTest(page) {
     await window.__MOONSHINE_IMAGE_TEST__.addFile(file);
     window.__MOONSHINE_IMAGE_TEST__.setCurrentModel("lama");
     const snapshot = window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
+    window.__MOONSHINE_IMAGE_TEST__.setMask(snapshot.currentFileId, maskDataUrl);
     window.__MOONSHINE_IMAGE_TEST__.toggleSelectionById(snapshot.currentFileId);
     return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
-  }, Array.from(tinyPngBytes));
+  }, {
+    bytes: Array.from(tinyPngBytes),
+    maskDataUrl: `data:image/png;base64,${solidMaskPngBase64}`,
+  });
   assert(snapshotAfterUpload.fileCount === 1, "Image upload should add one image.");
+  assert(snapshotAfterUpload.currentHasMask, "SAM smoke image should start with a manual mask.");
   assert(snapshotAfterUpload.selectedSamTextBatchCount === 1, "Uploaded image should be selected for SAM text batch search.");
 
   await page.waitForFunction(
@@ -576,8 +1303,8 @@ async function runSamSmartSelectionUiTest(page) {
     "Smart selection model selector should include the configured SAM3.1 text model."
   );
   assert(
-    !smartSnapshot.smart.samModelOptions.includes("sam3"),
-    "Smart selection model selector should not add unused SAM3 base when SAM3.1 is configured."
+    smartSnapshot.smart.samModelOptions.includes("sam3"),
+    "Smart selection model selector should include installed SAM3 alongside SAM3.1."
   );
   assert(
     smartSnapshot.smart.maskMode === "smart" && smartSnapshot.smart.smartSelectionMode === true,
@@ -585,13 +1312,35 @@ async function runSamSmartSelectionUiTest(page) {
   );
   assert(
     smartSnapshot.smart.samTextAvailable &&
-      smartSnapshot.smart.defaultSamTextModelId === "sam3_1_multiplex",
-    "SAM text smart selection should use SAM3.1 as the default text model when capabilities allow it."
+      smartSnapshot.smart.defaultSamTextModelId === "sam3",
+    "SAM text smart selection should follow the configured image smart-selection default model."
   );
 
   await page.waitForSelector(".sam-toolbar", { state: "visible", timeout: 20000 });
+  lastSamPredictRequest = null;
+  const maskCanvas = page.locator('[data-testid="image-mask-canvas"]');
+  await maskCanvas.waitFor({ state: "visible", timeout: 10000 });
+  const canvasBox = await maskCanvas.boundingBox();
+  assert(
+    canvasBox && canvasBox.width > 0 && canvasBox.height > 0,
+    "Image mask canvas should be visible before testing SAM3 point selection."
+  );
+  await maskCanvas.click();
+  await waitForCondition(
+    () =>
+      lastSamPredictRequest?.model_id === "sam3" &&
+      Array.isArray(lastSamPredictRequest?.points) &&
+      lastSamPredictRequest.points.length === 1,
+    10000,
+    "SAM3 point selection request"
+  );
+  assert(
+    lastSamPredictRequest.model_id === "sam3",
+    "Selecting SAM3 in image smart selection should use SAM3 for point/box requests."
+  );
+
   await openSamTextMenu(page);
-  await page.fill('[data-testid="sam-text-settings-section"] .sam-text-prompt input', "red rectangle");
+  await fillSamTextPrompt(page, "red rectangle");
 
   const themeButton = page.locator('[data-testid="toggle-theme-button"]');
   if (await page.evaluate(() => document.body.classList.contains("body--dark"))) {
@@ -617,20 +1366,45 @@ async function runSamSmartSelectionUiTest(page) {
     "Current-image and selected-images text search should be enabled when SAM3 text is available and an image is selected."
   );
 
-  await page.locator('[data-testid="sam-text-settings-section"] .sam-text-actions .q-btn').nth(1).click();
-  await page.waitForFunction(
-    () => {
-      const snapshot = window.__MOONSHINE_IMAGE_TEST__?.getSnapshot?.();
-      return (
-        snapshot?.currentHasMask &&
-        snapshot?.samTextBatchState?.running === false &&
-        snapshot?.samTextBatchState?.success === 1 &&
-        snapshot?.samTextBatchState?.failed === 0
+  await clickSamTextBatchButton(page);
+  try {
+    await page.waitForFunction(
+      () => {
+        const snapshot = window.__MOONSHINE_IMAGE_TEST__?.getSnapshot?.();
+        return (
+          snapshot?.currentHasMask &&
+          snapshot?.samTextBatchState?.running === false &&
+          snapshot?.samTextBatchState?.success === 1 &&
+          snapshot?.samTextBatchState?.failed === 0
+        );
+      },
+      null,
+      { timeout: 10000 }
+    );
+  } catch (error) {
+    const snapshot = await page.evaluate(() => window.__MOONSHINE_IMAGE_TEST__?.getSnapshot?.());
+    const domState = await page.evaluate(() => {
+      const batchButton = document.querySelector('[data-testid="sam-text-batch-button"]');
+      const promptInput = document.querySelector(
+        '[data-testid="sam-text-settings-section"] .sam-text-prompt input'
       );
-    },
-    null,
-    { timeout: 10000 }
-  );
+      return {
+        promptValue: promptInput?.value || "",
+        batchButtonText: batchButton?.textContent || "",
+        batchButtonDisabled:
+          Boolean(batchButton?.classList.contains("disabled")) ||
+          batchButton?.getAttribute("aria-disabled") === "true" ||
+          Boolean(batchButton?.hasAttribute("disabled")),
+        cpuRiskDialogVisible: Boolean(document.querySelector(".sam-cpu-risk-dialog")),
+      };
+    });
+    throw new Error(
+      `SAM selected-images text search did not finish as expected: ${JSON.stringify({
+        snapshot,
+        domState,
+      })}`
+    );
+  }
 
   await themeButton.click();
   await page.waitForSelector(".masker-dark .sam-toolbar", { state: "visible", timeout: 5000 });
@@ -649,6 +1423,20 @@ async function runSamSmartSelectionUiTest(page) {
     darkState.textPanelColor !== lightState.textPanelColor,
     "SAM text menu should expose a distinct dark-mode style."
   );
+
+  const afterMixedMaskFinalize = await page.evaluate(async () => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    const snapshot = bridge.getSnapshot();
+    return bridge.finalizeSuccessfulMaskRun([snapshot.currentFileId]);
+  });
+  assert(
+    !afterMixedMaskFinalize.currentHasMask,
+    "Successful mask-required processing should clear mixed manual and SAM smart-selection masks."
+  );
+
+  await runBatchMixedMaskCleanupRegression(page);
+  await runUnselectedSamFallbackPreservationRegression(page);
+  await runMaskLifecycleMatrixRegression(page);
 }
 
 async function main() {

@@ -372,6 +372,14 @@
                             label="预热左栏可见图片"
                             data-testid="global-settings-sam-preload-visible-list"
                           />
+                          <q-toggle
+                            v-model="localConfig.masking.samReleaseBeforeProcessing"
+                            label="处理模型运行前释放 SAM 显存"
+                            data-testid="global-settings-sam-release-before-processing"
+                          />
+                        </div>
+                        <div class="text-caption text-grey-7 q-mt-xs">
+                          开启后，连续智能选区仍会保留 SAM 缓存；运行 LaMa、MAT、SLBR 或视频处理前会释放 SAM 模型显存。
                         </div>
                         <div class="grid q-mt-sm">
                           <q-input
