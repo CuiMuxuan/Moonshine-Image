@@ -140,6 +140,7 @@
                 ref="fullscreenDrawingToolbarRef"
                 v-show="showFullscreenDrawingToolbar"
                 class="sam-video-floating-toolbar toolbar-container app-floating-toolbar"
+                :class="{ 'sam-video-floating-toolbar--dark': $q.dark.isActive }"
                 :style="fullscreenSmartToolbarStyle"
                 @mousedown.stop
                 @pointerdown.stop
@@ -160,110 +161,9 @@
                         aria-label="智能选区设置"
                         title="智能选区设置"
                         data-testid="video-sam-fullscreen-settings-button"
+                        @click.stop="toggleSamVideoFullscreenSettings"
                       >
                         <q-tooltip>智能选区设置</q-tooltip>
-                        <q-menu
-                          anchor="bottom middle"
-                          self="top middle"
-                          :offset="[0, 10]"
-                          content-class="video-sam-settings-popup"
-                        >
-                          <div class="video-sam-settings-panel q-pa-md">
-                            <div class="video-sam-popup-header">
-                              <div class="video-sam-settings-title">智能选区设置</div>
-                              <q-btn
-                                flat
-                                round
-                                dense
-                                icon="close"
-                                v-close-popup
-                                data-testid="video-sam-fullscreen-settings-close-button"
-                              >
-                                <q-tooltip>关闭</q-tooltip>
-                              </q-btn>
-                            </div>
-                            <q-select
-                              v-model="samVideoSessionModelId"
-                              dense
-                              outlined
-                              emit-value
-                              map-options
-                              :options="samVideoModelOptions"
-                              label="智能选区模型"
-                              data-testid="video-sam-fullscreen-model-select"
-                              :disable="samVideoState.running"
-                            />
-                            <div class="video-sam-settings-item">
-                              <div class="text-caption text-grey-7">点选/框选能力</div>
-                              <div class="text-body2">
-                                {{
-                                  activeSamVideoSupportsPoint && activeSamVideoSupportsBox
-                                    ? "支持点选和框选"
-                                    : activeSamVideoSupportsBox
-                                    ? "支持框选"
-                                    : activeSamVideoSupportsPoint
-                                    ? "支持点选"
-                                    : "当前模型不支持点选/框选"
-                                }}
-                              </div>
-                            </div>
-                            <template v-if="activeSamVideoSupportsText">
-                              <q-separator />
-                              <q-input
-                                v-model="samVideoTextPrompt"
-                                dense
-                                outlined
-                                clearable
-                                label="文本智选"
-                                placeholder="输入目标，例如 person"
-                                data-testid="video-sam-fullscreen-text-input"
-                                :disable="samVideoState.running"
-                              />
-                              <div class="sam-lexicon-row">
-                                <q-select
-                                  v-model="samVideoTextColor"
-                                  dense
-                                  outlined
-                                  clearable
-                                  emit-value
-                                  map-options
-                                  :options="samVideoTextColorOptions"
-                                  label="颜色"
-                                  class="sam-lexicon-select"
-                                  :disable="samVideoState.running"
-                                />
-                                <q-select
-                                  v-model="samVideoTextNoun"
-                                  dense
-                                  outlined
-                                  clearable
-                                  use-input
-                                  emit-value
-                                  map-options
-                                  :options="samVideoTextNounOptions"
-                                  label="目标"
-                                  class="sam-lexicon-select"
-                                  :disable="samVideoState.running"
-                                  @filter="filterSamVideoTextNounOptions"
-                                />
-                              </div>
-                              <div v-if="samVideoGeneratedPromptText" class="text-caption text-grey-7">
-                                {{ samVideoGeneratedPromptText }}
-                              </div>
-                              <q-btn
-                                color="primary"
-                                icon="manage_search"
-                                label="文本智选"
-                                no-caps
-                                unelevated
-                                data-testid="video-sam-fullscreen-text-run-button"
-                                :loading="samVideoState.running"
-                                :disable="!canRunSamVideoTextPropagation"
-                                @click="runSamVideoTextPropagation"
-                              />
-                            </template>
-                          </div>
-                        </q-menu>
                       </q-btn>
                       <q-btn
                         color="primary"
@@ -282,100 +182,200 @@
                         aria-label="候选蒙版列表"
                         title="候选蒙版列表"
                         data-testid="video-sam-fullscreen-candidate-button"
+                        @click.stop="toggleSamVideoFullscreenCandidateMenu"
                       >
                         <q-tooltip>候选蒙版列表</q-tooltip>
-                        <q-menu
-                          v-model="samVideoCandidateMenuOpen"
-                          anchor="bottom middle"
-                          self="top middle"
-                          :offset="[0, 10]"
-                          content-class="video-sam-candidate-popup"
-                        >
-                          <div class="video-sam-candidate-panel q-pa-sm">
-                            <div class="video-sam-popup-header video-sam-popup-header--compact q-px-sm q-pt-xs">
-                              <div class="video-sam-settings-title">候选蒙版</div>
-                              <q-btn
-                                flat
-                                round
-                                dense
-                                icon="close"
-                                v-close-popup
-                                data-testid="video-sam-fullscreen-candidate-close-button"
-                              >
-                                <q-tooltip>关闭</q-tooltip>
-                              </q-btn>
-                            </div>
-                            <q-list dense separator class="sam-track-object-list">
-                              <q-item
-                                v-for="objectItem in selectedSamVideoResultObjects"
-                                :key="`fullscreen-sam-object-${objectItem.objectId}`"
-                              >
-                                <q-item-section>
-                                  <q-item-label>对象 {{ objectItem.objectId }}</q-item-label>
-                                  <q-item-label caption>
-                                    {{ objectItem.enabled === false ? "已隐藏" : "已启用" }} ·
-                                    {{ objectItem.hasBox ? "框选传播" : "点选传播" }}
-                                  </q-item-label>
-                                </q-item-section>
-                                <q-item-section side>
-                                  <div class="row items-center no-wrap q-gutter-xs">
-                                    <q-toggle
-                                      dense
-                                      :model-value="objectItem.enabled !== false"
-                                      :disable="samVideoState.running"
-                                      :aria-label="objectItem.enabled === false ? '显示候选对象' : '隐藏候选对象'"
-                                      :title="objectItem.enabled === false ? '显示候选对象' : '隐藏候选对象'"
-                                      @update:model-value="
-                                        (value) =>
-                                          videoStore.setSamVideoObjectEnabled(
-                                            videoStore.selectedMaskId,
-                                            objectItem.objectId,
-                                            value
-                                          )
-                                      "
-                                    />
-                                    <q-input
-                                      v-if="currentModelRequiresMask"
-                                      :model-value="objectItem.expandPx ?? objectItem.autoExpandPx ?? 0"
-                                      type="number"
-                                      dense
-                                      outlined
-                                      min="0"
-                                      max="99"
-                                      step="1"
-                                      suffix="px"
-                                      class="video-sam-object-expand-input"
-                                      input-class="text-center"
-                                      :disable="samVideoState.running"
-                                      @update:model-value="setSelectedSamVideoObjectExpandPx(objectItem.objectId, $event)"
-                                      @click.stop
-                                    >
-                                      <q-tooltip>LaMa 扩边大小</q-tooltip>
-                                    </q-input>
-                                    <q-btn
-                                      flat
-                                      round
-                                      dense
-                                      color="negative"
-                                      icon="delete"
-                                      :disable="samVideoState.running"
-                                      @click="removeSelectedSamVideoObject(objectItem.objectId)"
-                                    >
-                                      <q-tooltip>删除候选对象</q-tooltip>
-                                    </q-btn>
-                                  </div>
-                                </q-item-section>
-                              </q-item>
-                              <q-item v-if="selectedSamVideoResultObjects.length === 0">
-                                <q-item-section class="text-grey-6">
-                                  还没有候选对象。先在画面上点选/框选目标，再运行智能选区。
-                                </q-item-section>
-                              </q-item>
-                            </q-list>
-                          </div>
-                        </q-menu>
                       </q-btn>
                     </q-btn-group>
+                    <div
+                      v-if="samVideoFullscreenSettingsOpen"
+                      class="video-sam-inline-popover video-sam-inline-popover--settings"
+                      @click.stop
+                    >
+                      <div class="video-sam-settings-panel q-pa-md">
+                        <div class="video-sam-popup-header">
+                          <div class="video-sam-settings-title">智能选区设置</div>
+                          <q-btn
+                            flat
+                            round
+                            dense
+                            icon="close"
+                            data-testid="video-sam-fullscreen-inline-settings-close-button"
+                            @click="samVideoFullscreenSettingsOpen = false"
+                          >
+                            <q-tooltip>关闭</q-tooltip>
+                          </q-btn>
+                        </div>
+                        <q-select
+                          v-model="samVideoSessionModelId"
+                          dense
+                          outlined
+                          emit-value
+                          map-options
+                          :options="samVideoModelOptions"
+                          label="智能选区模型"
+                          data-testid="video-sam-fullscreen-inline-model-select"
+                          :disable="samVideoState.running"
+                        />
+                        <div class="video-sam-settings-item">
+                          <div class="text-caption text-grey-7">点选/框选能力</div>
+                          <div class="text-body2">
+                            {{
+                              activeSamVideoSupportsPoint && activeSamVideoSupportsBox
+                                ? "支持点选和框选"
+                                : activeSamVideoSupportsBox
+                                ? "支持框选"
+                                : activeSamVideoSupportsPoint
+                                ? "支持点选"
+                                : "当前模型不支持点选/框选"
+                            }}
+                          </div>
+                        </div>
+                        <template v-if="activeSamVideoSupportsText">
+                          <q-separator />
+                          <q-input
+                            v-model="samVideoTextPrompt"
+                            dense
+                            outlined
+                            clearable
+                            label="文本智选"
+                            placeholder="输入目标，例如 person"
+                            data-testid="video-sam-fullscreen-inline-text-input"
+                            :disable="samVideoState.running"
+                          />
+                          <div class="sam-lexicon-row">
+                            <q-select
+                              v-model="samVideoTextColor"
+                              dense
+                              outlined
+                              clearable
+                              emit-value
+                              map-options
+                              :options="samVideoTextColorOptions"
+                              label="颜色"
+                              class="sam-lexicon-select"
+                              :disable="samVideoState.running"
+                            />
+                            <q-select
+                              v-model="samVideoTextNoun"
+                              dense
+                              outlined
+                              clearable
+                              use-input
+                              emit-value
+                              map-options
+                              :options="samVideoTextNounOptions"
+                              label="目标"
+                              class="sam-lexicon-select"
+                              :disable="samVideoState.running"
+                              @filter="filterSamVideoTextNounOptions"
+                            />
+                          </div>
+                          <div v-if="samVideoGeneratedPromptText" class="text-caption text-grey-7">
+                            {{ samVideoGeneratedPromptText }}
+                          </div>
+                          <q-btn
+                            color="primary"
+                            icon="manage_search"
+                            label="文本智选"
+                            no-caps
+                            unelevated
+                            data-testid="video-sam-fullscreen-inline-text-run-button"
+                            :loading="samVideoState.running"
+                            :disable="!canRunSamVideoTextPropagation"
+                            @click="runSamVideoTextPropagation"
+                          />
+                        </template>
+                      </div>
+                    </div>
+                    <div
+                      v-if="samVideoCandidateMenuOpen"
+                      class="video-sam-inline-popover video-sam-inline-popover--candidate"
+                      @click.stop
+                    >
+                      <div class="video-sam-candidate-panel q-pa-sm">
+                        <div class="video-sam-popup-header video-sam-popup-header--compact q-px-sm q-pt-xs">
+                          <div class="video-sam-settings-title">候选蒙版</div>
+                          <q-btn
+                            flat
+                            round
+                            dense
+                            icon="close"
+                            data-testid="video-sam-fullscreen-inline-candidate-close-button"
+                            @click="samVideoCandidateMenuOpen = false"
+                          >
+                            <q-tooltip>关闭</q-tooltip>
+                          </q-btn>
+                        </div>
+                        <q-list dense separator class="sam-track-object-list">
+                          <q-item
+                            v-for="objectItem in selectedSamVideoResultObjects"
+                            :key="`fullscreen-inline-sam-object-${objectItem.objectId}`"
+                          >
+                            <q-item-section>
+                              <q-item-label>对象 {{ objectItem.objectId }}</q-item-label>
+                              <q-item-label caption>
+                                {{ objectItem.enabled === false ? "已隐藏" : "已启用" }} ·
+                                {{ objectItem.hasBox ? "框选传播" : "点选传播" }}
+                              </q-item-label>
+                            </q-item-section>
+                            <q-item-section side>
+                              <div class="row items-center no-wrap q-gutter-xs">
+                                <q-toggle
+                                  dense
+                                  :model-value="objectItem.enabled !== false"
+                                  :disable="samVideoState.running"
+                                  :aria-label="objectItem.enabled === false ? '显示候选对象' : '隐藏候选对象'"
+                                  :title="objectItem.enabled === false ? '显示候选对象' : '隐藏候选对象'"
+                                  @update:model-value="
+                                    (value) =>
+                                      videoStore.setSamVideoObjectEnabled(
+                                        videoStore.selectedMaskId,
+                                        objectItem.objectId,
+                                        value
+                                      )
+                                  "
+                                />
+                                <q-input
+                                  v-if="currentModelRequiresMask"
+                                  :model-value="objectItem.expandPx ?? objectItem.autoExpandPx ?? 0"
+                                  type="number"
+                                  dense
+                                  outlined
+                                  min="0"
+                                  max="99"
+                                  step="1"
+                                  suffix="px"
+                                  class="video-sam-object-expand-input"
+                                  input-class="text-center"
+                                  :disable="samVideoState.running"
+                                  @update:model-value="setSelectedSamVideoObjectExpandPx(objectItem.objectId, $event)"
+                                  @click.stop
+                                >
+                                  <q-tooltip>LaMa 扩边大小</q-tooltip>
+                                </q-input>
+                                <q-btn
+                                  flat
+                                  round
+                                  dense
+                                  color="negative"
+                                  icon="delete"
+                                  :disable="samVideoState.running"
+                                  @click="removeSelectedSamVideoObject(objectItem.objectId)"
+                                >
+                                  <q-tooltip>删除候选对象</q-tooltip>
+                                </q-btn>
+                              </div>
+                            </q-item-section>
+                          </q-item>
+                          <q-item v-if="selectedSamVideoResultObjects.length === 0">
+                            <q-item-section class="text-grey-6">
+                              还没有候选对象。先在画面上点选/框选目标，再运行智能选区。
+                            </q-item-section>
+                          </q-item>
+                        </q-list>
+                      </div>
+                    </div>
                     <q-btn
                       flat
                       round
@@ -990,6 +990,7 @@ const showFullscreenExitButton = ref(false);
 const showFullscreenBottomControls = ref(false);
 const showFullscreenDrawingToolbar = ref(false);
 const samVideoCandidateMenuOpen = ref(false);
+const samVideoFullscreenSettingsOpen = ref(false);
 const fullscreenMaskPreviewVisible = ref(true);
 const fullscreenViewportState = ref({
   scale: 1,
@@ -1367,6 +1368,12 @@ const fullscreenSmartToolbarStyle = computed(() => ({
   left: `${Number(fullscreenDrawingToolbarPosition.value.x || 0)}px`,
   top: `${Number(fullscreenDrawingToolbarPosition.value.y || 0)}px`,
   zIndex: 1001,
+  borderColor: $q.dark.isActive ? "rgba(255, 255, 255, 0.1)" : "rgba(17, 24, 39, 0.08)",
+  background: $q.dark.isActive ? "rgba(24, 24, 27, 0.94)" : "rgba(255, 255, 255, 0.92)",
+  color: $q.dark.isActive ? "rgba(244, 244, 245, 0.94)" : "rgba(17, 24, 39, 0.9)",
+  boxShadow: $q.dark.isActive
+    ? "0 14px 36px rgba(0, 0, 0, 0.38)"
+    : "0 14px 36px rgba(15, 23, 42, 0.18)",
 }));
 const fullscreenToolbarToggleIcon = computed(() =>
   showFullscreenDrawingToolbar.value ? "visibility_off" : "visibility"
@@ -1950,6 +1957,25 @@ const setSelectedSamVideoObjectExpandPx = (objectId, value) => {
   );
 };
 
+const closeSamVideoFullscreenPopovers = () => {
+  samVideoCandidateMenuOpen.value = false;
+  samVideoFullscreenSettingsOpen.value = false;
+};
+
+const toggleSamVideoFullscreenSettings = () => {
+  samVideoFullscreenSettingsOpen.value = !samVideoFullscreenSettingsOpen.value;
+  if (samVideoFullscreenSettingsOpen.value) {
+    samVideoCandidateMenuOpen.value = false;
+  }
+};
+
+const toggleSamVideoFullscreenCandidateMenu = () => {
+  samVideoCandidateMenuOpen.value = !samVideoCandidateMenuOpen.value;
+  if (samVideoCandidateMenuOpen.value) {
+    samVideoFullscreenSettingsOpen.value = false;
+  }
+};
+
 const removeVideoMaskTrack = async (maskId) => {
   const mask = videoStore.masks.find((item) => item.id === maskId);
   if (!mask) return null;
@@ -1972,7 +1998,7 @@ const clearSelectedSamVideoResult = async () => {
   samVideoState.message = track
     ? "已清空当前智能选区轨道，请重新点选/框选对象后运行。"
     : "未找到可清空的智能选区轨道。";
-  samVideoCandidateMenuOpen.value = false;
+  closeSamVideoFullscreenPopovers();
   syncTimelineRowsFromStore();
   return track;
 };
@@ -2815,7 +2841,39 @@ const normalizeMaskRenderResult = (renderResult) => {
   };
 };
 
-const cloneBlobForOutput = (blob) => blob.slice(0, blob.size, blob.type);
+const cloneBlobForOutput = async (
+  blob,
+  format = "jpg",
+  width = videoStore.videoWidth,
+  height = videoStore.videoHeight,
+  quality = INPUT_FRAME_QUALITY
+) => {
+  const targetMimeType = getMimeTypeForFormat(format);
+  if (String(blob?.type || "").toLowerCase() === targetMimeType) {
+    return blob.slice(0, blob.size, targetMimeType);
+  }
+
+  const bitmap = await createImageBitmap(blob);
+  try {
+    const canvas =
+      typeof OffscreenCanvas !== "undefined"
+        ? new OffscreenCanvas(width, height)
+        : document.createElement("canvas");
+    canvas.width = Math.max(1, Math.floor(width || bitmap.width || 1));
+    canvas.height = Math.max(1, Math.floor(height || bitmap.height || 1));
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    return await canvasToBlob(canvas, {
+      mimeType: targetMimeType,
+      quality,
+    });
+  } finally {
+    if (typeof bitmap.close === "function") {
+      bitmap.close();
+    }
+  }
+};
 
 const encodeMaskImageAsJpegBlob = async (imageSource, width, height) => {
   const canvas =
@@ -3630,6 +3688,7 @@ watch(
     clearFullscreenPlaybackPauseSessions();
     finishFullscreenViewportPan();
     showFullscreenDrawingToolbar.value = false;
+    closeSamVideoFullscreenPopovers();
     fullscreenMaskPreviewVisible.value = true;
     resetFullscreenViewport();
   }
@@ -3640,6 +3699,15 @@ watch(
   (count) => {
     if (count === 0) {
       samVideoCandidateMenuOpen.value = false;
+    }
+  }
+);
+
+watch(
+  () => selectedMaskIsSamVideo.value,
+  (enabled) => {
+    if (!enabled) {
+      closeSamVideoFullscreenPopovers();
     }
   }
 );
@@ -4497,8 +4565,49 @@ const observePreviewStageSize = () => {
   previewStageResizeObserver.observe(target);
 };
 
-const INPUT_FRAME_QUALITY = 0.92;
-const RESULT_FRAME_FORMAT = "jpg";
+const INPUT_FRAME_QUALITY = 0.95;
+const VIDEO_INTERMEDIATE_FRAME_STRATEGY_POLICIES = Object.freeze({
+  performance: Object.freeze({
+    strategy: "performance",
+    inputFrameFormat: "jpg",
+    resultFrameFormat: "jpg",
+    imageQuality: 0.95,
+  }),
+  balanced: Object.freeze({
+    strategy: "balanced",
+    inputFrameFormat: "jpg",
+    resultFrameFormat: "png",
+    imageQuality: 0.95,
+  }),
+  quality: Object.freeze({
+    strategy: "quality",
+    inputFrameFormat: "png",
+    resultFrameFormat: "png",
+    imageQuality: 0.95,
+  }),
+});
+const VIDEO_ENCODING_QUALITY_POLICIES = Object.freeze({
+  performance: Object.freeze({
+    preset: "performance",
+    crf: 18,
+  }),
+  balanced: Object.freeze({
+    preset: "balanced",
+    crf: 14,
+  }),
+  stable: Object.freeze({
+    preset: "stable",
+    crf: 10,
+  }),
+  highStable: Object.freeze({
+    preset: "highStable",
+    crf: 6,
+  }),
+  nearLossless: Object.freeze({
+    preset: "nearLossless",
+    crf: 2,
+  }),
+});
 const FRAME_CAPTURE_FALLBACK_EPSILON_SECONDS = 0.002;
 let mp4ExportSupportChecked = false;
 
@@ -4508,6 +4617,14 @@ const normalizeImageFormat = (format, fallback = "jpg") => {
     return normalized === "jpeg" ? "jpg" : normalized;
   }
   return fallback;
+};
+
+const normalizeFrameImageQuality = (quality, fallback = INPUT_FRAME_QUALITY) => {
+  const normalized = Number(quality);
+  if (!Number.isFinite(normalized)) {
+    return fallback;
+  }
+  return Math.max(0.1, Math.min(1, normalized));
 };
 
 const getMimeTypeForFormat = (format) => {
@@ -4776,12 +4893,24 @@ const buildTemporalObjectRefsForTime = (timestamp) => {
   return refs;
 };
 
-const buildCurrentProcessingConfigSnapshot = ({ fps, batchSize, frameFormat }) =>
+const buildCurrentProcessingConfigSnapshot = ({
+  fps,
+  batchSize,
+  frameFormat,
+  resultFrameFormat,
+  intermediateFrameStrategy,
+  encodingQualityPreset,
+  segmentCrf,
+}) =>
   buildProcessingConfigSnapshot({
     fps,
     exportFpsMode: exportFpsMode.value,
     batchSize,
     frameFormat,
+    resultFrameFormat,
+    intermediateFrameStrategy,
+    encodingQualityPreset,
+    segmentCrf,
     modelId: currentModel.value,
     modelOptions: getCurrentModelOptionsPayload(),
     masks: videoStore.masks,
@@ -4936,6 +5065,22 @@ const ensureVideoProcessingDiskSpace = async ({
   if (firstFailure) {
     throw new Error(firstFailure.error || "磁盘空间不足，无法继续处理。");
   }
+};
+
+const resolveVideoIntermediateFramePolicy = (videoConfig = {}) => {
+  const strategy = String(videoConfig?.intermediateFrameStrategy || "performance").toLowerCase();
+  return (
+    VIDEO_INTERMEDIATE_FRAME_STRATEGY_POLICIES[strategy] ||
+    VIDEO_INTERMEDIATE_FRAME_STRATEGY_POLICIES.performance
+  );
+};
+
+const resolveVideoEncodingQualityPolicy = (videoConfig = {}) => {
+  const preset = String(videoConfig?.encodingQualityPreset || "performance").toLowerCase();
+  return (
+    VIDEO_ENCODING_QUALITY_POLICIES[preset] ||
+    VIDEO_ENCODING_QUALITY_POLICIES.performance
+  );
 };
 
 const buildOutputVideoPath = async (sourceFile, sourcePath, options = {}) => {
@@ -5828,12 +5973,12 @@ const runWithVideoProcessingEngine = async ({ stageLabel, webav, ffmpeg }) => {
   }
 
   try {
-    return await webav();
-  } catch (error) {
-    notifyVideoFfmpegFallback(stageLabel, error);
-    updateProcessingUi(`${stageLabel} WebAV 失败，正在切换 FFmpeg 兜底`, processingProgress.value);
-    await flushProcessingUiFrame();
     return await ffmpeg();
+  } catch (error) {
+    console.warn(`${stageLabel} FFmpeg failed, falling back to WebAV:`, error);
+    updateProcessingUi(`${stageLabel} FFmpeg 失败，正在切换 WebAV 兜底`, processingProgress.value);
+    await flushProcessingUiFrame();
+    return await webav();
   }
 };
 
@@ -6176,6 +6321,8 @@ const exportProcessedBatchSegmentWithFfmpeg = async ({
   width,
   height,
   fps,
+  sourceColorMetadata = null,
+  segmentCrf = 18,
   progressBase,
   progressWeight,
   batchNumber,
@@ -6209,6 +6356,8 @@ const exportProcessedBatchSegmentWithFfmpeg = async ({
     width,
     height,
     fps,
+    crf: segmentCrf,
+    colorMetadata: sourceColorMetadata,
     estimatedOutputBytes:
       Math.max(1, framePaths.length) *
       Math.max(1, width) *
@@ -6602,6 +6751,8 @@ const prepareBatchArtifacts = async ({
   paths,
   fps,
   frameFormat,
+  resultFrameFormat,
+  imageQuality = INPUT_FRAME_QUALITY,
   extractor,
   maskRenderer,
   modelId = "lama",
@@ -6649,7 +6800,7 @@ const prepareBatchArtifacts = async ({
     const ts = Math.min(videoStore.videoDuration, frameIndex / fps);
     const frameName = `frame_${String(frameIndex).padStart(6, "0")}.${frameFormat}`;
     const maskName = `mask_${String(frameIndex).padStart(6, "0")}.jpg`;
-    const resultName = `result_${String(frameIndex).padStart(6, "0")}.${RESULT_FRAME_FORMAT}`;
+    const resultName = `result_${String(frameIndex).padStart(6, "0")}.${resultFrameFormat}`;
 
     const framePath = window.electron.ipcRenderer.joinPath(paths.framesDir, frameName);
     const maskPath = window.electron.ipcRenderer.joinPath(paths.masksDir, maskName);
@@ -6680,7 +6831,10 @@ const prepareBatchArtifacts = async ({
       if (!maskArtifact?.hasMask) {
         skippedEmptyMaskCount += 1;
         skipBackendReason = "empty-mask";
-        await saveBlobToPath(cloneBlobForOutput(frameBlob), outputPath);
+        await saveBlobToPath(
+          await cloneBlobForOutput(frameBlob, resultFrameFormat, undefined, undefined, imageQuality),
+          outputPath
+        );
       } else {
         const signature = String(maskArtifact.signature || "").trim();
         const reusableMaskPath = signature ? maskPathBySignature.get(signature) : "";
@@ -6738,7 +6892,10 @@ const prepareBatchArtifacts = async ({
     if (modelId === "slbr" && !shouldProcessFrame) {
       skippedOutsideRangeCount += 1;
       skipBackendReason = "outside-processing-range";
-      await saveBlobToPath(cloneBlobForOutput(frameBlob), outputPath);
+      await saveBlobToPath(
+        await cloneBlobForOutput(frameBlob, resultFrameFormat, undefined, undefined, imageQuality),
+        outputPath
+      );
     }
 
     if (frameCaptureResult?.degraded) {
@@ -6794,6 +6951,8 @@ const createPreparedBatchTask = ({
   paths,
   fps,
   frameFormat,
+  resultFrameFormat,
+  imageQuality,
   extractor,
   maskRenderer,
   modelId,
@@ -6816,6 +6975,8 @@ const createPreparedBatchTask = ({
     paths,
     fps,
     frameFormat,
+    resultFrameFormat,
+    imageQuality,
     extractor,
     maskRenderer,
     modelId,
@@ -6909,17 +7070,25 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
     }
 
     const requestedBatchSize = computedBatchSize.value;
-    const requestedFrameFormat = normalizeImageFormat(
-      configStore.config.video?.frameExtractionFormat,
-      "jpg"
+    const requestedIntermediateFramePolicy = resolveVideoIntermediateFramePolicy(
+      configStore.config.video
     );
+    const requestedEncodingQualityPolicy = resolveVideoEncodingQualityPolicy(
+      configStore.config.video
+    );
+    const requestedFrameFormat = requestedIntermediateFramePolicy.inputFrameFormat;
+    const requestedResultFrameFormat = requestedIntermediateFramePolicy.resultFrameFormat;
     const retryCount = Math.max(1, Number(configStore.config.video?.batchRetryCount || 3));
     const currentRequestedFps = Math.max(1, Number(exportFps.value || sourceFps.value || 30));
     const currentRequestedSnapshot = buildCurrentProcessingConfigSnapshot({
       fps: currentRequestedFps,
-        batchSize: requestedBatchSize,
-        frameFormat: requestedFrameFormat,
-      });
+      batchSize: requestedBatchSize,
+      frameFormat: requestedFrameFormat,
+      resultFrameFormat: requestedResultFrameFormat,
+      intermediateFrameStrategy: requestedIntermediateFramePolicy.strategy,
+      encodingQualityPreset: requestedEncodingQualityPolicy.preset,
+      segmentCrf: requestedEncodingQualityPolicy.crf,
+    });
     if (isPreviewTrial) {
       currentRequestedSnapshot.previewTrial = true;
       currentRequestedSnapshot.previewTrialSeconds = normalizedPreviewTrialSeconds;
@@ -6998,12 +7167,20 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
     );
     const frameFormat = normalizeImageFormat(
       requestedFrameFormat || previousSnapshot?.frameFormat,
-      "jpg"
+      requestedIntermediateFramePolicy.inputFrameFormat
+    );
+    const resultFrameFormat = normalizeImageFormat(
+      requestedResultFrameFormat || previousSnapshot?.resultFrameFormat,
+      requestedIntermediateFramePolicy.resultFrameFormat
     );
     const effectiveSnapshot = buildCurrentProcessingConfigSnapshot({
       fps,
       batchSize,
       frameFormat,
+      resultFrameFormat,
+      intermediateFrameStrategy: requestedIntermediateFramePolicy.strategy,
+      encodingQualityPreset: requestedEncodingQualityPolicy.preset,
+      segmentCrf: requestedEncodingQualityPolicy.crf,
     });
     if (isPreviewTrial) {
       effectiveSnapshot.previewTrial = true;
@@ -7090,8 +7267,15 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
     }
 
     if (resumeStartFrame < totalFrames) {
-      extractor = await createFrameExtractor(videoStore.videoFile, frameFormat, fps);
+      extractor = await createFrameExtractor(videoStore.videoFile, frameFormat, fps, {
+        sourcePath,
+        framesDir: paths.framesDir,
+        totalFrames,
+        imageQuality: requestedIntermediateFramePolicy.imageQuality,
+      });
     }
+    const sourceColorMetadata =
+      extractor?.getColorMetadata?.() || extractor?.colorMetadata || null;
 
     try {
       const maskRenderer =
@@ -7126,6 +7310,8 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
         paths,
         fps,
         frameFormat,
+        resultFrameFormat,
+        imageQuality: requestedIntermediateFramePolicy.imageQuality,
         extractor,
         maskRenderer,
         modelId: requestedModelId,
@@ -7176,6 +7362,8 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
           paths,
           fps,
           frameFormat,
+          resultFrameFormat,
+          imageQuality: requestedIntermediateFramePolicy.imageQuality,
           extractor,
           maskRenderer,
           modelId: requestedModelId,
@@ -7278,6 +7466,8 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
           width: videoStore.videoWidth,
           height: videoStore.videoHeight,
           fps,
+          sourceColorMetadata,
+          segmentCrf: requestedEncodingQualityPolicy.crf,
           progressBase: currentBatch.batchProgressBase + currentBatch.batchProgressSpan * 0.55,
           progressWeight: currentBatch.batchProgressSpan * 0.3,
           batchNumber: currentBatch.batchNumber,
@@ -7556,7 +7746,9 @@ const resolveVideoSourcePath = async (file, options = {}) => {
   };
 };
 
-const createFrameExtractor = async (file, format, fps) => {
+const createWebAvFrameExtractor = async (file, format, fps, options = {}) => {
+  const frameFormat = normalizeImageFormat(format);
+  const imageQuality = normalizeFrameImageQuality(options.imageQuality);
   const createClipInstance = async () => {
     const nextClip = new MP4Clip(file.stream(), {
       __unsafe_hardwareAcceleration__: "no-preference",
@@ -7664,8 +7856,8 @@ const createFrameExtractor = async (file, format, fps) => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(decodedFrame, 0, 0, canvas.width, canvas.height);
       const nextBlob = await canvasToBlob(canvas, {
-        mimeType: getMimeTypeForFormat(format),
-        quality: INPUT_FRAME_QUALITY,
+        mimeType: getMimeTypeForFormat(frameFormat),
+        quality: imageQuality,
       });
       lastSuccessfulFrameBlob = nextBlob.slice(0, nextBlob.size, nextBlob.type);
       lastSuccessfulFrameTime = lastTriedTime;
@@ -7703,8 +7895,8 @@ const createFrameExtractor = async (file, format, fps) => {
           }
           ctx.clearRect(0, 0, canvas.width, canvas.height);
           const placeholderBlob = await canvasToBlob(canvas, {
-            mimeType: getMimeTypeForFormat(format),
-            quality: INPUT_FRAME_QUALITY,
+            mimeType: getMimeTypeForFormat(frameFormat),
+            quality: imageQuality,
           });
           lastSuccessfulFrameBlob = placeholderBlob.slice(
             0,
@@ -7728,6 +7920,138 @@ const createFrameExtractor = async (file, format, fps) => {
       disposed = true;
       await Promise.allSettled([captureQueue]);
       clip.destroy();
+    },
+  };
+};
+
+const getSequentialFramePath = (framesDir, frameIndex, format) =>
+  joinRendererPath(
+    framesDir,
+    `frame_${String(Math.max(0, Math.round(Number(frameIndex || 0)))).padStart(6, "0")}.${normalizeImageFormat(format)}`
+  );
+
+const parseSequentialFrameIndex = (framePath) => {
+  const match = /(?:^|[\\/])frame_(\d+)\.[^.\\/]+$/i.exec(String(framePath || ""));
+  return match ? Number(match[1]) : null;
+};
+
+const createFfmpegFrameExtractor = async (file, format, fps, options = {}) => {
+  const frameFormat = normalizeImageFormat(format);
+  const imageQuality = normalizeFrameImageQuality(options.imageQuality);
+  const sourcePath = String(options.sourcePath || "");
+  const framesDir = String(options.framesDir || "");
+  const totalFrames = Math.max(1, Math.round(Number(options.totalFrames || 0)));
+  const safeFps = Math.max(1, Number(fps || 1));
+
+  if (!sourcePath || !framesDir || !window.electron?.ipcRenderer?.invoke) {
+    throw new Error("FFmpeg 拆帧需要源视频路径和临时帧目录");
+  }
+
+  const result = await invokeVideoFfmpegIpc("ffmpeg-extract-frame-sequence", {
+    sourcePath,
+    outputDir: framesDir,
+    format: frameFormat,
+    quality: imageQuality,
+    fps: safeFps,
+    startFrame: 0,
+    endFrame: totalFrames,
+    totalFrames,
+    width: videoStore.videoWidth,
+    height: videoStore.videoHeight,
+    taskId: `video_extract_${Date.now()}`,
+  });
+
+  const framePathByIndex = new Map();
+  (result.framePaths || []).forEach((framePath) => {
+    const frameIndex = parseSequentialFrameIndex(framePath);
+    if (Number.isFinite(frameIndex)) {
+      framePathByIndex.set(frameIndex, framePath);
+    }
+  });
+
+  return {
+    colorMetadata: result.colorMetadata || null,
+    getColorMetadata: () => result.colorMetadata || null,
+    capture: async (time) => {
+      const frameIndex = Math.max(
+        0,
+        Math.min(totalFrames - 1, Math.round(Math.max(0, Number(time || 0)) * safeFps))
+      );
+      const framePath =
+        framePathByIndex.get(frameIndex) || getSequentialFramePath(framesDir, frameIndex, frameFormat);
+      const response = await fetchLocalFileResponse(framePath);
+      const blob = await response.blob();
+      if (!blob || blob.size <= 0) {
+        throw new Error(`FFmpeg 拆帧结果为空: ${framePath}`);
+      }
+      return {
+        blob,
+        degraded: false,
+        fallbackType: "ffmpeg",
+        fallbackSourceTime: frameIndex / safeFps,
+      };
+    },
+    dispose: async () => {},
+  };
+};
+
+const createFrameExtractor = async (file, format, fps, options = {}) => {
+  const frameFormat = normalizeImageFormat(format);
+  const imageQuality = normalizeFrameImageQuality(options.imageQuality);
+  const createFallbackExtractor = () =>
+    createWebAvFrameExtractor(file, frameFormat, fps, {
+      ...options,
+      imageQuality,
+    });
+
+  if (getConfiguredVideoProcessingEngine() === "webav") {
+    return await createFallbackExtractor();
+  }
+
+  let ffmpegExtractor = null;
+  let fallbackExtractorPromise = null;
+  const getFallbackExtractor = async () => {
+    if (!fallbackExtractorPromise) {
+      fallbackExtractorPromise = createFallbackExtractor();
+    }
+    return await fallbackExtractorPromise;
+  };
+
+  try {
+    ffmpegExtractor = await createFfmpegFrameExtractor(file, frameFormat, fps, {
+      ...options,
+      imageQuality,
+    });
+  } catch (error) {
+    console.warn("FFmpeg 批量拆帧失败，已回退 WebAV/canvas 拆帧:", error);
+    return await getFallbackExtractor();
+  }
+
+  return {
+    colorMetadata: ffmpegExtractor.colorMetadata || null,
+    getColorMetadata: () => ffmpegExtractor?.getColorMetadata?.() || null,
+    capture: async (time) => {
+      try {
+        return await ffmpegExtractor.capture(time);
+      } catch (error) {
+        console.warn("读取 FFmpeg 拆帧结果失败，已回退 WebAV/canvas 拆帧:", error);
+        const fallbackExtractor = await getFallbackExtractor();
+        const fallbackResult = await fallbackExtractor.capture(time);
+        return {
+          ...fallbackResult,
+          degraded: true,
+          fallbackType: fallbackResult?.fallbackType
+            ? `ffmpeg_read_${fallbackResult.fallbackType}`
+            : "ffmpeg_read_fallback",
+          error: error?.message || String(error),
+        };
+      }
+    },
+    dispose: async () => {
+      await Promise.allSettled([
+        ffmpegExtractor?.dispose?.(),
+        fallbackExtractorPromise?.then((extractor) => extractor?.dispose?.()),
+      ]);
     },
   };
 };
@@ -8665,7 +8989,7 @@ onUnmounted(() => {
   pointer-events: auto !important;
   touch-action: none;
   user-select: none;
-  overflow: hidden;
+  overflow: visible;
   width: max-content;
   max-width: min(680px, calc(100vw - 24px));
   border-radius: 22px;
@@ -8673,6 +8997,7 @@ onUnmounted(() => {
   box-shadow: 0 14px 36px rgba(15, 23, 42, 0.18);
   backdrop-filter: blur(14px);
   background: rgba(255, 255, 255, 0.9);
+  isolation: isolate;
 }
 
 .sam-video-floating-toolbar__bar {
@@ -8684,6 +9009,7 @@ onUnmounted(() => {
 }
 
 .sam-video-floating-toolbar__controls {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -8706,6 +9032,64 @@ onUnmounted(() => {
 .sam-video-floating-toolbar__controls > :deep(.q-btn) {
   min-width: 42px;
   min-height: 42px;
+}
+
+.sam-video-floating-toolbar--dark .sam-video-floating-toolbar__bar {
+  color: rgba(244, 244, 245, 0.94);
+}
+
+.sam-video-floating-toolbar--dark .sam-video-tool-group {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sam-video-floating-toolbar--dark :deep(.q-btn.text-primary) {
+  color: #c4b5fd !important;
+}
+
+.sam-video-floating-toolbar--dark :deep(.q-btn.text-white),
+.sam-video-floating-toolbar--dark :deep(.q-btn.bg-primary) {
+  color: #fff !important;
+}
+
+.video-sam-inline-popover {
+  position: absolute;
+  top: calc(100% + 10px);
+  z-index: 4;
+  border-radius: 18px;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.2);
+  backdrop-filter: blur(14px);
+  color: rgba(17, 24, 39, 0.92);
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+.video-sam-inline-popover--settings {
+  left: 0;
+}
+
+.video-sam-inline-popover--candidate {
+  left: 54px;
+}
+
+.video-sam-inline-popover .video-sam-settings-panel,
+.video-sam-inline-popover .video-sam-candidate-panel {
+  max-height: min(440px, calc(100vh - 180px));
+  overflow: auto;
+}
+
+.sam-video-floating-toolbar--dark .video-sam-inline-popover {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(24, 24, 27, 0.97);
+  box-shadow: 0 20px 46px rgba(0, 0, 0, 0.46);
+  color: rgba(244, 244, 245, 0.94);
+}
+
+.sam-video-floating-toolbar--dark .video-sam-inline-popover :deep(.text-grey-6),
+.sam-video-floating-toolbar--dark .video-sam-inline-popover :deep(.text-grey-7),
+.sam-video-floating-toolbar--dark .video-sam-inline-popover :deep(.q-item__label--caption) {
+  color: rgba(212, 212, 216, 0.72) !important;
 }
 
 .video-sam-popup-header {

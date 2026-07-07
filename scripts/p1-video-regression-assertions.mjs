@@ -159,7 +159,7 @@ function runFfmpegSmoke() {
       "-r",
       "10",
       "-vf",
-      "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+      "scale=trunc(iw/2)*2:trunc(ih/2)*2:in_range=pc:out_range=tv:out_color_matrix=bt709",
       "-c:v",
       "libx264",
       "-preset",
@@ -168,6 +168,14 @@ function runFfmpegSmoke() {
       "18",
       "-pix_fmt",
       "yuv420p",
+      "-color_range",
+      "tv",
+      "-colorspace",
+      "bt709",
+      "-color_primaries",
+      "bt709",
+      "-color_trc",
+      "bt709",
       segmentPath,
     ]);
 
@@ -228,8 +236,22 @@ function runFfmpegSmoke() {
     if (!streams.some((stream) => stream.codec_type === "audio")) {
       throw new Error("FFmpeg smoke output has no audio stream.");
     }
+    const videoStream = streams.find((stream) => stream.codec_type === "video") || {};
+    if (videoStream.pix_fmt !== "yuv420p") {
+      throw new Error(`FFmpeg smoke output pix_fmt drifted to ${videoStream.pix_fmt || "unknown"}.`);
+    }
+    if (videoStream.color_range !== "tv") {
+      throw new Error(
+        `FFmpeg smoke output color_range drifted to ${videoStream.color_range || "unknown"}.`
+      );
+    }
+    if (videoStream.color_space !== "bt709") {
+      throw new Error(
+        `FFmpeg smoke output color_space drifted to ${videoStream.color_space || "unknown"}.`
+      );
+    }
 
-    console.log("PASS  FFmpeg smoke encodes frame sequence and muxes source audio");
+    console.log("PASS  FFmpeg smoke keeps yuv420p/tv/bt709 while muxing source audio");
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
   }
@@ -249,6 +271,31 @@ function runAssertions() {
     description: "Global settings exposes video engine select in advanced video settings",
     pattern: /<q-tab-panel name="video"[\s\S]*v-model="localConfig\.advanced\.videoProcessingEngine"[\s\S]*global-settings-video-processing-engine/,
   });
+  assertPattern({
+    file: "src/shared/appConfigSchema.js",
+    description: "Video intermediate frame and encoding quality strategies default to performance in schema v12",
+    pattern: /CONFIG_SCHEMA_VERSION = 12[\s\S]*VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS = Object\.freeze\(\[[\s\S]*"performance"[\s\S]*"balanced"[\s\S]*"quality"[\s\S]*VIDEO_ENCODING_QUALITY_PRESET_OPTIONS = Object\.freeze\(\[[\s\S]*"performance"[\s\S]*"balanced"[\s\S]*"stable"[\s\S]*"highStable"[\s\S]*"nearLossless"[\s\S]*videoProcessingEngine:\s*"auto"[\s\S]*intermediateFrameStrategy:\s*"performance"[\s\S]*encodingQualityPreset:\s*"performance"[\s\S]*frameExtractionFormat:\s*"jpg"[\s\S]*legacySchemaVersion[\s\S]*migrated\.video\.intermediateFrameStrategy = "performance"[\s\S]*migrated\.video\.encodingQualityPreset = "performance"/,
+  });
+  assertPattern({
+    file: "src/components/global/GlobalSettings.vue",
+    description: "Global settings exposes video intermediate frame strategy instead of the legacy frame format control",
+    pattern: /v-model="localConfig\.video\.intermediateFrameStrategy"[\s\S]*global-settings-video-intermediate-frame-strategy[\s\S]*videoIntermediateFrameStrategyOptions[\s\S]*getVideoIntermediateFrameStrategyHint/,
+  });
+  assertPattern({
+    file: "src/components/global/GlobalSettings.vue",
+    description: "Global settings exposes video encoding quality preset with CRF tradeoff hints",
+    pattern: /v-model="localConfig\.video\.encodingQualityPreset"[\s\S]*global-settings-video-encoding-quality-preset[\s\S]*videoEncodingQualityPresetMeta[\s\S]*CRF 18[\s\S]*CRF 14[\s\S]*CRF 10[\s\S]*CRF 6[\s\S]*CRF 2[\s\S]*getVideoEncodingQualityPresetHint/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video page derives input/result frame formats from the three intermediate frame strategies",
+    pattern: /VIDEO_INTERMEDIATE_FRAME_STRATEGY_POLICIES = Object\.freeze\(\{[\s\S]*performance:[\s\S]*inputFrameFormat: "jpg"[\s\S]*resultFrameFormat: "jpg"[\s\S]*balanced:[\s\S]*inputFrameFormat: "jpg"[\s\S]*resultFrameFormat: "png"[\s\S]*quality:[\s\S]*inputFrameFormat: "png"[\s\S]*resultFrameFormat: "png"[\s\S]*resolveVideoIntermediateFramePolicy/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video page maps encoding quality presets to FFmpeg segment CRF values",
+    pattern: /VIDEO_ENCODING_QUALITY_POLICIES = Object\.freeze\(\{[\s\S]*performance:[\s\S]*crf: 18[\s\S]*balanced:[\s\S]*crf: 14[\s\S]*stable:[\s\S]*crf: 10[\s\S]*highStable:[\s\S]*crf: 6[\s\S]*nearLossless:[\s\S]*crf: 2[\s\S]*resolveVideoEncodingQualityPolicy[\s\S]*segmentCrf/,
+  });
 
   logSection("FFmpeg Export Path");
   assertPattern({
@@ -258,13 +305,33 @@ function runAssertions() {
   });
   assertPattern({
     file: "src-electron/electron-main.js",
-    description: "Electron exposes FFmpeg encode, concat, mux and cancel IPC",
-    pattern: /check-ffmpeg-runtime[\s\S]*ffprobe-media[\s\S]*ffmpeg-encode-frame-sequence[\s\S]*ffmpeg-concat-segments[\s\S]*ffmpeg-mux-audio[\s\S]*cancel-ffmpeg-task/,
+    description: "Electron exposes FFmpeg extract, encode, concat, mux and cancel IPC",
+    pattern: /check-ffmpeg-runtime[\s\S]*ffprobe-media[\s\S]*ffmpeg-extract-frame-sequence[\s\S]*ffmpeg-encode-frame-sequence[\s\S]*ffmpeg-concat-segments[\s\S]*ffmpeg-mux-audio[\s\S]*cancel-ffmpeg-task/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "FFmpeg extraction probes source color metadata and supports frame-range image output",
+    pattern: /(?=[\s\S]*ipcMain\.handle\("ffmpeg-extract-frame-sequence")(?=[\s\S]*probeVideoColorMetadata\(sourcePath)(?=[\s\S]*buildFfmpegExtractionFilter\(\{ fps, colorMetadata \}\))(?=[\s\S]*startFrame)(?=[\s\S]*endFrame)(?=[\s\S]*frame_%06d\.\$\{format\})[\s\S]*/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "FFmpeg frame-sequence encode forces yuv420p tv range with colorspace metadata",
+    pattern: /(?=[\s\S]*normalizeFfmpegCrf)(?=[\s\S]*normalizeVideoColorMetadata[\s\S]*encode_color_range: "tv")(?=[\s\S]*buildFfmpegEncodeFilter[\s\S]*out_color_matrix=\$\{color\.color_space\})(?=[\s\S]*buildFfmpegOutputColorArgs[\s\S]*"-pix_fmt"[\s\S]*"yuv420p"[\s\S]*"-color_range"[\s\S]*color\.encode_color_range[\s\S]*"-colorspace"[\s\S]*"-color_primaries"[\s\S]*"-color_trc")(?=[\s\S]*ffmpeg-encode-frame-sequence[\s\S]*buildFfmpegEncodeFilter\(colorMetadata)(?=[\s\S]*ffmpeg-encode-frame-sequence[\s\S]*"-crf"[\s\S]*normalizeFfmpegCrf\(payload\.crf\))(?=[\s\S]*ffmpeg-encode-frame-sequence[\s\S]*buildFfmpegOutputColorArgs)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video frame extraction is FFmpeg-first with WebAV/canvas fallback",
+    pattern: /createFfmpegFrameExtractor[\s\S]*ffmpeg-extract-frame-sequence[\s\S]*createFrameExtractor = async[\s\S]*getConfiguredVideoProcessingEngine\(\) === "webav"[\s\S]*FFmpeg 批量拆帧失败，已回退 WebAV\/canvas 拆帧[\s\S]*读取 FFmpeg 拆帧结果失败，已回退 WebAV\/canvas 拆帧/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "Video page can retry WebAV export stages through FFmpeg",
     pattern: /runWithVideoProcessingEngine[\s\S]*exportProcessedBatchSegmentWithFfmpeg[\s\S]*finalizeProcessedVideoWithFfmpeg/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Auto video export prefers FFmpeg and falls back to WebAV only if FFmpeg fails",
+    pattern: /const runWithVideoProcessingEngine = async[\s\S]*if \(engine === "ffmpeg"\)[\s\S]*if \(engine === "webav"\)[\s\S]*try \{[\s\S]*return await ffmpeg\(\);[\s\S]*catch \(error\) \{[\s\S]*FFmpeg 失败，正在切换 WebAV 兜底[\s\S]*return await webav\(\);/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -350,7 +417,7 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "Frontend skips backend work for empty mask frames while keeping result frame paths complete",
-    pattern: /(?=[\s\S]*if \(!maskArtifact\?\.hasMask\) \{[\s\S]*skippedEmptyMaskCount \+= 1[\s\S]*skipBackendReason = "empty-mask"[\s\S]*await saveBlobToPath\(cloneBlobForOutput\(frameBlob\), outputPath\))(?=[\s\S]*if \(\(modelId !== "slbr" \|\| shouldProcessFrame\) && !skipBackendReason\))(?=[\s\S]*const batchSkipsBackend = currentBatch\.batchItems\.length === 0)(?=[\s\S]*validateVideoBatchResponse[\s\S]*batch\.batchResultPaths)[\s\S]*/,
+    pattern: /(?=[\s\S]*const cloneBlobForOutput = async[\s\S]*createImageBitmap\(blob\)[\s\S]*mimeType: targetMimeType)(?=[\s\S]*resultFrameFormat,[\s\S]*imageQuality = INPUT_FRAME_QUALITY)(?=[\s\S]*const resultName = `result_\$\{String\(frameIndex\)\.padStart\(6, "0"\)\}\.\$\{resultFrameFormat\}`)(?=[\s\S]*if \(!maskArtifact\?\.hasMask\) \{[\s\S]*skippedEmptyMaskCount \+= 1[\s\S]*skipBackendReason = "empty-mask"[\s\S]*cloneBlobForOutput\(frameBlob, resultFrameFormat, undefined, undefined, imageQuality\))(?=[\s\S]*if \(\(modelId !== "slbr" \|\| shouldProcessFrame\) && !skipBackendReason\))(?=[\s\S]*const batchSkipsBackend = currentBatch\.batchItems\.length === 0)(?=[\s\S]*validateVideoBatchResponse[\s\S]*batch\.batchResultPaths)[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -382,7 +449,7 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "Video processing request only sends temporal enhancement options when enabled and records them in the config snapshot",
-    pattern: /(?=[\s\S]*getEnabledVideoTemporalEnhancementConfig[\s\S]*return config\.enabled \? config : null)(?=[\s\S]*temporalEnhancement: getEnabledVideoTemporalEnhancementConfig\(\))(?=[\s\S]*temporalEnhancementRequest[\s\S]*\? \{ temporal_enhancement: temporalEnhancementRequest \}[\s\S]*: \{\})[\s\S]*/,
+    pattern: /(?=[\s\S]*getEnabledVideoTemporalEnhancementConfig[\s\S]*return config\.enabled \? config : null)(?=[\s\S]*encodingQualityPreset)(?=[\s\S]*segmentCrf)(?=[\s\S]*temporalEnhancement: getEnabledVideoTemporalEnhancementConfig\(\))(?=[\s\S]*configSignature: effectiveSnapshot\.signature)(?=[\s\S]*temporalEnhancementRequest[\s\S]*\? \{ temporal_enhancement: temporalEnhancementRequest \}[\s\S]*: \{\})[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -598,6 +665,16 @@ function runAssertions() {
     file: "src/pages/VideoPage.vue",
     description: "Fullscreen SAM smart-selection toolbar keeps controls inset from the drag handle and lower shell border",
     pattern: /(?=[\s\S]*class="sam-video-floating-toolbar__bar rounded-b-pill")(?=[\s\S]*class="sam-video-floating-toolbar__controls")(?=[\s\S]*\.sam-video-floating-toolbar__bar\s*\{[\s\S]*min-height:\s*58px;[\s\S]*padding:\s*8px 22px 10px;)(?=[\s\S]*\.sam-video-floating-toolbar__controls\s*\{[\s\S]*display:\s*flex;[\s\S]*gap:\s*8px;)(?=[\s\S]*\.sam-video-tool-group :deep\(\.q-btn\)\s*\{[\s\S]*min-height:\s*42px;)(?=[\s\S]*\.sam-video-floating-toolbar__controls > :deep\(\.q-btn\)\s*\{[\s\S]*min-height:\s*42px;)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Fullscreen SAM settings and candidate popovers render inline inside the fullscreen toolbar with dark-mode styling",
+    pattern: /(?=[\s\S]*:class="\{ 'sam-video-floating-toolbar--dark': \$q\.dark\.isActive \}")(?=[\s\S]*@click\.stop="toggleSamVideoFullscreenSettings")(?=[\s\S]*v-if="samVideoFullscreenSettingsOpen"[\s\S]*class="video-sam-inline-popover video-sam-inline-popover--settings"[\s\S]*data-testid="video-sam-fullscreen-inline-model-select")(?=[\s\S]*@click\.stop="toggleSamVideoFullscreenCandidateMenu")(?=[\s\S]*v-if="samVideoCandidateMenuOpen"[\s\S]*class="video-sam-inline-popover video-sam-inline-popover--candidate"[\s\S]*data-testid="video-sam-fullscreen-inline-candidate-close-button")(?=[\s\S]*const closeSamVideoFullscreenPopovers = \(\) =>)(?=[\s\S]*\.sam-video-floating-toolbar--dark \.video-sam-inline-popover)[\s\S]*/,
+  });
+  assertAbsentPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Fullscreen SAM toolbar no longer relies on body-mounted QMenu popups that disappear in browser fullscreen",
+    pattern: /data-testid="video-sam-fullscreen-(?:settings|candidate)-button"[\s\S]{0,1200}<q-menu/,
   });
   assertPattern({
     file: "src/components/video/ResourceManage.vue",

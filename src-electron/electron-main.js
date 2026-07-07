@@ -46,6 +46,8 @@ import {
   IMAGE_PROCESSING_METHOD_OPTIONS,
   IMAGE_OUTPUT_FORMAT_OPTIONS,
   IMAGE_OUTPUT_NAMING_MODES,
+  VIDEO_ENCODING_QUALITY_PRESET_OPTIONS,
+  VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS,
   VIDEO_PROCESSING_ENGINE_OPTIONS,
   isPlainObject,
   migrateLegacyConfigShape,
@@ -2020,6 +2022,16 @@ function sanitizeAppConfig(config = {}) {
   )
     ? String(merged.video.frameExtractionFormat).toLowerCase()
     : "jpg";
+  merged.video.intermediateFrameStrategy = VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS.includes(
+    merged.video?.intermediateFrameStrategy
+  )
+    ? merged.video.intermediateFrameStrategy
+    : "performance";
+  merged.video.encodingQualityPreset = VIDEO_ENCODING_QUALITY_PRESET_OPTIONS.includes(
+    merged.video?.encodingQualityPreset
+  )
+    ? merged.video.encodingQualityPreset
+    : "performance";
   return merged;
 }
 
@@ -2200,6 +2212,20 @@ function validateConfig(config) {
         Number.isNaN(config.video.failureRetentionCount) ||
         config.video.failureRetentionCount < 1 ||
         config.video.failureRetentionCount > 50)
+    ) {
+      return false;
+    }
+
+    if (
+      config.video.intermediateFrameStrategy &&
+      !VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS.includes(config.video.intermediateFrameStrategy)
+    ) {
+      return false;
+    }
+
+    if (
+      config.video.encodingQualityPreset &&
+      !VIDEO_ENCODING_QUALITY_PRESET_OPTIONS.includes(config.video.encodingQualityPreset)
     ) {
       return false;
     }
@@ -2818,6 +2844,160 @@ function normalizeFfmpegFps(value) {
   return Math.min(240, Math.max(1, fps));
 }
 
+function normalizeFfmpegCrf(value, fallback = 18) {
+  const crf = Number(value);
+  if (!Number.isFinite(crf)) {
+    return fallback;
+  }
+  return Math.max(0, Math.min(51, Math.round(crf)));
+}
+
+function normalizeFfmpegImageFormat(value, fallback = "jpg") {
+  const normalized = String(value || fallback).toLowerCase();
+  if (["jpg", "jpeg", "png", "webp"].includes(normalized)) {
+    return normalized === "jpeg" ? "jpg" : normalized;
+  }
+  return fallback;
+}
+
+function normalizeImageQuality(value, fallback = 0.95) {
+  const quality = Number(value);
+  if (!Number.isFinite(quality)) {
+    return fallback;
+  }
+  return Math.max(0.1, Math.min(1, quality));
+}
+
+function jpegQualityToFfmpegQScale(value) {
+  const quality = normalizeImageQuality(value);
+  return Math.max(2, Math.min(31, Math.round(32 - quality * 32)));
+}
+
+const UNKNOWN_FFMPEG_COLOR_VALUES = new Set([
+  "",
+  "unknown",
+  "unspecified",
+  "reserved",
+  "n/a",
+  "na",
+]);
+
+function normalizeFfmpegColorToken(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (UNKNOWN_FFMPEG_COLOR_VALUES.has(normalized)) {
+    return "";
+  }
+  return normalized;
+}
+
+function inferDefaultVideoColorToken({ width = 0, height = 0 } = {}) {
+  const w = Math.max(0, Number(width || 0));
+  const h = Math.max(0, Number(height || 0));
+  return Math.max(w, h) >= 1280 ? "bt709" : "smpte170m";
+}
+
+function normalizeFfmpegColorRange(value, fallback = "tv") {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["pc", "jpeg", "full"].includes(normalized)) {
+    return "pc";
+  }
+  if (["tv", "mpeg", "limited"].includes(normalized)) {
+    return "tv";
+  }
+  return fallback;
+}
+
+function normalizeVideoColorMetadata(metadata = {}, fallback = {}) {
+  const width = Number(metadata.width || fallback.width || 0);
+  const height = Number(metadata.height || fallback.height || 0);
+  const defaultToken = inferDefaultVideoColorToken({ width, height });
+  const colorSpace =
+    normalizeFfmpegColorToken(metadata.color_space || metadata.colorspace) || defaultToken;
+  const colorPrimaries =
+    normalizeFfmpegColorToken(metadata.color_primaries || metadata.colorPrimaries) ||
+    defaultToken;
+  const colorTransfer =
+    normalizeFfmpegColorToken(
+      metadata.color_transfer || metadata.color_trc || metadata.colorTransfer
+    ) || defaultToken;
+
+  return {
+    width,
+    height,
+    pix_fmt: String(metadata.pix_fmt || metadata.pixFmt || "").trim(),
+    source_color_range: String(metadata.color_range || metadata.colorRange || "").trim(),
+    color_range: normalizeFfmpegColorRange(metadata.color_range || metadata.colorRange, "tv"),
+    encode_color_range: "tv",
+    color_space: colorSpace,
+    color_primaries: colorPrimaries,
+    color_transfer: colorTransfer,
+    color_trc: colorTransfer,
+    inferred: Boolean(
+      !normalizeFfmpegColorToken(metadata.color_space || metadata.colorspace) ||
+        !normalizeFfmpegColorToken(metadata.color_primaries || metadata.colorPrimaries) ||
+        !normalizeFfmpegColorToken(
+          metadata.color_transfer || metadata.color_trc || metadata.colorTransfer
+        )
+    ),
+  };
+}
+
+function extractVideoColorMetadataFromProbeData(data = {}, fallback = {}) {
+  const streams = Array.isArray(data.streams) ? data.streams : [];
+  const videoStream =
+    streams.find((stream) => stream?.codec_type === "video") || streams[0] || {};
+  return normalizeVideoColorMetadata(videoStream, {
+    width: videoStream.width || fallback.width,
+    height: videoStream.height || fallback.height,
+  });
+}
+
+async function probeVideoColorMetadata(inputPath, fallback = {}) {
+  const result = await runFfprobe([
+    "-v",
+    "error",
+    "-print_format",
+    "json",
+    "-show_streams",
+    "-select_streams",
+    "v:0",
+    inputPath,
+  ]);
+  const data = JSON.parse(result.stdout || "{}");
+  return extractVideoColorMetadataFromProbeData(data, fallback);
+}
+
+function buildFfmpegOutputColorArgs(metadata = {}, fallback = {}) {
+  const color = normalizeVideoColorMetadata(metadata, fallback);
+  return [
+    "-pix_fmt",
+    "yuv420p",
+    "-color_range",
+    color.encode_color_range,
+    "-colorspace",
+    color.color_space,
+    "-color_primaries",
+    color.color_primaries,
+    "-color_trc",
+    color.color_trc,
+  ];
+}
+
+function buildFfmpegExtractionFilter({ fps, colorMetadata } = {}) {
+  const safeFps = normalizeFfmpegFps(fps);
+  const color = normalizeVideoColorMetadata(colorMetadata || {});
+  const sourceRange = normalizeFfmpegColorRange(color.color_range, "tv");
+  return [
+    `fps=${safeFps}`,
+    `scale=iw:ih:in_range=${sourceRange}:out_range=pc:in_color_matrix=${color.color_space}`,
+  ].join(",");
+}
+
+function buildFfmpegEncodeFilter(metadata = {}, fallback = {}) {
+  const color = normalizeVideoColorMetadata(metadata, fallback);
+  return `scale=trunc(iw/2)*2:trunc(ih/2)*2:in_range=pc:out_range=tv:out_color_matrix=${color.color_space}`;
+}
+
 function escapeFfconcatPath(filePath) {
   return String(filePath || "")
     .replace(/\\/g, "/")
@@ -2989,7 +3169,99 @@ ipcMain.handle("ffprobe-media", async (event, { inputPath } = {}) => {
         ...data,
         hasAudio: streams.some((stream) => stream.codec_type === "audio"),
         hasVideo: streams.some((stream) => stream.codec_type === "video"),
+        colorMetadata: extractVideoColorMetadataFromProbeData(data),
       },
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("ffmpeg-extract-frame-sequence", async (event, payload = {}) => {
+  try {
+    const rawSourcePath = String(payload.sourcePath || payload.inputPath || "").trim();
+    if (!rawSourcePath) {
+      throw new Error("No source media path was provided.");
+    }
+    const sourcePath = path.normalize(rawSourcePath);
+    validateExistingFiles([sourcePath], "media");
+
+    const rawOutputDir = String(payload.outputDir || "").trim();
+    if (!rawOutputDir) {
+      throw new Error("No output directory was provided.");
+    }
+    const outputDir = path.normalize(rawOutputDir);
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    const format = normalizeFfmpegImageFormat(payload.format, "jpg");
+    const fps = normalizeFfmpegFps(payload.fps);
+    const startFrame = Math.max(0, Math.round(Number(payload.startFrame || 0)));
+    const requestedEndFrame = Number(payload.endFrame);
+    const totalFrames = Math.max(0, Math.round(Number(payload.totalFrames || 0)));
+    const endFrame = Number.isFinite(requestedEndFrame)
+      ? Math.max(startFrame + 1, Math.round(requestedEndFrame))
+      : Math.max(startFrame + 1, totalFrames || startFrame + 1);
+    const frameCount = Math.max(1, endFrame - startFrame);
+    const width = Math.max(1, Math.round(Number(payload.width || 0)));
+    const height = Math.max(1, Math.round(Number(payload.height || 0)));
+    const colorMetadata = await probeVideoColorMetadata(sourcePath, { width, height });
+    const bytesPerPixel = format === "png" ? 3.25 : 0.55;
+
+    ensureDiskSpace(outputDir, {
+      requiredBytes: Math.ceil(Math.max(1, width) * Math.max(1, height) * frameCount * bytesPerPixel),
+      operation: "FFmpeg 批量拆帧",
+    });
+
+    const outputPattern = path.join(outputDir, `frame_%06d.${format}`);
+    const args = ["-y", "-hide_banner"];
+    if (startFrame > 0) {
+      args.push("-ss", (startFrame / fps).toFixed(6));
+    }
+    args.push(
+      "-i",
+      sourcePath,
+      "-vf",
+      buildFfmpegExtractionFilter({ fps, colorMetadata }),
+      "-frames:v",
+      String(frameCount),
+      "-start_number",
+      String(startFrame)
+    );
+    if (format === "jpg") {
+      args.push("-q:v", String(jpegQualityToFfmpegQScale(payload.quality)));
+    } else if (format === "png") {
+      args.push("-compression_level", "3");
+    }
+    args.push(outputPattern);
+
+    await runFfmpeg(args, {
+      taskId: payload.taskId,
+      event,
+      progressEventName: "ffmpeg-progress",
+    });
+
+    const framePaths = [];
+    const missingFrameIndexes = [];
+    for (let index = startFrame; index < endFrame; index += 1) {
+      const framePath = path.join(outputDir, `frame_${String(index).padStart(6, "0")}.${format}`);
+      if (fs.existsSync(framePath)) {
+        framePaths.push(framePath);
+      } else {
+        missingFrameIndexes.push(index);
+      }
+    }
+
+    if (framePaths.length === 0) {
+      throw new Error("FFmpeg did not write any frames.");
+    }
+
+    return {
+      success: true,
+      framePaths,
+      startFrame,
+      endFrame,
+      missingFrameIndexes,
+      colorMetadata,
     };
   } catch (error) {
     return { success: false, error: error.message };
@@ -3014,6 +3286,10 @@ ipcMain.handle("ffmpeg-encode-frame-sequence", async (event, payload = {}) => {
     });
     const fps = normalizeFfmpegFps(payload.fps);
     listPath = createFrameSequenceConcatFile(framePaths, outputPath, fps);
+    const colorMetadata = normalizeVideoColorMetadata(payload.colorMetadata || {}, {
+      width: payload.width,
+      height: payload.height,
+    });
 
     await runFfmpeg(
       [
@@ -3028,15 +3304,20 @@ ipcMain.handle("ffmpeg-encode-frame-sequence", async (event, payload = {}) => {
         "-r",
         String(fps),
         "-vf",
-        "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        buildFfmpegEncodeFilter(colorMetadata, {
+          width: payload.width,
+          height: payload.height,
+        }),
         "-c:v",
         "libx264",
         "-preset",
         "veryfast",
         "-crf",
-        String(payload.crf || 18),
-        "-pix_fmt",
-        "yuv420p",
+        String(normalizeFfmpegCrf(payload.crf)),
+        ...buildFfmpegOutputColorArgs(colorMetadata, {
+          width: payload.width,
+          height: payload.height,
+        }),
         "-movflags",
         "+faststart",
         outputPath,

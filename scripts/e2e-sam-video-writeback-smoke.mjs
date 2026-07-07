@@ -197,7 +197,7 @@ function resolveChromiumExecutable() {
 
 function createMockConfig() {
   return {
-    schemaVersion: 5,
+    schemaVersion: 12,
     general: {
       backendPort: 8091,
       launchMode: "cpu",
@@ -234,6 +234,8 @@ function createMockConfig() {
       },
     },
     video: {
+      intermediateFrameStrategy: "performance",
+      encodingQualityPreset: "performance",
       frameExtractionFormat: "jpg",
       batchFrameCount: 120,
       historyLimit: 5,

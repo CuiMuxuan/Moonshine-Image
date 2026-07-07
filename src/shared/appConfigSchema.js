@@ -3,13 +3,25 @@ import {
   normalizeShortcutConfig,
 } from "../utils/shortcutConfig.js";
 
-export const CONFIG_SCHEMA_VERSION = 9;
+export const CONFIG_SCHEMA_VERSION = 12;
 
 export const DEFAULT_THEME_MODE = "light";
 export const DEFAULT_UI_BUTTON_SIZE = "sm";
 export const UI_BUTTON_SIZE_OPTIONS = Object.freeze(["xs", "sm", "md"]);
 export const IMAGE_PROCESSING_METHOD_OPTIONS = Object.freeze(["auto", "path", "base64"]);
 export const VIDEO_PROCESSING_ENGINE_OPTIONS = Object.freeze(["auto", "webav", "ffmpeg"]);
+export const VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS = Object.freeze([
+  "performance",
+  "balanced",
+  "quality",
+]);
+export const VIDEO_ENCODING_QUALITY_PRESET_OPTIONS = Object.freeze([
+  "performance",
+  "balanced",
+  "stable",
+  "highStable",
+  "nearLossless",
+]);
 export const VIDEO_TEMPORAL_ENHANCEMENT_MODES = Object.freeze([
   "conservative",
   "balanced",
@@ -133,6 +145,8 @@ export const createDefaultAppConfig = () => ({
   },
   shortcuts: createDefaultShortcuts(),
   video: {
+    intermediateFrameStrategy: "performance",
+    encodingQualityPreset: "performance",
     frameExtractionFormat: "jpg",
     batchFrameCount: 120,
     historyLimit: 5,
@@ -208,6 +222,7 @@ export const migrateLegacyConfigShape = (rawConfig = {}) => {
   }
 
   const migrated = cloneConfig(rawConfig);
+  const legacySchemaVersion = Number(migrated.schemaVersion || 0);
 
   if (isPlainObject(migrated.general)) {
     const legacyModelPath = String(migrated.general.modelPath || "").trim();
@@ -232,6 +247,23 @@ export const migrateLegacyConfigShape = (rawConfig = {}) => {
       };
       delete migrated.fileManagement.autoCleanTemp;
     }
+  }
+
+  if (
+    (!Number.isFinite(legacySchemaVersion) || legacySchemaVersion < 12) &&
+    isPlainObject(migrated.video) &&
+    !VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS.includes(
+      migrated.video.intermediateFrameStrategy
+    )
+  ) {
+    migrated.video.intermediateFrameStrategy = "performance";
+  }
+  if (
+    (!Number.isFinite(legacySchemaVersion) || legacySchemaVersion < 12) &&
+    isPlainObject(migrated.video) &&
+    !VIDEO_ENCODING_QUALITY_PRESET_OPTIONS.includes(migrated.video.encodingQualityPreset)
+  ) {
+    migrated.video.encodingQualityPreset = "performance";
   }
 
   return migrated;

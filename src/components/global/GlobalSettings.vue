@@ -644,7 +644,26 @@
 
                       <div class="grid">
                         <q-input v-model.number="localConfig.video.batchFrameCount" label="固定批次帧数" type="number" :min="1" />
-                        <q-select v-model="localConfig.video.frameExtractionFormat" label="拆帧存储格式" emit-value map-options :options="frameFormatOptions" />
+                        <q-select
+                          v-model="localConfig.video.intermediateFrameStrategy"
+                          label="视频中间帧策略"
+                          emit-value
+                          map-options
+                          :options="videoIntermediateFrameStrategyOptions"
+                          data-testid="global-settings-video-intermediate-frame-strategy"
+                        >
+                          <template #hint>{{ getVideoIntermediateFrameStrategyHint() }}</template>
+                        </q-select>
+                        <q-select
+                          v-model="localConfig.video.encodingQualityPreset"
+                          label="视频编码质量"
+                          emit-value
+                          map-options
+                          :options="videoEncodingQualityPresetOptions"
+                          data-testid="global-settings-video-encoding-quality-preset"
+                        >
+                          <template #hint>{{ getVideoEncodingQualityPresetHint() }}</template>
+                        </q-select>
                         <q-input v-model.number="localConfig.video.historyLimit" label="视频历史记录上限" type="number" :min="1" :max="50" />
                         <q-input v-model.number="localConfig.video.batchRetryCount" label="批次重试次数" type="number" :min="1" :max="10" />
                         <q-input v-model.number="localConfig.video.proxyMaxSide" label="代理预览最大边长" type="number" :min="256" :max="4096" />
@@ -703,7 +722,7 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
 import { useQuasar } from "quasar";
 import ModelManagementPanel from "src/components/global/ModelManagementPanel.vue";
-import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_MASKING_CONFIG, DEFAULT_TEMP_CLEANUP, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT, UI_BUTTON_SIZE_OPTIONS, VIDEO_PROCESSING_ENGINE_OPTIONS, VIDEO_TEMPORAL_ENHANCEMENT_MODES } from "src/config/ConfigManager";
+import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_MASKING_CONFIG, DEFAULT_TEMP_CLEANUP, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT, UI_BUTTON_SIZE_OPTIONS, VIDEO_ENCODING_QUALITY_PRESET_OPTIONS, VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS, VIDEO_PROCESSING_ENGINE_OPTIONS, VIDEO_TEMPORAL_ENHANCEMENT_MODES } from "src/config/ConfigManager";
 import { createDefaultShortcuts, formatShortcutKeys, getShortcutDefinition, getShortcutTokenFromKeyboardEvent, getShortcutsByGroup, normalizeShortcutKeys, SHORTCUT_GROUP_META, SHORTCUT_GROUPS, validateShortcutConfig } from "src/utils/shortcutConfig";
 import { useAppStateStore } from "src/stores/appState";
 import { useConfigStore } from "src/stores/config";
@@ -749,11 +768,56 @@ const imageOutputFormatOptions = [
   { label: "WebP", value: "webp", description: "压缩率较高，并支持透明通道。" },
 ];
 const imageNamingOptions = [{ label: "原文件名", value: "original" }, { label: "固定前缀 + UUID", value: "prefixUuid" }];
-const frameFormatOptions = [{ label: "JPG", value: "jpg" }, { label: "PNG", value: "png" }, { label: "WebP", value: "webp" }];
+const videoIntermediateFrameStrategyMeta = {
+  performance: {
+    label: "性能优先",
+    description: "输入帧和结果帧使用高质量 JPG，配合 FFmpeg 色彩控制，临时文件更小、处理更快。",
+  },
+  balanced: {
+    label: "均衡",
+    description: "输入帧使用 JPG，结果帧使用 PNG，减少模型输出再次压缩导致的重复处理损失。",
+  },
+  quality: {
+    label: "质量优先",
+    description: "输入帧和结果帧都使用 PNG，中间损失最低，但临时文件更大、读写更慢。",
+  },
+};
+const videoIntermediateFrameStrategyOptions = VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS.map((value) => ({
+  value,
+  label: videoIntermediateFrameStrategyMeta[value]?.label || value,
+  description: videoIntermediateFrameStrategyMeta[value]?.description || "",
+}));
+const videoEncodingQualityPresetMeta = {
+  performance: {
+    label: "性能优先",
+    description: "CRF 18，当前默认。编码速度和文件体积更友好，已配合 FFmpeg 色彩控制降低重复处理漂移。",
+  },
+  balanced: {
+    label: "均衡",
+    description: "CRF 14，亮度漂移约减半，输出体积通常约为性能优先的 1.9 倍。",
+  },
+  stable: {
+    label: "稳定优先",
+    description: "CRF 10，进一步压低重复处理漂移，输出体积通常约为性能优先的 3 倍以上。",
+  },
+  highStable: {
+    label: "高稳定",
+    description: "CRF 6，亮度漂移更低，输出体积通常约为性能优先的 5-6 倍。",
+  },
+  nearLossless: {
+    label: "近无损",
+    description: "CRF 2，接近无损编码，适合短片或关键素材，输出体积会显著增加。",
+  },
+};
+const videoEncodingQualityPresetOptions = VIDEO_ENCODING_QUALITY_PRESET_OPTIONS.map((value) => ({
+  value,
+  label: videoEncodingQualityPresetMeta[value]?.label || value,
+  description: videoEncodingQualityPresetMeta[value]?.description || "",
+}));
 const videoProcessingEngineOptionMeta = {
   auto: {
     label: "自动（推荐）",
-    description: "优先使用 WebAV；WebAV 编码、拼接、混音或高分辨率导出失败后，自动切换 FFmpeg 重试。",
+    description: "优先使用 FFmpeg 保持视频颜色范围稳定；FFmpeg 不可用时自动切换 WebAV 兜底。",
   },
   webav: {
     label: "WebAV",
@@ -905,6 +969,10 @@ const validatePort = (port) => {
 const getImageProcessingHint = () => imageProcessingOptions.find((item) => item.value === (localConfig.value.advanced?.imageProcessingMethod || "auto"))?.description || "";
 const getImageOutputFormatHint = () => imageOutputFormatOptions.find((item) => item.value === (localConfig.value.advanced?.imageOutputFormat || "auto"))?.description || "";
 const getVideoProcessingEngineHint = () => videoProcessingEngineOptions.find((item) => item.value === (localConfig.value.advanced?.videoProcessingEngine || "auto"))?.description || "";
+const getVideoIntermediateFrameStrategyHint = () =>
+  videoIntermediateFrameStrategyOptions.find((item) => item.value === (localConfig.value.video?.intermediateFrameStrategy || "performance"))?.description || "";
+const getVideoEncodingQualityPresetHint = () =>
+  videoEncodingQualityPresetOptions.find((item) => item.value === (localConfig.value.video?.encodingQualityPreset || "performance"))?.description || "";
 const getSamDefaultHint = (options, modelId) => {
   const selected = options.find((item) => item.value === modelId);
   if (selected) return selected.label;

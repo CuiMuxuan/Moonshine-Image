@@ -23,6 +23,8 @@ import {
   isTypeCompatible,
   migrateLegacyConfigShape,
   UI_BUTTON_SIZE_OPTIONS,
+  VIDEO_ENCODING_QUALITY_PRESET_OPTIONS,
+  VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS,
   VIDEO_TEMPORAL_ENHANCEMENT_MODES,
   VIDEO_PROCESSING_ENGINE_OPTIONS,
 } from "src/shared/appConfigSchema";
@@ -160,6 +162,8 @@ export {
   IMAGE_PROCESSING_METHOD_OPTIONS,
   IMAGE_OUTPUT_FORMAT_OPTIONS,
   IMAGE_OUTPUT_NAMING_MODES,
+  VIDEO_ENCODING_QUALITY_PRESET_OPTIONS,
+  VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS,
   VIDEO_PROCESSING_ENGINE_OPTIONS,
   normalizeBrandColors,
   normalizeBrushConfig,
@@ -451,6 +455,22 @@ export class ConfigManager {
     }
 
     if (
+      video.intermediateFrameStrategy &&
+      !VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS.includes(video.intermediateFrameStrategy)
+    ) {
+      errors.push("视频中间帧策略必须是 performance、balanced 或 quality。");
+    }
+
+    if (
+      video.encodingQualityPreset &&
+      !VIDEO_ENCODING_QUALITY_PRESET_OPTIONS.includes(video.encodingQualityPreset)
+    ) {
+      errors.push(
+        "视频编码质量必须是 performance、balanced、stable、highStable 或 nearLossless。"
+      );
+    }
+
+    if (
       video.previewTrialSeconds !== undefined &&
       ![3, 10].includes(Number(video.previewTrialSeconds))
     ) {
@@ -705,6 +725,16 @@ export class ConfigManager {
       )
         ? String(merged.video.frameExtractionFormat).toLowerCase()
         : "jpg",
+      intermediateFrameStrategy: VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS.includes(
+        merged.video?.intermediateFrameStrategy
+      )
+        ? merged.video.intermediateFrameStrategy
+        : "performance",
+      encodingQualityPreset: VIDEO_ENCODING_QUALITY_PRESET_OPTIONS.includes(
+        merged.video?.encodingQualityPreset
+      )
+        ? merged.video.encodingQualityPreset
+        : "performance",
       temporalEnhancement: normalizeVideoTemporalEnhancementConfig(
         merged.video?.temporalEnhancement
       ),

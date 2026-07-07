@@ -389,7 +389,7 @@ function runAssertions() {
   assertPattern({
     file: "src/shared/appConfigSchema.js",
     description: "Shared config schema owns SAM render cache defaults",
-    pattern: /CONFIG_SCHEMA_VERSION = 9[\s\S]*DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT[\s\S]*enabled:\s*false[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4[\s\S]*samReleaseBeforeProcessing:\s*true/,
+    pattern: /CONFIG_SCHEMA_VERSION = 12[\s\S]*DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT[\s\S]*enabled:\s*false[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4[\s\S]*samReleaseBeforeProcessing:\s*true/,
   });
   assertPattern({
     file: "src/config/ConfigManager.js",
