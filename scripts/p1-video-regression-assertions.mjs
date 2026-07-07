@@ -550,6 +550,11 @@ function runAssertions() {
     pattern: /const getVideoFileLocalPath = \(file\) => \{[\s\S]*window\.electron\?\.ipcRenderer\?\.getPathForFile\?\.\(file\)[\s\S]*file\.path[\s\S]*const loadDroppedVideoFile = async \(file\) => \{[\s\S]*const sourcePath = getVideoFileLocalPath\(file\);[\s\S]*videoStore\.setVideoFile\(file,[\s\S]*sourcePath,/,
   });
   assertPattern({
+    file: "src/services/ModelRegistryService.js",
+    description: "Frontend model registry preserves fine-grained SAM capabilities used by video smart-selection model switching",
+    pattern: /(?=[\s\S]*officialCapabilities:[\s\S]*model\.officialCapabilities)(?=[\s\S]*enabledCapabilities:[\s\S]*model\.enabledCapabilities)(?=[\s\S]*capabilityNotes:[\s\S]*model\.capabilityNotes)[\s\S]*/,
+  });
+  assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "Video page creates empty SAM smart-selection tracks and writes bidirectional job results back into the selected track",
     pattern: /(?=[\s\S]*sam-video-action-disabled)(?=[\s\S]*samVideoSelectionActionTooltip)(?=[\s\S]*run-sam-video-selection)(?=[\s\S]*runSamVideoSelectionFromMaskList[\s\S]*createEmptySamVideoMaskTrack)(?=[\s\S]*selectedMaskIsSamVideo)(?=[\s\S]*selectedSamVideoPromptObjects)(?=[\s\S]*canRunSamVideoPropagation[\s\S]*selectedSamVideoPromptObjects\.value\.length > 0)(?=[\s\S]*handleSamVideoPromptFromOverlay)(?=[\s\S]*runSamVideoPropagationJob)(?=[\s\S]*getSamVideoPropagationJobResult)(?=[\s\S]*mergeSamVideoPropagationResults)(?=[\s\S]*propagation: "bidirectional")(?=[\s\S]*reverse: true)(?=[\s\S]*updateSamVideoMaskTrackResult\(targetMaskId, result\))(?=[\s\S]*正在写入智能选区轨道)[\s\S]*/,
@@ -787,7 +792,7 @@ function runAssertions() {
   assertPattern({
     file: "src/components/video/VideoMaskEditor.vue",
     description: "Video mask editor treats SAM smart-selection as a special mask track with smart tools and candidate object list",
-    pattern: /(?=[\s\S]*videoStore\.selectedMask\?\.type === 'samVideo')(?=[\s\S]*label="轨道名称")(?=[\s\S]*智能选区轨道使用 SAM 点选\/框选或文本传播生成)(?=[\s\S]*data-testid="video-sam-smart-tool-section")(?=[\s\S]*sam-video-tool-group)(?=[\s\S]*data-testid="video-sam-settings-button")(?=[\s\S]*data-testid="video-sam-select-tool-button")(?=[\s\S]*data-testid="video-sam-clear-result-button")(?=[\s\S]*清空提示、候选对象和传播结果)(?=[\s\S]*运行智能选区)(?=[\s\S]*data-testid="video-sam-prompt-list")(?=[\s\S]*data-testid="video-sam-candidate-list-section")(?=[\s\S]*候选蒙版列表)(?=[\s\S]*setSamVideoObjectEnabled)(?=[\s\S]*@click\.stop)(?=[\s\S]*remove-sam-video-object)[\s\S]*/,
+    pattern: /(?=[\s\S]*videoStore\.selectedMask\?\.type === 'samVideo')(?=[\s\S]*label="轨道名称")(?=[\s\S]*智能选区轨道使用 SAM 点选\/框选或文本传播生成)(?=[\s\S]*data-testid="video-sam-smart-tool-section")(?=[\s\S]*sam-video-tool-group)(?=[\s\S]*label="设置"[\s\S]*title="智能选区设置"[\s\S]*data-testid="video-sam-settings-button")(?=[\s\S]*data-testid="video-sam-select-tool-button")(?=[\s\S]*data-testid="video-sam-clear-result-button")(?=[\s\S]*清空提示、候选对象和传播结果)(?=[\s\S]*运行智能选区)(?=[\s\S]*data-testid="video-sam-prompt-list")(?=[\s\S]*data-testid="video-sam-candidate-list-section")(?=[\s\S]*候选蒙版列表)(?=[\s\S]*setSamVideoObjectEnabled)(?=[\s\S]*@click\.stop)(?=[\s\S]*remove-sam-video-object)[\s\S]*/,
   });
   assertPattern({
     file: "src/components/video/VideoPreviewOverlay.vue",

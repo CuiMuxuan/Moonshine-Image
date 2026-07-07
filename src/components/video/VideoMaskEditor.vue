@@ -118,6 +118,10 @@
               color="primary"
               text-color="white"
               icon="tune"
+              label="设置"
+              no-caps
+              aria-label="智能选区设置"
+              title="智能选区设置"
               :disable="disabled || samVideoRunning"
               data-testid="video-sam-settings-button"
             >

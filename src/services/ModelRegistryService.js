@@ -81,6 +81,18 @@ const normalizeModel = (model = {}) => ({
     model.runCapabilities && typeof model.runCapabilities === "object"
       ? model.runCapabilities
       : {},
+  officialCapabilities:
+    model.officialCapabilities && typeof model.officialCapabilities === "object"
+      ? model.officialCapabilities
+      : {},
+  enabledCapabilities:
+    model.enabledCapabilities && typeof model.enabledCapabilities === "object"
+      ? model.enabledCapabilities
+      : {},
+  capabilityNotes:
+    model.capabilityNotes && typeof model.capabilityNotes === "object"
+      ? model.capabilityNotes
+      : {},
   parameters: model.parameters && typeof model.parameters === "object" ? model.parameters : {},
   parameterHelp: String(model.parameterHelp || "").trim(),
   capabilities: model.capabilities && typeof model.capabilities === "object"
