@@ -4608,6 +4608,7 @@ const VIDEO_ENCODING_QUALITY_POLICIES = Object.freeze({
     crf: 2,
   }),
 });
+const VIDEO_INPAINT_COLOR_STABILIZATION_MODES = Object.freeze(["off", "auto", "enhanced"]);
 const FRAME_CAPTURE_FALLBACK_EPSILON_SECONDS = 0.002;
 let mp4ExportSupportChecked = false;
 
@@ -4625,6 +4626,11 @@ const normalizeFrameImageQuality = (quality, fallback = INPUT_FRAME_QUALITY) => 
     return fallback;
   }
   return Math.max(0.1, Math.min(1, normalized));
+};
+
+const getConfiguredInpaintColorStabilization = () => {
+  const mode = String(configStore.config.video?.inpaintColorStabilization || "auto");
+  return VIDEO_INPAINT_COLOR_STABILIZATION_MODES.includes(mode) ? mode : "auto";
 };
 
 const getMimeTypeForFormat = (format) => {
@@ -4901,6 +4907,7 @@ const buildCurrentProcessingConfigSnapshot = ({
   intermediateFrameStrategy,
   encodingQualityPreset,
   segmentCrf,
+  inpaintColorStabilization,
 }) =>
   buildProcessingConfigSnapshot({
     fps,
@@ -4911,6 +4918,7 @@ const buildCurrentProcessingConfigSnapshot = ({
     intermediateFrameStrategy,
     encodingQualityPreset,
     segmentCrf,
+    inpaintColorStabilization,
     modelId: currentModel.value,
     modelOptions: getCurrentModelOptionsPayload(),
     masks: videoStore.masks,
@@ -4944,6 +4952,7 @@ const getOutputDirectory = (sourcePath) => {
 const estimateVideoDiskUsage = ({
   sourceSize = 0,
   frameCount = 0,
+  peakFrameCount = 0,
   width = 0,
   height = 0,
   hasMask = false,
@@ -4953,6 +4962,10 @@ const estimateVideoDiskUsage = ({
 } = {}) => {
   const pixelCount = Math.max(1, Math.floor(Number(width || 0)) * Math.floor(Number(height || 0)));
   const frames = Math.max(1, Math.floor(Number(frameCount || 0)));
+  const peakFrames = Math.max(
+    1,
+    Math.min(frames, Math.floor(Number(peakFrameCount || frameCount || 0)) || frames)
+  );
   const estimatedFrameBytes = Math.ceil(pixelCount * VIDEO_DISK_ESTIMATE_FACTORS.frameBytesPerPixel);
   const estimatedMaskBytes = Math.ceil(
     pixelCount * (hasMask ? VIDEO_DISK_ESTIMATE_FACTORS.maskBytesPerPixel : 0)
@@ -4972,8 +4985,9 @@ const estimateVideoDiskUsage = ({
 
   const totalBytes =
     sourceCopyBytes +
-    frames * (estimatedFrameBytes + estimatedMaskBytes + estimatedResultBytes + estimatedSegmentBytes) +
-    estimatedSamMaskBytes * Math.max(1, frameCount);
+    peakFrames * (estimatedFrameBytes + estimatedMaskBytes + estimatedResultBytes) +
+    frames * estimatedSegmentBytes +
+    estimatedSamMaskBytes * peakFrames;
 
   return {
     targetPath: outputDir || tempBase || "",
@@ -4987,6 +5001,7 @@ const estimateVideoDiskUsage = ({
       estimatedResultBytes,
       estimatedSegmentBytes,
       estimatedSamMaskBytes,
+      peakFrames,
     },
   };
 };
@@ -5022,17 +5037,20 @@ const ensureVideoProcessingDiskSpace = async ({
   taskRoot,
   framesDir,
   masksDir,
+  objectMasksDir,
   resultsDir,
   segmentsDir,
   hasMask = false,
   hasSamAssets = false,
   frameCount = 0,
+  batchFrameCount = 0,
 } = {}) => {
   const sourceStats = await window.electron.ipcRenderer.invoke("get-file-stats", sourcePath);
   const sourceSize = Number(sourceStats?.data?.size || 0);
   const estimate = estimateVideoDiskUsage({
     sourceSize,
     frameCount,
+    peakFrameCount: Math.max(1, Number(batchFrameCount || 0) * 2 || frameCount),
     width: videoStore.videoWidth,
     height: videoStore.videoHeight,
     hasMask,
@@ -5042,7 +5060,7 @@ const ensureVideoProcessingDiskSpace = async ({
   });
   await ensureVideoDiskSpace(estimate);
 
-  const rootChecks = [taskRoot, framesDir, masksDir, resultsDir, segmentsDir]
+  const rootChecks = [taskRoot, framesDir, masksDir, objectMasksDir, resultsDir, segmentsDir]
     .filter(Boolean)
     .map((dirPath) =>
       window.electron.ipcRenderer.invoke("ensure-disk-space", {
@@ -5052,7 +5070,15 @@ const ensureVideoProcessingDiskSpace = async ({
           Math.ceil(
             (videoStore.videoWidth || 1) *
               (videoStore.videoHeight || 1) *
-              Math.max(1, Math.ceil(frameCount || 1)) *
+              Math.max(
+                1,
+                Math.ceil(
+                  Math.min(
+                    Math.max(1, frameCount || 1),
+                    Math.max(1, Number(batchFrameCount || 0) * 2 || frameCount || 1)
+                  )
+                )
+              ) *
               0.18
           )
         ),
@@ -6005,6 +6031,12 @@ const removeTemporaryFiles = async (filePaths = []) => {
   );
 };
 
+const cleanupCompletedBatchArtifacts = async (batch) => {
+  const artifactPaths = [...new Set(batch?.batchArtifactPaths || [])].filter(Boolean);
+  if (artifactPaths.length === 0) return;
+  await removeTemporaryFiles(artifactPaths);
+};
+
 const openPathAsStream = async (filePath) => {
   const response = await fetchLocalFileResponse(filePath);
   if (response.body) {
@@ -6780,6 +6812,22 @@ const prepareBatchArtifacts = async ({
   let skippedEmptyMaskCount = 0;
   let skippedOutsideRangeCount = 0;
 
+  if (typeof extractor?.prepareRange === "function") {
+    if (reportProgress) {
+      updateBatchProcessingUi({
+        batchNumber,
+        totalBatches,
+        stageLabel: "正在按批次拆帧",
+        batchDurations,
+        remainingBatchCount: getActiveStageRemainingBatchCount({ batchNumber, totalBatches }),
+        progress: batchProgressBase,
+        etaProgress: 0,
+        phase: VIDEO_PROCESSING_PHASES.STAGING,
+      });
+    }
+    await extractor.prepareRange(start, end);
+  }
+
   for (let frameIndex = start; frameIndex < end; frameIndex += 1) {
     if (reportProgress) {
       const stageRatio = (frameIndex - start) / Math.max(batchFrameCount, 1);
@@ -6842,7 +6890,10 @@ const prepareBatchArtifacts = async ({
           frameMaskPath = reusableMaskPath;
         } else {
           const sharedMaskName = signature
-            ? `mask_shared_${sanitizeMaskSignatureForFileName(signature)}.jpg`
+            ? `mask_batch_${String(batchNumber).padStart(
+                4,
+                "0"
+              )}_shared_${sanitizeMaskSignatureForFileName(signature)}.jpg`
             : maskName;
           frameMaskPath = signature
             ? window.electron.ipcRenderer.joinPath(paths.masksDir, sharedMaskName)
@@ -7076,6 +7127,7 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
     const requestedEncodingQualityPolicy = resolveVideoEncodingQualityPolicy(
       configStore.config.video
     );
+    const requestedInpaintColorStabilization = getConfiguredInpaintColorStabilization();
     const requestedFrameFormat = requestedIntermediateFramePolicy.inputFrameFormat;
     const requestedResultFrameFormat = requestedIntermediateFramePolicy.resultFrameFormat;
     const retryCount = Math.max(1, Number(configStore.config.video?.batchRetryCount || 3));
@@ -7088,6 +7140,7 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
       intermediateFrameStrategy: requestedIntermediateFramePolicy.strategy,
       encodingQualityPreset: requestedEncodingQualityPolicy.preset,
       segmentCrf: requestedEncodingQualityPolicy.crf,
+      inpaintColorStabilization: requestedInpaintColorStabilization,
     });
     if (isPreviewTrial) {
       currentRequestedSnapshot.previewTrial = true;
@@ -7181,6 +7234,7 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
       intermediateFrameStrategy: requestedIntermediateFramePolicy.strategy,
       encodingQualityPreset: requestedEncodingQualityPolicy.preset,
       segmentCrf: requestedEncodingQualityPolicy.crf,
+      inpaintColorStabilization: requestedInpaintColorStabilization,
     });
     if (isPreviewTrial) {
       effectiveSnapshot.previewTrial = true;
@@ -7220,11 +7274,13 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
       taskRoot: paths.taskRoot,
       framesDir: paths.framesDir,
       masksDir: paths.masksDir,
+      objectMasksDir: paths.objectMasksDir,
       resultsDir: paths.resultsDir,
       segmentsDir: paths.segmentsDir,
       hasMask: isMaskInpaintModel(requestedModelId),
       hasSamAssets: videoStore.masks.some((mask) => mask?.type === "samVideo"),
       frameCount: Math.max(1, totalFrames - resumeStartFrame),
+      batchFrameCount: batchSize,
     });
 
     currentTaskMeta = await persistVideoTaskMeta({
@@ -7425,6 +7481,7 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
                         prompt: "",
                         negative_prompt: "",
                         sd_seed: -1,
+                        color_stabilization: requestedInpaintColorStabilization,
                       },
                     },
                   });
@@ -7502,6 +7559,7 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
           ].sort((left, right) => left.segmentIndex - right.segmentIndex),
           totalBatches: Math.max(currentTaskMeta.totalBatches, currentBatch.batchNumber),
         });
+        await cleanupCompletedBatchArtifacts(currentBatch);
 
         updateBatchProcessingUi({
           batchNumber: currentBatch.batchNumber,
@@ -7947,36 +8005,51 @@ const createFfmpegFrameExtractor = async (file, format, fps, options = {}) => {
     throw new Error("FFmpeg 拆帧需要源视频路径和临时帧目录");
   }
 
-  const result = await invokeVideoFfmpegIpc("ffmpeg-extract-frame-sequence", {
-    sourcePath,
-    outputDir: framesDir,
-    format: frameFormat,
-    quality: imageQuality,
-    fps: safeFps,
-    startFrame: 0,
-    endFrame: totalFrames,
-    totalFrames,
-    width: videoStore.videoWidth,
-    height: videoStore.videoHeight,
-    taskId: `video_extract_${Date.now()}`,
+  const probeResult = await invokeVideoFfmpegIpc("ffprobe-media", {
+    inputPath: sourcePath,
   });
-
+  const colorMetadata = probeResult.data?.colorMetadata || null;
   const framePathByIndex = new Map();
-  (result.framePaths || []).forEach((framePath) => {
-    const frameIndex = parseSequentialFrameIndex(framePath);
-    if (Number.isFinite(frameIndex)) {
-      framePathByIndex.set(frameIndex, framePath);
-    }
-  });
+  const prepareRange = async (startFrame = 0, endFrame = totalFrames) => {
+    const safeStartFrame = Math.max(0, Math.min(totalFrames - 1, Math.round(Number(startFrame || 0))));
+    const safeEndFrame = Math.max(
+      safeStartFrame + 1,
+      Math.min(totalFrames, Math.round(Number(endFrame || totalFrames)))
+    );
+    const result = await invokeVideoFfmpegIpc("ffmpeg-extract-frame-sequence", {
+      sourcePath,
+      outputDir: framesDir,
+      format: frameFormat,
+      quality: imageQuality,
+      fps: safeFps,
+      startFrame: safeStartFrame,
+      endFrame: safeEndFrame,
+      totalFrames,
+      width: videoStore.videoWidth,
+      height: videoStore.videoHeight,
+      taskId: `video_extract_${safeStartFrame}_${safeEndFrame}_${Date.now()}`,
+    });
+    (result.framePaths || []).forEach((framePath) => {
+      const frameIndex = parseSequentialFrameIndex(framePath);
+      if (Number.isFinite(frameIndex)) {
+        framePathByIndex.set(frameIndex, framePath);
+      }
+    });
+    return result;
+  };
 
   return {
-    colorMetadata: result.colorMetadata || null,
-    getColorMetadata: () => result.colorMetadata || null,
+    colorMetadata,
+    getColorMetadata: () => colorMetadata,
+    prepareRange,
     capture: async (time) => {
       const frameIndex = Math.max(
         0,
         Math.min(totalFrames - 1, Math.round(Math.max(0, Number(time || 0)) * safeFps))
       );
+      if (!framePathByIndex.has(frameIndex)) {
+        await prepareRange(frameIndex, frameIndex + 1);
+      }
       const framePath =
         framePathByIndex.get(frameIndex) || getSequentialFramePath(framesDir, frameIndex, frameFormat);
       const response = await fetchLocalFileResponse(framePath);
@@ -8027,11 +8100,26 @@ const createFrameExtractor = async (file, format, fps, options = {}) => {
     return await getFallbackExtractor();
   }
 
+  let ffmpegRangeUnavailable = false;
   return {
     colorMetadata: ffmpegExtractor.colorMetadata || null,
     getColorMetadata: () => ffmpegExtractor?.getColorMetadata?.() || null,
+    prepareRange: async (startFrame, endFrame) => {
+      if (typeof ffmpegExtractor?.prepareRange === "function") {
+        try {
+          await ffmpegExtractor.prepareRange(startFrame, endFrame);
+        } catch (error) {
+          ffmpegRangeUnavailable = true;
+          console.warn("FFmpeg 按批次拆帧失败，已回退 WebAV/canvas 拆帧:", error);
+          await getFallbackExtractor();
+        }
+      }
+    },
     capture: async (time) => {
       try {
+        if (ffmpegRangeUnavailable) {
+          throw new Error("FFmpeg range extraction unavailable");
+        }
         return await ffmpegExtractor.capture(time);
       } catch (error) {
         console.warn("读取 FFmpeg 拆帧结果失败，已回退 WebAV/canvas 拆帧:", error);

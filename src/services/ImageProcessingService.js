@@ -29,6 +29,20 @@ const getRequestItemId = (requestData, index) => {
   return undefined;
 };
 
+const resolveInpaintColorStabilization = () => {
+  const configStore = useConfigStore();
+  const mode = String(configStore.config.video?.inpaintColorStabilization || 'auto');
+  return ['off', 'auto', 'enhanced'].includes(mode) ? mode : 'auto';
+};
+
+const attachInpaintOptions = (requestData = {}) => ({
+  ...requestData,
+  inpaint: {
+    ...(requestData.inpaint || {}),
+    color_stabilization: resolveInpaintColorStabilization(),
+  },
+});
+
 const performInpainting = async (fileId) => {
   try {
     const fileManagerStore = useFileManagerStore();
@@ -48,7 +62,7 @@ const performInpainting = async (fileId) => {
       imageBase64 = await fileManagerStore.fileToBase64(file.originalFile);
     }
 
-    const requestData = {
+    const requestData = attachInpaintOptions({
       data: [{
         id: fileId,
         image: getBase64FromDataURL(imageBase64),
@@ -58,7 +72,7 @@ const performInpainting = async (fileId) => {
       mask_type: 'base64',
       response_type: 'base64',
       ...buildImageOutputRequestOptions(configStore.config)
-    };
+    });
 
     const response = await performBatchInpainting(requestData);
 
@@ -76,6 +90,7 @@ const performInpainting = async (fileId) => {
 // Call batch inpaint API.
 const performBatchInpainting = async (requestData) => {
   try {
+    requestData = attachInpaintOptions(requestData);
     validateRequestData(requestData);
     console.log('发送批量处理请求:', requestData);
 
@@ -183,6 +198,10 @@ const processBatchResults = async (response, requestData = {}) => {
 // Call folder batch API.
 const performFolderInpainting = async (folderData) => {
   try {
+    folderData = {
+      ...folderData,
+      color_stabilization: resolveInpaintColorStabilization(),
+    };
     return await api.post('/api/v1/batch_inpaint_by_folder', folderData, {
       headers: {
         'Content-Type': 'application/json',

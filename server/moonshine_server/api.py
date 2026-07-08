@@ -59,6 +59,10 @@ from moonshine_server.image_output import (
     normalize_image_format,
     resolve_image_output_spec,
 )
+from moonshine_server.inpaint_color_stabilization import (
+    apply_inpaint_color_stabilization,
+    try_flat_background_fill,
+)
 from moonshine_server.model.utils import torch_gc
 from moonshine_server.model_manager import ModelManager
 from moonshine_server.video_temporal_enhancement import (
@@ -911,10 +915,17 @@ class Api:
             )
         start = time.time()
         self._release_sam_runtime_before_processing("single_image_inpaint")
-        try:
-            rgb_np_img = self.model_manager(image, mask, req)
-        finally:
-            torch_gc()
+        rgb_np_img, color_decision = try_flat_background_fill(
+            image, mask, req.color_stabilization
+        )
+        if rgb_np_img is None:
+            try:
+                rgb_np_img = self.model_manager(image, mask, req)
+                rgb_np_img, color_decision = apply_inpaint_color_stabilization(
+                    image, mask, rgb_np_img, req.color_stabilization
+                )
+            finally:
+                torch_gc()
         logger.info(f"process time: {(time.time() - start) * 1000:.2f}ms")
 
         rgb_np_img = cv2.cvtColor(rgb_np_img.astype(np.uint8), cv2.COLOR_BGR2RGB)
@@ -1248,7 +1259,7 @@ class Api:
         results = []
 
         # Create one InpaintRequest and reuse the shared batch params.
-        inpaint_req = InpaintRequest()
+        inpaint_req = req.inpaint.model_copy(deep=True)
 
         start_time = time.time()
 
@@ -1288,7 +1299,14 @@ class Api:
                             "utf-8"
                         )
 
-                rgb_np_img = self.model_manager(image, mask, inpaint_req)
+                rgb_np_img, color_decision = try_flat_background_fill(
+                    image, mask, inpaint_req.color_stabilization
+                )
+                if rgb_np_img is None:
+                    rgb_np_img = self.model_manager(image, mask, inpaint_req)
+                    rgb_np_img, color_decision = apply_inpaint_color_stabilization(
+                        image, mask, rgb_np_img, inpaint_req.color_stabilization
+                    )
 
                 rgb_np_img = cv2.cvtColor(rgb_np_img.astype(np.uint8), cv2.COLOR_BGR2RGB)
                 rgb_res = concat_alpha_channel(rgb_np_img, alpha_channel)
@@ -1385,6 +1403,7 @@ class Api:
                 output=output_path,
                 output_format=req.output_format,
                 output_quality=req.output_quality,
+                color_stabilization=req.color_stabilization,
                 return_results=True,
             )
             success_count = sum(
@@ -1739,9 +1758,19 @@ class Api:
                         )
                         continue
 
-                    processed_bgr = self.model_manager(image, mask, inpaint_req).astype(
-                        np.uint8
+                    processed_bgr, color_decision = try_flat_background_fill(
+                        image, mask, inpaint_req.color_stabilization
                     )
+                    if processed_bgr is None:
+                        processed_bgr = self.model_manager(image, mask, inpaint_req).astype(
+                            np.uint8
+                        )
+                        processed_bgr, color_decision = apply_inpaint_color_stabilization(
+                            image,
+                            mask,
+                            processed_bgr,
+                            inpaint_req.color_stabilization,
+                        )
                     temporal_decision = None
                     if temporal_enhancer is not None:
                         try:
@@ -1778,6 +1807,8 @@ class Api:
                     }
                     if temporal_decision is not None:
                         result_item["temporal_enhancement"] = temporal_decision
+                    if color_decision and color_decision.get("applied"):
+                        result_item["color_stabilization"] = color_decision
                     results.append(result_item)
 
             except Exception as error:

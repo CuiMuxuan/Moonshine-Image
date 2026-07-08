@@ -24,6 +24,10 @@ from moonshine_server.image_output import (
     image_format_from_path,
     resolve_image_output_spec,
 )
+from moonshine_server.inpaint_color_stabilization import (
+    apply_inpaint_color_stabilization,
+    try_flat_background_fill,
+)
 from moonshine_server.model.utils import torch_gc
 from moonshine_server.model_manager import ModelManager
 from moonshine_server.schema import InpaintRequest
@@ -51,6 +55,7 @@ def batch_inpaint(
     concat: bool = False,
     output_format: str = "auto",
     output_quality: int = 95,
+    color_stabilization: str = "auto",
     return_results: bool = False,
 ):
     if image.is_dir() and output.is_file():
@@ -71,6 +76,7 @@ def batch_inpaint(
 
     if config is None:
         inpaint_request = InpaintRequest()
+        inpaint_request.color_stabilization = color_stabilization
         logger.info(f"Using default config: {inpaint_request}")
     else:
         with open(config, "r", encoding="utf-8") as f:
@@ -156,7 +162,17 @@ def batch_inpaint(
             mask_img[mask_img < 127] = 0
 
             # bgr
-            inpaint_result = model_manager(img, mask_img, inpaint_request)
+            inpaint_result, color_decision = try_flat_background_fill(
+                img, mask_img, inpaint_request.color_stabilization
+            )
+            if inpaint_result is None:
+                inpaint_result = model_manager(img, mask_img, inpaint_request)
+                inpaint_result, color_decision = apply_inpaint_color_stabilization(
+                    img,
+                    mask_img,
+                    inpaint_result,
+                    inpaint_request.color_stabilization,
+                )
             inpaint_result = cv2.cvtColor(inpaint_result, cv2.COLOR_BGR2RGB)
             if concat:
                 mask_img = cv2.cvtColor(mask_img, cv2.COLOR_GRAY2RGB)

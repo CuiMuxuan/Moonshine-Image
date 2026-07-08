@@ -59,6 +59,11 @@ export const buildProcessingConfigSnapshot = ({
   exportFpsMode = "source",
   batchSize = 0,
   frameFormat = "jpg",
+  resultFrameFormat = "jpg",
+  intermediateFrameStrategy = "performance",
+  encodingQualityPreset = "performance",
+  segmentCrf = 18,
+  inpaintColorStabilization = "auto",
   modelId = "lama",
   modelOptions = {},
   masks = [],
@@ -74,6 +79,11 @@ export const buildProcessingConfigSnapshot = ({
     exportFpsMode: String(exportFpsMode || "source"),
     batchSize: Math.max(1, Math.round(Number(batchSize || 1))),
     frameFormat: String(frameFormat || "jpg").toLowerCase(),
+    resultFrameFormat: String(resultFrameFormat || "jpg").toLowerCase(),
+    intermediateFrameStrategy: String(intermediateFrameStrategy || "performance"),
+    encodingQualityPreset: String(encodingQualityPreset || "performance"),
+    segmentCrf: Math.max(0, Math.round(Number(segmentCrf || 0))),
+    inpaintColorStabilization: String(inpaintColorStabilization || "auto"),
     modelId: String(modelId || "lama"),
     modelOptions:
       modelOptions && typeof modelOptions === "object" && !Array.isArray(modelOptions)

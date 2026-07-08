@@ -133,6 +133,7 @@ class InpaintRequest(BaseModel):
     sd_seed: int = Field(42, validate_default=True)
     prompt: str = ""
     negative_prompt: str = ""
+    color_stabilization: Literal["off", "auto", "enhanced"] = Field("auto")
 
     cv2_flag: CV2Flag = Field(CV2Flag.INPAINT_NS)
     cv2_radius: int = Field(4)
@@ -218,6 +219,7 @@ class BatchInpaintItem(BaseModel):
 
 class BatchInpaintRequest(BaseModel):
     data: List[BatchInpaintItem] = Field(default_factory=list)
+    inpaint: InpaintRequest = Field(default_factory=InpaintRequest)
     image_type: Literal["base64", "path"] = Field("base64")
     mask_type: Literal["base64", "path"] = Field("base64")
     temp_path: Optional[str] = Field(None)
@@ -276,6 +278,7 @@ class BatchInpaintByFolderRequest(BaseModel):
     concat: bool = False
     output_format: ImageOutputFormat = Field("auto")
     output_quality: int = Field(95, ge=1, le=100)
+    color_stabilization: Literal["off", "auto", "enhanced"] = Field("auto")
 
     _normalize_output_format_value = field_validator(
         "output_format", mode="before"

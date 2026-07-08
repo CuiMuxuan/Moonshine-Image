@@ -47,6 +47,7 @@ import {
   IMAGE_OUTPUT_FORMAT_OPTIONS,
   IMAGE_OUTPUT_NAMING_MODES,
   VIDEO_ENCODING_QUALITY_PRESET_OPTIONS,
+  VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS,
   VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS,
   VIDEO_PROCESSING_ENGINE_OPTIONS,
   isPlainObject,
@@ -2032,6 +2033,11 @@ function sanitizeAppConfig(config = {}) {
   )
     ? merged.video.encodingQualityPreset
     : "performance";
+  merged.video.inpaintColorStabilization = VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS.includes(
+    merged.video?.inpaintColorStabilization
+  )
+    ? merged.video.inpaintColorStabilization
+    : "auto";
   return merged;
 }
 
@@ -2226,6 +2232,15 @@ function validateConfig(config) {
     if (
       config.video.encodingQualityPreset &&
       !VIDEO_ENCODING_QUALITY_PRESET_OPTIONS.includes(config.video.encodingQualityPreset)
+    ) {
+      return false;
+    }
+
+    if (
+      config.video.inpaintColorStabilization &&
+      !VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS.includes(
+        config.video.inpaintColorStabilization
+      )
     ) {
       return false;
     }

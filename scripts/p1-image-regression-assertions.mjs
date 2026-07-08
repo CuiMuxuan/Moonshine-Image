@@ -122,7 +122,7 @@ function runAssertions() {
   assertPattern({
     file: "src/shared/appConfigSchema.js",
     description: "Shared config schema keeps version and page-level default SAM model settings",
-    pattern: /CONFIG_SCHEMA_VERSION = 12[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*defaultSamModel:\s*"sam_vit_b"[\s\S]*defaultSam2Model:\s*"sam2_1_hiera_large"[\s\S]*defaultSam3Model:\s*"sam3_1_multiplex"[\s\S]*imageSmartSelectionDefaultModel:\s*"sam_vit_b"[\s\S]*videoSmartSelectionDefaultModel:\s*"sam2_1_hiera_large"[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4[\s\S]*masking:\s*\{[\s\S]*DEFAULT_MASKING_CONFIG/,
+    pattern: /CONFIG_SCHEMA_VERSION = 13[\s\S]*VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*defaultSamModel:\s*"sam_vit_b"[\s\S]*defaultSam2Model:\s*"sam2_1_hiera_large"[\s\S]*defaultSam3Model:\s*"sam3_1_multiplex"[\s\S]*imageSmartSelectionDefaultModel:\s*"sam_vit_b"[\s\S]*videoSmartSelectionDefaultModel:\s*"sam2_1_hiera_large"[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4[\s\S]*masking:\s*\{[\s\S]*DEFAULT_MASKING_CONFIG/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",
@@ -134,7 +134,22 @@ function runAssertions() {
   assertPattern({
     file: "server/moonshine_server/schema.py",
     description: "Image requests expose output_format and output_quality",
-    pattern: /class BatchInpaintRequest[\s\S]*output_format:\s*ImageOutputFormat[\s\S]*output_quality:\s*int = Field\(95,\s*ge=1,\s*le=100\)[\s\S]*class MoonshineImageProcessRequest[\s\S]*output_format:\s*ImageOutputFormat[\s\S]*output_quality:\s*int = Field\(95,\s*ge=1,\s*le=100\)/,
+    pattern: /class InpaintRequest[\s\S]*color_stabilization:\s*Literal\["off", "auto", "enhanced"\][\s\S]*class BatchInpaintRequest[\s\S]*inpaint:\s*InpaintRequest[\s\S]*output_format:\s*ImageOutputFormat[\s\S]*output_quality:\s*int = Field\(95,\s*ge=1,\s*le=100\)[\s\S]*class MoonshineImageProcessRequest[\s\S]*output_format:\s*ImageOutputFormat[\s\S]*output_quality:\s*int = Field\(95,\s*ge=1,\s*le=100\)/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/inpaint_color_stabilization.py",
+    description: "Backend color stabilization supports flat background fill and local color matching",
+    pattern: /COLOR_STABILIZATION_MODES = \{"off", "auto", "enhanced"\}[\s\S]*def try_flat_background_fill[\s\S]*flat-background-fill[\s\S]*def apply_inpaint_color_stabilization[\s\S]*local-color-match[\s\S]*except Exception as error:[\s\S]*return result_bgr/,
+  });
+  assertPattern({
+    file: "server/moonshine_server/api.py",
+    description: "Image APIs apply color stabilization before encoding results",
+    pattern: /def api_inpaint[\s\S]*try_flat_background_fill\([\s\S]*self\.model_manager\(image, mask, req\)[\s\S]*apply_inpaint_color_stabilization[\s\S]*def api_batch_inpaint[\s\S]*req\.inpaint\.model_copy\(deep=True\)[\s\S]*try_flat_background_fill\([\s\S]*apply_inpaint_color_stabilization/,
+  });
+  assertPattern({
+    file: "src/services/ImageProcessingService.js",
+    description: "Frontend image requests carry the configured inpaint color stabilization mode",
+    pattern: /resolveInpaintColorStabilization[\s\S]*inpaintColorStabilization[\s\S]*attachInpaintOptions[\s\S]*color_stabilization[\s\S]*performBatchInpainting/,
   });
   assertPattern({
     file: "server/moonshine_server/schema.py",

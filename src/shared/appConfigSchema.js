@@ -3,7 +3,7 @@ import {
   normalizeShortcutConfig,
 } from "../utils/shortcutConfig.js";
 
-export const CONFIG_SCHEMA_VERSION = 12;
+export const CONFIG_SCHEMA_VERSION = 13;
 
 export const DEFAULT_THEME_MODE = "light";
 export const DEFAULT_UI_BUTTON_SIZE = "sm";
@@ -21,6 +21,11 @@ export const VIDEO_ENCODING_QUALITY_PRESET_OPTIONS = Object.freeze([
   "stable",
   "highStable",
   "nearLossless",
+]);
+export const VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS = Object.freeze([
+  "off",
+  "auto",
+  "enhanced",
 ]);
 export const VIDEO_TEMPORAL_ENHANCEMENT_MODES = Object.freeze([
   "conservative",
@@ -147,6 +152,7 @@ export const createDefaultAppConfig = () => ({
   video: {
     intermediateFrameStrategy: "performance",
     encodingQualityPreset: "performance",
+    inpaintColorStabilization: "auto",
     frameExtractionFormat: "jpg",
     batchFrameCount: 120,
     historyLimit: 5,
@@ -264,6 +270,15 @@ export const migrateLegacyConfigShape = (rawConfig = {}) => {
     !VIDEO_ENCODING_QUALITY_PRESET_OPTIONS.includes(migrated.video.encodingQualityPreset)
   ) {
     migrated.video.encodingQualityPreset = "performance";
+  }
+  if (
+    (!Number.isFinite(legacySchemaVersion) || legacySchemaVersion < 13) &&
+    isPlainObject(migrated.video) &&
+    !VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS.includes(
+      migrated.video.inpaintColorStabilization
+    )
+  ) {
+    migrated.video.inpaintColorStabilization = "auto";
   }
 
   return migrated;

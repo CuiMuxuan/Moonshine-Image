@@ -24,6 +24,7 @@ import {
   migrateLegacyConfigShape,
   UI_BUTTON_SIZE_OPTIONS,
   VIDEO_ENCODING_QUALITY_PRESET_OPTIONS,
+  VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS,
   VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS,
   VIDEO_TEMPORAL_ENHANCEMENT_MODES,
   VIDEO_PROCESSING_ENGINE_OPTIONS,
@@ -163,6 +164,7 @@ export {
   IMAGE_OUTPUT_FORMAT_OPTIONS,
   IMAGE_OUTPUT_NAMING_MODES,
   VIDEO_ENCODING_QUALITY_PRESET_OPTIONS,
+  VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS,
   VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS,
   VIDEO_PROCESSING_ENGINE_OPTIONS,
   normalizeBrandColors,
@@ -469,6 +471,12 @@ export class ConfigManager {
         "视频编码质量必须是 performance、balanced、stable、highStable 或 nearLossless。"
       );
     }
+    if (
+      video.inpaintColorStabilization &&
+      !VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS.includes(video.inpaintColorStabilization)
+    ) {
+      errors.push("补洞颜色稳定必须是 off、auto 或 enhanced。");
+    }
 
     if (
       video.previewTrialSeconds !== undefined &&
@@ -735,6 +743,11 @@ export class ConfigManager {
       )
         ? merged.video.encodingQualityPreset
         : "performance",
+      inpaintColorStabilization: VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS.includes(
+        merged.video?.inpaintColorStabilization
+      )
+        ? merged.video.inpaintColorStabilization
+        : "auto",
       temporalEnhancement: normalizeVideoTemporalEnhancementConfig(
         merged.video?.temporalEnhancement
       ),

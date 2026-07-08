@@ -664,6 +664,16 @@
                         >
                           <template #hint>{{ getVideoEncodingQualityPresetHint() }}</template>
                         </q-select>
+                        <q-select
+                          v-model="localConfig.video.inpaintColorStabilization"
+                          label="补洞颜色稳定"
+                          emit-value
+                          map-options
+                          :options="videoInpaintColorStabilizationOptions"
+                          data-testid="global-settings-video-inpaint-color-stabilization"
+                        >
+                          <template #hint>{{ getVideoInpaintColorStabilizationHint() }}</template>
+                        </q-select>
                         <q-input v-model.number="localConfig.video.historyLimit" label="视频历史记录上限" type="number" :min="1" :max="50" />
                         <q-input v-model.number="localConfig.video.batchRetryCount" label="批次重试次数" type="number" :min="1" :max="10" />
                         <q-input v-model.number="localConfig.video.proxyMaxSide" label="代理预览最大边长" type="number" :min="256" :max="4096" />
@@ -722,7 +732,7 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
 import { useQuasar } from "quasar";
 import ModelManagementPanel from "src/components/global/ModelManagementPanel.vue";
-import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_MASKING_CONFIG, DEFAULT_TEMP_CLEANUP, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT, UI_BUTTON_SIZE_OPTIONS, VIDEO_ENCODING_QUALITY_PRESET_OPTIONS, VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS, VIDEO_PROCESSING_ENGINE_OPTIONS, VIDEO_TEMPORAL_ENHANCEMENT_MODES } from "src/config/ConfigManager";
+import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_MASKING_CONFIG, DEFAULT_TEMP_CLEANUP, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT, UI_BUTTON_SIZE_OPTIONS, VIDEO_ENCODING_QUALITY_PRESET_OPTIONS, VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS, VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS, VIDEO_PROCESSING_ENGINE_OPTIONS, VIDEO_TEMPORAL_ENHANCEMENT_MODES } from "src/config/ConfigManager";
 import { createDefaultShortcuts, formatShortcutKeys, getShortcutDefinition, getShortcutTokenFromKeyboardEvent, getShortcutsByGroup, normalizeShortcutKeys, SHORTCUT_GROUP_META, SHORTCUT_GROUPS, validateShortcutConfig } from "src/utils/shortcutConfig";
 import { useAppStateStore } from "src/stores/appState";
 import { useConfigStore } from "src/stores/config";
@@ -813,6 +823,25 @@ const videoEncodingQualityPresetOptions = VIDEO_ENCODING_QUALITY_PRESET_OPTIONS.
   value,
   label: videoEncodingQualityPresetMeta[value]?.label || value,
   description: videoEncodingQualityPresetMeta[value]?.description || "",
+}));
+const videoInpaintColorStabilizationMeta = {
+  off: {
+    label: "关闭",
+    description: "完全保留模型原始补洞结果，适合排查模型差异。",
+  },
+  auto: {
+    label: "自动（推荐）",
+    description: "纯色或绿幕背景直接回填，普通区域做轻量局部颜色匹配，兼顾速度和稳定性。",
+  },
+  enhanced: {
+    label: "增强",
+    description: "放宽颜色匹配强度，用于明显色差素材；仍不启用高开销的无缝融合。",
+  },
+};
+const videoInpaintColorStabilizationOptions = VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS.map((value) => ({
+  value,
+  label: videoInpaintColorStabilizationMeta[value]?.label || value,
+  description: videoInpaintColorStabilizationMeta[value]?.description || "",
 }));
 const videoProcessingEngineOptionMeta = {
   auto: {
@@ -973,6 +1002,8 @@ const getVideoIntermediateFrameStrategyHint = () =>
   videoIntermediateFrameStrategyOptions.find((item) => item.value === (localConfig.value.video?.intermediateFrameStrategy || "performance"))?.description || "";
 const getVideoEncodingQualityPresetHint = () =>
   videoEncodingQualityPresetOptions.find((item) => item.value === (localConfig.value.video?.encodingQualityPreset || "performance"))?.description || "";
+const getVideoInpaintColorStabilizationHint = () =>
+  videoInpaintColorStabilizationOptions.find((item) => item.value === (localConfig.value.video?.inpaintColorStabilization || "auto"))?.description || "";
 const getSamDefaultHint = (options, modelId) => {
   const selected = options.find((item) => item.value === modelId);
   if (selected) return selected.label;

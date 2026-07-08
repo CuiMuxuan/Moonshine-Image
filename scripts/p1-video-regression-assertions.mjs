@@ -273,8 +273,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/shared/appConfigSchema.js",
-    description: "Video intermediate frame and encoding quality strategies default to performance in schema v12",
-    pattern: /CONFIG_SCHEMA_VERSION = 12[\s\S]*VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS = Object\.freeze\(\[[\s\S]*"performance"[\s\S]*"balanced"[\s\S]*"quality"[\s\S]*VIDEO_ENCODING_QUALITY_PRESET_OPTIONS = Object\.freeze\(\[[\s\S]*"performance"[\s\S]*"balanced"[\s\S]*"stable"[\s\S]*"highStable"[\s\S]*"nearLossless"[\s\S]*videoProcessingEngine:\s*"auto"[\s\S]*intermediateFrameStrategy:\s*"performance"[\s\S]*encodingQualityPreset:\s*"performance"[\s\S]*frameExtractionFormat:\s*"jpg"[\s\S]*legacySchemaVersion[\s\S]*migrated\.video\.intermediateFrameStrategy = "performance"[\s\S]*migrated\.video\.encodingQualityPreset = "performance"/,
+    description: "Video intermediate, encoding quality and color stabilization strategies default safely in schema v13",
+    pattern: /CONFIG_SCHEMA_VERSION = 13[\s\S]*VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS = Object\.freeze\(\[[\s\S]*"performance"[\s\S]*"balanced"[\s\S]*"quality"[\s\S]*VIDEO_ENCODING_QUALITY_PRESET_OPTIONS = Object\.freeze\(\[[\s\S]*"performance"[\s\S]*"balanced"[\s\S]*"stable"[\s\S]*"highStable"[\s\S]*"nearLossless"[\s\S]*VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS = Object\.freeze\(\[[\s\S]*"off"[\s\S]*"auto"[\s\S]*"enhanced"[\s\S]*videoProcessingEngine:\s*"auto"[\s\S]*intermediateFrameStrategy:\s*"performance"[\s\S]*encodingQualityPreset:\s*"performance"[\s\S]*inpaintColorStabilization:\s*"auto"[\s\S]*frameExtractionFormat:\s*"jpg"[\s\S]*legacySchemaVersion[\s\S]*migrated\.video\.intermediateFrameStrategy = "performance"[\s\S]*migrated\.video\.encodingQualityPreset = "performance"[\s\S]*migrated\.video\.inpaintColorStabilization = "auto"/,
   });
   assertPattern({
     file: "src/components/global/GlobalSettings.vue",
@@ -285,6 +285,11 @@ function runAssertions() {
     file: "src/components/global/GlobalSettings.vue",
     description: "Global settings exposes video encoding quality preset with CRF tradeoff hints",
     pattern: /v-model="localConfig\.video\.encodingQualityPreset"[\s\S]*global-settings-video-encoding-quality-preset[\s\S]*videoEncodingQualityPresetMeta[\s\S]*CRF 18[\s\S]*CRF 14[\s\S]*CRF 10[\s\S]*CRF 6[\s\S]*CRF 2[\s\S]*getVideoEncodingQualityPresetHint/,
+  });
+  assertPattern({
+    file: "src/components/global/GlobalSettings.vue",
+    description: "Global settings exposes inpaint color stabilization modes",
+    pattern: /v-model="localConfig\.video\.inpaintColorStabilization"[\s\S]*global-settings-video-inpaint-color-stabilization[\s\S]*videoInpaintColorStabilizationMeta[\s\S]*纯色或绿幕背景直接回填[\s\S]*getVideoInpaintColorStabilizationHint/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -320,8 +325,23 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
-    description: "Video frame extraction is FFmpeg-first with WebAV/canvas fallback",
-    pattern: /createFfmpegFrameExtractor[\s\S]*ffmpeg-extract-frame-sequence[\s\S]*createFrameExtractor = async[\s\S]*getConfiguredVideoProcessingEngine\(\) === "webav"[\s\S]*FFmpeg 批量拆帧失败，已回退 WebAV\/canvas 拆帧[\s\S]*读取 FFmpeg 拆帧结果失败，已回退 WebAV\/canvas 拆帧/,
+    description: "Video frame extraction is FFmpeg-first, batch-range lazy, and has WebAV/canvas fallback",
+    pattern: /(?=[\s\S]*createFfmpegFrameExtractor[\s\S]*ffprobe-media)(?=[\s\S]*const prepareRange = async[\s\S]*ffmpeg-extract-frame-sequence)(?=[\s\S]*startFrame: safeStartFrame)(?=[\s\S]*endFrame: safeEndFrame)(?=[\s\S]*prepareBatchArtifacts[\s\S]*extractor\.prepareRange\(start, end\))(?=[\s\S]*FFmpeg 按批次拆帧失败，已回退 WebAV\/canvas 拆帧)(?=[\s\S]*读取 FFmpeg 拆帧结果失败，已回退 WebAV\/canvas 拆帧)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Completed video batches clean frame, mask and result artifacts only after segment metadata is persisted",
+    pattern: /cleanupCompletedBatchArtifacts[\s\S]*batchArtifactPaths[\s\S]*removeTemporaryFiles[\s\S]*persistVideoTaskMeta\(\{[\s\S]*completedSegments[\s\S]*totalBatches[\s\S]*\}\);[\s\S]*await cleanupCompletedBatchArtifacts\(currentBatch\)/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Shared mask files are scoped to the current batch to avoid cross-batch cleanup collisions",
+    pattern: /mask_batch_\$\{String\(batchNumber\)\.padStart\([\s\S]*\)\}_shared_\$\{sanitizeMaskSignatureForFileName\(signature\)\}\.jpg/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video requests pass color stabilization before temporal enhancement fallback",
+    pattern: /(?=[\s\S]*getConfiguredInpaintColorStabilization)(?=[\s\S]*inpaintColorStabilization: requestedInpaintColorStabilization)(?=[\s\S]*color_stabilization: requestedInpaintColorStabilization)(?=[\s\S]*temporal_enhancement: temporalEnhancementRequest)[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -411,8 +431,8 @@ function runAssertions() {
   logSection("Video Mask IO Optimization");
   assertPattern({
     file: "src/pages/VideoPage.vue",
-    description: "Video temporary masks remain JPG while mask signatures can reuse shared JPG files",
-    pattern: /(?=[\s\S]*const maskName = `mask_\$\{String\(frameIndex\)\.padStart\(6, "0"\)\}\.jpg`)(?=[\s\S]*mimeType: "image\/jpeg")(?=[\s\S]*`mask_shared_\$\{sanitizeMaskSignatureForFileName\(signature\)\}\.jpg`)[\s\S]*/,
+    description: "Video temporary masks remain JPG while mask signatures can reuse batch-scoped shared JPG files",
+    pattern: /(?=[\s\S]*const maskName = `mask_\$\{String\(frameIndex\)\.padStart\(6, "0"\)\}\.jpg`)(?=[\s\S]*mimeType: "image\/jpeg")(?=[\s\S]*`mask_batch_\$\{String\(batchNumber\)\.padStart\([\s\S]*\)\}_shared_\$\{sanitizeMaskSignatureForFileName\(signature\)\}\.jpg`)[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
