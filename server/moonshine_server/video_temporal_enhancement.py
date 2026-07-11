@@ -48,6 +48,9 @@ DEFAULT_OPTIONS = {
     "diagnostics_path": "",
     "state_path": "",
     "cache_dir": "",
+    "resume_state_path": "",
+    "resume_cache_dir": "",
+    "resume_before_frame_index": None,
     "config_signature": "",
     "source_fingerprint": "",
     "video_width": None,
@@ -166,6 +169,11 @@ def normalize_temporal_enhancement_options(options: Any) -> Dict[str, Any]:
     normalized["diagnostics_path"] = str(raw.get("diagnostics_path") or "").strip()
     normalized["state_path"] = _string(raw.get("state_path"))
     normalized["cache_dir"] = _string(raw.get("cache_dir"))
+    normalized["resume_state_path"] = _string(raw.get("resume_state_path"))
+    normalized["resume_cache_dir"] = _string(raw.get("resume_cache_dir"))
+    normalized["resume_before_frame_index"] = _optional_int(
+        raw.get("resume_before_frame_index"), 0, 1_000_000
+    )
     normalized["config_signature"] = _string(raw.get("config_signature"))
     normalized["source_fingerprint"] = _string(raw.get("source_fingerprint"))
     normalized["video_width"] = _optional_int(raw.get("video_width"), 1, 100_000)
@@ -379,7 +387,58 @@ class VideoTemporalEnhancer:
             return independent_bgr, decision
 
         previous = self.previous
-        if previous is None:
+        if previous is not None:
+            scene_delta = _scene_delta(current_thumb, previous.get("thumbnail"))
+            iou = _mask_iou(stats["binary"], previous["mask_binary"])
+            center_shift = _center_shift(stats["center"], previous.get("center"))
+            previous_area = max(float(previous.get("area_ratio") or 0), 1e-8)
+            area_delta = abs(stats["area_ratio"] - previous_area) / previous_area
+            decision.update(
+                {
+                    "scene_delta": scene_delta,
+                    "mask_iou": iou,
+                    "center_shift": center_shift,
+                    "area_delta": area_delta,
+                }
+            )
+
+            risk_reason = self._get_risk_reason(scene_delta, iou, center_shift, area_delta)
+            if risk_reason:
+                decision["skip_reason"] = risk_reason
+                self._remember(frame_index, current_thumb, stats, independent_bgr)
+                self._update_texture_cache(
+                    frame_index,
+                    stats,
+                    independent_bgr,
+                    object_key,
+                    object_refs,
+                    mask.shape[:2],
+                )
+                self._write_diagnostic(decision, output_path)
+                return independent_bgr, decision
+
+        blend_mask = mask
+        if self.options["stabilize_mask"]:
+            blend_mask = _stabilize_binary_mask(mask)
+            decision["mask_stabilized"] = True
+
+        reference_bgr = (
+            previous["result_bgr"].copy()
+            if previous is not None and self.options["stabilize_result"]
+            else independent_bgr.copy()
+        )
+        reference_bgr, cache_hit_keys = self._apply_texture_cache_to_reference(
+            frame_index,
+            object_refs,
+            object_key,
+            mask,
+            reference_bgr,
+        )
+        if cache_hit_keys:
+            decision["texture_cache_hit"] = True
+            decision["texture_cache_hit_keys"] = cache_hit_keys
+
+        if previous is None and not cache_hit_keys:
             decision["skip_reason"] = "missing-reference"
             self._remember(frame_index, current_thumb, stats, independent_bgr)
             self._update_texture_cache(
@@ -393,50 +452,11 @@ class VideoTemporalEnhancer:
             self._write_diagnostic(decision, output_path)
             return independent_bgr, decision
 
-        scene_delta = _scene_delta(current_thumb, previous.get("thumbnail"))
-        iou = _mask_iou(stats["binary"], previous["mask_binary"])
-        center_shift = _center_shift(stats["center"], previous.get("center"))
-        previous_area = max(float(previous.get("area_ratio") or 0), 1e-8)
-        area_delta = abs(stats["area_ratio"] - previous_area) / previous_area
-        decision.update(
-            {
-                "scene_delta": scene_delta,
-                "mask_iou": iou,
-                "center_shift": center_shift,
-                "area_delta": area_delta,
-            }
-        )
-
-        risk_reason = self._get_risk_reason(scene_delta, iou, center_shift, area_delta)
-        if risk_reason:
-            decision["skip_reason"] = risk_reason
-            self._remember(frame_index, current_thumb, stats, independent_bgr)
-            self._update_texture_cache(
-                frame_index,
-                stats,
-                independent_bgr,
-                object_key,
-                object_refs,
-                mask.shape[:2],
-            )
-            self._write_diagnostic(decision, output_path)
-            return independent_bgr, decision
-
-        blend_mask = mask
-        if self.options["stabilize_mask"]:
-            blend_mask = _stabilize_binary_mask(mask)
-            decision["mask_stabilized"] = True
-
         enhanced_bgr = independent_bgr
-        cache_hit_keys = self._get_texture_cache_hit_keys(frame_index, object_refs, object_key)
-        if cache_hit_keys:
-            decision["texture_cache_hit"] = True
-            decision["texture_cache_hit_keys"] = cache_hit_keys
-
-        if self.options["stabilize_result"]:
+        if self.options["stabilize_result"] or cache_hit_keys:
             enhanced_bgr = _blend_in_mask(
                 independent_bgr,
-                previous["result_bgr"],
+                reference_bgr,
                 blend_mask,
                 self.options["blend_strength"],
             )
@@ -557,13 +577,97 @@ class VideoTemporalEnhancer:
         hit_keys = []
         for key in keys:
             cache_entry = self.texture_cache.get(key)
-            if (
-                cache_entry
-                and frame_index - int(cache_entry.get("frame_index", frame_index))
-                <= self.options["cache_ttl_frames"]
-            ):
+            age = frame_index - int((cache_entry or {}).get("frame_index", frame_index))
+            if cache_entry and 0 <= age <= self.options["cache_ttl_frames"]:
                 hit_keys.append(key)
         return hit_keys
+
+    def _apply_texture_cache_entry(
+        self,
+        frame_index: int,
+        current_mask: np.ndarray,
+        reference_bgr: np.ndarray,
+        cache_entry: Dict[str, Any],
+    ) -> bool:
+        age = frame_index - int(cache_entry.get("frame_index", frame_index))
+        if age < 0 or age > self.options["cache_ttl_frames"]:
+            return False
+
+        patch = cache_entry.get("patch")
+        cached_mask = cache_entry.get("mask")
+        if (
+            not isinstance(patch, np.ndarray)
+            or patch.size == 0
+            or not isinstance(cached_mask, np.ndarray)
+            or cached_mask.size == 0
+            or patch.shape[:2] != cached_mask.shape[:2]
+        ):
+            return False
+
+        current_stats = _mask_stats(current_mask)
+        if current_stats["nonzero"] < self.options["min_mask_area"]:
+            return False
+        cached_area = max(float(cache_entry.get("area_ratio") or 0), 1e-8)
+        area_delta = abs(current_stats["area_ratio"] - cached_area) / cached_area
+        center_shift = _center_shift(current_stats["center"], cache_entry.get("center"))
+        if area_delta > 1.0 or center_shift > self.options["center_shift_threshold"]:
+            return False
+
+        x0, y0, x1, y1 = current_stats["bounds"]
+        if x1 <= x0 or y1 <= y0:
+            return False
+        target_size = (x1 - x0, y1 - y0)
+        resized_patch = cv2.resize(patch, target_size, interpolation=cv2.INTER_LINEAR)
+        resized_cached_mask = cv2.resize(
+            cached_mask, target_size, interpolation=cv2.INTER_NEAREST
+        )
+        current_crop = np.where(current_stats["binary"][y0:y1, x0:x1], 255, 0).astype(
+            np.uint8
+        )
+        intersection = (resized_cached_mask > 127) & (current_crop > 127)
+        if int(np.count_nonzero(intersection)) < self.options["min_mask_area"]:
+            return False
+
+        reference_roi = reference_bgr[y0:y1, x0:x1]
+        reference_roi[intersection] = resized_patch[intersection]
+        return True
+
+    def _apply_texture_cache_to_reference(
+        self,
+        frame_index: int,
+        object_refs: list,
+        fallback_key: str,
+        combined_mask: np.ndarray,
+        reference_bgr: np.ndarray,
+    ) -> Tuple[np.ndarray, list]:
+        if not self.options["texture_cache"]:
+            return reference_bgr, []
+
+        hit_keys = []
+        for ref in sorted(object_refs or [], key=lambda item: item.get("object_key") or ""):
+            object_key = _string(ref.get("object_key"))
+            mask_path = _string(ref.get("mask_path"))
+            cache_entry = self.texture_cache.get(object_key)
+            if not object_key or not mask_path or not cache_entry:
+                continue
+            object_mask = _read_binary_mask_from_path(mask_path, combined_mask.shape[:2])
+            if object_mask is None:
+                continue
+            if self._apply_texture_cache_entry(
+                frame_index, object_mask, reference_bgr, cache_entry
+            ):
+                hit_keys.append(object_key)
+
+        if hit_keys:
+            return reference_bgr, hit_keys
+
+        cache_key = fallback_key or DEFAULT_OBJECT_KEY
+        cache_entry = self.texture_cache.get(cache_key)
+        if cache_entry and self._apply_texture_cache_entry(
+            frame_index, combined_mask, reference_bgr, cache_entry
+        ):
+            hit_keys.append(cache_key)
+        return reference_bgr, hit_keys
 
     def _update_texture_cache(
         self,
@@ -632,14 +736,14 @@ class VideoTemporalEnhancer:
             updates += 1
         return updates
 
-    def _state_dir(self) -> str:
-        state_path = self.options.get("state_path") or ""
+    def _state_dir(self, state_path: str = "") -> str:
+        state_path = state_path or self.options.get("state_path") or ""
         return os.path.dirname(os.path.abspath(state_path)) if state_path else ""
 
-    def _resolve_state_reference_path(self, reference_path: str) -> str:
+    def _resolve_state_reference_path(self, reference_path: str, state_path: str = "") -> str:
         if os.path.isabs(reference_path):
             return reference_path
-        state_dir = self._state_dir()
+        state_dir = self._state_dir(state_path)
         return os.path.abspath(os.path.join(state_dir, reference_path))
 
     def _relative_to_state_dir(self, path: str) -> str:
@@ -684,7 +788,11 @@ class VideoTemporalEnhancer:
         return True
 
     def _load_previous_from_state(self) -> None:
-        state_path = self.options.get("state_path") or ""
+        state_path = (
+            self.options.get("resume_state_path")
+            or self.options.get("state_path")
+            or ""
+        )
         if not state_path or not os.path.exists(state_path):
             return
         try:
@@ -696,13 +804,16 @@ class VideoTemporalEnhancer:
                 return
 
             result_path = self._resolve_state_reference_path(
-                _string(reference.get("resultPath") or reference.get("result_path"))
+                _string(reference.get("resultPath") or reference.get("result_path")),
+                state_path,
             )
             mask_path = self._resolve_state_reference_path(
-                _string(reference.get("maskPath") or reference.get("mask_path"))
+                _string(reference.get("maskPath") or reference.get("mask_path")),
+                state_path,
             )
             thumbnail_path = self._resolve_state_reference_path(
-                _string(reference.get("thumbnailPath") or reference.get("thumbnail_path"))
+                _string(reference.get("thumbnailPath") or reference.get("thumbnail_path")),
+                state_path,
             )
             if not result_path or not mask_path or not thumbnail_path:
                 return
@@ -726,6 +837,9 @@ class VideoTemporalEnhancer:
 
             stats = _mask_stats(mask)
             frame_index = int(reference.get("frameIndex") or reference.get("frame_index") or 0)
+            resume_before = self.options.get("resume_before_frame_index")
+            if resume_before is not None and frame_index >= int(resume_before):
+                return
             self.previous = {
                 "frame_index": frame_index,
                 "thumbnail": thumbnail.copy(),
@@ -806,14 +920,24 @@ class VideoTemporalEnhancer:
         return os.path.join(object_dir, cache_path)
 
     def _load_object_cache(self) -> None:
-        cache_dir = self.options.get("cache_dir") or ""
+        cache_dir = (
+            self.options.get("resume_cache_dir")
+            or self.options.get("cache_dir")
+            or ""
+        )
         if not cache_dir:
             return
         objects_dir = os.path.join(cache_dir, "objects")
         if not os.path.isdir(objects_dir):
             return
         try:
-            for object_name in os.listdir(objects_dir):
+            object_names = sorted(os.listdir(objects_dir))
+        except Exception as error:
+            self._write_persistence_diagnostic("object-cache-load-failed", error)
+            return
+
+        for object_name in object_names:
+            try:
                 object_dir = os.path.join(objects_dir, object_name)
                 meta_path = os.path.join(object_dir, "meta.json")
                 if not os.path.isfile(meta_path):
@@ -822,26 +946,64 @@ class VideoTemporalEnhancer:
                 if not self._matches_context(meta):
                     continue
                 object_key = _string(meta.get("objectKey")) or DEFAULT_OBJECT_KEY
+                frame_index = int(meta.get("lastReliableFrameIndex"))
+                if frame_index < 0:
+                    continue
+                resume_before = self.options.get("resume_before_frame_index")
+                if resume_before is not None and frame_index >= int(resume_before):
+                    continue
+
+                bounds_payload = meta.get("bounds")
+                if not isinstance(bounds_payload, (list, tuple)) or len(bounds_payload) != 4:
+                    continue
+                bounds = tuple(int(round(float(value))) for value in bounds_payload)
+                x0, y0, x1, y1 = bounds
+                if x0 < 0 or y0 < 0 or x1 <= x0 or y1 <= y0:
+                    continue
+                expected_width = self.options.get("video_width")
+                expected_height = self.options.get("video_height")
+                if expected_width and x1 > int(expected_width):
+                    continue
+                if expected_height and y1 > int(expected_height):
+                    continue
+
+                center_payload = meta.get("center")
+                if not isinstance(center_payload, (list, tuple)) or len(center_payload) != 2:
+                    continue
+                center = tuple(float(value) for value in center_payload)
+                if not all(np.isfinite(value) and 0 <= value <= 1 for value in center):
+                    continue
+                area_ratio = float(meta.get("areaRatio") or meta.get("area_ratio") or 0)
+                if not np.isfinite(area_ratio) or area_ratio <= 0 or area_ratio > 1:
+                    continue
+
                 patch_path = self._resolve_object_cache_file(
                     object_dir, _string(meta.get("patchPath"))
                 )
                 patch = cv2.imread(patch_path, cv2.IMREAD_COLOR)
-                if patch is None:
-                    continue
                 mask_path = self._resolve_object_cache_file(
                     object_dir, _string(meta.get("maskPath"))
                 )
                 mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                expected_shape = (y1 - y0, x1 - x0)
+                if (
+                    patch is None
+                    or mask is None
+                    or patch.shape[:2] != expected_shape
+                    or mask.shape[:2] != expected_shape
+                    or int(np.count_nonzero(mask > 127)) < self.options["min_mask_area"]
+                ):
+                    continue
                 self.texture_cache[object_key] = {
-                    "frame_index": int(meta.get("lastReliableFrameIndex") or 0),
-                    "bounds": tuple(meta.get("bounds") or ()),
-                    "area_ratio": float(meta.get("areaRatio") or meta.get("area_ratio") or 0),
-                    "center": tuple(meta.get("center") or ()),
+                    "frame_index": frame_index,
+                    "bounds": bounds,
+                    "area_ratio": area_ratio,
+                    "center": center,
                     "patch": patch,
                     "mask": mask,
                 }
-        except Exception as error:
-            self._write_persistence_diagnostic("object-cache-load-failed", error)
+            except Exception as error:
+                self._write_persistence_diagnostic("object-cache-entry-load-failed", error)
 
     def _persist_object_cache(self) -> None:
         cache_dir = self.options.get("cache_dir") or ""
@@ -893,9 +1055,9 @@ class VideoTemporalEnhancer:
             except Exception as error:
                 self._write_persistence_diagnostic("object-cache-write-failed", error)
 
-    def finalize_batch(self) -> None:
+    def finalize_batch(self) -> Optional[Dict[str, Any]]:
         if not self.enabled:
-            return
+            return None
         try:
             self._persist_previous_state()
         except Exception as error:
@@ -904,6 +1066,15 @@ class VideoTemporalEnhancer:
             self._persist_object_cache()
         except Exception as error:
             self._write_persistence_diagnostic("object-cache-write-failed", error)
+        state_path = self.options.get("state_path") or ""
+        cache_dir = self.options.get("cache_dir") or ""
+        if not self.previous or not state_path or not cache_dir or not os.path.isfile(state_path):
+            return None
+        return {
+            "state_path": state_path,
+            "cache_dir": cache_dir,
+            "last_frame_index": int(self.previous.get("frame_index") or 0),
+        }
 
     def _write_persistence_diagnostic(self, event: str, error: Exception) -> None:
         self._write_diagnostic(

@@ -3,6 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { resolveVideoEncodingQualityPolicy } from "../src/utils/videoProcessingPolicies.js";
+import {
+  buildProcessingConfigSnapshot,
+  hasProcessingConfigMismatch,
+  normalizeVideoTaskMeta,
+} from "../src/utils/videoProcessingResume.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -62,6 +68,15 @@ function assertOrder({ file, description, before, after }) {
 
 function logSection(title) {
   console.log(`\n[${title}]`);
+}
+
+function assertValue({ description, actual, expected }) {
+  if (actual !== expected) {
+    throw new Error(
+      `Assertion failed: ${description}\nExpected: ${expected}\nActual: ${actual}`
+    );
+  }
+  console.log(`PASS  ${description}`);
 }
 
 function resolveFfmpegBinRoot() {
@@ -257,10 +272,151 @@ function runFfmpegSmoke() {
   }
 }
 
+function resolveTemporalTestPython() {
+  const candidates = [
+    process.env.MOONSHINE_PYTHON_PATH,
+    "C:\\Users\\cjh02\\anaconda3\\envs\\moonshine-runtime-312\\python.exe",
+    "python",
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  for (const candidate of candidates) {
+    const probe = spawnSync(candidate, ["-c", "import cv2, numpy"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    if (probe.status === 0) return candidate;
+  }
+  return "";
+}
+
+function runTemporalEnhancementBehaviorTests() {
+  const pythonPath = resolveTemporalTestPython();
+  if (!pythonPath) {
+    console.log("SKIP  Temporal behavior tests require Python with OpenCV and NumPy");
+    return;
+  }
+  const result = spawnSync(
+    pythonPath,
+    [path.join(repoRoot, "scripts", "test_video_temporal_enhancement.py")],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      windowsHide: true,
+    }
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      `Temporal behavior tests failed.\n${result.stdout || ""}\n${result.stderr || ""}`
+    );
+  }
+  process.stdout.write(result.stdout || "");
+}
+
 function runAssertions() {
   console.log("Running P1 video regression assertions...");
 
   logSection("Video Engine Config");
+  for (const [preset, expectedCrf] of Object.entries({
+    performance: 18,
+    balanced: 14,
+    stable: 10,
+    highStable: 6,
+    nearLossless: 2,
+  })) {
+    assertValue({
+      description: `Video encoding preset ${preset} resolves to CRF ${expectedCrf}`,
+      actual: resolveVideoEncodingQualityPolicy({ encodingQualityPreset: preset }).crf,
+      expected: expectedCrf,
+    });
+  }
+  assertValue({
+    description: "Unknown video encoding preset falls back to performance",
+    actual: resolveVideoEncodingQualityPolicy({ encodingQualityPreset: "unknown" }).preset,
+    expected: "performance",
+  });
+
+  const samMask = {
+    id: "sam-track-1",
+    type: "samVideo",
+    name: "SAM Track",
+    displayColor: "#ffffff",
+    enabled: true,
+    startTime: 0,
+    endTime: 3,
+    samObjects: [{ objectId: 1, enabled: true, autoExpandPx: 4 }],
+    samFrames: [
+      {
+        frameIndex: 0,
+        time: 0,
+        masks: [{ objectId: 1, maskSignature: "mask-signature-a" }],
+      },
+    ],
+  };
+  const buildSamSnapshot = (maskOverrides = {}) =>
+    buildProcessingConfigSnapshot({ masks: [{ ...samMask, ...maskOverrides }] });
+  const baselineSamSnapshot = buildSamSnapshot();
+  assertValue({
+    description: "Video processing snapshot uses signature version 2",
+    actual: baselineSamSnapshot.signatureVersion,
+    expected: 2,
+  });
+  assertValue({
+    description: "SAM display-only changes do not invalidate resume signature",
+    actual: hasProcessingConfigMismatch(
+      baselineSamSnapshot,
+      buildSamSnapshot({ name: "Renamed", displayColor: "#000000" })
+    ),
+    expected: false,
+  });
+  assertValue({
+    description: "SAM object visibility changes invalidate resume signature",
+    actual: hasProcessingConfigMismatch(
+      baselineSamSnapshot,
+      buildSamSnapshot({ samObjects: [{ objectId: 1, enabled: false, autoExpandPx: 4 }] })
+    ),
+    expected: true,
+  });
+  assertValue({
+    description: "SAM object expansion changes invalidate resume signature",
+    actual: hasProcessingConfigMismatch(
+      baselineSamSnapshot,
+      buildSamSnapshot({ samObjects: [{ objectId: 1, enabled: true, expandPx: 7 }] })
+    ),
+    expected: true,
+  });
+  assertValue({
+    description: "SAM frame mask signature changes invalidate resume signature",
+    actual: hasProcessingConfigMismatch(
+      baselineSamSnapshot,
+      buildSamSnapshot({
+        samFrames: [
+          {
+            frameIndex: 0,
+            time: 0,
+            masks: [{ objectId: 1, maskSignature: "mask-signature-b" }],
+          },
+        ],
+      })
+    ),
+    expected: true,
+  });
+  const normalizedCheckpointTask = normalizeVideoTaskMeta({
+    taskId: "checkpoint-task",
+    temporalCheckpoint: {
+      statePath: "C:\\temp\\state.json",
+      cacheDir: "C:\\temp\\cache",
+      batchNumber: 2,
+      lastFrameIndex: 239,
+    },
+  });
+  assertValue({
+    description: "Video task metadata preserves temporal checkpoint state path",
+    actual: normalizedCheckpointTask.temporalCheckpoint?.statePath,
+    expected: "C:\\temp\\state.json",
+  });
   assertPattern({
     file: "src/shared/appConfigSchema.js",
     description: "Shared schema exposes auto/webav/ffmpeg video engine options",
@@ -297,9 +453,9 @@ function runAssertions() {
     pattern: /VIDEO_INTERMEDIATE_FRAME_STRATEGY_POLICIES = Object\.freeze\(\{[\s\S]*performance:[\s\S]*inputFrameFormat: "jpg"[\s\S]*resultFrameFormat: "jpg"[\s\S]*balanced:[\s\S]*inputFrameFormat: "jpg"[\s\S]*resultFrameFormat: "png"[\s\S]*quality:[\s\S]*inputFrameFormat: "png"[\s\S]*resultFrameFormat: "png"[\s\S]*resolveVideoIntermediateFramePolicy/,
   });
   assertPattern({
-    file: "src/pages/VideoPage.vue",
-    description: "Video page maps encoding quality presets to FFmpeg segment CRF values",
-    pattern: /VIDEO_ENCODING_QUALITY_POLICIES = Object\.freeze\(\{[\s\S]*performance:[\s\S]*crf: 18[\s\S]*balanced:[\s\S]*crf: 14[\s\S]*stable:[\s\S]*crf: 10[\s\S]*highStable:[\s\S]*crf: 6[\s\S]*nearLossless:[\s\S]*crf: 2[\s\S]*resolveVideoEncodingQualityPolicy[\s\S]*segmentCrf/,
+    file: "src/utils/videoProcessingPolicies.js",
+    description: "Video encoding policy module maps every preset to its FFmpeg segment CRF",
+    pattern: /VIDEO_ENCODING_QUALITY_POLICIES = Object\.freeze\(\{[\s\S]*performance:[\s\S]*crf: 18[\s\S]*balanced:[\s\S]*crf: 14[\s\S]*stable:[\s\S]*crf: 10[\s\S]*highStable:[\s\S]*crf: 6[\s\S]*nearLossless:[\s\S]*crf: 2[\s\S]*resolveVideoEncodingQualityPolicy/,
   });
 
   logSection("FFmpeg Export Path");
@@ -341,7 +497,7 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "Video requests pass color stabilization before temporal enhancement fallback",
-    pattern: /(?=[\s\S]*getConfiguredInpaintColorStabilization)(?=[\s\S]*inpaintColorStabilization: requestedInpaintColorStabilization)(?=[\s\S]*color_stabilization: requestedInpaintColorStabilization)(?=[\s\S]*temporal_enhancement: temporalEnhancementRequest)[\s\S]*/,
+    pattern: /(?=[\s\S]*getConfiguredInpaintColorStabilization)(?=[\s\S]*inpaintColorStabilization: requestedInpaintColorStabilization)(?=[\s\S]*color_stabilization: requestedInpaintColorStabilization)(?=[\s\S]*temporal_enhancement: resolvedTemporalEnhancementRequest)[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -469,12 +625,12 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "Video processing request only sends temporal enhancement options when enabled and records them in the config snapshot",
-    pattern: /(?=[\s\S]*getEnabledVideoTemporalEnhancementConfig[\s\S]*return config\.enabled \? config : null)(?=[\s\S]*encodingQualityPreset)(?=[\s\S]*segmentCrf)(?=[\s\S]*temporalEnhancement: getEnabledVideoTemporalEnhancementConfig\(\))(?=[\s\S]*configSignature: effectiveSnapshot\.signature)(?=[\s\S]*temporalEnhancementRequest[\s\S]*\? \{ temporal_enhancement: temporalEnhancementRequest \}[\s\S]*: \{\})[\s\S]*/,
+    pattern: /(?=[\s\S]*getEnabledVideoTemporalEnhancementConfig[\s\S]*return config\.enabled \? config : null)(?=[\s\S]*encodingQualityPreset)(?=[\s\S]*segmentCrf)(?=[\s\S]*temporalEnhancement: getEnabledVideoTemporalEnhancementConfig\(\))(?=[\s\S]*configSignature: effectiveSnapshot\.signature)(?=[\s\S]*resolvedTemporalEnhancementRequest[\s\S]*\? \{ temporal_enhancement: resolvedTemporalEnhancementRequest \}[\s\S]*: \{\})[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
-    description: "Temporal enhancement request carries persistence paths, source fingerprint, config signature, and video shape",
-    pattern: /(?=[\s\S]*const buildVideoTemporalEnhancementRequest = \(\{[\s\S]*statePath = ""[\s\S]*cacheDir = ""[\s\S]*configSignature = ""[\s\S]*sourceFingerprint = ""[\s\S]*videoWidth = 0[\s\S]*videoHeight = 0[\s\S]*fps = 0)(?=[\s\S]*state_path: statePath)(?=[\s\S]*cache_dir: cacheDir)(?=[\s\S]*config_signature: configSignature)(?=[\s\S]*source_fingerprint: sourceFingerprint)(?=[\s\S]*video_width: Math\.max)(?=[\s\S]*video_height: Math\.max)(?=[\s\S]*fps: Math\.max)(?=[\s\S]*temporalStatePath)(?=[\s\S]*temporalCacheDir)(?=[\s\S]*ensure-directory", temporalCacheDir)(?=[\s\S]*configSignature: effectiveSnapshot\.signature)(?=[\s\S]*sourceFingerprint: fingerprintInfo\.fingerprint)[\s\S]*/,
+    description: "Temporal enhancement uses attempt-level output checkpoints and committed resume checkpoints",
+    pattern: /(?=[\s\S]*const buildVideoTemporalEnhancementRequest = \(\{[\s\S]*statePath = ""[\s\S]*cacheDir = ""[\s\S]*resumeStatePath = ""[\s\S]*resumeCacheDir = ""[\s\S]*resumeBeforeFrameIndex = null)(?=[\s\S]*resume_state_path: resumeStatePath)(?=[\s\S]*resume_cache_dir: resumeCacheDir)(?=[\s\S]*resume_before_frame_index)(?=[\s\S]*createTemporalCheckpointAttemptPaths)(?=[\s\S]*currentTaskMeta\?\.temporalCheckpoint\?\.statePath)(?=[\s\S]*pendingTemporalCheckpoint = normalizeTemporalCheckpointResponse)(?=[\s\S]*temporalCheckpoint: nextTemporalCheckpoint)[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -494,7 +650,7 @@ function runAssertions() {
   assertPattern({
     file: "server/moonshine_server/schema.py",
     description: "Backend schema accepts temporal persistence fields and per-frame temporal object refs",
-    pattern: /(?=[\s\S]*class VideoTemporalObjectRef\(BaseModel\):[\s\S]*object_key: str = Field\(\.\.\., min_length=1\)[\s\S]*mask_id: Optional\[str\][\s\S]*object_id: Optional\[int\][\s\S]*mask_path: Optional\[str\] = Field\(None\))(?=[\s\S]*class VideoBatchFrameItem\(BaseModel\):[\s\S]*temporal_objects: List\[VideoTemporalObjectRef\] = Field\(default_factory=list\))(?=[\s\S]*state_path: Optional\[str\] = Field\(None\))(?=[\s\S]*cache_dir: Optional\[str\] = Field\(None\))(?=[\s\S]*config_signature: Optional\[str\] = Field\(None\))(?=[\s\S]*source_fingerprint: Optional\[str\] = Field\(None\))(?=[\s\S]*video_width: Optional\[int\] = Field\(None, ge=1\))(?=[\s\S]*video_height: Optional\[int\] = Field\(None, ge=1\))(?=[\s\S]*fps: Optional\[float\] = Field\(None, gt=0\))[\s\S]*/,
+    pattern: /(?=[\s\S]*class VideoTemporalObjectRef\(BaseModel\):[\s\S]*object_key: str = Field\(\.\.\., min_length=1\)[\s\S]*mask_path: Optional\[str\] = Field\(None\))(?=[\s\S]*class VideoBatchFrameItem\(BaseModel\):[\s\S]*temporal_objects: List\[VideoTemporalObjectRef\] = Field\(default_factory=list\))(?=[\s\S]*state_path: Optional\[str\] = Field\(None\))(?=[\s\S]*cache_dir: Optional\[str\] = Field\(None\))(?=[\s\S]*resume_state_path: Optional\[str\] = Field\(None\))(?=[\s\S]*resume_cache_dir: Optional\[str\] = Field\(None\))(?=[\s\S]*resume_before_frame_index: Optional\[int\] = Field\(None, ge=0\))[\s\S]*/,
   });
   assertPattern({
     file: "server/moonshine_server/api.py",
@@ -503,18 +659,18 @@ function runAssertions() {
   });
   assertPattern({
     file: "server/moonshine_server/api.py",
-    description: "Backend passes temporal object refs and finalizes temporal persistence without interrupting video processing",
-    pattern: /(?=[\s\S]*temporal_objects=getattr\(item, "temporal_objects", None\))(?=[\s\S]*if temporal_enhancer is not None:[\s\S]*temporal_enhancer\.finalize_batch\(\))(?=[\s\S]*temporal enhancement finalize skipped)[\s\S]*/,
+    description: "Backend commits temporal checkpoints only for fully successful batches",
+    pattern: /(?=[\s\S]*temporal_objects=getattr\(item, "temporal_objects", None\))(?=[\s\S]*if temporal_enhancer is not None and len\(failed_items\) == 0:[\s\S]*temporal_checkpoint = temporal_enhancer\.finalize_batch\(\))(?=[\s\S]*"temporal_checkpoint": temporal_checkpoint)[\s\S]*/,
   });
   assertPattern({
     file: "server/moonshine_server/video_temporal_enhancement.py",
-    description: "Temporal enhancer persists cross-batch state atomically and restores object-level texture cache safely",
-    pattern: /(?=[\s\S]*STATE_VERSION = 1)(?=[\s\S]*DEFAULT_OBJECT_KEY = "default")(?=[\s\S]*def _write_json_atomic\(path: str, payload: Dict\[str, Any\]\) -> None:[\s\S]*temporary_path = f"\{path\}\.tmp"[\s\S]*os\.replace\(temporary_path, path\))(?=[\s\S]*state_path)(?=[\s\S]*cache_dir)(?=[\s\S]*_load_previous_from_state)(?=[\s\S]*_persist_previous_state)(?=[\s\S]*objects_dir)(?=[\s\S]*objectKey)(?=[\s\S]*_load_object_cache)(?=[\s\S]*_persist_object_cache)(?=[\s\S]*def finalize_batch\(self\) -> None:)[\s\S]*/,
+    description: "Temporal enhancer separates resume/output checkpoints and rejects future state",
+    pattern: /(?=[\s\S]*resume_state_path)(?=[\s\S]*resume_cache_dir)(?=[\s\S]*resume_before_frame_index)(?=[\s\S]*frame_index >= int\(resume_before\))(?=[\s\S]*def finalize_batch\(self\) -> Optional\[Dict\[str, Any\]\])(?=[\s\S]*"last_frame_index")[\s\S]*/,
   });
   assertPattern({
     file: "server/moonshine_server/video_temporal_enhancement.py",
-    description: "Temporal enhancer reads per-object mask paths and updates precise object texture cache before combo fallback",
-    pattern: /(?=[\s\S]*def _read_binary_mask_from_path\(mask_path: str, expected_shape: Tuple\[int, int\]\) -> Optional\[np\.ndarray\])(?=[\s\S]*mask = cv2\.imread\(mask_path, cv2\.IMREAD_GRAYSCALE\))(?=[\s\S]*return np\.where\(mask > 127, 255, 0\)\.astype\(np\.uint8\))(?=[\s\S]*def _normalize_temporal_object_refs\(self, temporal_objects: Optional\[Any\]\) -> list:)(?=[\s\S]*"mask_path": _string\(item\.get\("mask_path"\) or item\.get\("maskPath"\)\))(?=[\s\S]*def _update_precise_object_texture_cache)(?=[\s\S]*object_mask = _read_binary_mask_from_path\(mask_path, mask_shape\))(?=[\s\S]*self\.texture_cache\[object_key\])(?=[\s\S]*precise_updates = self\._update_precise_object_texture_cache)(?=[\s\S]*if precise_updates > 0:[\s\S]*return)[\s\S]*/,
+    description: "Temporal enhancer composites valid object cache patches inside current masks",
+    pattern: /(?=[\s\S]*def _apply_texture_cache_entry)(?=[\s\S]*age < 0 or age > self\.options\["cache_ttl_frames"\])(?=[\s\S]*intersection = \(resized_cached_mask > 127\) & \(current_crop > 127\))(?=[\s\S]*reference_roi\[intersection\] = resized_patch\[intersection\])(?=[\s\S]*def _apply_texture_cache_to_reference)(?=[\s\S]*sorted\(object_refs or \[\], key=lambda item: item\.get\("object_key"\) or ""\))(?=[\s\S]*reference_bgr, cache_hit_keys = self\._apply_texture_cache_to_reference)[\s\S]*/,
   });
   assertPattern({
     file: "scripts/verify_video_temporal_enhancement_3s.py",
@@ -904,6 +1060,7 @@ function runAssertions() {
 
   logSection("Runtime Smoke");
   runFfmpegSmoke();
+  runTemporalEnhancementBehaviorTests();
 
   console.log("\nAll P1 video regression assertions passed.");
 }

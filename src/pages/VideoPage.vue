@@ -874,6 +874,7 @@ import {
   VIDEO_TASK_DIRECTORY_PREFIX,
   VIDEO_TASK_META_FILE_NAME,
 } from "src/utils/videoProcessingResume";
+import { resolveVideoEncodingQualityPolicy } from "src/utils/videoProcessingPolicies";
 import {
   buildBackendPathBlockedMessage,
   validateBackendPathsForConfig,
@@ -4586,28 +4587,6 @@ const VIDEO_INTERMEDIATE_FRAME_STRATEGY_POLICIES = Object.freeze({
     imageQuality: 0.95,
   }),
 });
-const VIDEO_ENCODING_QUALITY_POLICIES = Object.freeze({
-  performance: Object.freeze({
-    preset: "performance",
-    crf: 18,
-  }),
-  balanced: Object.freeze({
-    preset: "balanced",
-    crf: 14,
-  }),
-  stable: Object.freeze({
-    preset: "stable",
-    crf: 10,
-  }),
-  highStable: Object.freeze({
-    preset: "highStable",
-    crf: 6,
-  }),
-  nearLossless: Object.freeze({
-    preset: "nearLossless",
-    crf: 2,
-  }),
-});
 const VIDEO_INPAINT_COLOR_STABILIZATION_MODES = Object.freeze(["off", "auto", "enhanced"]);
 const FRAME_CAPTURE_FALLBACK_EPSILON_SECONDS = 0.002;
 let mp4ExportSupportChecked = false;
@@ -4828,6 +4807,9 @@ const buildVideoTemporalEnhancementRequest = ({
   diagnosticsPath = "",
   statePath = "",
   cacheDir = "",
+  resumeStatePath = "",
+  resumeCacheDir = "",
+  resumeBeforeFrameIndex = null,
   configSignature = "",
   sourceFingerprint = "",
   videoWidth = 0,
@@ -4853,12 +4835,67 @@ const buildVideoTemporalEnhancementRequest = ({
     diagnostics_path: config.diagnostics ? diagnosticsPath : "",
     state_path: statePath,
     cache_dir: cacheDir,
+    resume_state_path: resumeStatePath,
+    resume_cache_dir: resumeCacheDir,
+    ...(Number.isFinite(Number(resumeBeforeFrameIndex))
+      ? { resume_before_frame_index: Math.max(0, Math.round(Number(resumeBeforeFrameIndex))) }
+      : {}),
     config_signature: configSignature,
     source_fingerprint: sourceFingerprint,
     video_width: Math.max(1, Math.round(Number(videoWidth || 0))),
     video_height: Math.max(1, Math.round(Number(videoHeight || 0))),
     fps: Math.max(0.001, Number(fps || 0)),
   };
+};
+
+const normalizeTemporalCheckpointResponse = (payload, batchNumber) => {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const statePath = String(payload.state_path || payload.statePath || "").trim();
+  const cacheDir = String(payload.cache_dir || payload.cacheDir || "").trim();
+  if (!statePath || !cacheDir) return null;
+  const normalizedBatchNumber = Number(batchNumber);
+  const normalizedLastFrameIndex = Number(
+    payload.last_frame_index ?? payload.lastFrameIndex ?? -1
+  );
+  return {
+    statePath,
+    cacheDir,
+    batchNumber: Number.isFinite(normalizedBatchNumber)
+      ? Math.max(0, Math.round(normalizedBatchNumber))
+      : 0,
+    lastFrameIndex: Number.isFinite(normalizedLastFrameIndex)
+      ? Math.max(-1, Math.round(normalizedLastFrameIndex))
+      : -1,
+  };
+};
+
+const getTemporalCheckpointRoot = (checkpoint) =>
+  String(checkpoint?.statePath || "").replace(/[\\/][^\\/]+$/, "");
+
+const cleanupTemporalCheckpointArtifacts = async (checkpoint, paths) => {
+  const checkpointRoot = getTemporalCheckpointRoot(checkpoint);
+  const managedRoot = String(paths?.temporalCheckpointsDir || "").replace(/[\\/]+$/, "");
+  if (!checkpointRoot || !managedRoot) return;
+  const normalizedCheckpointRoot = checkpointRoot.replace(/\\/g, "/").toLowerCase();
+  const normalizedManagedRoot = managedRoot.replace(/\\/g, "/").toLowerCase();
+  if (!normalizedCheckpointRoot.startsWith(`${normalizedManagedRoot}/`)) return;
+  await window.electron.ipcRenderer
+    .invoke("remove-directory-recursive", checkpointRoot)
+    .catch(() => undefined);
+};
+
+const createTemporalCheckpointAttemptPaths = async ({ paths, batchNumber, attempt }) => {
+  const attemptRoot = window.electron.ipcRenderer.joinPath(
+    paths.temporalCheckpointsDir,
+    `batch_${String(batchNumber).padStart(4, "0")}_attempt_${String(attempt).padStart(
+      2,
+      "0"
+    )}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
+  );
+  const statePath = window.electron.ipcRenderer.joinPath(attemptRoot, "state.json");
+  const cacheDir = window.electron.ipcRenderer.joinPath(attemptRoot, "cache");
+  await window.electron.ipcRenderer.invoke("ensure-directory", cacheDir);
+  return { attemptRoot, statePath, cacheDir };
 };
 
 const isTemporalMaskActiveAt = (mask, timestamp) => {
@@ -5098,14 +5135,6 @@ const resolveVideoIntermediateFramePolicy = (videoConfig = {}) => {
   return (
     VIDEO_INTERMEDIATE_FRAME_STRATEGY_POLICIES[strategy] ||
     VIDEO_INTERMEDIATE_FRAME_STRATEGY_POLICIES.performance
-  );
-};
-
-const resolveVideoEncodingQualityPolicy = (videoConfig = {}) => {
-  const preset = String(videoConfig?.encodingQualityPreset || "performance").toLowerCase();
-  return (
-    VIDEO_ENCODING_QUALITY_POLICIES[preset] ||
-    VIDEO_ENCODING_QUALITY_POLICIES.performance
   );
 };
 
@@ -7110,6 +7139,7 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
   let firstBatchRequestStartedAt = null;
   let extractor = null;
   let currentTaskMeta = null;
+  let pendingTemporalCheckpointArtifacts = null;
   let taskCleanupErrorMessage = "";
   let shouldCleanupCurrentTask = false;
   const frameDecodeFallbacks = [];
@@ -7258,16 +7288,17 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
       resumeTaskMeta,
     });
     frameDecodeFallbackReportPath = paths.frameDecodeFallbackReportPath || "";
-    const temporalEnhancementRequest = buildVideoTemporalEnhancementRequest({
-      diagnosticsPath: paths.temporalDiagnosticsPath,
-      statePath: paths.temporalStatePath,
-      cacheDir: paths.temporalCacheDir,
-      configSignature: effectiveSnapshot.signature,
-      sourceFingerprint: fingerprintInfo.fingerprint,
-      videoWidth: videoStore.videoWidth,
-      videoHeight: videoStore.videoHeight,
-      fps,
-    });
+    const temporalEnhancementEnabled = Boolean(getEnabledVideoTemporalEnhancementConfig());
+    const committedTemporalCheckpoint =
+      resumeTaskMeta?.temporalCheckpoint ||
+      (resumeTaskMeta && temporalEnhancementEnabled
+        ? {
+            statePath: paths.temporalStatePath,
+            cacheDir: paths.temporalCacheDir,
+            batchNumber: reusableSegments.length,
+            lastFrameIndex: Math.max(-1, resumeStartFrame - 1),
+          }
+        : null);
     await ensureVideoProcessingDiskSpace({
       sourcePath,
       tempBase: paths.tempBase,
@@ -7308,6 +7339,7 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
       previewTrial: isPreviewTrial,
       previewTrialSeconds: normalizedPreviewTrialSeconds || 0,
       completedSegments: reusableSegments,
+      temporalCheckpoint: committedTemporalCheckpoint,
       configSnapshot: effectiveSnapshot,
       frameDecodeFallbackReportPath,
       lastError: "",
@@ -7430,8 +7462,10 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
 
         let success = false;
         let lastError = null;
+        let pendingTemporalCheckpoint = null;
 
         for (let attempt = 1; attempt <= retryCount; attempt += 1) {
+          let attemptCheckpointPaths = null;
           try {
             if (firstBatchRequestStartedAt === null) {
               firstBatchRequestStartedAt = performance.now();
@@ -7459,6 +7493,30 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
             await flushProcessingUiFrame();
 
             const batchSkipsBackend = currentBatch.batchItems.length === 0;
+            const resumeBeforeFrameIndex = batchSkipsBackend
+              ? null
+              : Math.min(...currentBatch.batchItems.map((item) => Number(item.frame_index)));
+            let resolvedTemporalEnhancementRequest = null;
+            if (!batchSkipsBackend && temporalEnhancementEnabled) {
+              attemptCheckpointPaths = await createTemporalCheckpointAttemptPaths({
+                paths,
+                batchNumber: currentBatch.batchNumber,
+                attempt,
+              });
+              resolvedTemporalEnhancementRequest = buildVideoTemporalEnhancementRequest({
+                diagnosticsPath: paths.temporalDiagnosticsPath,
+                statePath: attemptCheckpointPaths.statePath,
+                cacheDir: attemptCheckpointPaths.cacheDir,
+                resumeStatePath: currentTaskMeta?.temporalCheckpoint?.statePath || "",
+                resumeCacheDir: currentTaskMeta?.temporalCheckpoint?.cacheDir || "",
+                resumeBeforeFrameIndex,
+                configSignature: effectiveSnapshot.signature,
+                sourceFingerprint: fingerprintInfo.fingerprint,
+                videoWidth: videoStore.videoWidth,
+                videoHeight: videoStore.videoHeight,
+                fps,
+              });
+            }
             const data =
               batchSkipsBackend
                 ? createSkippedVideoBatchResponse(currentBatch)
@@ -7474,8 +7532,8 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
                       batch_id: `batch_${currentBatch.start}_${currentBatch.end}`,
                       batch_number: currentBatch.batchNumber,
                       total_batches: totalBatches,
-                      ...(temporalEnhancementRequest
-                        ? { temporal_enhancement: temporalEnhancementRequest }
+                      ...(resolvedTemporalEnhancementRequest
+                        ? { temporal_enhancement: resolvedTemporalEnhancementRequest }
                         : {}),
                       inpaint: {
                         prompt: "",
@@ -7500,10 +7558,30 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
               responseData: data,
             });
 
+            pendingTemporalCheckpoint = normalizeTemporalCheckpointResponse(
+              data?.temporal_checkpoint,
+              currentBatch.batchNumber
+            );
+            if (pendingTemporalCheckpoint && attemptCheckpointPaths) {
+              pendingTemporalCheckpointArtifacts = {
+                ...pendingTemporalCheckpoint,
+                attemptRoot: attemptCheckpointPaths.attemptRoot,
+              };
+            } else if (attemptCheckpointPaths) {
+              await window.electron.ipcRenderer
+                .invoke("remove-directory-recursive", attemptCheckpointPaths.attemptRoot)
+                .catch(() => undefined);
+            }
+
             success = true;
             break;
           } catch (error) {
             lastError = error;
+            if (attemptCheckpointPaths?.attemptRoot) {
+              await window.electron.ipcRenderer
+                .invoke("remove-directory-recursive", attemptCheckpointPaths.attemptRoot)
+                .catch(() => undefined);
+            }
           }
         }
 
@@ -7549,6 +7627,8 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
           end: currentBatch.end,
           path: savedSegmentPath || segmentPath,
         });
+        const previousTemporalCheckpoint = currentTaskMeta.temporalCheckpoint;
+        const nextTemporalCheckpoint = pendingTemporalCheckpoint || previousTemporalCheckpoint;
         currentTaskMeta = await persistVideoTaskMeta({
           ...currentTaskMeta,
           completedSegments: [
@@ -7558,7 +7638,15 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
             completedSegmentEntry,
           ].sort((left, right) => left.segmentIndex - right.segmentIndex),
           totalBatches: Math.max(currentTaskMeta.totalBatches, currentBatch.batchNumber),
+          temporalCheckpoint: nextTemporalCheckpoint,
         });
+        if (
+          pendingTemporalCheckpoint &&
+          previousTemporalCheckpoint?.statePath !== pendingTemporalCheckpoint.statePath
+        ) {
+          await cleanupTemporalCheckpointArtifacts(previousTemporalCheckpoint, paths);
+        }
+        pendingTemporalCheckpointArtifacts = null;
         await cleanupCompletedBatchArtifacts(currentBatch);
 
         updateBatchProcessingUi({
@@ -7617,6 +7705,12 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
       await extractor?.dispose?.();
     }
   } catch (error) {
+    if (pendingTemporalCheckpointArtifacts?.attemptRoot) {
+      await window.electron.ipcRenderer
+        .invoke("remove-directory-recursive", pendingTemporalCheckpointArtifacts.attemptRoot)
+        .catch(() => undefined);
+      pendingTemporalCheckpointArtifacts = null;
+    }
     if (currentTaskMeta?.taskId) {
       try {
         currentTaskMeta = await persistVideoTaskMeta({
@@ -7740,6 +7834,10 @@ const prepareTaskPaths = async ({
     taskRoot,
     "temporal_cache"
   );
+  const temporalCheckpointsDir = window.electron.ipcRenderer.joinPath(
+    taskRoot,
+    "temporal_checkpoints"
+  );
 
   await window.electron.ipcRenderer.invoke("ensure-directory", taskRoot);
   await window.electron.ipcRenderer.invoke("ensure-directory", framesDir);
@@ -7749,6 +7847,7 @@ const prepareTaskPaths = async ({
   await window.electron.ipcRenderer.invoke("ensure-directory", segmentsDir);
   await window.electron.ipcRenderer.invoke("ensure-directory", failureRoot);
   await window.electron.ipcRenderer.invoke("ensure-directory", temporalCacheDir);
+  await window.electron.ipcRenderer.invoke("ensure-directory", temporalCheckpointsDir);
 
   return {
     taskId,
@@ -7766,6 +7865,7 @@ const prepareTaskPaths = async ({
     temporalDiagnosticsPath,
     temporalStatePath,
     temporalCacheDir,
+    temporalCheckpointsDir,
   };
 };
 

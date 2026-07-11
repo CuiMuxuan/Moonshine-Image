@@ -1662,6 +1662,7 @@ class Api:
         slbr_options = None
         mask_cache = {}
         temporal_enhancer = None
+        temporal_checkpoint = None
         if model_id == "slbr":
             slbr_runner = self._get_slbr_runner()
             slbr_options = self._normalize_moonshine_options(req.options.model_options)
@@ -1673,8 +1674,13 @@ class Api:
         if model_id in {"lama", "mat"} and is_temporal_enhancement_enabled(
             req.options.temporal_enhancement
         ):
+            temporal_options = req.options.temporal_enhancement.model_copy(deep=True)
+            if temporal_options.resume_before_frame_index is None and req.frames:
+                temporal_options.resume_before_frame_index = min(
+                    int(item.frame_index) for item in req.frames
+                )
             temporal_enhancer = VideoTemporalEnhancer(
-                req.options.temporal_enhancement,
+                temporal_options,
                 batch_id=batch_id,
             )
 
@@ -1842,9 +1848,9 @@ class Api:
 
         torch_gc()
 
-        if temporal_enhancer is not None:
+        if temporal_enhancer is not None and len(failed_items) == 0:
             try:
-                temporal_enhancer.finalize_batch()
+                temporal_checkpoint = temporal_enhancer.finalize_batch()
             except Exception as temporal_finalize_error:
                 logger.exception(
                     f"[{batch_id}] temporal enhancement finalize skipped: "
@@ -1877,6 +1883,7 @@ class Api:
                     "failed_count": len(failed_items),
                     "batch_time": batch_time,
                     "failure_snapshot_dir": failure_snapshot_dir,
+                    "temporal_checkpoint": temporal_checkpoint,
                     "results": results,
                 }
             )

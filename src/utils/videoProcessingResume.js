@@ -25,26 +25,74 @@ const hashString = (input = "") => {
   return hash.toString(16).padStart(8, "0");
 };
 
+const normalizeSamExpandPx = (value, fallbackValue) =>
+  Math.max(0, Math.min(99, Math.round(Number(value ?? fallbackValue ?? 0) || 0)));
+
+const buildSamComparisonState = (mask = {}) => {
+  const objects = (Array.isArray(mask?.samObjects) ? mask.samObjects : [])
+    .map((item) => ({
+      objectId: Math.max(0, Math.round(Number(item?.objectId || 0))),
+      enabled: item?.enabled !== false,
+      expandPx: normalizeSamExpandPx(item?.expandPx, item?.autoExpandPx),
+    }))
+    .filter((item) => item.objectId > 0)
+    .sort((left, right) => left.objectId - right.objectId);
+  const frames = (Array.isArray(mask?.samFrames) ? mask.samFrames : [])
+    .map((frame) => ({
+      frameIndex: Math.max(0, Math.round(Number(frame?.frameIndex || 0))),
+      time: normalizeNumber(frame?.time),
+      masks: (Array.isArray(frame?.masks) ? frame.masks : [])
+        .map((item) => ({
+          objectId: Math.max(0, Math.round(Number(item?.objectId || 0))),
+          signature: String(
+            item?.maskSignature || item?.maskAssetId || item?.maskPath || ""
+          ),
+        }))
+        .filter((item) => item.objectId > 0 && item.signature)
+        .sort((left, right) =>
+          left.objectId - right.objectId || left.signature.localeCompare(right.signature)
+        ),
+    }))
+    .filter((frame) => frame.masks.length > 0)
+    .sort((left, right) => left.frameIndex - right.frameIndex || left.time - right.time);
+
+  return {
+    objectCount: objects.length,
+    frameCount: frames.length,
+    signature: hashString(JSON.stringify({ objects, frames })),
+  };
+};
+
 const buildMaskComparisonState = (masks = []) =>
-  (Array.isArray(masks) ? masks : []).map((mask) => ({
-    name: String(mask?.name || ""),
-    enabled: mask?.enabled !== false,
-    displayColor: String(mask?.displayColor || ""),
-    startTime: normalizeNumber(mask?.startTime),
-    endTime: normalizeNumber(mask?.endTime),
-    baseMaskSignature: hashString(mask?.baseMaskDataUrl || ""),
-    keyframes: (Array.isArray(mask?.keyframes) ? mask.keyframes : []).map((keyframe) => ({
-      type: String(keyframe?.type || ""),
-      time: normalizeNumber(keyframe?.time),
-      x: normalizeNumber(keyframe?.x),
-      y: normalizeNumber(keyframe?.y),
-      scale: normalizeNumber(keyframe?.scale, 8),
-      scaleX: normalizeNumber(keyframe?.scaleX, 8),
-      scaleY: normalizeNumber(keyframe?.scaleY, 8),
-      originScaleX: normalizeNumber(keyframe?.originScaleX, 8),
-      originScaleY: normalizeNumber(keyframe?.originScaleY, 8),
-    })),
-  }));
+  (Array.isArray(masks) ? masks : [])
+    .map((mask) => {
+      const samState = buildSamComparisonState(mask);
+      return {
+        id: String(mask?.id || ""),
+        type: String(mask?.type || "standard"),
+        enabled: mask?.enabled !== false,
+        startTime: normalizeNumber(mask?.startTime),
+        endTime: normalizeNumber(mask?.endTime),
+        baseMaskSignature: hashString(mask?.baseMaskDataUrl || ""),
+        keyframes: (Array.isArray(mask?.keyframes) ? mask.keyframes : []).map((keyframe) => ({
+          type: String(keyframe?.type || ""),
+          time: normalizeNumber(keyframe?.time),
+          x: normalizeNumber(keyframe?.x),
+          y: normalizeNumber(keyframe?.y),
+          scale: normalizeNumber(keyframe?.scale, 8),
+          scaleX: normalizeNumber(keyframe?.scaleX, 8),
+          scaleY: normalizeNumber(keyframe?.scaleY, 8),
+          originScaleX: normalizeNumber(keyframe?.originScaleX, 8),
+          originScaleY: normalizeNumber(keyframe?.originScaleY, 8),
+        })),
+        samObjectCount: samState.objectCount,
+        samFrameCount: samState.frameCount,
+        samStateSignature: samState.signature,
+      };
+    })
+    .sort((left, right) =>
+      left.id.localeCompare(right.id) || left.type.localeCompare(right.type)
+    );
 
 const buildRangeComparisonState = (ranges = []) =>
   (Array.isArray(ranges) ? ranges : []).map((range) => ({
@@ -75,6 +123,7 @@ export const buildProcessingConfigSnapshot = ({
   temporalEnhancement = null,
 } = {}) => {
   const comparisonPayload = {
+    signatureVersion: 2,
     fps: normalizeNumber(fps, 4),
     exportFpsMode: String(exportFpsMode || "source"),
     batchSize: Math.max(1, Math.round(Number(batchSize || 1))),
@@ -238,6 +287,26 @@ export const normalizeVideoTaskMeta = (taskMeta = {}) => {
       completedAt: Number(segment?.completedAt || Date.now()),
     }))
     .sort((left, right) => left.segmentIndex - right.segmentIndex);
+  const rawTemporalCheckpoint =
+    safeTaskMeta.temporalCheckpoint &&
+    typeof safeTaskMeta.temporalCheckpoint === "object" &&
+    !Array.isArray(safeTaskMeta.temporalCheckpoint)
+      ? safeTaskMeta.temporalCheckpoint
+      : null;
+  const checkpointBatchNumber = Number(rawTemporalCheckpoint?.batchNumber);
+  const checkpointLastFrameIndex = Number(rawTemporalCheckpoint?.lastFrameIndex);
+  const temporalCheckpoint = rawTemporalCheckpoint
+    ? {
+        statePath: String(rawTemporalCheckpoint.statePath || "").trim(),
+        cacheDir: String(rawTemporalCheckpoint.cacheDir || "").trim(),
+        batchNumber: Number.isFinite(checkpointBatchNumber)
+          ? Math.max(0, Math.round(checkpointBatchNumber))
+          : 0,
+        lastFrameIndex: Number.isFinite(checkpointLastFrameIndex)
+          ? Math.max(-1, Math.round(checkpointLastFrameIndex))
+          : -1,
+      }
+    : null;
 
   return {
     taskId: String(safeTaskMeta.taskId || "").trim(),
@@ -267,6 +336,8 @@ export const normalizeVideoTaskMeta = (taskMeta = {}) => {
     videoHeight: Math.max(0, Math.round(Number(safeTaskMeta.videoHeight || 0))),
     videoDuration: Math.max(0, Number(safeTaskMeta.videoDuration || 0)),
     completedSegments,
+    temporalCheckpoint:
+      temporalCheckpoint?.statePath && temporalCheckpoint?.cacheDir ? temporalCheckpoint : null,
     configSnapshot:
       safeTaskMeta.configSnapshot &&
       typeof safeTaskMeta.configSnapshot === "object" &&
