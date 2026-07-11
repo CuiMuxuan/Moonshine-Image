@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runStartupIpcOperation } from "../../src-electron/startup-ipc.js";
+import {
+  registerDeprecatedStartupHandler,
+  runStartupIpcOperation,
+} from "../../src-electron/startup-ipc.js";
 
 test("returns successful asynchronous startup IPC results unchanged", async () => {
   const expected = { success: true, pythonPath: "runtime/python.exe" };
@@ -51,4 +54,66 @@ test("normalizes synchronous startup failures through the same boundary", async 
     (error) => ({ success: false, error: error.message })
   );
   assert.deepEqual(result, { success: false, error: expected.message });
+});
+
+test("deprecated startup handlers preserve legacy fields and add migration metadata", async () => {
+  const handlers = new Map();
+  const notices = [];
+  const ipcMain = {
+    handle(channel, handler) {
+      handlers.set(channel, handler);
+    },
+  };
+  const legacyResult = {
+    success: false,
+    code: "CONDA_ENVIRONMENT_NOT_FOUND",
+    error: "Conda environment does not exist.",
+    running: false,
+  };
+
+  const wrapped = registerDeprecatedStartupHandler({
+    ipcMain,
+    channel: "check-conda-venv",
+    replacement: "prepare-project-python",
+    deprecationCode: "LEGACY_CONDA_IPC",
+    handler: async () => legacyResult,
+    onDeprecated: (notice) => notices.push(notice),
+  });
+
+  assert.equal(handlers.get("check-conda-venv"), wrapped);
+  const result = await wrapped({ sender: {} });
+  assert.deepEqual(result, {
+    ...legacyResult,
+    deprecated: true,
+    deprecationCode: "LEGACY_CONDA_IPC",
+    replacement: "prepare-project-python",
+  });
+  assert.deepEqual(notices, [
+    {
+      channel: "check-conda-venv",
+      replacement: "prepare-project-python",
+      deprecationCode: "LEGACY_CONDA_IPC",
+    },
+  ]);
+});
+
+test("deprecation reporting failures do not alter legacy handler behavior", async () => {
+  const ipcMain = { handle() {} };
+  const wrapped = registerDeprecatedStartupHandler({
+    ipcMain,
+    channel: "create-conda-venv",
+    replacement: "prepare-project-python",
+    handler: async () => ({ success: true, message: "created" }),
+    onDeprecated() {
+      throw new Error("log unavailable");
+    },
+  });
+
+  assert.deepEqual(await wrapped({ sender: {} }), {
+    success: true,
+    message: "created",
+    deprecated: true,
+    deprecationCode: "DEPRECATED_STARTUP_IPC",
+    replacement: "prepare-project-python",
+  });
 });

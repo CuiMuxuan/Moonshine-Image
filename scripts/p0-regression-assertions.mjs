@@ -554,6 +554,47 @@ function runAssertions() {
     description: "Startup log IPC accepts no path and opens only the application startup log",
     pattern: /ipcMain\.handle\("open-startup-log", async \(\) => \{[\s\S]*shell\.openPath\(STARTUP_LOG_PATH\)[\s\S]*logPath: STARTUP_LOG_PATH/,
   });
+  assertAbsentPattern({
+    file: "src-electron/electron-main.js",
+    description: "Electron main no longer exposes the global PATH-mutating set-python-env IPC",
+    pattern: /ipcMain\.handle\("set-python-env"/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "External links use the invoke handler",
+    pattern: /ipcMain\.handle\("open-external-link", async \(event, url\) => \{[\s\S]*shell\.openExternal\(url\)/,
+  });
+  assertAbsentPattern({
+    file: "src-electron/electron-main.js",
+    description: "Electron main no longer keeps the duplicate open-external-link event listener",
+    pattern: /ipcMain\.on\("open-external-link"/,
+  });
+  assertPattern({
+    file: "src-electron/electron-preload.js",
+    description: "Preload exposes external links through invoke",
+    pattern: /openExternal:\s*\(url\)\s*=>\s*ipcRenderer\.invoke\("open-external-link", url\)/,
+  });
+  for (const file of [
+    "src/layouts/MainLayout.vue",
+    "src/components/global/MainToolbar.vue",
+    "src/components/global/ModelManagementPanel.vue",
+  ]) {
+    assertAbsentPattern({
+      file,
+      description: `${file} no longer sends the retired open-external-link event`,
+      pattern: /ipcRenderer\.send\("open-external-link"/,
+    });
+  }
+  assertPattern({
+    file: "src-electron/startup-ipc.js",
+    description: "Deprecated startup IPC wrapper preserves handler results and adds migration metadata",
+    pattern: /export function registerDeprecatedStartupHandler\(options = \{\}\)[\s\S]*const result = await handler\(\.\.\.args\);[\s\S]*\.\.\.result,[\s\S]*deprecated: true,[\s\S]*deprecationCode,[\s\S]*replacement,/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Legacy Conda IPC channels remain available through the shared deprecation wrapper",
+    pattern: /(?=[\s\S]*registerLegacyCondaHandler\("check-conda-venv")(?=[\s\S]*registerLegacyCondaHandler\("check-conda-dependencies")(?=[\s\S]*registerLegacyCondaHandler\("create-conda-venv")(?=[\s\S]*registerLegacyCondaHandler\("install-conda-dependencies")(?=[\s\S]*LEGACY_CONDA_IPC_CODE\s*=\s*"LEGACY_CONDA_IPC")(?=[\s\S]*replacement:\s*"prepare-project-python")[\s\S]*/,
+  });
   assertPatternOrder({
     file: "src/layouts/MainLayout.vue",
     description: "Automatic backend startup reuses the shared lifecycle action and syncs the actual runtime port",

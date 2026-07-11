@@ -472,6 +472,7 @@ async function installElectronMock(context) {
     };
 
     window.electron = {
+      openExternal: (url) => invoke("open-external-link", url),
       ipcRenderer: {
         invoke,
         on(channel, callback) {

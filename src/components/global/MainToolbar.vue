@@ -148,11 +148,15 @@ const handleRouteChange = (value) => {
   emit("route-change", value);
 };
 
-const openExternalLink = (url) => {
-  if (window.electron) {
-    window.electron.ipcRenderer.send("open-external-link", url);
-  } else {
-    window.open(url, "_blank");
+const openExternalLink = async (url) => {
+  try {
+    if (window.electron?.openExternal) {
+      return Boolean(await window.electron.openExternal(url));
+    }
+    return Boolean(window.open(url, "_blank", "noopener,noreferrer"));
+  } catch (error) {
+    console.error("Failed to open external link:", error);
+    return false;
   }
 };
 

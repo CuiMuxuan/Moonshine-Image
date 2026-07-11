@@ -71,7 +71,10 @@ import {
 } from "./startup-diagnostics.js";
 import { runStartupProcess } from "./startup-process.js";
 import { downloadHttpsFile } from "./startup-download.js";
-import { runStartupIpcOperation } from "./startup-ipc.js";
+import {
+  registerDeprecatedStartupHandler,
+  runStartupIpcOperation,
+} from "./startup-ipc.js";
 import { StartupOperationRegistry } from "./startup-operation-registry.js";
 import {
   buildImportProbeScript,
@@ -89,6 +92,27 @@ app.setName(APP_DISPLAY_NAME);
 app.setPath("userData", path.join(app.getPath("appData"), APP_DISPLAY_NAME));
 const STARTUP_LOG_PATH = path.join(app.getPath("userData"), "logs", "startup.log");
 const startupLogger = createStartupLogger({ logPath: STARTUP_LOG_PATH });
+const LEGACY_CONDA_IPC_CODE = "LEGACY_CONDA_IPC";
+
+function registerLegacyCondaHandler(channel, handler) {
+  return registerDeprecatedStartupHandler({
+    ipcMain,
+    channel,
+    replacement: "prepare-project-python",
+    handler,
+    deprecationCode: LEGACY_CONDA_IPC_CODE,
+    onDeprecated: ({ replacement }) => {
+      const message = `IPC channel "${channel}" is deprecated; use "${replacement}" instead.`;
+      console.warn(message);
+      void startupLogger.warning(message, {
+        code: LEGACY_CONDA_IPC_CODE,
+        stage: "deprecated-startup-ipc",
+        channel,
+        replacement,
+      });
+    },
+  });
+}
 
 function toLoggedStartupFailure(error, options = {}) {
   const failure = toStartupFailure(error, {
@@ -3229,13 +3253,6 @@ ipcMain.handle("open-external-link", async (event, url) => {
     return false;
   }
 });
-// Compatibility handler for sync calls from older code
-ipcMain.on("open-external-link", (event, url) => {
-  shell.openExternal(url).catch((err) => {
-    console.error("Failed to open external link:", err);
-  });
-  event.returnValue = true; // Required for sendSync callers.
-});
 // IPC handler - get resources path
 ipcMain.handle("get-resources-path", () => {
   try {
@@ -4115,42 +4132,8 @@ ipcMain.handle("check-python", async (event) => {
   }
 });
 
-// IPC handler - set Python environment variables
-ipcMain.handle("set-python-env", async (event, pythonPath) => {
-  try {
-    const targetPath = String(pythonPath || "").trim();
-    if (!targetPath) {
-      return augmentStartupFailure(
-        {
-          success: false,
-          code: "PYTHON_ENVIRONMENT_PATH_INVALID",
-          error: "Python environment path is empty.",
-        },
-        {
-          stage: "set-python-environment",
-          recoveryHint: "Select a valid Python installation directory and retry.",
-        }
-      );
-    }
-    const currentEnv = process.env.PATH || "";
-    const normalizeEntry = (entry) =>
-      process.platform === "win32" ? entry.toLowerCase() : entry;
-    const entries = currentEnv.split(path.delimiter).filter(Boolean);
-    if (!entries.some((entry) => normalizeEntry(entry) === normalizeEntry(targetPath))) {
-      process.env.PATH = [targetPath, ...entries].join(path.delimiter);
-    }
-    return { success: true, message: "Python environment variables updated successfully" };
-  } catch (error) {
-    return toLoggedStartupFailure(error, {
-      code: "PYTHON_ENVIRONMENT_UPDATE_FAILED",
-      stage: "set-python-environment",
-      userMessage: "Failed to update the Python environment path.",
-    });
-  }
-});
-
 // IPC handler - check conda environment
-ipcMain.handle("check-conda-venv", async () => {
+registerLegacyCondaHandler("check-conda-venv", async () => {
   try {
     const environments = await getCondaEnvironmentList();
     const envExists = hasNamedCondaEnvironment(environments, "moonshine-image");
@@ -4184,7 +4167,7 @@ ipcMain.handle("check-conda-venv", async () => {
 });
 
 // IPC handler - check conda dependencies
-ipcMain.handle("check-conda-dependencies", async () => {
+registerLegacyCondaHandler("check-conda-dependencies", async () => {
   try {
     const dependencyResult = await probeCondaDependencies(
       "moonshine-image",
@@ -4854,7 +4837,7 @@ ipcMain.handle("create-venv", async (event, projectPath) => {
 });
 
 // IPC create conda venv
-ipcMain.handle("create-conda-venv", async (event) => {
+registerLegacyCondaHandler("create-conda-venv", async (event) => {
   const sendLog = createBackendOutputSender(event.sender, "create-conda-environment");
 
   try {
@@ -4966,7 +4949,7 @@ ipcMain.handle("install-dependencies", async (event, projectPath) => {
   }
 });
 // IPC handler - install conda dependencies
-ipcMain.handle("install-conda-dependencies", async (event) => {
+registerLegacyCondaHandler("install-conda-dependencies", async (event) => {
   const sendLog = createBackendOutputSender(event.sender, "install-conda-dependencies");
 
   try {

@@ -1134,17 +1134,17 @@ const getLicenseName = (model) => model?.license?.name || "待确认";
 const getLicenseUrl = (model) => model?.license?.url || "";
 const getLicenseNote = (model) => model?.license?.note || "";
 
-const openExternalUrl = (url) => {
-  if (!url) return;
-  if (window.electron?.openExternal) {
-    window.electron.openExternal(url);
-    return;
+const openExternalUrl = async (url) => {
+  if (!url) return false;
+  try {
+    if (window.electron?.openExternal) {
+      return Boolean(await window.electron.openExternal(url));
+    }
+    return Boolean(window.open(url, "_blank", "noopener,noreferrer"));
+  } catch (error) {
+    console.error("Failed to open external link:", error);
+    return false;
   }
-  if (window.electron?.ipcRenderer?.send) {
-    window.electron.ipcRenderer.send("open-external-link", url);
-    return;
-  }
-  window.open(url, "_blank", "noopener,noreferrer");
 };
 
 const copyText = async (text) => {
