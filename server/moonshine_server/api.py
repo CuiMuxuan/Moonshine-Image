@@ -231,6 +231,7 @@ class Api:
         self.add_api_route("/api/v1/adjust_mask", self.api_adjust_mask, methods=["POST"])
         self.add_api_route("/api/v1/save_image", self.api_save_image, methods=["POST"])
         self.add_api_route("/api/v1/batch_inpaint", self.api_batch_inpaint, methods=["POST"])
+        self.add_api_route("/api/v1/health", self.api_health, methods=["GET"])
         self.add_api_route("/api/v1/check_cuda", self.api_check_cuda_fixed, methods=["GET"])
         self.add_api_route("/api/v1/batch_inpaint_by_folder", self.api_batch_inpaint_by_folder, methods=["POST"])
         self.add_api_route("/api/v1/video_batch_inpaint", self.api_video_batch_inpaint, methods=["POST"])
@@ -881,6 +882,17 @@ class Api:
             "slbr": recommend_slbr_params(cuda_info),
         }
         return cuda_info
+
+    def api_health(self):
+        """Return a lightweight, uncached service liveness response."""
+        return JSONResponse(
+            content={"status": "ok"},
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
 
     def api_check_cuda_fixed(self):
         """Return CUDA availability, memory and model recommendation details."""

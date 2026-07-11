@@ -15,8 +15,7 @@ import nodeNet from "node:net";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import crypto from "node:crypto";
 import fs from "fs";
-import https from "https";
-import { spawn, spawnSync, exec, execFile } from "child_process";
+import { spawn, exec } from "child_process";
 import { TextDecoder, promisify } from "util";
 import {
   INTEGRITY_MANIFEST_FILE,
@@ -59,17 +58,317 @@ import {
   validateShortcutConfig as validateShortcutConfigShape,
 } from "../src/utils/shortcutConfig.js";
 import { createDefaultSam3Lexicon } from "../src/shared/samLexiconDefaults.js";
+import {
+  bootstrapApplication,
+  ApplicationBootstrapError,
+  createFatalStartupHandler,
+} from "./app-bootstrap.js";
+import { BackendProcessSupervisor } from "./backend-process-supervisor.js";
+import {
+  createDiagnostic,
+  createStartupLogger,
+  toStartupFailure,
+} from "./startup-diagnostics.js";
+import { runStartupProcess } from "./startup-process.js";
+import { downloadHttpsFile } from "./startup-download.js";
+import { runStartupIpcOperation } from "./startup-ipc.js";
+import { StartupOperationRegistry } from "./startup-operation-registry.js";
+import {
+  buildImportProbeScript,
+  createImportProbeArgs,
+  createIsolatedPythonEnv,
+  detectSupportedPython,
+  isSupportedPythonVersion,
+  parseImportProbeResult,
+} from "./python-runtime.js";
 const execAsync = promisify(exec);
-const execFileAsync = promisify(execFile);
 const APP_DISPLAY_NAME = "Moonshine-Image";
 const LEGACY_APP_NAME = "moonshine-client";
 
 app.setName(APP_DISPLAY_NAME);
 app.setPath("userData", path.join(app.getPath("appData"), APP_DISPLAY_NAME));
+const STARTUP_LOG_PATH = path.join(app.getPath("userData"), "logs", "startup.log");
+const startupLogger = createStartupLogger({ logPath: STARTUP_LOG_PATH });
 
-// Backend service process
-let backendProcess = null;
-let backendServicePort = null;
+function toLoggedStartupFailure(error, options = {}) {
+  const failure = toStartupFailure(error, {
+    ...options,
+    logPath: STARTUP_LOG_PATH,
+    diagnostic: {
+      ...(options.diagnostic || {}),
+      logPath: STARTUP_LOG_PATH,
+    },
+  });
+  void startupLogger.error(failure.error, {
+    code: failure.code,
+    recoveryHint: failure.recoveryHint,
+    diagnostic: failure.diagnostic,
+  });
+  return failure;
+}
+
+function augmentStartupFailure(result = {}, options = {}) {
+  if (result.success === false && result.code && result.recoveryHint && result.diagnostic?.id) {
+    return result;
+  }
+  const sourceError = new Error(result.error || options.userMessage || "Startup failed.");
+  const failure = toLoggedStartupFailure(sourceError, {
+    ...options,
+    code: result.code || options.code,
+    userMessage: result.error || options.userMessage,
+    recoveryHint: result.recoveryHint || options.recoveryHint,
+    diagnostic: result.diagnostic,
+    attempts: result.attempts,
+  });
+  return { ...result, ...failure };
+}
+
+function createSupervisorFailure(input = {}) {
+  const cause = input.cause || new Error(input.reason || input.error || input.code);
+  return toLoggedStartupFailure(cause, {
+    code: input.code,
+    stage: input.stage,
+    reason: input.reason,
+    userMessage: input.error,
+    recoveryHint: input.recoveryHint,
+    commandLine: input.commandLine,
+    cwd: input.cwd,
+    osCode: input.osCode,
+    exitCode: input.exitCode,
+    signal: input.signal,
+    timedOut: input.timedOut,
+    durationMs: input.durationMs,
+    stdout: input.stdoutTail,
+    stderr: input.stderrTail,
+    attempts: input.attempts,
+  });
+}
+
+let mainWindow = null;
+let allowCloseWithActiveProcessingTasks = false;
+let sessionSecurityRegistered = false;
+let rendererFailureDialogOpen = false;
+let quitAfterBackendStop = false;
+let backendShutdownPromise = null;
+let backendLaunchPromise = null;
+let backendLaunchAbortController = null;
+let backendStopPromise = null;
+let applicationQuitRequested = false;
+let applicationBootstrapPromise = null;
+let applicationBootstrapComplete = false;
+const ACTIVE_STARTUP_SETTLEMENT_TIMEOUT_MS = 10000;
+const startupOperationRegistry = new StartupOperationRegistry({
+  getInitialAbortReason: () =>
+    applicationQuitRequested
+      ? new Error("Application quit cancelled startup operations.")
+      : null,
+});
+
+async function withTrackedStartupOperation(operation, externalSignal) {
+  return await startupOperationRegistry.run(operation, externalSignal);
+}
+
+function abortActiveStartupOperations(reason) {
+  return startupOperationRegistry.abort(reason);
+}
+
+async function waitForActiveStartupOperations(
+  timeoutMs = ACTIVE_STARTUP_SETTLEMENT_TIMEOUT_MS
+) {
+  return await startupOperationRegistry.waitForSettled(timeoutMs);
+}
+
+function sendToMainWindow(channel, payload) {
+  if (
+    !mainWindow ||
+    mainWindow.isDestroyed() ||
+    !mainWindow.webContents ||
+    mainWindow.webContents.isDestroyed()
+  ) {
+    return false;
+  }
+  mainWindow.webContents.send(channel, payload);
+  return true;
+}
+
+function createBackendOutputPayload(message, type = "info", metadata = {}) {
+  const timestamp = metadata.timestamp || new Date().toISOString();
+  return {
+    ...metadata,
+    message: String(message ?? ""),
+    type,
+    stream: metadata.stream || "lifecycle",
+    stage: metadata.stage || "startup",
+    diagnosticId: metadata.diagnosticId || metadata.diagnostic?.id || null,
+    timestamp,
+  };
+}
+
+function sendBackendOutput(message, type = "info", metadata = {}, target = null) {
+  const payload = createBackendOutputPayload(message, type, metadata);
+  const webContents = target || mainWindow?.webContents;
+  if (webContents && !webContents.isDestroyed?.()) {
+    webContents.send("backend-output", payload);
+  }
+  return payload;
+}
+
+function createBackendOutputSender(target, stage) {
+  return (message, type = "info", metadata = {}) =>
+    sendBackendOutput(message, type, { stage, ...metadata }, target);
+}
+
+async function probeBackendHealth(port, options = {}) {
+  const signal = options.signal;
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) {
+    controller.abort(signal.reason);
+  } else {
+    signal?.addEventListener("abort", onAbort, { once: true });
+  }
+  const timeout = setTimeout(() => controller.abort(new Error("Health probe timed out.")), 1500);
+  timeout.unref?.();
+
+  try {
+    const response = await net.fetch(
+      `http://${BACKEND_PORT_HOST}:${port}/api/v1/health?_=${Date.now()}`,
+      {
+        cache: "no-store",
+        headers: {
+          Accept: "application/json",
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          Pragma: "no-cache",
+        },
+        signal: controller.signal,
+      }
+    );
+    if (!response.ok) return false;
+    const body = await response.json();
+    return body?.status === "ok";
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+async function terminateBackendProcessTree(child, options = {}) {
+  const { force = false, record, signal } = options;
+  if (!child?.pid || record?.closed) return;
+
+  if (process.platform === "win32") {
+    try {
+      await runStartupProcess(
+        "taskkill",
+        ["/pid", String(child.pid), "/t", ...(force ? ["/f"] : [])],
+        {
+          timeoutMs: 5000,
+          stage: force ? "backend-force-stop" : "backend-stop",
+          failureCode: "BACKEND_PROCESS_TERMINATION_FAILED",
+          userMessage: "Failed to terminate the backend process tree.",
+          recoveryHint: "Close the application and terminate the recorded process manually.",
+          logPath: STARTUP_LOG_PATH,
+          signal,
+        }
+      );
+    } catch (error) {
+      if (record?.closed || child.exitCode !== null) return;
+      throw error;
+    }
+    return;
+  }
+
+  const killSignal = force ? "SIGKILL" : "SIGTERM";
+  try {
+    process.kill(-child.pid, killSignal);
+  } catch (error) {
+    if (error?.code === "ESRCH" || record?.closed || child.exitCode !== null) return;
+    child.kill(killSignal);
+  }
+}
+
+const backendSupervisor = new BackendProcessSupervisor({
+  spawnImpl: spawn,
+  probeReady: probeBackendHealth,
+  terminateProcess: terminateBackendProcessTree,
+  createFailure: createSupervisorFailure,
+  decodeOutput: decodeProcessOutput,
+  readinessTimeoutMs: 120000,
+  pollIntervalMs: 500,
+  onOutput: (payload) => {
+    const output = createBackendOutputPayload(payload.message, payload.type, payload);
+    sendToMainWindow("backend-output", output);
+    const logMethod = output.type === "error" ? "error" : output.type === "warning" ? "warning" : "info";
+    void startupLogger[logMethod](output.message, output);
+  },
+  onState: (payload) => {
+    sendToMainWindow("backend-service-state", payload);
+    void startupLogger.info(`Backend service state changed to ${payload.state}.`, payload);
+  },
+});
+
+function createBackendStartCancellation(reason = "Backend startup was cancelled.") {
+  const failure = toStartupFailure(new Error(reason), {
+    code: "BACKEND_START_CANCELLED",
+    stage: "backend-preflight",
+    userMessage: "Backend startup was cancelled.",
+    recoveryHint: "No action is required.",
+    logPath: STARTUP_LOG_PATH,
+  });
+  return {
+    ...failure,
+    cancelled: true,
+    expected: true,
+  };
+}
+
+function getBackendStartCancellation(signal) {
+  if (!signal?.aborted && !applicationQuitRequested) return null;
+  return createBackendStartCancellation(
+    signal?.reason?.message ||
+      (applicationQuitRequested
+        ? "Application quit while backend startup was in progress."
+        : "Backend startup was cancelled.")
+  );
+}
+
+async function stopBackendServiceAndPendingLaunch(reason) {
+  abortActiveStartupOperations(reason || "Backend stop was requested.");
+  const activeLaunch = backendLaunchPromise;
+  if (backendLaunchAbortController && !backendLaunchAbortController.signal.aborted) {
+    backendLaunchAbortController.abort(new Error(reason || "Backend startup was cancelled."));
+  }
+
+  let stopResult = await backendSupervisor.stop();
+  if (activeLaunch) {
+    try {
+      await activeLaunch;
+    } catch (error) {
+      void startupLogger.error("Pending backend startup rejected during cancellation.", {
+        reason: error?.message || String(error),
+      });
+    }
+  }
+  const operationSettlement = await waitForActiveStartupOperations();
+  if (!operationSettlement.settled) {
+    void startupLogger.warning("Startup operations did not settle before the shutdown deadline.", {
+      stage: "startup-operation-shutdown",
+      pending: operationSettlement.pending,
+      timeoutMs: ACTIVE_STARTUP_SETTLEMENT_TIMEOUT_MS,
+    });
+  }
+  if (backendSupervisor.getStatus().processRunning) {
+    const finalStopResult = await backendSupervisor.stop();
+    if (!finalStopResult.success) stopResult = finalStopResult;
+  }
+  return {
+    ...stopResult,
+    startupOperationsSettled: operationSettlement.settled,
+    pendingStartupOperations: operationSettlement.pending,
+  };
+}
+
+// Backend service state
 global.projectPath = "";
 const activeFfmpegTasks = new Map();
 const activeProcessingTasks = new Map();
@@ -90,8 +389,6 @@ protocol.registerSchemesAsPrivileged([
 let globalConfig = cloneConfig(DEFAULT_APP_CONFIG);
 
 const TARGET_PYTHON_VERSION = "3.12.11";
-const MIN_SYSTEM_PYTHON_MINOR = 10;
-const MAX_SYSTEM_PYTHON_MINOR = 12;
 const BUNDLED_RUNTIME_STATE_FILE = "runtime-state.json";
 const BUNDLED_RUNTIME_LOCK_FILE = ".prepare.lock";
 const BUNDLED_RUNTIME_LOCK_WAIT_MS = 300000;
@@ -104,6 +401,7 @@ const CJK_PATH_PATTERN = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u;
 const BACKEND_PORT_HOST = "127.0.0.1";
 const BACKEND_PORT_RETRY_LIMIT = 20;
 const DEFAULT_DISK_SPACE_SAFETY_BYTES = 64 * 1024 * 1024;
+const COMPLETE_PROCESS_ENV = Symbol("moonshine-complete-process-env");
 let packagedIntegrityStatus = null;
 
 function validateShortcutConfig(shortcuts = {}) {
@@ -542,9 +840,18 @@ function getBundledPythonPath() {
     : path.join(getBundledRuntimeEnvPath(), "bin", "python");
 }
 
+function markCompleteProcessEnv(environment) {
+  Object.defineProperty(environment, COMPLETE_PROCESS_ENV, {
+    value: true,
+    enumerable: false,
+  });
+  return environment;
+}
+
 function getUtf8ProcessEnv(overrides = {}) {
-  return {
-    ...process.env,
+  const inheritProcessEnv = overrides?.[COMPLETE_PROCESS_ENV] !== true;
+  const environment = {
+    ...(inheritProcessEnv ? process.env : {}),
     ...(overrides || {}),
     PYTHONUTF8: "1",
     PYTHONIOENCODING: "utf-8",
@@ -552,6 +859,28 @@ function getUtf8ProcessEnv(overrides = {}) {
     LANG: "C.UTF-8",
     LC_ALL: "C.UTF-8",
   };
+  return inheritProcessEnv ? environment : markCompleteProcessEnv(environment);
+}
+
+function getIsolatedPythonCommandEnv(envRoot, overrides = {}) {
+  return markCompleteProcessEnv(
+    createIsolatedPythonEnv({
+      baseEnv: process.env,
+      envRoot,
+      platform: os.platform(),
+      overrides,
+    })
+  );
+}
+
+function getCleanPythonCommandEnv(overrides = {}) {
+  return markCompleteProcessEnv(
+    createIsolatedPythonEnv({
+      baseEnv: process.env,
+      platform: os.platform(),
+      overrides,
+    })
+  );
 }
 
 function wrapUtf8ShellCommand(command) {
@@ -607,39 +936,37 @@ function getWindowsShellInvocation(command, args = []) {
 }
 
 async function execFileCommand(command, args = [], options = {}) {
-  const { env, ...execOptions } = options;
-  const result = await execFileAsync(command, args, {
-    windowsHide: true,
-    ...execOptions,
-    encoding: "buffer",
-    env: getUtf8ProcessEnv(env),
-  });
-
-  return {
-    ...result,
-    stdout: decodeProcessOutput(result.stdout),
-    stderr: decodeProcessOutput(result.stderr),
-  };
+  const env = getUtf8ProcessEnv(options.env);
+  return await withTrackedStartupOperation(
+    (signal) =>
+      runStartupProcess(command, args, {
+        cwd: options.cwd,
+        env,
+        windowsHide: true,
+        detached: options.detached ?? os.platform() !== "win32",
+        timeoutMs: options.timeout,
+        signal,
+        stage: options.stage || "process-exec",
+        failureCode: options.failureCode,
+        userMessage: options.userMessage,
+        recoveryHint: options.recoveryHint,
+        logPath: STARTUP_LOG_PATH,
+        onStdout: options.onStdout,
+        onStderr: options.onStderr,
+        terminateProcess:
+          options.terminateProcess ||
+          ((child) => terminateBackendProcessTree(child, { force: true })),
+      }),
+    options.signal
+  );
 }
 
 async function execCondaCommand(args = [], options = {}) {
   if (os.platform() === "win32") {
     const invocation = getWindowsShellInvocation("conda", args);
-    return execFileCommand(invocation.command, invocation.args, options);
+    return await execFileCommand(invocation.command, invocation.args, options);
   }
-  return execFileCommand("conda", args, options);
-}
-
-function spawnCondaCommand(args = [], options = {}) {
-  const invocation =
-    os.platform() === "win32"
-      ? getWindowsShellInvocation("conda", args)
-      : { command: "conda", args };
-  return spawn(invocation.command, invocation.args, {
-    cwd: options.cwd,
-    stdio: options.stdio || "pipe",
-    env: getUtf8ProcessEnv(options.env),
-  });
+  return await execFileCommand("conda", args, options);
 }
 
 async function execCommand(command, options = {}) {
@@ -672,12 +999,7 @@ function parsePythonVersion(text) {
 }
 
 function isSystemPythonVersionSupported(versionInfo) {
-  return (
-    versionInfo &&
-    versionInfo.major === 3 &&
-    versionInfo.minor >= MIN_SYSTEM_PYTHON_MINOR &&
-    versionInfo.minor <= MAX_SYSTEM_PYTHON_MINOR
-  );
+  return isSupportedPythonVersion(versionInfo);
 }
 
 function getDefaultBackendProjectPath() {
@@ -1109,8 +1431,7 @@ function getPackagedRuntimeMetadata() {
 function getBundledRuntimeCommandEnv(overrides = {}) {
   const modelDir = getPackagedModelsPath();
   const runtimeMetadata = getPackagedRuntimeMetadata();
-  return {
-    ...process.env,
+  return getIsolatedPythonCommandEnv(getBundledRuntimeEnvPath(), {
     MOONSHINE_PACKAGED_RUNTIME: "1",
     MOONSHINE_RUNTIME_FLAVOR: runtimeMetadata.runtimeFlavor || "external",
     MOONSHINE_MODEL_BUNDLE: runtimeMetadata.modelBundle || "external-models",
@@ -1122,7 +1443,7 @@ function getBundledRuntimeCommandEnv(overrides = {}) {
     HF_HUB_OFFLINE: "1",
     TRANSFORMERS_OFFLINE: "1",
     LAMA_MODEL_URL: getBundledDefaultModelPath(),
-  };
+  });
 }
 
 function getEffectiveBundledModelDir() {
@@ -1137,52 +1458,32 @@ function resolveEffectiveModelDir(input = {}) {
 }
 
 async function runProcess(command, args = [], options = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      env: getUtf8ProcessEnv(options.env),
-      stdio: options.stdio || "pipe",
-      shell: options.shell || false,
-    });
-
-    let stdout = "";
-    let stderr = "";
-
-    if (child.stdout) {
-      child.stdout.on("data", (data) => {
-        const text = decodeProcessOutput(data);
-        stdout += text;
-        options.onStdout?.(text);
-      });
-    }
-
-    if (child.stderr) {
-      child.stderr.on("data", (data) => {
-        const text = decodeProcessOutput(data);
-        stderr += text;
-        options.onStderr?.(text);
-      });
-    }
-
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolve({ stdout, stderr });
-      } else {
-        const error = new Error(
-          options.errorMessage ||
-            `${command} ${args.join(" ")} failed with exit code ${code}`
-        );
-        error.code = code;
-        error.stdout = stdout;
-        error.stderr = stderr;
-        reject(error);
-      }
-    });
-  });
+  return await withTrackedStartupOperation(
+    (signal) =>
+      runStartupProcess(command, args, {
+        cwd: options.cwd,
+        env: getUtf8ProcessEnv(options.env),
+        stdio: options.stdio || "pipe",
+        shell: options.shell || false,
+        detached: options.detached ?? os.platform() !== "win32",
+        timeoutMs: options.timeout,
+        signal,
+        stage: options.stage || "startup-process",
+        failureCode: options.failureCode,
+        userMessage: options.errorMessage,
+        recoveryHint: options.recoveryHint,
+        logPath: STARTUP_LOG_PATH,
+        onStdout: options.onStdout,
+        onStderr: options.onStderr,
+        terminateProcess:
+          options.terminateProcess ||
+          ((child) => terminateBackendProcessTree(child, { force: true })),
+      }),
+    options.signal
+  );
 }
 
-async function runBundledCondaUnpack(sendLog) {
+async function runBundledCondaUnpack(sendLog, options = {}) {
   const envPath = getBundledRuntimeEnvPath();
   const pythonPath = getBundledPythonPath();
   const exeCandidate = path.join(envPath, "Scripts", "conda-unpack.exe");
@@ -1194,6 +1495,12 @@ async function runBundledCondaUnpack(sendLog) {
     await runProcess(exeCandidate, [], {
       cwd: envPath,
       errorMessage: "Failed to relocate the bundled Python runtime.",
+      failureCode: "BUNDLED_RUNTIME_RELOCATION_FAILED",
+      stage: "bundled-runtime-relocation",
+      recoveryHint: "Re-extract the application to a writable directory and check security software.",
+      signal: options.signal,
+      onStdout: (text) => sendLog?.(text, "info"),
+      onStderr: (text) => sendLog?.(text, "warning"),
     });
     return;
   }
@@ -1205,6 +1512,12 @@ async function runBundledCondaUnpack(sendLog) {
       {
         cwd: envPath,
         errorMessage: "Failed to relocate the bundled Python runtime.",
+        failureCode: "BUNDLED_RUNTIME_RELOCATION_FAILED",
+        stage: "bundled-runtime-relocation",
+        recoveryHint: "Re-extract the application to a writable directory and check security software.",
+        signal: options.signal,
+        onStdout: (text) => sendLog?.(text, "info"),
+        onStderr: (text) => sendLog?.(text, "warning"),
       }
     );
     return;
@@ -1245,13 +1558,16 @@ function isBundledRuntimeLockStale(lockPath) {
   }
 }
 
-async function withBundledRuntimeLock(task) {
+async function withBundledRuntimeLock(task, options = {}) {
   const runtimeRoot = getBundledRuntimeRootPath();
   const lockPath = getBundledRuntimeLockPath();
   fs.mkdirSync(runtimeRoot, { recursive: true });
   const deadline = Date.now() + BUNDLED_RUNTIME_LOCK_WAIT_MS;
 
   while (true) {
+    if (options.signal?.aborted) {
+      throw options.signal.reason || new Error("Bundled runtime preparation was cancelled.");
+    }
     try {
       const handle = fs.openSync(lockPath, "wx");
       try {
@@ -1317,28 +1633,31 @@ async function verifyBundledPythonRuntime(options = {}) {
   const versionResult = await getPythonVersionFromCommand(bundledPython, [], {
     cwd: getPackagedBackendRuntimeProjectPath(),
     env: getBundledRuntimeCommandEnv(),
+    signal: options.signal,
   });
   if (!versionResult.success) {
     return versionResult;
   }
 
   if (checkDependencies) {
-    try {
-      await execFileCommand(
-        bundledPython,
-        ["-c", "import fastapi,uvicorn,numpy,PIL,torch,transformers"],
-        {
-          cwd: getPackagedBackendRuntimeProjectPath(),
-          timeout: 30000,
-          env: getBundledRuntimeCommandEnv(),
-        }
-      );
-    } catch (error) {
+    const dependencyResult = await probePythonDependencies(
+      bundledPython,
+      ["fastapi", "uvicorn", "numpy", "PIL", "torch", "transformers"],
+      {
+        cwd: getPackagedBackendRuntimeProjectPath(),
+        timeout: 30000,
+        env: getBundledRuntimeCommandEnv(),
+        signal: options.signal,
+      }
+    );
+    if (!dependencyResult.success) {
       return {
         success: false,
-        error:
-          error.message ||
-          "Bundled Python executable is present, but backend dependencies are not usable.",
+        code: dependencyResult.code || "BUNDLED_DEPENDENCIES_UNUSABLE",
+        error: dependencyResult.error,
+        missingModules: dependencyResult.missingModules,
+        dependencyErrors: dependencyResult.errors,
+        stderr: dependencyResult.stderr,
       };
     }
   }
@@ -1350,26 +1669,37 @@ async function verifyBundledPythonRuntime(options = {}) {
   };
 }
 
-async function ensureBundledRuntimeReady(sendLog) {
+async function ensureBundledRuntimeReady(sendLog, options = {}) {
   const integrityResult = await ensurePackagedBackendIntegrity(
     getPackagedBackendRuntimeProjectPath()
   );
   if (!integrityResult.success) {
-    return integrityResult;
+    return augmentStartupFailure(integrityResult, {
+      code: "PACKAGED_BACKEND_INTEGRITY_FAILED",
+      stage: "bundled-runtime-integrity",
+    });
   }
 
   if (!fs.existsSync(getPackagedRuntimeEnvPath())) {
-    return {
-      success: false,
-      error: `Bundled runtime directory is missing: ${getPackagedRuntimeEnvPath()}`,
-    };
+    return augmentStartupFailure(
+      {
+        success: false,
+        code: "BUNDLED_RUNTIME_MISSING",
+        error: `Bundled runtime directory is missing: ${getPackagedRuntimeEnvPath()}`,
+      },
+      { stage: "bundled-runtime-validation" }
+    );
   }
 
   if (!fs.existsSync(getPackagedRuntimeMetadataPath())) {
-    return {
-      success: false,
-      error: `Bundled runtime metadata is missing: ${getPackagedRuntimeMetadataPath()}`,
-    };
+    return augmentStartupFailure(
+      {
+        success: false,
+        code: "BUNDLED_RUNTIME_METADATA_MISSING",
+        error: `Bundled runtime metadata is missing: ${getPackagedRuntimeMetadataPath()}`,
+      },
+      { stage: "bundled-runtime-validation" }
+    );
   }
 
   const runtimeMetadata = readJsonFile(getPackagedRuntimeMetadataPath());
@@ -1382,6 +1712,7 @@ async function ensureBundledRuntimeReady(sendLog) {
 
     const existingRuntime = await verifyBundledPythonRuntime({
       checkDependencies: true,
+      signal: options.signal,
     });
     if (existingRuntime.success && fs.existsSync(getPackagedBackendRuntimeProjectPath())) {
       sendLog?.(
@@ -1402,19 +1733,54 @@ async function ensureBundledRuntimeReady(sendLog) {
     }
 
     try {
-      await runBundledCondaUnpack(sendLog);
+      await runBundledCondaUnpack(sendLog, options);
     } catch (error) {
+      if (options.signal?.aborted) throw error;
       const fallbackRuntime = await verifyBundledPythonRuntime({
         checkDependencies: true,
+        signal: options.signal,
+      });
+      const relocationFailure = toStartupFailure(error, {
+        code: "BUNDLED_RUNTIME_RELOCATION_FAILED",
+        stage: "bundled-runtime-relocation",
+        userMessage: "Bundled Python runtime relocation failed.",
+        recoveryHint:
+          "Re-extract the application to a writable directory and check security software.",
+        logPath: STARTUP_LOG_PATH,
       });
       if (fallbackRuntime.success) {
         sendLog?.(
           `Bundled runtime relocation reported a warning, but Python is usable: ${error.message}`,
-          "warning"
+          "warning",
+          {
+            diagnostic: relocationFailure.diagnostic,
+            diagnosticId: relocationFailure.diagnostic.id,
+            recoveryHint: relocationFailure.recoveryHint,
+          }
         );
+        void startupLogger.warning(relocationFailure.error, {
+          recoveryHint: relocationFailure.recoveryHint,
+          diagnostic: relocationFailure.diagnostic,
+        });
         writeBundledRuntimeState(runtimeMetadata, fallbackRuntime.pythonPath);
         return;
       }
+
+      const recheckFailure = toStartupFailure(
+        new Error(fallbackRuntime.error || "Bundled runtime recheck failed."),
+        {
+          code: fallbackRuntime.code || "BUNDLED_RUNTIME_RECHECK_FAILED",
+          stage: "bundled-runtime-recheck",
+          userMessage: fallbackRuntime.error || "Bundled runtime recheck failed.",
+          diagnostic: fallbackRuntime.diagnostic,
+          logPath: STARTUP_LOG_PATH,
+        }
+      );
+      error.diagnostic = createDiagnostic({
+        ...relocationFailure.diagnostic,
+        attempts: [relocationFailure.diagnostic, recheckFailure.diagnostic],
+        logPath: STARTUP_LOG_PATH,
+      });
 
       if (appMoved) {
         clearBundledRuntimeState();
@@ -1423,17 +1789,26 @@ async function ensureBundledRuntimeReady(sendLog) {
       throw error;
     }
 
-    const preparedRuntime = await verifyBundledPythonRuntime();
+    const preparedRuntime = await verifyBundledPythonRuntime({
+      checkDependencies: true,
+      signal: options.signal,
+    });
     if (!preparedRuntime.success) {
       throw new Error(preparedRuntime.error || "Bundled Python runtime verification failed.");
     }
 
     writeBundledRuntimeState(runtimeMetadata, preparedRuntime.pythonPath);
-  });
+  }, options);
 
-  const runtimeResult = await verifyBundledPythonRuntime();
+  const runtimeResult = await verifyBundledPythonRuntime({
+    checkDependencies: true,
+    signal: options.signal,
+  });
   if (!runtimeResult.success) {
-    return runtimeResult;
+    return augmentStartupFailure(runtimeResult, {
+      code: runtimeResult.code || "BUNDLED_RUNTIME_UNUSABLE",
+      stage: "bundled-runtime-verification",
+    });
   }
 
   return {
@@ -1524,74 +1899,98 @@ async function getPythonVersionFromCommand(pythonCommand, args = [], options = {
   } catch (error) {
     return {
       success: false,
-      error: error.message || "Python version check command failed.",
+      code: error.startupCode || error.code || "PYTHON_VERSION_CHECK_FAILED",
+      error: error.userMessage || error.message || "Python version check command failed.",
+      osCode: error.osCode,
+      diagnostic: error.diagnostic,
     };
   }
+}
+
+async function probePythonDependencies(pythonCommand, modules, options = {}) {
+  const args = createImportProbeArgs(modules);
+  let processResult;
+  let failureMetadata = {};
+  try {
+    const { stdout, stderr } = await execFileCommand(pythonCommand, args, options);
+    processResult = { stdout, stderr, exitCode: 0 };
+  } catch (error) {
+    const diagnostic = error?.diagnostic;
+    processResult = {
+      stdout: diagnostic?.stdoutTail || decodeProcessOutput(error?.stdout),
+      stderr: diagnostic?.stderrTail || decodeProcessOutput(error?.stderr),
+      exitCode: diagnostic?.exitCode ?? error?.exitCode ?? null,
+    };
+    failureMetadata = {
+      diagnostic,
+      attempts: diagnostic?.attempts || error?.attempts,
+    };
+  }
+  return { ...parseImportProbeResult(processResult), ...failureMetadata };
 }
 
 async function detectSystemPython() {
   const commandCandidates =
     os.platform() === "win32"
       ? [
+          { command: "py", args: ["-3.12"] },
+          { command: "py", args: ["-3.11"] },
+          { command: "py", args: ["-3.10"] },
           { command: "python", args: [] },
           { command: "py", args: ["-3"] },
           { command: "py", args: [] },
           { command: "python3", args: [] },
         ]
       : [
+          { command: "python3.12", args: [] },
+          { command: "python3.11", args: [] },
+          { command: "python3.10", args: [] },
           { command: "python3", args: [] },
           { command: "python", args: [] },
         ];
 
-  for (const candidate of commandCandidates) {
-    const versionResult = await getPythonVersionFromCommand(
-      candidate.command,
-      candidate.args
-    );
-    if (versionResult.success) {
-      return {
-        success: true,
-        command: candidate.command,
-        args: candidate.args,
-        label: formatCommandLabel(candidate.command, candidate.args),
-        version: versionResult.version,
-      };
-    }
-  }
-
   if (os.platform() === "win32") {
-    const userName = os.userInfo().username;
+    const localAppData =
+      process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+    const programFiles = process.env.ProgramFiles || "C:\\Program Files";
     const pathCandidates = [
       "C:\\Python312\\python.exe",
       "C:\\Python311\\python.exe",
       "C:\\Python310\\python.exe",
-      `C:\\Users\\${userName}\\AppData\\Local\\Programs\\Python\\Python312\\python.exe`,
-      `C:\\Users\\${userName}\\AppData\\Local\\Programs\\Python\\Python311\\python.exe`,
-      `C:\\Users\\${userName}\\AppData\\Local\\Programs\\Python\\Python310\\python.exe`,
+      path.join(localAppData, "Programs", "Python", "Python312", "python.exe"),
+      path.join(localAppData, "Programs", "Python", "Python311", "python.exe"),
+      path.join(localAppData, "Programs", "Python", "Python310", "python.exe"),
+      path.join(programFiles, "Python312", "python.exe"),
+      path.join(programFiles, "Python311", "python.exe"),
+      path.join(programFiles, "Python310", "python.exe"),
     ];
-
     for (const pythonPath of pathCandidates) {
-      if (!fs.existsSync(pythonPath)) {
-        continue;
-      }
-      const versionResult = await getPythonVersionFromCommand(pythonPath);
-      if (versionResult.success) {
-        return {
-          success: true,
-          command: pythonPath,
-          args: [],
-          label: pythonPath,
-          version: versionResult.version,
-          path: pythonPath,
-        };
-      }
+      commandCandidates.push({
+        command: pythonPath,
+        args: [],
+        label: pythonPath,
+        path: pythonPath,
+        requiresExistingPath: true,
+      });
     }
   }
 
-  return {
-    success: false,
-    error: "No system Python executable was detected.",
-  };
+  return await detectSupportedPython({
+    candidates: commandCandidates,
+    inspectCandidate: async (candidate) => {
+      if (candidate.requiresExistingPath && !fs.existsSync(candidate.command)) {
+        return {
+          success: false,
+          notFound: true,
+          osCode: "ENOENT",
+          error: `Python executable does not exist: ${candidate.command}`,
+        };
+      }
+      return await getPythonVersionFromCommand(candidate.command, candidate.args || [], {
+        env: getCleanPythonCommandEnv(),
+      });
+    },
+  });
 }
 
 async function detectConda() {
@@ -1605,27 +2004,131 @@ async function detectConda() {
     }
     return { success: true, version: message };
   } catch (error) {
-    return { success: false, error: error.message || "Conda was not detected." };
+    const details = `${error?.message || ""}\n${error?.diagnostic?.stderrTail || ""}`;
+    const notFound =
+      error?.osCode === "ENOENT" ||
+      error?.diagnostic?.osCode === "ENOENT" ||
+      /not recognized|command not found|不是内部或外部命令/i.test(details);
+    return {
+      success: false,
+      code: notFound ? "CONDA_NOT_FOUND" : "CONDA_UNUSABLE",
+      error: error.userMessage || error.message || "Conda was not detected.",
+      diagnostic: error.diagnostic,
+    };
   }
+}
+
+async function getCondaEnvironmentList(options = {}) {
+  const { stdout } = await execCondaCommand(["env", "list", "--json"], {
+    timeout: 30000,
+    ...options,
+  });
+  let parsed;
+  try {
+    parsed = JSON.parse(String(stdout || ""));
+  } catch (error) {
+    throw new Error(`Conda returned an invalid environment list: ${error.message}`);
+  }
+  if (!Array.isArray(parsed?.envs)) {
+    throw new Error("Conda environment list did not contain an envs array.");
+  }
+  return parsed.envs.map((envPath) => path.normalize(String(envPath)));
+}
+
+function hasNamedCondaEnvironment(environments, environmentName) {
+  const expectedName = String(environmentName || "").trim().toLowerCase();
+  return environments.some(
+    (environmentPath) => path.basename(environmentPath).toLowerCase() === expectedName
+  );
+}
+
+async function probeCondaDependencies(environmentName, modules, options = {}) {
+  const probeDirectory = path.join(app.getPath("temp"), "moonshine-startup-probes");
+  const probePath = path.join(probeDirectory, `import-probe-${crypto.randomUUID()}.py`);
+  const probeArgs = [
+    "run",
+    "-n",
+    environmentName,
+    "python",
+    probePath,
+  ];
+  try {
+    fs.mkdirSync(probeDirectory, { recursive: true });
+    fs.writeFileSync(probePath, buildImportProbeScript(modules), "utf8");
+    const { stdout, stderr } = await execCondaCommand(probeArgs, options);
+    return parseImportProbeResult({ stdout, stderr, exitCode: 0 });
+  } catch (error) {
+    const diagnostic = error?.diagnostic;
+    return {
+      ...parseImportProbeResult({
+        stdout: diagnostic?.stdoutTail || error?.stdout || "",
+        stderr: diagnostic?.stderrTail || error?.stderr || error?.message || "",
+        exitCode: diagnostic?.exitCode ?? error?.exitCode ?? null,
+      }),
+      diagnostic,
+      attempts: diagnostic?.attempts || error?.attempts,
+    };
+  } finally {
+    fs.rmSync(probePath, { force: true });
+  }
+}
+
+function createDependencyCheckResponse(dependencyResult, options = {}) {
+  const response = {
+    success: dependencyResult.success,
+    missingModules: dependencyResult.missingModules,
+    dependencyErrors: dependencyResult.errors,
+    error: dependencyResult.success ? undefined : dependencyResult.error,
+    diagnostic: dependencyResult.diagnostic,
+    attempts: dependencyResult.attempts,
+    message: dependencyResult.success
+      ? options.successMessage || "Backend dependencies are ready."
+      : dependencyResult.error,
+  };
+  if (response.success) return response;
+  return augmentStartupFailure(
+    {
+      ...response,
+      code: options.code || "PYTHON_DEPENDENCIES_MISSING",
+    },
+    { stage: options.stage || "check-dependencies" }
+  );
 }
 
 async function createProjectVenvWithPython(projectPath, pythonCommand, pythonArgs = [], sendLog) {
   const label = formatCommandLabel(pythonCommand, pythonArgs);
+  const venvPath = path.join(projectPath, ".venv");
+  const existedBefore = fs.existsSync(venvPath);
   sendLog?.(`Creating project virtual environment with ${label}...`, "info");
-  await execFileCommand(pythonCommand, [...pythonArgs, "-m", "venv", ".venv"], {
-    cwd: projectPath,
-    timeout: 180000,
-  });
+  try {
+    await execFileCommand(pythonCommand, [...pythonArgs, "-m", "venv", ".venv"], {
+      cwd: projectPath,
+      env: getCleanPythonCommandEnv(),
+      timeout: 180000,
+      stage: "create-project-venv",
+      failureCode: "PROJECT_VENV_CREATE_FAILED",
+      userMessage: "Failed to create the project virtual environment.",
+    });
 
-  const venvInfo = getProjectVenvInfo(projectPath);
-  if (!venvInfo.exists || !venvInfo.valid) {
-    throw new Error("Virtual environment creation finished, but .venv is invalid.");
+    const venvInfo = await getUsableProjectVenvInfo(projectPath);
+    if (!venvInfo.exists || !venvInfo.valid) {
+      throw new Error(
+        venvInfo.error || "Virtual environment creation finished, but .venv is invalid."
+      );
+    }
+    return venvInfo;
+  } catch (error) {
+    if (!existedBefore && fs.existsSync(venvPath)) {
+      fs.rmSync(venvPath, { recursive: true, force: true });
+    }
+    throw error;
   }
-  return venvInfo;
 }
 
 async function bootstrapProjectVenvWithConda(projectPath, sendLog) {
   const tempEnvName = `moonshine-image-bootstrap-${Date.now()}`;
+  const venvPath = path.join(projectPath, ".venv");
+  const venvExistedBefore = fs.existsSync(venvPath);
   let createdTempEnv = false;
   try {
     sendLog?.(
@@ -1644,11 +2147,16 @@ async function bootstrapProjectVenvWithConda(projectPath, sendLog) {
       timeout: 600000,
     });
 
-    const venvInfo = getProjectVenvInfo(projectPath);
+    const venvInfo = await getUsableProjectVenvInfo(projectPath);
     if (!venvInfo.exists || !venvInfo.valid) {
       throw new Error("Conda bootstrap completed, but .venv is invalid.");
     }
     return venvInfo;
+  } catch (error) {
+    if (!venvExistedBefore && fs.existsSync(venvPath)) {
+      fs.rmSync(venvPath, { recursive: true, force: true });
+    }
+    throw error;
   } finally {
     if (createdTempEnv) {
       try {
@@ -1840,7 +2348,7 @@ function mergeConfigWithDefaults(config = {}) {
   return merged;
 }
 
-async function getUsableProjectVenvInfo(projectPath) {
+async function getUsableProjectVenvInfo(projectPath, options = {}) {
   const venvInfo = getProjectVenvInfo(projectPath);
   if (!venvInfo.exists || !venvInfo.valid) {
     return venvInfo;
@@ -1848,6 +2356,8 @@ async function getUsableProjectVenvInfo(projectPath) {
 
   const versionResult = await getPythonVersionFromCommand(venvInfo.pythonPath, [], {
     cwd: projectPath,
+    env: getIsolatedPythonCommandEnv(venvInfo.venvPath),
+    signal: options.signal,
   });
   if (!versionResult.success) {
     return {
@@ -1856,28 +2366,19 @@ async function getUsableProjectVenvInfo(projectPath) {
       error: `${venvInfo.venvName} exists, but its Python executable is unusable. ${versionResult.error}`,
     };
   }
+  if (!isSupportedPythonVersion(versionResult.version)) {
+    return {
+      ...venvInfo,
+      valid: false,
+      pythonVersion: versionResult.version.text,
+      error: `${venvInfo.venvName} uses unsupported Python ${versionResult.version.text}. Supported versions are 3.10.x to 3.12.x.`,
+    };
+  }
 
   return {
     ...venvInfo,
     pythonVersion: versionResult.version.text,
   };
-}
-
-function canAutoRepairProjectVenv(projectPath, venvInfo) {
-  return (
-    app.isPackaged &&
-    usesPackagedBackendProject(projectPath) &&
-    !!venvInfo?.venvPath &&
-    isPathInsideDirectory(venvInfo.venvPath, projectPath)
-  );
-}
-
-function removeProjectVenv(venvInfo) {
-  if (!venvInfo?.venvPath) {
-    return;
-  }
-
-  fs.rmSync(venvInfo.venvPath, { recursive: true, force: true });
 }
 
 async function resolveValidatedProjectPath(inputPath) {
@@ -3549,275 +4050,160 @@ ipcMain.handle("select-folder", async (event, options = {}) => {
 
 // IPC handler - check Python environment
 ipcMain.handle("check-python", async (event) => {
-  const sendLog = (message, type = "info") => {
-    event.sender.send("backend-output", { message, type });
-  };
+  const sendLog = createBackendOutputSender(event.sender, "check-python");
 
   try {
-    // Snapshot current system environment variables
-    const systemEnv = getUtf8ProcessEnv();
     sendLog("Checking Python environment...", "info");
-
-    // Windows-specific detection flow
-    if (os.platform() === "win32") {
-      // Try common Python commands first
-      const pythonCommands = ["python", "py", "python3"];
-      sendLog(`Trying Python commands: ${pythonCommands.join(", ")}`, "info");
-
-      for (const cmd of pythonCommands) {
-        try {
-          sendLog(`Trying command: ${cmd} --version`, "info");
-          const { stdout, stderr } = await execFileCommand(cmd, ["--version"], {
-            env: systemEnv,
-            timeout: 10000,
-          });
-          const decodedStdout = `${stdout || ""}${stderr || ""}`.trim();
-          if (decodedStdout) {
-            sendLog(
-              `Command ${cmd} --version succeeded: ${decodedStdout.trim()}`,
-              "success"
-            );
-            return {
-              success: true,
-              version: decodedStdout.trim(),
-              type: "python",
-              command: cmd,
-            };
-          }
-        } catch (cmdError) {
-          sendLog(`Command ${cmd} failed: ${cmdError.message}`, "warning");
-          continue;
-        }
-      }
-
-      // Fall back to common installation paths
-      const commonPaths = [
-        "C:\\Python312\\python.exe",
-        "C:\\Python311\\python.exe",
-        "C:\\Python310\\python.exe",
-        "C:\\Python39\\python.exe",
-        "C:\\Users\\" +
-          os.userInfo().username +
-          "\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
-        "C:\\Users\\" +
-          os.userInfo().username +
-          "\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
-        "C:\\Users\\" +
-          os.userInfo().username +
-          "\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
-      ];
-
-      sendLog("Checking common Python installation paths...", "info");
-      for (const pythonPath of commonPaths) {
-        try {
-          sendLog(`Checking path: ${pythonPath}`, "info");
-          if (fs.existsSync(pythonPath)) {
-            sendLog(`Found Python executable: ${pythonPath}`, "success");
-            const { stdout, stderr } = await execFileCommand(pythonPath, ["--version"], {
-              env: systemEnv,
-              timeout: 10000,
-            });
-            const decodedStdout = `${stdout || ""}${stderr || ""}`.trim();
-            if (decodedStdout) {
-              sendLog(`Python version check succeeded: ${decodedStdout.trim()}`, "success");
-              return {
-                success: true,
-                version: decodedStdout.trim(),
-                type: "python",
-                path: pythonPath,
-              };
-            }
-          } else {
-            sendLog(`Path does not exist: ${pythonPath}`, "warning");
-          }
-        } catch (pathError) {
-          sendLog(
-            `Path check failed for ${pythonPath}: ${pathError.message}`,
-            "warning"
-          );
-          continue;
-        }
-      }
-    } else {
-      // Unix-like platforms
-      sendLog("Checking Python environment on Unix-like platforms...", "info");
-      try {
-        sendLog("Trying command: python --version", "info");
-        const { stdout: pythonStdout, stderr: pythonStderr } = await execFileCommand("python", ["--version"], {
-          env: systemEnv,
-          timeout: 10000,
-        });
-        const decodedPythonStdout = `${pythonStdout || ""}${pythonStderr || ""}`.trim();
-        if (decodedPythonStdout) {
-          sendLog(`python command succeeded: ${decodedPythonStdout.trim()}`, "success");
-          return {
-            success: true,
-            version: decodedPythonStdout.trim(),
-            type: "python",
-          };
-        }
-      } catch (pythonError) {
-        sendLog(`python command failed: ${pythonError.message}`, "warning");
-        try {
-          sendLog("Trying command: python3 --version", "info");
-          const { stdout: python3Stdout, stderr: python3Stderr } = await execFileCommand(
-            "python3",
-            ["--version"],
-            {
-              env: systemEnv,
-              timeout: 10000,
-            }
-          );
-          const decodedPython3Stdout = `${python3Stdout || ""}${python3Stderr || ""}`.trim();
-          if (decodedPython3Stdout) {
-            sendLog(`python3 command succeeded: ${decodedPython3Stdout.trim()}`, "success");
-            return {
-              success: true,
-              version: decodedPython3Stdout.trim(),
-              type: "python",
-            };
-          }
-        } catch (python3Error) {
-          sendLog(`python3 command failed: ${python3Error.message}`, "warning");
-          // Continue by checking conda
-        }
-      }
+    const pythonResult = await detectSystemPython();
+    for (const attempt of pythonResult.attempts || []) {
+      const versionLabel = attempt.version?.text ? ` (${attempt.version.text})` : "";
+      const type = attempt.status === "supported" ? "success" :
+        attempt.status === "not-found" ? "info" : "warning";
+      sendLog(
+        `${attempt.label}: ${attempt.status}${versionLabel}${attempt.reason ? ` - ${attempt.reason}` : ""}`,
+        type,
+        { diagnostic: attempt.diagnostic || undefined }
+      );
     }
-
-    // Fall back to conda detection
-    sendLog("Checking conda environment...", "info");
-    try {
-      const { stdout: condaStdout, stderr: condaStderr } = await execCondaCommand(["-V"], {
-        env: systemEnv,
-        timeout: 10000,
-      });
-      const decodedCondaStdout = `${condaStdout || ""}${condaStderr || ""}`.trim();
-      if (decodedCondaStdout) {
-        sendLog(`Found conda: ${decodedCondaStdout.trim()}`, "success");
-        try {
-          // Check whether the moonshine-image environment exists
-          sendLog("Checking moonshine-image conda environment...", "info");
-          const { stdout: envCheckStdout, stderr: envCheckStderr } = await execCondaCommand(["env", "list"], {
-            env: systemEnv,
-            timeout: 10000,
-          });
-          const decodedEnvCheckStdout = `${envCheckStdout || ""}${envCheckStderr || ""}`.trim();
-
-          if (!decodedEnvCheckStdout.includes("moonshine-image")) {
-            // Create the moonshine-image environment if needed
-            sendLog("Creating moonshine-image conda environment...", "info");
-            await execCondaCommand(
-              ["create", "-n", "moonshine-image", `python=${TARGET_PYTHON_VERSION}`, "-y"],
-              {
-                env: systemEnv,
-                timeout: 300000,
-              }
-            );
-            sendLog("moonshine-image environment created successfully", "success");
-          } else {
-            sendLog("moonshine-image environment already exists", "success");
-          }
-
-          sendLog("Checking moonshine-image Python version...", "info");
-          const { stdout: envPythonStdout, stderr: envPythonStderr } = await execCondaCommand(
-            ["run", "-n", "moonshine-image", "python", "--version"],
-            {
-              env: systemEnv,
-              timeout: 30000,
-            }
-          );
-          const decodedEnvPythonStdout = `${envPythonStdout || ""}${envPythonStderr || ""}`.trim();
-
-          sendLog(
-            `Conda environment Python version: ${decodedEnvPythonStdout.trim()}`,
-            "success"
-          );
-          return {
-            success: true,
-            version: decodedEnvPythonStdout.trim(),
-            type: "conda",
-          };
-        } catch (envError) {
-          sendLog(`Conda environment operation failed: ${envError.message}`, "error");
-          return {
-            success: false,
-            error: `Found conda (${decodedCondaStdout.trim()}), but creating or activating the environment failed: ${
-              envError.message
-            }`,
-          };
-        }
-      }
-    } catch (condaError) {
-      sendLog(`Conda check failed: ${condaError.message}`, "warning");
-      sendLog("No usable Python environment was detected", "error");
+    if (pythonResult.success) {
+      sendLog(`Using Python ${pythonResult.version.text}: ${pythonResult.label}`, "success");
       return {
-        success: false,
-        error: `No usable Python environment was detected. Please make sure Python is installed and added to PATH. Details: ${condaError.message}`,
+        success: true,
+        version: `Python ${pythonResult.version.text}`,
+        pythonVersion: pythonResult.version.text,
+        type: "python",
+        command: pythonResult.command,
+        args: pythonResult.args,
+        path: pythonResult.path,
+        attempts: pythonResult.attempts,
       };
     }
+
+    sendLog("No supported system Python was selected. Checking Conda...", "info");
+    const condaResult = await detectConda();
+    if (condaResult.success) {
+      sendLog(`Found Conda: ${condaResult.version}`, "success");
+      return {
+        success: true,
+        version: condaResult.version,
+        type: "conda",
+        environmentPrepared: false,
+        pythonFailure: pythonResult,
+      };
+    }
+
+    const primaryFailure =
+      pythonResult.code !== "SYSTEM_PYTHON_NOT_FOUND" ? pythonResult : condaResult;
+    return toLoggedStartupFailure(new Error(primaryFailure.error), {
+      code: primaryFailure.code || "PYTHON_RUNTIME_UNUSABLE",
+      stage: "check-python",
+      userMessage: primaryFailure.error || "No usable Python environment was detected.",
+      recoveryHint:
+        primaryFailure.code === "SYSTEM_PYTHON_UNSUPPORTED"
+          ? "Install Python 3.10-3.12, or create a supported .venv in the backend project."
+          : "Install or repair Python 3.10-3.12, then retry the environment check.",
+      attempts: pythonResult.attempts,
+      diagnostic: primaryFailure.diagnostic,
+    });
   } catch (error) {
     sendLog(`Unexpected error while checking Python environment: ${error.message}`, "error");
-    return {
-      success: false,
-      error: `Python environment check failed: ${error.message}`,
-    };
+    return toLoggedStartupFailure(error, {
+      code: "PYTHON_ENVIRONMENT_CHECK_FAILED",
+      stage: "check-python",
+      userMessage: "Python environment check failed.",
+    });
   }
 });
 
 // IPC handler - set Python environment variables
 ipcMain.handle("set-python-env", async (event, pythonPath) => {
   try {
+    const targetPath = String(pythonPath || "").trim();
+    if (!targetPath) {
+      return augmentStartupFailure(
+        {
+          success: false,
+          code: "PYTHON_ENVIRONMENT_PATH_INVALID",
+          error: "Python environment path is empty.",
+        },
+        {
+          stage: "set-python-environment",
+          recoveryHint: "Select a valid Python installation directory and retry.",
+        }
+      );
+    }
     const currentEnv = process.env.PATH || "";
-    if (!currentEnv.includes(pythonPath)) {
-      // Append the path only when it is not already present
-      process.env.PATH = `${pythonPath};${currentEnv}`;
+    const normalizeEntry = (entry) =>
+      process.platform === "win32" ? entry.toLowerCase() : entry;
+    const entries = currentEnv.split(path.delimiter).filter(Boolean);
+    if (!entries.some((entry) => normalizeEntry(entry) === normalizeEntry(targetPath))) {
+      process.env.PATH = [targetPath, ...entries].join(path.delimiter);
     }
     return { success: true, message: "Python environment variables updated successfully" };
   } catch (error) {
-    return { success: false, error: error.message };
+    return toLoggedStartupFailure(error, {
+      code: "PYTHON_ENVIRONMENT_UPDATE_FAILED",
+      stage: "set-python-environment",
+      userMessage: "Failed to update the Python environment path.",
+    });
   }
 });
 
 // IPC handler - check conda environment
 ipcMain.handle("check-conda-venv", async () => {
   try {
-    // Snapshot current system environment variables
-    const systemEnv = { ...process.env };
-
-    // Check whether the moonshine-image environment exists
-    const { stdout } = await execCondaCommand(["env", "list"], {
-      env: systemEnv,
-      timeout: 10000,
-    });
-
-    const envExists = stdout.includes("moonshine-image");
+    const environments = await getCondaEnvironmentList();
+    const envExists = hasNamedCondaEnvironment(environments, "moonshine-image");
+    if (!envExists) {
+      return augmentStartupFailure(
+        {
+          success: false,
+          code: "CONDA_ENVIRONMENT_NOT_FOUND",
+          error: "Conda environment moonshine-image does not exist.",
+          message: "Conda environment does not exist",
+          environments,
+        },
+        {
+          stage: "check-conda-environment",
+          recoveryHint: "Create the moonshine-image Conda environment, then retry.",
+        }
+      );
+    }
     return {
-      success: envExists,
-      message: envExists ? "Conda environment exists" : "Conda environment does not exist",
+      success: true,
+      message: "Conda environment exists",
+      environments,
     };
   } catch (error) {
-    return {
-      success: false,
-      error: `Failed to check conda environment: ${error.message}`,
-    };
+    return toLoggedStartupFailure(error, {
+      code: "CONDA_ENVIRONMENT_CHECK_FAILED",
+      stage: "check-conda-environment",
+      userMessage: "Failed to check the Conda environment.",
+    });
   }
 });
 
 // IPC handler - check conda dependencies
 ipcMain.handle("check-conda-dependencies", async () => {
   try {
-    // Snapshot current system environment variables
-    const systemEnv = { ...process.env };
-
-    const { stdout } = await execCondaCommand(["list", "-n", "moonshine-image"], {
-      env: systemEnv,
+    const dependencyResult = await probeCondaDependencies(
+      "moonshine-image",
+      ["fastapi", "uvicorn", "numpy", "PIL"],
+      {
       timeout: 30000,
+      }
+    );
+    return createDependencyCheckResponse(dependencyResult, {
+      code: "CONDA_DEPENDENCIES_MISSING",
+      stage: "check-conda-dependencies",
+      successMessage: "Conda dependencies are ready.",
     });
-
-    // Treat a populated conda list output as a basic dependency check
-    return { success: stdout.split("\n").length > 10, message: stdout };
   } catch (error) {
-    return { success: false, error: `Failed to check conda dependencies: ${error.message}` };
+    return toLoggedStartupFailure(error, {
+      code: "CONDA_DEPENDENCY_CHECK_FAILED",
+      stage: "check-conda-dependencies",
+      userMessage: "Failed to check Conda dependencies.",
+    });
   }
 });
 // IPC handler - validate project path
@@ -3833,18 +4219,21 @@ ipcMain.handle("check-project", async (event, selectPath) => {
       modelDir: globalConfig.general?.modelDir || "",
     });
     if (!backendPathValidation.valid) {
-      return {
-        success: false,
-        code: backendPathValidation.code,
-        error: backendPathValidation.message,
-        recoveryHint: backendPathValidation.message,
-        invalidPaths: backendPathValidation.invalidPaths,
-      };
+      return augmentStartupFailure(
+        {
+          success: false,
+          code: backendPathValidation.code,
+          error: backendPathValidation.message,
+          recoveryHint: backendPathValidation.message,
+          invalidPaths: backendPathValidation.invalidPaths,
+        },
+        { stage: "check-project" }
+      );
     }
 
     const result = await resolveValidatedProjectPath(selectPath || global.projectPath);
     if (!result.success) {
-      return result;
+      return augmentStartupFailure(result, { stage: "check-project" });
     }
 
     global.projectPath = result.path;
@@ -3855,24 +4244,25 @@ ipcMain.handle("check-project", async (event, selectPath) => {
       defaultProjectPath: getDefaultBackendProjectPath(),
     };
   } catch (error) {
-    return {
-      success: false,
-      error: error.message,
-    };
+    return toLoggedStartupFailure(error, {
+      code: error.startupCode || error.diagnostic?.code || "PROJECT_CHECK_FAILED",
+      stage: "check-project",
+      userMessage: "Failed to check the backend project path.",
+    });
   }
 });
 
 ipcMain.handle("prepare-project-python", async (event, selectPath) => {
-  const sendLog = (message, type = "info") => {
-    event.sender.send("backend-output", { message, type });
-  };
+  const sendLog = createBackendOutputSender(event.sender, "prepare-project-python");
 
   try {
     const projectResult = await resolveValidatedProjectPath(
       selectPath || global.projectPath
     );
     if (!projectResult.success) {
-      return projectResult;
+      return augmentStartupFailure(projectResult, {
+        stage: "prepare-project-python",
+      });
     }
 
     global.projectPath = projectResult.path;
@@ -3881,22 +4271,27 @@ ipcMain.handle("prepare-project-python", async (event, selectPath) => {
 
     if (isBundledBackendMode(workingPath)) {
       sendLog("Using bundled offline backend mode.", "info");
-      return ensureBundledRuntimeReady(sendLog);
+      return await runStartupIpcOperation(
+        () => ensureBundledRuntimeReady(sendLog),
+        (error) =>
+          toLoggedStartupFailure(error, {
+            code:
+              error.startupCode ||
+              error.diagnostic?.code ||
+              "BUNDLED_RUNTIME_PREPARATION_FAILED",
+            stage: "prepare-project-python",
+            userMessage: error.userMessage || "Bundled Python runtime preparation failed.",
+            recoveryHint: error.recoveryHint,
+          })
+      );
     }
 
-    let existingVenv = await getUsableProjectVenvInfo(workingPath);
+    const existingVenv = await getUsableProjectVenvInfo(workingPath);
     if (existingVenv.exists) {
       if (!existingVenv.valid) {
-        if (canAutoRepairProjectVenv(workingPath, existingVenv)) {
-          sendLog(
-            `Detected an unusable packaged virtual environment at ${existingVenv.venvPath}. Removing it before repair...`,
-            "warning"
-          );
-          removeProjectVenv(existingVenv);
-          existingVenv = await getUsableProjectVenvInfo(workingPath);
-        } else {
-          const manualGuide = buildManualVenvGuide(workingPath);
-          return {
+        const manualGuide = buildManualVenvGuide(workingPath);
+        return augmentStartupFailure(
+          {
             success: false,
             code: "INVALID_PROJECT_VENV",
             error:
@@ -3905,8 +4300,9 @@ ipcMain.handle("prepare-project-python", async (event, selectPath) => {
             manualGuide,
             venvPath: existingVenv.venvPath,
             venvName: existingVenv.venvName,
-          };
-        }
+          },
+          { stage: "prepare-project-python" }
+        );
       }
 
       if (existingVenv.exists && existingVenv.valid) {
@@ -3927,13 +4323,16 @@ ipcMain.handle("prepare-project-python", async (event, selectPath) => {
     if (systemPython.success) {
       if (!isSystemPythonVersionSupported(systemPython.version)) {
         const manualGuide = buildManualVenvGuide(workingPath);
-        return {
-          success: false,
-          code: "SYSTEM_PYTHON_UNSUPPORTED",
-          error: `Detected system Python ${systemPython.version.text}. Supported range is 3.10.x to 3.12.x. Please manually create a Python ${TARGET_PYTHON_VERSION} .venv inside the backend project.`,
-          manualGuide,
-          detectedPythonVersion: systemPython.version.text,
-        };
+        return augmentStartupFailure(
+          {
+            success: false,
+            code: "SYSTEM_PYTHON_UNSUPPORTED",
+            error: `Detected system Python ${systemPython.version.text}. Supported range is 3.10.x to 3.12.x. Please manually create a Python ${TARGET_PYTHON_VERSION} .venv inside the backend project.`,
+            manualGuide,
+            detectedPythonVersion: systemPython.version.text,
+          },
+          { stage: "prepare-project-python" }
+        );
       }
 
       const venvInfo = await createProjectVenvWithPython(
@@ -3975,21 +4374,49 @@ ipcMain.handle("prepare-project-python", async (event, selectPath) => {
       };
     }
 
+    if (
+      systemPython.code !== "SYSTEM_PYTHON_NOT_FOUND" ||
+      condaResult.code !== "CONDA_NOT_FOUND"
+    ) {
+      const primaryFailure =
+        systemPython.code !== "SYSTEM_PYTHON_NOT_FOUND" ? systemPython : condaResult;
+      return augmentStartupFailure(
+        {
+          success: false,
+          code: primaryFailure.code || "PYTHON_RUNTIME_UNUSABLE",
+          error: primaryFailure.error || "The detected Python runtime is not usable.",
+          recoveryHint:
+            "Repair or remove the broken Python/Conda installation, or create a supported .venv manually.",
+          diagnostic: primaryFailure.diagnostic,
+          attempts: systemPython.attempts,
+          manualGuide: buildManualVenvGuide(workingPath),
+        },
+        { stage: "prepare-project-python" }
+      );
+    }
+
     sendLog(
       `No system Python or conda was detected. Trying to install Python ${TARGET_PYTHON_VERSION} automatically...`,
       "warning"
     );
     const installResult = await installTargetPython(sendLog);
+    if (!installResult.success) {
+      return {
+        ...installResult,
+        manualGuide: buildManualVenvGuide(workingPath),
+      };
+    }
     if (installResult.success) {
-      const detectedAfterInstall = await detectSystemPython();
-      if (
-        detectedAfterInstall.success &&
-        isSystemPythonVersionSupported(detectedAfterInstall.version)
-      ) {
+      const installedVersion = await getPythonVersionFromCommand(
+        installResult.pythonPath,
+        [],
+        { env: getCleanPythonCommandEnv() }
+      );
+      if (installedVersion.success && isSystemPythonVersionSupported(installedVersion.version)) {
         const venvInfo = await createProjectVenvWithPython(
           workingPath,
-          detectedAfterInstall.command,
-          detectedAfterInstall.args || [],
+          installResult.pythonPath,
+          [],
           sendLog
         );
         const versionResult = await getPythonVersionFromCommand(
@@ -4009,18 +4436,25 @@ ipcMain.handle("prepare-project-python", async (event, selectPath) => {
     }
 
     const manualGuide = buildManualVenvGuide(workingPath);
-    return {
-      success: false,
-      code: "PYTHON_AUTO_SETUP_FAILED",
-      error: `Automatic Python environment setup failed. Please install Python ${TARGET_PYTHON_VERSION} manually and create .venv in the backend project.`,
-      manualGuide,
-    };
+    return augmentStartupFailure(
+      {
+        success: false,
+        code: "PYTHON_AUTO_SETUP_FAILED",
+        error: `Automatic Python environment setup failed. Please install Python ${TARGET_PYTHON_VERSION} manually and create .venv in the backend project.`,
+        manualGuide,
+      },
+      { stage: "prepare-project-python" }
+    );
   } catch (error) {
-    return {
-      success: false,
-      code: "PREPARE_PROJECT_PYTHON_FAILED",
-      error: error.message,
-    };
+    return toLoggedStartupFailure(error, {
+      code:
+        error.startupCode ||
+        error.diagnostic?.code ||
+        "PREPARE_PROJECT_PYTHON_FAILED",
+      stage: "prepare-project-python",
+      userMessage: error.userMessage || "Python runtime preparation failed.",
+      recoveryHint: error.recoveryHint,
+    });
   }
 });
 
@@ -4033,20 +4467,25 @@ ipcMain.handle("set-project-path", async (event, selectPath) => {
       modelDir: globalConfig.general?.modelDir || "",
     });
     if (!backendPathValidation.valid) {
-      return {
-        success: false,
-        code: backendPathValidation.code,
-        error: backendPathValidation.message,
-        invalidPaths: backendPathValidation.invalidPaths,
-      };
+      return augmentStartupFailure(
+        {
+          success: false,
+          code: backendPathValidation.code,
+          error: backendPathValidation.message,
+          recoveryHint: backendPathValidation.message,
+          invalidPaths: backendPathValidation.invalidPaths,
+        },
+        { stage: "set-project-path" }
+      );
     }
 
     const integrityResult = await ensurePackagedBackendIntegrity(normalizedPath);
     if (!integrityResult.success) {
-      return {
-        success: false,
-        error: integrityResult.error || "Packaged backend integrity verification failed.",
-      };
+      return augmentStartupFailure(integrityResult, {
+        code: "PACKAGED_BACKEND_INTEGRITY_FAILED",
+        stage: "set-project-path",
+        userMessage: "Packaged backend integrity verification failed.",
+      });
     }
     if (fs.existsSync(normalizedPath)) {
       global.projectPath = normalizedPath;
@@ -4056,27 +4495,45 @@ ipcMain.handle("set-project-path", async (event, selectPath) => {
         backendMode: isBundledBackendMode(normalizedPath) ? "bundled" : "external",
       };
     }
-    return {
-      success: false,
-      error: "Backend project path does not exist.",
-    };
+    return augmentStartupFailure(
+      {
+        success: false,
+        code: "BACKEND_PROJECT_PATH_NOT_FOUND",
+        error: "Backend project path does not exist.",
+      },
+      {
+        stage: "set-project-path",
+        recoveryHint: "Select an existing backend project directory.",
+      }
+    );
   } catch (error) {
-    return {
-      success: false,
-      error: error.message,
-    };
+    return toLoggedStartupFailure(error, {
+      code: error.startupCode || error.diagnostic?.code || "SET_PROJECT_PATH_FAILED",
+      stage: "set-project-path",
+      userMessage: "Failed to set the backend project path.",
+    });
   }
 });
 ipcMain.handle("check-venv", async () => {
   try {
     if (!global.projectPath) {
-      return { success: false, error: "Backend project path is not set." };
+      return augmentStartupFailure(
+        {
+          success: false,
+          code: "BACKEND_PROJECT_PATH_NOT_SET",
+          error: "Backend project path is not set.",
+        },
+        {
+          stage: "check-venv",
+          recoveryHint: "Select the backend project directory first.",
+        }
+      );
     }
 
     if (isBundledBackendMode(global.projectPath)) {
       const bundledResult = await ensureBundledRuntimeReady();
       if (!bundledResult.success) {
-        return bundledResult;
+        return augmentStartupFailure(bundledResult, { stage: "check-venv" });
       }
 
       return {
@@ -4090,23 +4547,43 @@ ipcMain.handle("check-venv", async () => {
 
     const integrityResult = await ensurePackagedBackendIntegrity(global.projectPath);
     if (!integrityResult.success) {
-      return integrityResult;
+      return augmentStartupFailure(integrityResult, {
+        code: "PACKAGED_BACKEND_INTEGRITY_FAILED",
+        stage: "check-venv",
+      });
     }
 
     const venvInfo = await getUsableProjectVenvInfo(global.projectPath);
+    if (!venvInfo.exists || !venvInfo.valid) {
+      return augmentStartupFailure(
+        {
+          success: false,
+          code: "PROJECT_VENV_UNUSABLE",
+          exists: venvInfo.exists,
+          valid: venvInfo.valid,
+          venvPath: venvInfo.venvPath,
+          venvName: venvInfo.venvName,
+          error: venvInfo.error || "Project virtual environment is missing or invalid.",
+        },
+        {
+          stage: "check-venv",
+          recoveryHint: "Create or repair the project virtual environment, then retry.",
+        }
+      );
+    }
     return {
-      success: venvInfo.exists && venvInfo.valid,
-      exists: venvInfo.exists,
-      valid: venvInfo.valid,
+      success: true,
+      exists: true,
+      valid: true,
       venvPath: venvInfo.venvPath,
       venvName: venvInfo.venvName,
-      error: venvInfo.valid ? undefined : venvInfo.error,
     };
   } catch (error) {
-    return {
-      success: false,
-      error: error.message,
-    };
+    return toLoggedStartupFailure(error, {
+      code: error.startupCode || error.diagnostic?.code || "PROJECT_VENV_CHECK_FAILED",
+      stage: "check-venv",
+      userMessage: "Failed to check the project virtual environment.",
+    });
   }
 });
 
@@ -4114,77 +4591,101 @@ ipcMain.handle("check-venv", async () => {
 ipcMain.handle("check-dependencies", async () => {
   try {
     if (!global.projectPath) {
-      return { success: false, error: "Backend project path is not set." };
+      return augmentStartupFailure(
+        {
+          success: false,
+          code: "BACKEND_PROJECT_PATH_NOT_SET",
+          error: "Backend project path is not set.",
+        },
+        {
+          stage: "check-dependencies",
+          recoveryHint: "Select the backend project directory first.",
+        }
+      );
     }
 
     if (isBundledBackendMode(global.projectPath)) {
       const bundledResult = await ensureBundledRuntimeReady();
       if (!bundledResult.success) {
-        return bundledResult;
+        return augmentStartupFailure(bundledResult, { stage: "check-dependencies" });
       }
 
-      try {
-        await execFileCommand(bundledResult.pythonPath, [
-          "-c",
-          "import fastapi,uvicorn,numpy,PIL,torch,transformers",
-        ], {
+      const dependencyResult = await probePythonDependencies(
+        bundledResult.pythonPath,
+        ["fastapi", "uvicorn", "numpy", "PIL", "torch", "transformers"],
+        {
           cwd: bundledResult.path,
           timeout: 30000,
           env: getBundledRuntimeCommandEnv(),
-        });
-        return { success: true };
-      } catch (error) {
-        return { success: false, error: error.message };
-      }
+        }
+      );
+      return createDependencyCheckResponse(dependencyResult, {
+        code: "BUNDLED_DEPENDENCIES_UNUSABLE",
+        stage: "check-dependencies",
+      });
     }
 
     const integrityResult = await ensurePackagedBackendIntegrity(global.projectPath);
     if (!integrityResult.success) {
-      return integrityResult;
+      return augmentStartupFailure(integrityResult, {
+        code: "PACKAGED_BACKEND_INTEGRITY_FAILED",
+        stage: "check-dependencies",
+      });
     }
 
     const venvInfo = await getUsableProjectVenvInfo(global.projectPath);
     if (!venvInfo.exists || !venvInfo.valid) {
-      return { success: false, error: venvInfo.error };
+      return augmentStartupFailure(
+        {
+          success: false,
+          code: "PROJECT_VENV_UNUSABLE",
+          error: venvInfo.error || "Project virtual environment is missing or invalid.",
+        },
+        { stage: "check-dependencies" }
+      );
     }
 
-    try {
-      await execFileCommand(venvInfo.pythonPath, [
-        "-c",
-        "import fastapi,uvicorn,numpy,PIL",
-      ], {
+    const dependencyResult = await probePythonDependencies(
+      venvInfo.pythonPath,
+      ["fastapi", "uvicorn", "numpy", "PIL", "torch", "transformers"],
+      {
         cwd: global.projectPath,
         timeout: 30000,
-      });
-      return { success: true };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
+        env: getIsolatedPythonCommandEnv(venvInfo.venvPath),
+      }
+    );
+    return createDependencyCheckResponse(dependencyResult, {
+      code: "PYTHON_DEPENDENCIES_MISSING",
+      stage: "check-dependencies",
+    });
   } catch (error) {
-    return {
-      success: false,
-      error: error.message,
-    };
+    return toLoggedStartupFailure(error, {
+      code: "PYTHON_DEPENDENCY_CHECK_FAILED",
+      stage: "check-dependencies",
+      userMessage: "Failed to check backend dependencies.",
+    });
   }
 });
 
 // Helper - install the target Python runtime.
-async function installTargetPython(sendLog) {
+async function installTargetPython(sendLog, options = {}) {
   try {
-    const pythonUrls = {
-      win32: "https://www.python.org/ftp/python/3.12.11/python-3.12.11-amd64.exe",
-      darwin:
-        "https://www.python.org/ftp/python/3.12.11/python-3.12.11-macos11.pkg",
-      linux: "https://www.python.org/ftp/python/3.12.11/Python-3.12.11.tgz",
-    };
     const platform = os.platform();
-    const downloadUrl = pythonUrls[platform];
-    if (!downloadUrl) {
-      return {
-        success: false,
-        error: `Automatic installation is not supported on this platform. Please install Python ${TARGET_PYTHON_VERSION} manually.`,
-      };
+    if (platform !== "win32") {
+      return augmentStartupFailure(
+        {
+          success: false,
+          code: "PYTHON_AUTO_INSTALL_UNSUPPORTED",
+          error: `Automatic installation is not supported on this platform. Please install Python ${TARGET_PYTHON_VERSION} manually.`,
+        },
+        {
+          stage: "python-install",
+          recoveryHint: `Install Python ${TARGET_PYTHON_VERSION} manually, then create .venv in the backend project.`,
+        }
+      );
     }
+    const downloadUrl =
+      "https://www.python.org/ftp/python/3.12.11/python-3.12.11-amd64.exe";
 
     const downloadDir = path.join(app.getPath("temp"), "moonshine-python-installer");
     if (!fs.existsSync(downloadDir)) {
@@ -4192,111 +4693,88 @@ async function installTargetPython(sendLog) {
     }
     const fileName = path.basename(downloadUrl);
     const filePath = path.join(downloadDir, fileName);
+    const localAppData =
+      process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+    const installDir = path.join(localAppData, "Programs", "Python", "Python312");
+    const installedPythonPath = path.join(installDir, "python.exe");
 
     sendLog?.(`Downloading Python installer: ${downloadUrl}`, "info");
-    await new Promise((resolve, reject) => {
-      let checkedByContentLength = false;
-      let settled = false;
-      const file = fs.createWriteStream(filePath);
-      const failDownload = (error) => {
-        if (settled) return;
-        settled = true;
-        file.destroy();
-        fs.unlink(filePath, () => {});
-        reject(error);
-      };
-      const request = https
-        .get(downloadUrl, (response) => {
-          const contentLength = Number(response.headers["content-length"] || 0);
-          if (Number.isFinite(contentLength) && contentLength > 0) {
-            try {
-              ensureDiskSpace(filePath, {
-                requiredBytes: contentLength,
-                operation: "下载 Python 安装包",
-              });
-            } catch (error) {
-              response.destroy();
-              failDownload(error);
-              return;
-            }
-            checkedByContentLength = true;
-          }
-          response.on("data", (chunk) => {
-            if (!checkedByContentLength && !settled) {
-              try {
-                ensureDiskSpace(filePath, {
-                  requiredBytes: getBufferByteLength(chunk),
-                  operation: "下载 Python 安装包",
-                });
-              } catch (error) {
-                response.destroy();
-                failDownload(error);
-              }
-            }
-          });
-          response.on("error", failDownload);
-          response.pipe(file);
-          file.on("finish", () => {
-            if (settled) return;
-            settled = true;
-            file.close();
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send("python-install-path", filePath);
-            }
-            resolve();
-          });
-          file.on("error", failDownload);
-        });
-      request.on("error", failDownload);
-    });
+    await withTrackedStartupOperation(
+      (signal) =>
+        downloadHttpsFile(downloadUrl, filePath, {
+          ensureDiskSpace,
+          getByteLength: getBufferByteLength,
+          signal,
+        }),
+      options.signal
+    );
+    sendToMainWindow("python-install-path", filePath);
 
     sendLog?.("Python installer downloaded. Starting installation...", "info");
-    if (platform === "win32") {
-      await execFileCommand(
-        filePath,
-        ["/quiet", "InstallAllUsers=1", "PrependPath=1", "Include_test=0"],
-        { timeout: 600000 }
-      );
-    } else if (platform === "darwin") {
-      await execFileCommand("sudo", ["installer", "-pkg", filePath, "-target", "/"], {
+    await execFileCommand(
+      filePath,
+      [
+        "/quiet",
+        "InstallAllUsers=0",
+        "PrependPath=0",
+        "Include_launcher=1",
+        "Include_test=0",
+        `TargetDir=${installDir}`,
+      ],
+      {
         timeout: 600000,
-      });
-    } else {
-      return {
-        success: false,
-        error: `Automatic installation is not supported on Linux. Please install Python ${TARGET_PYTHON_VERSION} manually.`,
-      };
-    }
+        stage: "python-install",
+        failureCode: "PYTHON_INSTALL_FAILED",
+        userMessage: "Python installation failed.",
+        signal: options.signal,
+      }
+    );
 
     fs.unlink(filePath, () => {});
+    if (!fs.existsSync(installedPythonPath)) {
+      throw new Error(`Python installation completed, but python.exe is missing: ${installedPythonPath}`);
+    }
+    const verification = await getPythonVersionFromCommand(installedPythonPath, [], {
+      env: getCleanPythonCommandEnv(),
+      stage: "python-install-verification",
+      failureCode: "PYTHON_INSTALL_VERIFICATION_FAILED",
+      userMessage: "Installed Python could not be verified.",
+    });
+    if (!verification.success || !isSupportedPythonVersion(verification.version)) {
+      throw new Error(
+        verification.error ||
+          `Installed Python ${verification.version?.text || "unknown"} is not supported.`
+      );
+    }
     return {
       success: true,
       message: `Python ${TARGET_PYTHON_VERSION} installed successfully.`,
+      pythonPath: installedPythonPath,
+      pythonVersion: verification.version.text,
     };
   } catch (error) {
-    return {
-      success: false,
-      error: error.message,
-    };
+    return toLoggedStartupFailure(error, {
+      code: "PYTHON_INSTALL_FAILED",
+      stage: "python-install",
+      userMessage: "Python installation failed.",
+    });
   }
 }
 
 ipcMain.handle("install-python", async () => {
-  return installTargetPython();
+  return await installTargetPython();
 });
 
 // IPC create venv
 ipcMain.handle("create-venv", async (event, projectPath) => {
-  const sendLog = (message, type = "info") => {
-    event.sender.send("backend-output", { message, type });
-  };
+  const sendLog = createBackendOutputSender(event.sender, "create-project-venv");
 
   try {
     const projectResult = await resolveValidatedProjectPath(
       projectPath || global.projectPath
     );
     if (!projectResult.success) {
-      return projectResult;
+      return augmentStartupFailure(projectResult, { stage: "create-project-venv" });
     }
 
     global.projectPath = projectResult.path;
@@ -4304,7 +4782,7 @@ ipcMain.handle("create-venv", async (event, projectPath) => {
     if (isBundledBackendMode(workingPath)) {
       const bundledResult = await ensureBundledRuntimeReady(sendLog);
       if (!bundledResult.success) {
-        return bundledResult;
+        return augmentStartupFailure(bundledResult, { stage: "create-project-venv" });
       }
 
       return {
@@ -4313,26 +4791,20 @@ ipcMain.handle("create-venv", async (event, projectPath) => {
       };
     }
 
-    let venvInfo = await getUsableProjectVenvInfo(workingPath);
+    const venvInfo = await getUsableProjectVenvInfo(workingPath);
     if (venvInfo.exists) {
       if (!venvInfo.valid) {
-        if (canAutoRepairProjectVenv(workingPath, venvInfo)) {
-          sendLog(
-            `Detected an unusable packaged virtual environment at ${venvInfo.venvPath}. Removing it before recreation...`,
-            "warning"
-          );
-          removeProjectVenv(venvInfo);
-          venvInfo = await getUsableProjectVenvInfo(workingPath);
-        } else {
-          return {
+        return augmentStartupFailure(
+          {
             success: false,
             code: "INVALID_PROJECT_VENV",
             error:
               venvInfo.error ||
               "A virtual environment folder exists in the backend project, but it is invalid. Please fix it manually.",
             manualGuide: buildManualVenvGuide(workingPath),
-          };
-        }
+          },
+          { stage: "create-project-venv" }
+        );
       }
       if (venvInfo.exists && venvInfo.valid) {
         return {
@@ -4344,20 +4816,25 @@ ipcMain.handle("create-venv", async (event, projectPath) => {
 
     const systemPython = await detectSystemPython();
     if (!systemPython.success) {
-      return {
-        success: false,
-        code: "SYSTEM_PYTHON_NOT_FOUND",
-        error: "No system Python was detected.",
-      };
+      return augmentStartupFailure(
+        {
+          ...systemPython,
+          manualGuide: buildManualVenvGuide(workingPath),
+        },
+        { stage: "create-project-venv" }
+      );
     }
 
     if (!isSystemPythonVersionSupported(systemPython.version)) {
-      return {
-        success: false,
-        code: "SYSTEM_PYTHON_UNSUPPORTED",
-        error: `Detected system Python ${systemPython.version.text}. Please manually create a Python ${TARGET_PYTHON_VERSION} .venv.`,
-        manualGuide: buildManualVenvGuide(workingPath),
-      };
+      return augmentStartupFailure(
+        {
+          success: false,
+          code: "SYSTEM_PYTHON_UNSUPPORTED",
+          error: `Detected system Python ${systemPython.version.text}. Please manually create a Python ${TARGET_PYTHON_VERSION} .venv.`,
+          manualGuide: buildManualVenvGuide(workingPath),
+        },
+        { stage: "create-project-venv" }
+      );
     }
 
     await createProjectVenvWithPython(
@@ -4368,34 +4845,34 @@ ipcMain.handle("create-venv", async (event, projectPath) => {
     );
     return { success: true };
   } catch (error) {
-    return {
-      success: false,
-      error: error.message,
-    };
+    return toLoggedStartupFailure(error, {
+      code: error.startupCode || error.diagnostic?.code || "PROJECT_VENV_CREATE_FAILED",
+      stage: "create-project-venv",
+      userMessage: "Failed to create the project virtual environment.",
+    });
   }
 });
 
 // IPC create conda venv
 ipcMain.handle("create-conda-venv", async (event) => {
-  const sendLog = (message, type = "info") => {
-    event.sender.send("backend-output", { message, type });
-  };
+  const sendLog = createBackendOutputSender(event.sender, "create-conda-environment");
 
   try {
-    const systemEnv = { ...process.env };
     sendLog("Creating conda virtual environment...", "info");
 
-    const { stdout: envListStdout } = await execCondaCommand(["env", "list"], {
-      env: systemEnv,
-      timeout: 10000,
-    });
+    const environments = await getCondaEnvironmentList();
 
-    if (!envListStdout.includes("moonshine-image")) {
+    if (!hasNamedCondaEnvironment(environments, "moonshine-image")) {
       sendLog("Creating moonshine-image conda environment...", "info");
-      await execCondaCommand(["create", "-n", "moonshine-image", `python=${TARGET_PYTHON_VERSION}`, "-y"], {
-        env: systemEnv,
-        timeout: 300000,
-      });
+      await execCondaCommand(
+        ["create", "-n", "moonshine-image", `python=${TARGET_PYTHON_VERSION}`, "-y"],
+        {
+          timeout: 300000,
+          stage: "create-conda-environment",
+          failureCode: "CONDA_ENVIRONMENT_CREATE_FAILED",
+          userMessage: "Failed to create the Conda environment.",
+        }
+      );
       sendLog("moonshine-image environment created successfully", "success");
     } else {
       sendLog("moonshine-image environment already exists", "success");
@@ -4404,11 +4881,16 @@ ipcMain.handle("create-conda-venv", async (event) => {
     return { success: true };
   } catch (error) {
     sendLog(`Failed to create conda virtual environment: ${error.message}`, "error");
-    return { success: false, error: error.message };
+    return toLoggedStartupFailure(error, {
+      code: "CONDA_ENVIRONMENT_CREATE_FAILED",
+      stage: "create-conda-environment",
+      userMessage: "Failed to create the Conda environment.",
+    });
   }
 });
 // IPC handler - install dependencies
 ipcMain.handle("install-dependencies", async (event, projectPath) => {
+  const sendLog = createBackendOutputSender(event.sender, "install-dependencies");
   try {
     const projectResult = await resolveValidatedProjectPath(projectPath || global.projectPath);
     if (!projectResult.success) {
@@ -4417,17 +4899,12 @@ ipcMain.handle("install-dependencies", async (event, projectPath) => {
 
     const workingPath = projectResult.path;
     if (isBundledBackendMode(workingPath)) {
-      const bundledResult = await ensureBundledRuntimeReady((message, type = "info") => {
-        mainWindow.webContents.send("backend-output", { type, message });
-      });
+      const bundledResult = await ensureBundledRuntimeReady(sendLog);
       if (!bundledResult.success) {
         return bundledResult;
       }
 
-      mainWindow.webContents.send("backend-output", {
-        type: "success",
-        message: "Bundled offline runtime already includes backend dependencies.",
-      });
+      sendLog("Bundled offline runtime already includes backend dependencies.", "success");
       return {
         success: true,
         message: "Bundled offline runtime already includes backend dependencies.",
@@ -4436,24 +4913,21 @@ ipcMain.handle("install-dependencies", async (event, projectPath) => {
 
     const venvInfo = await getUsableProjectVenvInfo(workingPath);
     if (!venvInfo.exists || !venvInfo.valid) {
-      return {
-        success: false,
-        error:
-          venvInfo.error ||
-          "Project virtual environment is missing or invalid. Create or repair .venv first.",
-      };
+      return augmentStartupFailure(
+        {
+          success: false,
+          code: "PROJECT_VENV_UNUSABLE",
+          error:
+            venvInfo.error ||
+            "Project virtual environment is missing or invalid. Create or repair .venv first.",
+        },
+        { stage: "install-dependencies" }
+      );
     }
 
-    const venvPython = venvInfo.pythonPath;
-    // const pipCommand = `"${venvPython}" -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`;
-
-    mainWindow.webContents.send("backend-output", {
-      type: "info",
-      message: "Starting dependency installation...",
-    });
-
-    const installProcess = spawn(
-      venvPython,
+    sendLog("Starting dependency installation...", "info");
+    await runProcess(
+      venvInfo.pythonPath,
       [
         "-m",
         "pip",
@@ -4465,70 +4939,44 @@ ipcMain.handle("install-dependencies", async (event, projectPath) => {
       ],
       {
         cwd: workingPath,
-        stdio: "pipe",
-        env: getUtf8ProcessEnv(),
+        env: getIsolatedPythonCommandEnv(venvInfo.venvPath),
+        timeout: 1800000,
+        stage: "install-dependencies",
+        failureCode: "PYTHON_DEPENDENCY_INSTALL_FAILED",
+        errorMessage: "Backend dependency installation failed.",
+        recoveryHint: "Check the network, disk space, and the final pip output, then retry.",
+        onStdout: (text) => sendLog(text, "info", { stream: "stdout" }),
+        onStderr: (text) => sendLog(text, "warning", { stream: "stderr" }),
       }
     );
-
-    // Stream install output in real time
-    installProcess.stdout.on("data", (data) => {
-      mainWindow.webContents.send("backend-output", {
-        type: "info",
-        message: decodeProcessOutput(data),
-      });
-    });
-
-    installProcess.stderr.on("data", (data) => {
-      mainWindow.webContents.send("backend-output", {
-        type: "warning",
-        message: decodeProcessOutput(data),
-      });
-    });
-
-    return new Promise((resolve) => {
-      installProcess.on("close", (code) => {
-        if (code === 0) {
-          mainWindow.webContents.send("backend-output", {
-            type: "success",
-            message: "Dependencies installed successfully",
-          });
-          resolve({ success: true, message: "Dependencies installed successfully" });
-        } else {
-          mainWindow.webContents.send("backend-output", {
-            type: "error",
-            message: `Dependency installation failed. Exit code: ${code}`,
-          });
-          resolve({ success: false, error: `Dependency installation failed. Exit code: ${code}` });
-        }
-      });
-    });
+    sendLog("Dependencies installed successfully", "success");
+    return { success: true, message: "Dependencies installed successfully" };
   } catch (error) {
-    mainWindow.webContents.send("backend-output", {
-      type: "error",
-      message: `Dependency installation failed: ${error.message}`,
+    const failure = toLoggedStartupFailure(error, {
+      code: "PYTHON_DEPENDENCY_INSTALL_FAILED",
+      stage: "install-dependencies",
+      userMessage: "Backend dependency installation failed.",
     });
-    return {
-      success: false,
-      error: error.message,
-      stderr: error.stderr,
-    };
+    sendLog(failure.error, "error", {
+      diagnostic: failure.diagnostic,
+      diagnosticId: failure.diagnostic.id,
+      recoveryHint: failure.recoveryHint,
+    });
+    return failure;
   }
 });
 // IPC handler - install conda dependencies
 ipcMain.handle("install-conda-dependencies", async (event) => {
-  const sendLog = (message, type = "info") => {
-    event.sender.send("backend-output", { message, type });
-  };
+  const sendLog = createBackendOutputSender(event.sender, "install-conda-dependencies");
 
   try {
     if (!global.projectPath) {
       return { success: false, error: "Project path is not set." };
     }
 
-    const systemEnv = getUtf8ProcessEnv();
     sendLog("Starting conda dependency installation...", "info");
 
-    const installProcess = spawnCondaCommand([
+    await execCondaCommand([
       "run",
       "-n",
       "moonshine-image",
@@ -4542,37 +4990,36 @@ ipcMain.handle("install-conda-dependencies", async (event) => {
       "https://pypi.tuna.tsinghua.edu.cn/simple",
     ], {
       cwd: global.projectPath,
-      stdio: "pipe",
-      env: systemEnv,
+      timeout: 1800000,
+      stage: "install-conda-dependencies",
+      failureCode: "CONDA_DEPENDENCY_INSTALL_FAILED",
+      userMessage: "Conda dependency installation failed.",
+      recoveryHint: "Check the Conda environment, network, disk space, and pip output.",
+      onStdout: (text) => sendLog(text, "info", { stream: "stdout" }),
+      onStderr: (text) => sendLog(text, "warning", { stream: "stderr" }),
     });
-
-    // Stream install output in real time
-    installProcess.stdout.on("data", (data) => {
-      sendLog(decodeProcessOutput(data), "info");
-    });
-
-    installProcess.stderr.on("data", (data) => {
-      sendLog(decodeProcessOutput(data), "warning");
-    });
-
-    return new Promise((resolve) => {
-      installProcess.on("close", (code) => {
-        if (code === 0) {
-          sendLog("Conda dependencies installed successfully", "success");
-          resolve({ success: true });
-        } else {
-          sendLog(`Conda dependency installation failed. Exit code: ${code}`, "error");
-          resolve({ success: false, error: `Dependency installation failed. Exit code: ${code}` });
-        }
-      });
-    });
+    sendLog("Conda dependencies installed successfully", "success");
+    return { success: true };
   } catch (error) {
-    sendLog(`Conda dependency installation failed: ${error.message}`, "error");
-    return { success: false, error: error.message };
+    const failure = toLoggedStartupFailure(error, {
+      code: "CONDA_DEPENDENCY_INSTALL_FAILED",
+      stage: "install-conda-dependencies",
+      userMessage: "Conda dependency installation failed.",
+    });
+    sendLog(failure.error, "error", {
+      diagnostic: failure.diagnostic,
+      diagnosticId: failure.diagnostic.id,
+      recoveryHint: failure.recoveryHint,
+    });
+    return failure;
   }
 });
 // IPC handler - start backend service
-function probePythonCudaCompatibility(pythonPath, runtimeEnv = process.env) {
+async function probePythonCudaCompatibility(
+  pythonPath,
+  runtimeEnv = process.env,
+  options = {}
+) {
   const probeScript = `
 import json
 
@@ -4641,24 +5088,19 @@ print(json.dumps(result))
 `;
 
   try {
-    const probeResult = spawnSync(pythonPath, ["-c", probeScript], {
-      env: getUtf8ProcessEnv(runtimeEnv),
-      encoding: "buffer",
-      windowsHide: true,
+    const probeResult = await execFileCommand(pythonPath, ["-c", probeScript], {
+      env: runtimeEnv,
+      timeout: 30000,
+      stage: "cuda-preflight",
+      failureCode: "CUDA_PREFLIGHT_FAILED",
+      userMessage: "CUDA compatibility preflight failed.",
+      signal: options.signal,
     });
-
-    if (probeResult.error) {
-      return {
-        success: false,
-        message: probeResult.error.message,
-      };
-    }
-
-    const stdout = decodeProcessOutput(probeResult.stdout).trim();
+    const stdout = String(probeResult.stdout || "").trim();
     if (!stdout) {
       return {
         success: false,
-        message: decodeProcessOutput(probeResult.stderr || "CUDA probe returned no output").trim(),
+        message: String(probeResult.stderr || "CUDA probe returned no output").trim(),
       };
     }
 
@@ -4667,255 +5109,320 @@ print(json.dumps(result))
     return {
       success: false,
       message: error.message,
+      diagnostic: error.diagnostic,
     };
   }
 }
 
-ipcMain.handle("start-backend-service", async (event, config) => {
+async function launchBackendService(event, config, signal) {
+  const sendLog = createBackendOutputSender(event.sender, "backend-start");
   try {
-    if (backendProcess) {
-      return {
-        success: false,
-        error: "Service is already running.",
-      };
+    let cancellation = getBackendStartCancellation(signal);
+    if (cancellation) return cancellation;
+    const currentStatus = backendSupervisor.getStatus();
+    if (currentStatus.state === "running" || currentStatus.state === "starting") {
+      return await backendSupervisor.start({});
     }
+    if (currentStatus.state === "stopping" || currentStatus.processRunning) {
+      const stopResult = await backendSupervisor.stop();
+      if (!stopResult.success) return stopResult;
+    }
+    cancellation = getBackendStartCancellation(signal);
+    if (cancellation) return cancellation;
 
     if (!global.projectPath) {
-      return { success: false, error: "Project path is not set." };
+      return augmentStartupFailure(
+        {
+          success: false,
+          code: "BACKEND_PROJECT_PATH_NOT_SET",
+          error: "Project path is not set.",
+        },
+        { stage: "backend-preflight" }
+      );
     }
 
+    const launchConfig = config || {};
     const backendPathValidation = buildBackendPathValidationResult({
       backendProjectPath: global.projectPath,
-      modelDir: config?.modelDir || "",
+      modelDir: launchConfig.modelDir || "",
     });
     if (!backendPathValidation.valid) {
-      return {
-        success: false,
-        error: backendPathValidation.message,
-        code: backendPathValidation.code,
-        invalidPaths: backendPathValidation.invalidPaths,
-      };
+      return augmentStartupFailure(
+        {
+          success: false,
+          error: backendPathValidation.message,
+          code: backendPathValidation.code,
+          recoveryHint: backendPathValidation.message,
+          invalidPaths: backendPathValidation.invalidPaths,
+        },
+        { stage: "backend-preflight" }
+      );
     }
 
     const integrityResult = await ensurePackagedBackendIntegrity(global.projectPath);
+    cancellation = getBackendStartCancellation(signal);
+    if (cancellation) return cancellation;
     if (!integrityResult.success) {
-      return {
-        success: false,
-        error: integrityResult.error || "Packaged backend integrity verification failed.",
-      };
+      return augmentStartupFailure(integrityResult, {
+        code: "PACKAGED_BACKEND_INTEGRITY_FAILED",
+        stage: "backend-integrity",
+        userMessage: "Packaged backend integrity verification failed.",
+      });
     }
 
     const projectResult = await resolveValidatedProjectPath(global.projectPath);
+    cancellation = getBackendStartCancellation(signal);
+    if (cancellation) return cancellation;
     if (!projectResult.success) {
-      return projectResult;
+      return augmentStartupFailure(projectResult, { stage: "backend-preflight" });
     }
 
     global.projectPath = projectResult.path;
     let backendPython = "";
-    let backendEnv = getUtf8ProcessEnv();
-    const portResolution = await resolveAvailableBackendPort(config?.port);
+    let backendEnv = getCleanPythonCommandEnv();
+    const portResolution = await resolveAvailableBackendPort(launchConfig.port);
+    cancellation = getBackendStartCancellation(signal);
+    if (cancellation) return cancellation;
     if (!portResolution.success) {
-      return {
-        success: false,
-        error: portResolution.error,
-        requestedPort: portResolution.requestedPort,
-        attemptedPorts: portResolution.attemptedPorts,
-      };
+      return augmentStartupFailure(
+        {
+          success: false,
+          code: "BACKEND_PORT_UNAVAILABLE",
+          error: portResolution.error,
+          requestedPort: portResolution.requestedPort,
+          attemptedPorts: portResolution.attemptedPorts,
+        },
+        { stage: "backend-port-selection" }
+      );
     }
 
     if (portResolution.portChanged) {
-      event.sender.send("backend-output", {
-        type: "warning",
-        message:
-          `配置端口 ${portResolution.requestedPort} 已被占用，` +
+      sendLog(
+        `配置端口 ${portResolution.requestedPort} 已被占用，` +
           `已自动切换到可用端口 ${portResolution.port}。`,
-      });
+        "warning"
+      );
     }
 
     const args = [
       "main.py",
       "start",
-      `--model=${config.model}`,
-      `--device=${config.device}`,
+      `--model=${launchConfig.model}`,
+      `--device=${launchConfig.device}`,
       `--port=${portResolution.port}`,
     ];
     args.push(
-      config?.samReleaseBeforeProcessing === false
+      launchConfig.samReleaseBeforeProcessing === false
         ? "--no-sam-release-before-processing"
         : "--sam-release-before-processing"
     );
 
     if (isBundledBackendMode(global.projectPath)) {
-      const bundledResult = await ensureBundledRuntimeReady((message, type = "info") => {
-        event.sender.send("backend-output", { message, type });
-      });
+      const bundledResult = await ensureBundledRuntimeReady(sendLog, { signal });
+      cancellation = getBackendStartCancellation(signal);
+      if (cancellation) return cancellation;
       if (!bundledResult.success) {
-        return bundledResult;
+        return augmentStartupFailure(bundledResult, {
+          code: bundledResult.code || "BUNDLED_RUNTIME_UNUSABLE",
+          stage: "bundled-runtime-preparation",
+        });
       }
 
       const effectiveModelDir = resolveEffectiveModelDir({
-        modelDir: config?.modelDir || "",
+        modelDir: launchConfig.modelDir || "",
       });
       backendPython = bundledResult.pythonPath;
-      backendEnv = getUtf8ProcessEnv(getBundledRuntimeCommandEnv({
-        TORCH_HOME: effectiveModelDir,
-        XDG_CACHE_HOME: effectiveModelDir,
-        U2NET_HOME: effectiveModelDir,
-        HF_HOME: path.join(effectiveModelDir, "huggingface"),
-      }));
+      backendEnv = getUtf8ProcessEnv(
+        getBundledRuntimeCommandEnv({
+          TORCH_HOME: effectiveModelDir,
+          XDG_CACHE_HOME: effectiveModelDir,
+          U2NET_HOME: effectiveModelDir,
+          HF_HOME: path.join(effectiveModelDir, "huggingface"),
+        })
+      );
       args.push(`--model-dir=${effectiveModelDir}`);
     } else {
-      const venvInfo = await getUsableProjectVenvInfo(global.projectPath);
+      const venvInfo = await getUsableProjectVenvInfo(global.projectPath, { signal });
+      cancellation = getBackendStartCancellation(signal);
+      if (cancellation) return cancellation;
       if (!venvInfo.exists || !venvInfo.valid) {
-        return {
-          success: false,
-          error:
-            venvInfo.error ||
-            "Project virtual environment is missing or invalid. Create or repair .venv first.",
-        };
+        return augmentStartupFailure(
+          {
+            success: false,
+            code: "PROJECT_VENV_UNUSABLE",
+            error:
+              venvInfo.error ||
+              "Project virtual environment is missing or invalid. Create or repair .venv first.",
+          },
+          { stage: "backend-runtime-selection" }
+        );
       }
 
       backendPython = venvInfo.pythonPath;
-      if (config.modelDir) {
-        args.push(`--model-dir=${config.modelDir}`);
+      backendEnv = getIsolatedPythonCommandEnv(venvInfo.venvPath);
+      if (launchConfig.modelDir) {
+        args.push(`--model-dir=${launchConfig.modelDir}`);
       }
     }
 
-    if (config.device === "cuda") {
-      const cudaProbe = probePythonCudaCompatibility(backendPython, backendEnv);
+    if (launchConfig.device === "cuda") {
+      const cudaProbe = await probePythonCudaCompatibility(backendPython, backendEnv, {
+        signal,
+      });
+      cancellation = getBackendStartCancellation(signal);
+      if (cancellation) return cancellation;
       if (!cudaProbe.success) {
-        event.sender.send("backend-output", {
-          type: "warning",
-          message: `CUDA 预检失败，将继续尝试启动后端: ${cudaProbe.message || "未知错误"}`,
-        });
+        sendLog(
+          `CUDA 预检失败，将继续尝试启动后端: ${cudaProbe.message || "未知错误"}`,
+          "warning",
+          {
+            diagnostic: cudaProbe.diagnostic,
+            diagnosticId: cudaProbe.diagnostic?.id,
+          }
+        );
       } else if (!cudaProbe.cuda_available) {
-        return {
-          success: false,
-          error: "当前运行时未检测到可用 CUDA 设备，请切换为 CPU 模式后再启动后端。",
-          cudaProbe,
-        };
+        return augmentStartupFailure(
+          {
+            success: false,
+            code: "CUDA_NOT_AVAILABLE",
+            error: "当前运行时未检测到可用 CUDA 设备，请切换为 CPU 模式后再启动后端。",
+            cudaProbe,
+          },
+          { stage: "cuda-preflight" }
+        );
       } else if (cudaProbe.cuda_compatible === false) {
         const capability = Array.isArray(cudaProbe.device_capability)
           ? `sm_${cudaProbe.device_capability.join("")}`
           : "unknown";
-        return {
-          success: false,
-          error:
-            `当前运行时的 PyTorch (${cudaProbe.torch_version || "unknown"}, CUDA ${cudaProbe.cuda_version || "unknown"}) ` +
-            `不支持显卡 ${cudaProbe.device_name || ""} (${capability})。` +
-            "请将启动方式切换为 CPU，或升级运行时到支持 CUDA 12.8/13.0 的 PyTorch。",
-          cudaProbe,
-        };
+        return augmentStartupFailure(
+          {
+            success: false,
+            code: "CUDA_RUNTIME_INCOMPATIBLE",
+            error:
+              `当前运行时的 PyTorch (${cudaProbe.torch_version || "unknown"}, CUDA ${cudaProbe.cuda_version || "unknown"}) ` +
+              `不支持显卡 ${cudaProbe.device_name || ""} (${capability})。` +
+              "请将启动方式切换为 CPU，或升级运行时到支持 CUDA 12.8/13.0 的 PyTorch。",
+            cudaProbe,
+          },
+          { stage: "cuda-preflight" }
+        );
       }
     }
 
-    backendProcess = spawn(backendPython, args, {
+    cancellation = getBackendStartCancellation(signal);
+    if (cancellation) return cancellation;
+    const startResult = await backendSupervisor.start({
+      command: backendPython,
+      args,
       cwd: global.projectPath,
-      stdio: "pipe",
       env: backendEnv,
-    });
-    backendServicePort = portResolution.port;
-
-    backendProcess.stdout.on("data", (data) => {
-      mainWindow.webContents.send("backend-output", {
-        type: "info",
-        message: decodeProcessOutput(data),
-      });
-    });
-
-    backendProcess.stderr.on("data", (data) => {
-      mainWindow.webContents.send("backend-output", {
-        type: "info",
-        message: decodeProcessOutput(data),
-      });
-    });
-
-    backendProcess.on("close", (code, signal) => {
-      const exitInfo = signal
-        ? `Signal: ${signal}`
-        : `Exit code: ${code !== null ? code : "Normal exit"}`;
-      backendProcess = null;
-      backendServicePort = null;
-      mainWindow.webContents.send("backend-output", {
-        type: "info",
-        message: `Service stopped, ${exitInfo}`,
-      });
-    });
-
-    return {
-      success: true,
       port: portResolution.port,
+      requestedPort: portResolution.requestedPort,
+      spawnOptions: {
+        windowsHide: true,
+        detached: process.platform !== "win32",
+      },
+    });
+    return {
+      ...startResult,
       requestedPort: portResolution.requestedPort,
       portChanged: portResolution.portChanged,
       attemptedPorts: portResolution.attemptedPorts,
     };
   } catch (error) {
-    return {
-      success: false,
-      error: error.message,
-    };
+    const cancellation = getBackendStartCancellation(signal);
+    if (cancellation) return cancellation;
+    return toLoggedStartupFailure(error, {
+      code: error.startupCode || "BACKEND_START_FAILED",
+      stage: "backend-start",
+      userMessage: error.userMessage || "Backend service failed to start.",
+      recoveryHint: error.recoveryHint,
+    });
+  }
+}
+
+ipcMain.handle("start-backend-service", async (event, config) => {
+  if (applicationQuitRequested) return createBackendStartCancellation();
+  if (backendStopPromise) {
+    const stopResult = await backendStopPromise;
+    if (!stopResult.success) return stopResult;
+    if (applicationQuitRequested) return createBackendStartCancellation();
+  }
+  if (backendLaunchPromise) return await backendLaunchPromise;
+  if (startupOperationRegistry.size > 0) {
+    const settlement = await waitForActiveStartupOperations();
+    if (!settlement.settled) {
+      return augmentStartupFailure(
+        {
+          success: false,
+          code: "STARTUP_OPERATIONS_STILL_RUNNING",
+          error: "A previous startup operation is still shutting down.",
+          pendingStartupOperations: settlement.pending,
+        },
+        {
+          stage: "backend-preflight",
+          recoveryHint: "Wait for the current setup operation to finish, then retry.",
+        }
+      );
+    }
+    if (applicationQuitRequested) return createBackendStartCancellation();
+    if (backendLaunchPromise) return await backendLaunchPromise;
+  }
+
+  const abortController = new AbortController();
+  backendLaunchAbortController = abortController;
+  const pending = Promise.resolve().then(() =>
+    launchBackendService(event, config, abortController.signal)
+  );
+  backendLaunchPromise = pending;
+  try {
+    return await pending;
+  } finally {
+    if (backendLaunchPromise === pending) backendLaunchPromise = null;
+    if (backendLaunchAbortController === abortController) {
+      backendLaunchAbortController = null;
+    }
   }
 });
 
 // IPC handler - stop backend service
 ipcMain.handle("stop-backend-service", async () => {
-  try {
-    if (!backendProcess) {
-      return {
-        success: false,
-        error: "Service is not running.",
-      };
-    }
-
-    return new Promise((resolve) => {
-      backendProcess.on("exit", (code, signal) => {
-        const exitInfo = signal
-          ? `Signal: ${signal}`
-          : `Exit code: ${code !== null ? code : "Normal exit"}`;
-        mainWindow.webContents.send("backend-output", {
-          type: "info",
-          message: `Service stopped, ${exitInfo}`,
-        });
-        backendProcess = null;
-        backendServicePort = null;
-        resolve({ success: true });
+  if (backendStopPromise) return await backendStopPromise;
+  const pending = Promise.resolve().then(async () => {
+    try {
+      return await stopBackendServiceAndPendingLaunch("Backend stop was requested.");
+    } catch (error) {
+      return toLoggedStartupFailure(error, {
+        code: "BACKEND_STOP_FAILED",
+        stage: "backend-stop",
+        userMessage: "Backend service could not be stopped.",
       });
-
-      backendProcess.kill("SIGTERM");
-
-      setTimeout(() => {
-        if (backendProcess) {
-          backendProcess.kill("SIGKILL");
-          mainWindow.webContents.send("backend-output", {
-            type: "warning",
-            message: "Service process was forcefully terminated",
-          });
-          backendProcess = null;
-          backendServicePort = null;
-          resolve({ success: true });
-        }
-      }, 5000);
-    });
-  } catch (error) {
-    return {
-      success: false,
-      error: error.message,
-    };
+    }
+  });
+  backendStopPromise = pending;
+  try {
+    return await pending;
+  } finally {
+    if (backendStopPromise === pending) backendStopPromise = null;
   }
 });
-ipcMain.handle("check-backend-status", async () => {
+
+ipcMain.handle("check-backend-status", async () => backendSupervisor.getStatus());
+
+ipcMain.handle("open-startup-log", async () => {
   try {
-    return {
-      success: true,
-      running: backendProcess !== null,
-      pid: backendProcess ? backendProcess.pid : null,
-      port: backendServicePort,
-    };
+    await startupLogger.info("Startup log opened by the user.");
+    await startupLogger.flush();
+    const openError = await shell.openPath(STARTUP_LOG_PATH);
+    if (openError) throw new Error(openError);
+    return { success: true, logPath: STARTUP_LOG_PATH };
   } catch (error) {
-    return {
-      success: false,
-      error: error.message,
-    };
+    return toLoggedStartupFailure(error, {
+      code: "STARTUP_LOG_OPEN_FAILED",
+      stage: "open-startup-log",
+      userMessage: "Could not open the startup log.",
+      recoveryHint: `Open this file manually: ${STARTUP_LOG_PATH}`,
+    });
   }
 });
 // IPC handler - execute command
@@ -4980,10 +5487,11 @@ ipcMain.handle("show-item-in-folder", async (event, { filePath }) => {
       error: openError || undefined,
     };
   } catch (error) {
-    return {
-      success: false,
-      error: error.message,
-    };
+    return toLoggedStartupFailure(error, {
+      code: "PROJECT_VENV_CREATE_FAILED",
+      stage: "create-project-venv",
+      userMessage: "Failed to create the project virtual environment.",
+    });
   }
 });
 
@@ -5614,8 +6122,66 @@ function getMimeType(filePath) {
 const platform = process.platform || os.platform();
 const currentDir = fileURLToPath(new URL(".", import.meta.url));
 
-let mainWindow;
-let allowCloseWithActiveProcessingTasks = false;
+async function recordApplicationDiagnostic(code, stage, error, details = {}) {
+  const diagnostic = createDiagnostic({
+    code,
+    stage,
+    reason: error?.message || details.reason || code,
+    error,
+    osCode: details.osCode,
+    exitCode: details.exitCode,
+    signal: details.signal,
+    logPath: STARTUP_LOG_PATH,
+  });
+  await startupLogger.error(error?.message || details.reason || code, {
+    diagnostic,
+    details,
+  });
+  return diagnostic;
+}
+
+async function handleRendererRuntimeFailure(windowInstance, error, options = {}) {
+  const diagnostic = await recordApplicationDiagnostic(
+    options.code || "APP_RENDERER_FAILED",
+    options.stage || "renderer-runtime",
+    error,
+    options.details
+  );
+  if (options.initialLoad === true) {
+    return await handleFatalStartupError(
+      new ApplicationBootstrapError(error?.message || "Application window failed to load.", {
+        code: options.code || "APP_WINDOW_LOAD_FAILED",
+        phase: options.stage || "window-load",
+        exitCode: 174,
+        diagnostic,
+        cause: error,
+        recoveryHint: "Restart the application. If the problem continues, reinstall it.",
+      })
+    );
+  }
+  if (rendererFailureDialogOpen) return;
+  rendererFailureDialogOpen = true;
+  try {
+    const result = await dialog.showMessageBox(windowInstance, {
+      type: "error",
+      buttons: ["重启应用", "退出"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+      title: "应用界面发生错误",
+      message: "应用界面已停止响应或意外退出。",
+      detail:
+        `错误代码: ${diagnostic.code}\n` +
+        `诊断编号: ${diagnostic.id}\n` +
+        `启动日志: ${STARTUP_LOG_PATH}`,
+    });
+    allowCloseWithActiveProcessingTasks = true;
+    if (result.response === 0) app.relaunch();
+    app.quit();
+  } finally {
+    rendererFailureDialogOpen = false;
+  }
+}
 
 async function createWindow() {
   /**
@@ -5640,6 +6206,67 @@ async function createWindow() {
         )
       ),
     },
+  });
+  const windowInstance = mainWindow;
+  let initialLoadComplete = false;
+  let initialLoadDiagnostic = null;
+  let initialLoadDiagnosticPromise = null;
+
+  windowInstance.webContents.on("preload-error", (event, preloadPath, error) => {
+    void handleRendererRuntimeFailure(windowInstance, error, {
+      code: "APP_PRELOAD_FAILED",
+      stage: "preload",
+      initialLoad: !initialLoadComplete,
+      details: { preloadPath },
+    });
+  });
+  windowInstance.webContents.on(
+    "did-fail-load",
+    (event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+      if (!isMainFrame) return;
+      const error = new Error(errorDescription || `Window load failed (${errorCode}).`);
+      if (initialLoadComplete) {
+        void handleRendererRuntimeFailure(windowInstance, error, {
+          code: "APP_WINDOW_LOAD_FAILED",
+          stage: "window-load",
+          details: { osCode: errorCode, validatedUrl },
+        });
+        return;
+      }
+      initialLoadDiagnosticPromise = recordApplicationDiagnostic(
+        "APP_WINDOW_LOAD_FAILED",
+        "window-load",
+        error,
+        {
+        osCode: errorCode,
+        validatedUrl,
+        }
+      );
+      void initialLoadDiagnosticPromise.then((diagnostic) => {
+        initialLoadDiagnostic = diagnostic;
+      });
+    }
+  );
+  windowInstance.webContents.on("render-process-gone", (event, details) => {
+    if (details?.reason === "clean-exit") return;
+    const error = new Error(`Renderer process exited: ${details?.reason || "unknown"}.`);
+    void handleRendererRuntimeFailure(windowInstance, error, {
+      code: "APP_RENDERER_PROCESS_GONE",
+      stage: "renderer-runtime",
+      initialLoad: !initialLoadComplete,
+      details,
+    });
+  });
+  windowInstance.on("unresponsive", () => {
+    void handleRendererRuntimeFailure(
+      windowInstance,
+      new Error("Application window became unresponsive."),
+      {
+        code: "APP_WINDOW_UNRESPONSIVE",
+        stage: "renderer-runtime",
+        initialLoad: !initialLoadComplete,
+      }
+    );
   });
   // Build application menu based on environment
   if (process.env.DEV) {
@@ -5698,47 +6325,44 @@ async function createWindow() {
     Menu.setApplicationMenu(null);
   }
 
-  // Set Content Security Policy
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    callback({
-      responseHeaders: {
-        ...details.responseHeaders,
-        "Content-Security-Policy": [
-          "default-src 'self' data:; " +
-            "script-src 'self' 'unsafe-inline'; " +
-            "style-src 'self' 'unsafe-inline'; " +
-            "worker-src 'self' blob:; " +
-            "img-src 'self' data: blob: atom:; " +
-            "media-src 'self' data: blob: atom:; " +
-            "font-src 'self'; " +
-            "connect-src 'self' http://localhost:* http://127.0.0.1:* data: atom:; " +
-            "object-src 'none';",
-        ],
-      },
+  try {
+    if (process.env.DEV) {
+      await windowInstance.loadURL(process.env.APP_URL);
+    } else {
+      await windowInstance.loadFile("index.html");
+    }
+    initialLoadComplete = true;
+  } catch (error) {
+    const diagnostic =
+      initialLoadDiagnostic ||
+      (await initialLoadDiagnosticPromise) ||
+      (await recordApplicationDiagnostic("APP_WINDOW_LOAD_FAILED", "window-load", error));
+    throw new ApplicationBootstrapError(error?.message || "Application window failed to load.", {
+      code: "APP_WINDOW_LOAD_FAILED",
+      phase: "window-load",
+      exitCode: 174,
+      diagnostic,
+      cause: error,
+      recoveryHint: "Restart the application. If the problem continues, reinstall it.",
     });
-  });
-  if (process.env.DEV) {
-    await mainWindow.loadURL(process.env.APP_URL);
-  } else {
-    await mainWindow.loadFile("index.html");
   }
 
   if (process.env.DEBUGGING) {
     // if on DEV or Production with debug enabled
-    mainWindow.webContents.openDevTools();
+    windowInstance.webContents.openDevTools();
   } else {
     // we're on production; no access to devtools pls
-    mainWindow.webContents.on("devtools-opened", () => {
-      mainWindow.webContents.closeDevTools();
+    windowInstance.webContents.on("devtools-opened", () => {
+      windowInstance.webContents.closeDevTools();
     });
   }
 
-  mainWindow.on("close", (event) => {
+  windowInstance.on("close", (event) => {
     if (allowCloseWithActiveProcessingTasks || activeProcessingTasks.size === 0) {
       return;
     }
 
-    const choice = dialog.showMessageBoxSync(mainWindow, {
+    const choice = dialog.showMessageBoxSync(windowInstance, {
       type: "warning",
       buttons: ["继续处理", "关闭应用"],
       defaultId: 0,
@@ -5751,13 +6375,19 @@ async function createWindow() {
 
     if (choice !== 1) {
       event.preventDefault();
+      if (applicationQuitRequested) {
+        applicationQuitRequested = false;
+        quitAfterBackendStop = false;
+        backendShutdownPromise = null;
+      }
       return;
     }
 
     allowCloseWithActiveProcessingTasks = true;
   });
 
-  mainWindow.on("closed", () => {
+  windowInstance.on("closed", () => {
+    if (mainWindow !== windowInstance) return;
     activeProcessingTasks.clear();
     mainWindow = null;
   });
@@ -5802,101 +6432,156 @@ const registerAtomProtocol = () => {
   });
 };
 
-app.whenReady().then(async () => {
-  const integrityResult = await verifyPackagedResourcesIntegrity();
-  if (!integrityResult.success) {
-    dialog.showErrorBox(
-      "应用资源完整性校验失败",
-      `${integrityResult.error}\n\n应用将退出，请重新安装或恢复受保护资源。`
-    );
-    app.exit(173);
-    return;
-  }
+function registerSessionSecurity() {
+  if (sessionSecurityRegistered) return;
+  sessionSecurityRegistered = true;
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        "Content-Security-Policy": [
+          "default-src 'self' data:; " +
+            "script-src 'self' 'unsafe-inline'; " +
+            "style-src 'self' 'unsafe-inline'; " +
+            "worker-src 'self' blob:; " +
+            "img-src 'self' data: blob: atom:; " +
+            "media-src 'self' data: blob: atom:; " +
+            "font-src 'self'; " +
+            "connect-src 'self' http://localhost:* http://127.0.0.1:* data: atom:; " +
+            "object-src 'none';",
+        ],
+      },
+    });
+  });
+}
 
+async function registerApplicationInfrastructure() {
   registerAtomProtocol();
-  loadAppConfig();
-  runStartupTempCleanup();
-  createWindow();
-});
-app.on("before-quit", async (event) => {
-  if (backendProcess && !backendProcess.killed) {
-    event.preventDefault();
+  registerSessionSecurity();
+}
+
+const handleFatalStartupError = createFatalStartupHandler(async (error) => {
+    const source = error instanceof Error ? error : new Error(String(error));
+    const failure = toStartupFailure(source, {
+      code: source.code || "APP_BOOTSTRAP_FAILED",
+      stage: source.phase || "app-bootstrap",
+      userMessage: source.message || "Application startup failed.",
+      recoveryHint: source.recoveryHint,
+      diagnostic: source.diagnostic,
+      logPath: STARTUP_LOG_PATH,
+    });
+    await startupLogger.error(failure.error, {
+      recoveryHint: failure.recoveryHint,
+      diagnostic: failure.diagnostic,
+    });
     try {
-      if (backendProcess.pid) {
-        if (process.platform === "win32") {
-          // Windows uses taskkill
-          spawn("taskkill", ["/pid", backendProcess.pid, "/f", "/t"]);
-        } else {
-          // Unix-like platforms use SIGTERM
-          backendProcess.kill("SIGTERM");
-        }
-
-        const exitPromise = new Promise((resolve) => {
-          if (backendProcess) {
-            backendProcess.on("exit", () => {
-              console.log("Backend process exited");
-              resolve();
-            });
-            backendProcess.on("error", (error) => {
-              console.log("Error while waiting for backend process to exit:", error.message);
-              resolve();
-            });
-          } else {
-            resolve();
-          }
+      applicationQuitRequested = true;
+      const stopResult = await stopBackendServiceAndPendingLaunch(
+        "Application startup failed while startup operations were in progress."
+      );
+      if (!stopResult.success) {
+        await startupLogger.error(stopResult.error || "Backend shutdown failed.", {
+          recoveryHint: stopResult.recoveryHint,
+          diagnostic: stopResult.diagnostic,
         });
-
-        const timeoutPromise = new Promise((resolve) => {
-          setTimeout(() => {
-            console.log("Timed out while waiting for backend process to exit");
-            resolve();
-          }, 5000);
-        });
-
-        await Promise.race([exitPromise, timeoutPromise]);
-
-        if (backendProcess && !backendProcess.killed && backendProcess.pid) {
-          console.log("Forcefully terminating backend process");
-          if (process.platform === "win32") {
-            spawn("taskkill", ["/pid", backendProcess.pid, "/f", "/t"]);
-          } else {
-            backendProcess.kill("SIGKILL");
-          }
-        }
       }
-
-      backendProcess = null;
-    } catch (error) {
-      console.error("Failed to stop backend service during app shutdown:", error);
-      // Clear the stale process reference even if shutdown throws
-      backendProcess = null;
+    } catch (stopError) {
+      await startupLogger.error("Backend shutdown failed while handling a fatal error.", {
+        reason: stopError?.message || String(stopError),
+      });
     }
+    await startupLogger.flush();
 
-    app.quit();
-  }
+    try {
+      dialog.showErrorBox(
+        source instanceof ApplicationBootstrapError && source.exitCode === 173
+          ? "应用资源完整性校验失败"
+          : "应用启动失败",
+        `${failure.error}\n\n` +
+          `错误代码: ${failure.code}\n` +
+          `诊断编号: ${failure.diagnostic.id}\n` +
+          `处理建议: ${failure.recoveryHint}\n` +
+          `启动日志: ${STARTUP_LOG_PATH}`
+      );
+    } catch (dialogError) {
+      console.error("Failed to display fatal startup error:", dialogError);
+    } finally {
+      app.exit(source instanceof ApplicationBootstrapError ? source.exitCode : 174);
+    }
+    return failure;
+});
+
+process.on("uncaughtException", (error) => {
+  void handleFatalStartupError(error);
+});
+process.on("unhandledRejection", (reason) => {
+  void handleFatalStartupError(reason instanceof Error ? reason : new Error(String(reason)));
+});
+
+applicationBootstrapPromise = app
+  .whenReady()
+  .then(() =>
+    bootstrapApplication({
+      verifyIntegrity: verifyPackagedResourcesIntegrity,
+      registerProtocol: registerApplicationInfrastructure,
+      loadConfig: async () => loadAppConfig(),
+      cleanupTemporaryFiles: async () => runStartupTempCleanup(),
+      createWindow,
+    })
+  )
+  .then((result) => {
+    applicationBootstrapComplete = true;
+    return result;
+  })
+  .catch(handleFatalStartupError);
+
+app.on("before-quit", (event) => {
+  if (quitAfterBackendStop) return;
+  event.preventDefault();
+  applicationQuitRequested = true;
+  if (backendShutdownPromise) return;
+
+  backendShutdownPromise = (async () => {
+    try {
+      const result = await stopBackendServiceAndPendingLaunch(
+        "Application quit while backend startup was in progress."
+      );
+      if (!result.success) {
+        await startupLogger.error(result.error || "Backend shutdown failed during app quit.", {
+          recoveryHint: result.recoveryHint,
+          diagnostic: result.diagnostic,
+        });
+      }
+    } catch (error) {
+      const failure = toStartupFailure(error, {
+        code: "BACKEND_STOP_FAILED",
+        stage: "application-quit",
+        userMessage: "Backend shutdown failed during app quit.",
+        logPath: STARTUP_LOG_PATH,
+      });
+      await startupLogger.error(failure.error, { diagnostic: failure.diagnostic });
+    } finally {
+      await startupLogger.flush();
+      quitAfterBackendStop = true;
+      app.quit();
+    }
+  })();
 });
 
 app.on("window-all-closed", () => {
-  if (backendProcess && !backendProcess.killed) {
-    try {
-      if (process.platform === "win32") {
-        spawn("taskkill", ["/pid", backendProcess.pid, "/f", "/t"]);
-      } else {
-        backendProcess.kill("SIGKILL");
-      }
-    } catch (error) {
-      console.error("Failed to clean up backend process:", error);
-    }
-    backendProcess = null;
-  }
-
-  if (platform !== "darwin") {
-    app.quit();
-  }
+  if (platform !== "darwin") app.quit();
 });
 
 app.on("activate", () => {
-  if (mainWindow === null) {
-    createWindow();
-  }
+  void (async () => {
+    await applicationBootstrapPromise;
+    if (
+      !applicationBootstrapComplete ||
+      applicationQuitRequested ||
+      BrowserWindow.getAllWindows().length > 0
+    ) {
+      return;
+    }
+    await createWindow();
+  })().catch(handleFatalStartupError);
 });

@@ -78,6 +78,12 @@ function runP0Gate() {
   const shouldRunE2E = String(process.env.MOONSHINE_P0_RUN_E2E || "").trim() === "1";
 
   runCommand({
+    label: "Startup Lifecycle Tests",
+    command: npmCommand,
+    args: ["run", "test:startup"],
+  });
+
+  runCommand({
     label: "Lint",
     command: npmCommand,
     args: ["run", "lint"],

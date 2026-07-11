@@ -10,7 +10,8 @@
   "private": true,
   "scripts": {
     "lint": "eslint -c ./eslint.config.js \"./src*/**/*.{js,cjs,mjs,vue}\"",
-    "test": "echo \"No test specified\" && exit 0",
+    "test": "npm run test:startup",
+    "test:startup": "node scripts/run-startup-tests.mjs",
     "test:regression:p0": "node scripts/p0-regression-gate.mjs",
     "test:regression:p0:assertions": "node scripts/p0-regression-assertions.mjs",
     "test:regression:p1:image": "node scripts/p1-image-regression-assertions.mjs",

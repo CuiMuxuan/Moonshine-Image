@@ -111,7 +111,16 @@
 
 <script setup>
 import { setCssVar, useQuasar } from "quasar";
-import { computed, markRaw, onMounted, provide, ref, shallowRef, watch } from "vue";
+import {
+  computed,
+  markRaw,
+  onMounted,
+  onUnmounted,
+  provide,
+  ref,
+  shallowRef,
+  watch,
+} from "vue";
 import { useRouter } from "vue-router";
 
 import { api } from "src/boot/axios";
@@ -145,7 +154,7 @@ const settingsTarget = ref({
   tab: "",
   modelId: "",
 });
-const backendRunning = ref(false);
+const backendRunning = computed(() => backendEngineStore.isRunning);
 const showStartupOverlay = ref(false);
 const runtimeE2EFlag =
   typeof window !== "undefined" && window.__MOONSHINE_E2E__ === true;
@@ -153,6 +162,7 @@ const isE2EMode = import.meta.env.VITE_MOONSHINE_E2E === "1" || runtimeE2EFlag;
 const pendingBackendPathDialog = ref(null);
 const cudaDiagnosticNotificationKey = ref("");
 const backendSessionStartedAt = ref(0);
+let removeBackendServiceStateListener = null;
 
 const loadingState = ref({
   showing: false,
@@ -423,12 +433,20 @@ const handleModelDownloaded = (modelId) => {
 const backendEngineContext = computed(() => ({
   status: backendEngineStore.status,
   phase: backendEngineStore.phase,
+  diagnostic: backendEngineStore.diagnostic,
+  recoveryHint: backendEngineStore.recoveryHint,
+  port: backendEngineStore.port,
   phaseLabel: backendEngineStore.phaseLabel,
   isRunning: backendEngineStore.isRunning,
   isPreparing: backendEngineStore.isPreparing,
+  isBusy: backendEngineStore.isBusy,
   hasFailed: backendEngineStore.hasFailed,
   runDisabled: backendEngineStore.runDisabled,
   runDisabledTooltip: backendEngineStore.runDisabledTooltip,
+  start: startBackendService,
+  stop: stopBackendService,
+  restart: restartBackendService,
+  refresh: refreshBackendServiceStatus,
   openDiagnostics: openBackendDiagnostics,
 }));
 
@@ -504,15 +522,103 @@ const handleLoadingUpdate = (state) => {
   };
 };
 
+const probeBackendHealth = async () => {
+  const health = await api.get(
+    "/api/v1/health",
+    { _: Date.now() },
+    {
+      headers: {
+        "Cache-Control": "no-cache, no-store",
+        Pragma: "no-cache",
+      },
+    }
+  );
+  if (health?.status !== "ok") {
+    throw new Error("后端健康检查返回了无效响应");
+  }
+  return health;
+};
+
+const clearBackendSession = (reason = "后端服务未启动") => {
+  backendSessionStartedAt.value = 0;
+  cudaDiagnosticNotificationKey.value = "";
+  runtimeDiagnosticsStore.setCudaUnavailable(reason);
+};
+
+const handleBackendServiceState = (eventOrPayload, maybePayload) => {
+  const payload = maybePayload ?? eventOrPayload;
+  if (!payload || typeof payload !== "object") return;
+
+  backendEngineStore.applyServiceEvent(payload);
+  if (payload.port) {
+    void syncBackendRuntimePort(payload.port);
+  }
+
+  if (payload.state === "running" && payload.ready !== false) {
+    backendSessionStartedAt.value = payload.readyAt || Date.now();
+    return;
+  }
+
+  if (payload.state === "stopped" || payload.state === "failed") {
+    clearBackendSession(
+      payload.state === "failed" ? "后端服务异常退出" : "后端服务未启动"
+    );
+  }
+};
+
 const checkBackendStatus = async ({ notifyOnFailure = true } = {}) => {
+  let processStatus = null;
   try {
-    await refreshCudaDiagnostics({ notify: true });
-    backendRunning.value = true;
-    backendEngineStore.setRunning();
+    const invoke = getElectronInvoke();
+    if (invoke) {
+      processStatus = await invoke("check-backend-status");
+      if (processStatus?.success === false) {
+        const statusError = new Error(processStatus.error || "无法读取后端进程状态");
+        Object.assign(statusError, processStatus);
+        throw statusError;
+      }
+      if (processStatus?.success) {
+        backendEngineStore.applyServiceEvent(processStatus);
+        if (processStatus.port) {
+          await syncBackendRuntimePort(processStatus.port);
+        }
+        if (
+          processStatus.running !== true &&
+          processStatus.ready !== true &&
+          processStatus.processRunning !== true
+        ) {
+          throw new Error("后端服务未启动");
+        }
+      }
+    }
+
+    await probeBackendHealth();
+    backendSessionStartedAt.value =
+      processStatus?.readyAt || backendSessionStartedAt.value || Date.now();
+    backendEngineStore.setRunning({
+      ...processStatus,
+      ready: true,
+      processRunning: true,
+      port: processStatus?.port || configStore.config.general?.backendPort,
+    });
+
+    try {
+      await refreshCudaDiagnostics({ notify: true });
+    } catch (cudaError) {
+      console.warn("CUDA diagnostics unavailable while backend is healthy:", cudaError);
+      runtimeDiagnosticsStore.setCudaUnavailable("CUDA 诊断暂不可用");
+    }
     return true;
   } catch (error) {
-    backendRunning.value = false;
-    runtimeDiagnosticsStore.setCudaUnavailable("后端服务未启动");
+    if (processStatus?.state === "failed") {
+      backendEngineStore.setFailed(processStatus);
+      clearBackendSession("后端服务异常退出");
+    } else if (processStatus?.processRunning) {
+      backendEngineStore.setPreparing("verifying", processStatus);
+    } else {
+      backendEngineStore.setStopped(processStatus || {});
+      clearBackendSession("后端服务未启动");
+    }
     if (notifyOnFailure) {
       const classifiedError = classifyMoonshineError(error, "后端服务未启动");
       $q.notify({
@@ -576,11 +682,6 @@ const queueBackendPathBlockedDialog = (validationResult = null) => {
 
 const getElectronInvoke = () => window.electron?.ipcRenderer?.invoke;
 
-const getSkippedAutoStartMessage = () =>
-  import.meta.env.DEV
-    ? "开发环境已跳过自动启动 Moonshine AI 引擎；需要时请打开后端管理手动启动。"
-    : "当前环境未自动启动 Moonshine AI 引擎";
-
 const syncBackendRuntimePort = async (port) => {
   const normalizedPort = Number(port);
   if (
@@ -617,12 +718,117 @@ const syncBackendRuntimePort = async (port) => {
   return true;
 };
 
+const normalizeBackendFailure = (value, fallback) => ({
+  success: false,
+  code: value?.code || value?.diagnostic?.code || "BACKEND_OPERATION_FAILED",
+  error: value?.error || value?.message || fallback,
+  recoveryHint: value?.recoveryHint || "",
+  diagnostic: value?.diagnostic || null,
+});
+
+const throwBackendFailure = (value, fallback) => {
+  const failure = normalizeBackendFailure(value, fallback);
+  const error = new Error(failure.error);
+  Object.assign(error, failure);
+  throw error;
+};
+
+const startBackendService = async (options = {}) => {
+  const invoke = getElectronInvoke();
+  if (!invoke) {
+    const failure = normalizeBackendFailure(null, "当前环境无法启动后端服务");
+    backendEngineStore.setFailed(failure);
+    return failure;
+  }
+
+  backendEngineStore.setPreparing("startingEngine");
+  try {
+    const result = await invoke("start-backend-service", options);
+    if (!result?.success) {
+      const failure = normalizeBackendFailure(result, "AI 引擎启动失败");
+      backendEngineStore.setFailed(failure);
+      return failure;
+    }
+
+    const actualPort = result.port || options.port || 8080;
+    await syncBackendRuntimePort(actualPort);
+    backendSessionStartedAt.value = result.readyAt || Date.now();
+    backendEngineStore.setRunning({
+      ...result,
+      port: actualPort,
+      processRunning: true,
+      ready: true,
+    });
+
+    const healthy = await checkBackendStatus({ notifyOnFailure: false });
+    if (!healthy) {
+      const failure = normalizeBackendFailure(result, "AI 引擎启动后健康检查失败");
+      backendEngineStore.setFailed({
+        ...failure,
+        processRunning: backendEngineStore.processRunning,
+      });
+      return failure;
+    }
+    return { ...result, success: true, port: actualPort, ready: true };
+  } catch (error) {
+    const failure = normalizeBackendFailure(error, "AI 引擎启动失败");
+    backendEngineStore.setFailed(failure);
+    return failure;
+  }
+};
+
+const refreshBackendServiceStatus = (options = {}) => checkBackendStatus(options);
+
+const stopBackendService = async () => {
+  const invoke = getElectronInvoke();
+  if (!invoke) {
+    const failure = normalizeBackendFailure(null, "当前环境无法停止后端服务");
+    backendEngineStore.setFailed(failure);
+    return failure;
+  }
+
+  backendEngineStore.setStopping({
+    processRunning: backendEngineStore.processRunning,
+  });
+  try {
+    const result = await invoke("stop-backend-service");
+    if (backendEngineStore.applyStopResult(result)) {
+      clearBackendSession("后端服务未启动");
+      return result;
+    }
+
+    await checkBackendStatus({ notifyOnFailure: false });
+    if (backendEngineStore.status === "stopping") {
+      backendEngineStore.setFailed(
+        normalizeBackendFailure(result, "停止后端服务失败")
+      );
+    }
+    return normalizeBackendFailure(result, "停止后端服务失败");
+  } catch (error) {
+    await checkBackendStatus({ notifyOnFailure: false });
+    if (backendEngineStore.status === "stopping") {
+      backendEngineStore.setFailed(
+        normalizeBackendFailure(error, "停止后端服务失败")
+      );
+    }
+    return normalizeBackendFailure(error, "停止后端服务失败");
+  }
+};
+
+const restartBackendService = async (options = {}) => {
+  const stopResult = await stopBackendService();
+  if (!stopResult?.success && backendEngineStore.processRunning) {
+    return stopResult;
+  }
+  return await startBackendService(options);
+};
+
 const prepareBackendEngine = async () => {
   const invoke = getElectronInvoke();
   if (!invoke || import.meta.env.DEV || configStore.config.general?.autoStart === false) {
     const reachable = await checkBackendStatus({ notifyOnFailure: false });
     if (!reachable) {
-      backendEngineStore.setFailed(getSkippedAutoStartMessage());
+      backendEngineStore.setStopped();
     }
     return;
   }
@@ -634,7 +840,6 @@ const prepareBackendEngine = async () => {
       configStore.config.general || {}
     );
     if (!backendPathValidation.valid) {
-      backendRunning.value = false;
       backendEngineStore.setFailed(
         backendPathValidation.message || BACKEND_PATH_CJK_BLOCK_MESSAGE
       );
@@ -644,6 +849,7 @@ const prepareBackendEngine = async () => {
 
     const processStatus = await invoke("check-backend-status");
     if (processStatus?.success && processStatus.running) {
+      backendEngineStore.applyServiceEvent(processStatus);
       await syncBackendRuntimePort(processStatus.port);
       if (!backendSessionStartedAt.value) {
         backendSessionStartedAt.value = Date.now();
@@ -662,15 +868,12 @@ const prepareBackendEngine = async () => {
       configStore.config.general?.backendProjectPath || ""
     );
     if (!projectResult?.success) {
-      const message = [projectResult?.error || "后端项目检测失败", projectResult?.recoveryHint]
-        .filter(Boolean)
-        .join(" ");
-      throw new Error(message);
+      throwBackendFailure(projectResult, "后端项目检测失败");
     }
 
     const prepareResult = await invoke("prepare-project-python", projectResult.path);
     if (!prepareResult?.success) {
-      throw new Error(prepareResult?.error || "运行时准备失败");
+      throwBackendFailure(prepareResult, "运行时准备失败");
     }
 
     backendEngineStore.setPhase("loadingModel");
@@ -678,24 +881,22 @@ const prepareBackendEngine = async () => {
     if (!depsResult?.success) {
       const installResult = await invoke("install-dependencies", projectResult.path);
       if (!installResult?.success) {
-        throw new Error(installResult?.error || depsResult?.error || "依赖准备失败");
+        throwBackendFailure(installResult || depsResult, "依赖准备失败");
       }
     }
 
     backendEngineStore.setPhase("startingEngine");
     const generalConfig = configStore.config.general || {};
-    const startResult = await invoke("start-backend-service", {
+    const startResult = await startBackendService({
       port: generalConfig.backendPort || 8080,
       device: generalConfig.launchMode || "cuda",
       model: generalConfig.defaultModel || "lama",
       modelDir: generalConfig.modelDir || "",
     });
     if (!startResult?.success) {
-      throw new Error(startResult?.error || "AI 引擎启动失败");
+      throwBackendFailure(startResult, "AI 引擎启动失败");
     }
 
-    await syncBackendRuntimePort(startResult.port || generalConfig.backendPort || 8080);
-    backendSessionStartedAt.value = Date.now();
     if (startResult.portChanged) {
       $q.notify({
         type: "warning",
@@ -704,23 +905,13 @@ const prepareBackendEngine = async () => {
         timeout: 5000,
       });
     }
-
-    backendEngineStore.setPhase("verifying");
-    let reachable = false;
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      reachable = await checkBackendStatus({ notifyOnFailure: false });
-      if (reachable) break;
-      await new Promise((resolve) => window.setTimeout(resolve, 500));
-    }
-
-    if (!reachable) {
-      throw new Error("AI 引擎启动后未响应");
-    }
   } catch (error) {
-    backendRunning.value = false;
-    backendEngineStore.setFailed(
-      classifyMoonshineError(error, "Moonshine AI 引擎准备失败").message
-    );
+    const classified = classifyMoonshineError(error, "Moonshine AI 引擎准备失败");
+    backendEngineStore.setFailed({
+      ...normalizeBackendFailure(error, classified.message),
+      error: classified.message,
+      processRunning: backendEngineStore.processRunning,
+    });
   }
 };
 
@@ -769,6 +960,11 @@ const toggleThemeMode = async () => {
 };
 
 onMounted(async () => {
+  removeBackendServiceStateListener =
+    window.electron?.ipcRenderer?.on?.(
+      "backend-service-state",
+      handleBackendServiceState
+    ) || null;
   await configStore.loadConfig();
   showStartupOverlay.value =
     !isE2EMode && configStore.config.ui?.showStartupAnimation !== false;
@@ -776,6 +972,11 @@ onMounted(async () => {
   api.updateConfig(configStore.config);
   await appStateStore.loadState();
   void prepareBackendEngine();
+});
+
+onUnmounted(() => {
+  removeBackendServiceStateListener?.();
+  removeBackendServiceStateListener = null;
 });
 
 watch(

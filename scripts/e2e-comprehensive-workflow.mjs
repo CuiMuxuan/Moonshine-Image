@@ -20,9 +20,6 @@ const npmCommand = isWindows ? "npm.cmd" : "npm";
 
 const distDir = path.join(repoRoot, "dist", "spa");
 const indexHtmlPath = path.join(distDir, "index.html");
-const solidMaskPngBase64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4f5phFwAHHAKFhD+0FQAAAABJRU5ErkJggg==";
-
 const browserExecutableCandidatesByPlatform = {
   win32: [
     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -1185,7 +1182,7 @@ async function testVideoWorkflow(page) {
   );
   assert(afterMaskDelete.maskCount === 0, "Video mask deletion should remove the selected mask.");
 
-  const samVideoWriteback = await page.evaluate((maskBase64) => {
+  const samVideoWriteback = await page.evaluate(() => {
     const bridge = window.__MOONSHINE_VIDEO_TEST__;
     const emptyTrack = bridge.createEmptySamVideoTrack({
       name: "E2E SAM 智能选区",
@@ -1209,14 +1206,17 @@ async function testVideoWorkflow(page) {
           masks: [
             {
               objectId: 1,
-              mask: `data:image/png;base64,${maskBase64}`,
+              maskPath: "C:\\Moonshine-E2E\\temp\\sam-mask-f000002-o001.jpg",
+              maskAssetId: "e2e:2:1",
+              maskSize: 128,
+              maskSignature: "e2e-mask-signature",
             },
           ],
         },
       ],
     });
     return { emptyTrack, writeback };
-  }, solidMaskPngBase64);
+  });
 
   assert(
     samVideoWriteback.emptyTrack.maskId,
@@ -1708,6 +1708,7 @@ async function runWorkflowTest() {
       if (
         !/Failed to load model list/i.test(text) &&
         !/Video player initialization timed out/i.test(text) &&
+        !/加载 SAM 视频蒙版帧失败，已跳过该对象/i.test(text) &&
         !/Failed to load resource: net::ERR_UNKNOWN_URL_SCHEME/i.test(text)
       ) {
         consoleProblems.push(`${message.type()}: ${text}`);

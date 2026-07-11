@@ -256,7 +256,7 @@
                         :color="
                           serviceStatus === 'running'
                             ? 'positive'
-                            : serviceStatus === 'stopped'
+                            : ['stopped', 'failed'].includes(serviceStatus)
                             ? 'negative'
                             : 'orange'
                         "
@@ -264,7 +264,7 @@
                         :icon="
                           serviceStatus === 'running'
                             ? 'play_arrow'
-                            : serviceStatus === 'stopped'
+                            : ['stopped', 'failed'].includes(serviceStatus)
                             ? 'stop'
                             : 'pending'
                         "
@@ -299,6 +299,49 @@
                           }}</span>
                         </div>
                       </div>
+
+                      <q-banner
+                        v-if="backendEngineStore.error || activeDiagnostic"
+                        rounded
+                        class="q-mt-md bg-red-1 text-negative"
+                        role="alert"
+                      >
+                        <template #avatar>
+                          <q-icon name="error_outline" color="negative" />
+                        </template>
+                        <div class="text-weight-medium">
+                          {{ backendEngineStore.error || activeDiagnostic?.reason || '后端启动失败' }}
+                        </div>
+                        <div
+                          v-if="backendEngineStore.recoveryHint"
+                          class="q-mt-xs text-body2 text-grey-9"
+                        >
+                          {{ backendEngineStore.recoveryHint }}
+                        </div>
+                        <q-expansion-item
+                          v-if="diagnosticRows.length || activeDiagnostic?.stdoutTail || activeDiagnostic?.stderrTail"
+                          dense
+                          dense-toggle
+                          icon="troubleshoot"
+                          label="诊断详情"
+                          class="q-mt-sm diagnostic-expansion"
+                        >
+                          <q-list dense separator>
+                            <q-item v-for="([label, detail], index) in diagnosticRows" :key="index">
+                              <q-item-section side class="text-grey-8">{{ label }}</q-item-section>
+                              <q-item-section class="diagnostic-value">{{ detail }}</q-item-section>
+                            </q-item>
+                          </q-list>
+                          <pre
+                            v-if="activeDiagnostic?.stderrTail"
+                            class="diagnostic-output q-mt-sm"
+                          >{{ activeDiagnostic.stderrTail }}</pre>
+                          <pre
+                            v-if="activeDiagnostic?.stdoutTail"
+                            class="diagnostic-output q-mt-sm"
+                          >{{ activeDiagnostic.stdoutTail }}</pre>
+                        </q-expansion-item>
+                      </q-banner>
                     </q-card-section>
                   </q-card>
 
@@ -381,7 +424,7 @@
                       icon="play_arrow"
                       :label="serviceStartButtonLabel"
                       :loading="serviceLoading || serviceStatus === 'starting'"
-                      :disable="serviceStatus !== 'stopped'"
+                      :disable="!['stopped', 'failed'].includes(serviceStatus)"
                       unelevated
                     >
                       <template #loading>
@@ -429,6 +472,29 @@
                 <q-icon name="terminal" class="q-mr-sm" />
                 <span class="text-h6">终端输出</span>
                 <q-space />
+                <q-btn
+                  v-if="activeDiagnostic"
+                  flat
+                  round
+                  dense
+                  icon="content_copy"
+                  color="white"
+                  aria-label="复制启动诊断"
+                  @click="copyStartupDiagnostic"
+                >
+                  <q-tooltip>复制启动诊断</q-tooltip>
+                </q-btn>
+                <q-btn
+                  flat
+                  round
+                  dense
+                  icon="folder_open"
+                  color="white"
+                  aria-label="打开启动日志"
+                  @click="openStartupLog"
+                >
+                  <q-tooltip>打开启动日志</q-tooltip>
+                </q-btn>
                 <q-btn
                   flat
                   round
@@ -493,8 +559,9 @@
 </template>
 <script setup>
 import { computed, inject, ref, reactive, onMounted, onUnmounted, nextTick, watch } from "vue";
-import { useQuasar } from "quasar";
+import { copyToClipboard, useQuasar } from "quasar";
 import { useConfigStore } from "src/stores/config";
+import { useBackendEngineStore } from "src/stores/backendEngine";
 import { api } from "src/boot/axios";
 import {
   buildBackendPathBlockedMessage,
@@ -512,24 +579,19 @@ const props = defineProps({
 const splitterModel = ref(35);
 
 const configStore = useConfigStore();
+const backendEngineStore = useBackendEngineStore();
 const $q = useQuasar();
 // Emits
 const emit = defineEmits(["update:modelValue"]);
 
-const backendRunningState = inject("backendRunning", ref(false));
-const backendEngineState = inject("backendEngine", ref({}));
+const backendEngineActions = inject("backendEngine", ref({}));
 const readInjectedValue = (value) => value?.value ?? value;
-const observedBackendRunning = computed(() => {
-  const engineValue = readInjectedValue(backendEngineState) || {};
-  return Boolean(
-    readInjectedValue(backendRunningState) ||
-      (engineValue.isRunning?.value ?? engineValue.isRunning)
-  );
-});
-const isBackendPreparing = computed(() => {
-  const engineValue = readInjectedValue(backendEngineState) || {};
-  return Boolean(engineValue.isPreparing?.value ?? engineValue.isPreparing);
-});
+const getBackendEngineAction = (name) => {
+  const actions = readInjectedValue(backendEngineActions) || {};
+  return typeof actions[name] === "function" ? actions[name] : null;
+};
+const observedBackendRunning = computed(() => backendEngineStore.isRunning);
+const isBackendPreparing = computed(() => backendEngineStore.isPreparing);
 
 const backendMode = ref("external");
 const isBundledBackendMode = computed(() => backendMode.value === "bundled");
@@ -568,6 +630,8 @@ const checking = ref(false);
 const commandExecuting = ref(false);
 const serviceLoading = ref(false);
 let serviceProcessPollTimerId = 0;
+let removeBackendOutputListener = null;
+let removePythonInstallPathListener = null;
 
 // 环境状态
 const environmentStatus = reactive({
@@ -586,14 +650,43 @@ const installing = reactive({
 });
 
 // 服务状态
-const serviceStatus = ref("stopped"); // 'stopped', 'starting', 'running', 'stopping'
-const serviceStatusText = ref("已停止");
+const serviceStatus = computed(() => {
+  if (backendEngineStore.status === "preparing") return "starting";
+  if (backendEngineStore.status === "idle") return "stopped";
+  return backendEngineStore.status;
+});
+const serviceStatusText = computed(() => ({
+  starting: "等待接口就绪",
+  running: "运行中",
+  stopping: "停止中",
+  stopped: "已停止",
+  failed: "启动失败",
+}[serviceStatus.value] || "已停止"));
 const canUseServiceManagementStep = computed(
-  () => environmentStatus.configured || ["starting", "running", "stopping"].includes(serviceStatus.value)
+  () =>
+    environmentStatus.configured ||
+    backendEngineStore.hasFailed ||
+    ["starting", "running", "stopping"].includes(serviceStatus.value)
 );
 const serviceStartButtonLabel = computed(() =>
   serviceStatus.value === "starting" ? "等待接口就绪" : "启动服务"
 );
+const activeDiagnostic = computed(() => backendEngineStore.diagnostic || null);
+const diagnosticRows = computed(() => {
+  const value = activeDiagnostic.value;
+  if (!value) return [];
+  return [
+    ["诊断编号", value.id],
+    ["错误代码", value.code],
+    ["阶段", value.stage],
+    ["命令", value.commandLine],
+    ["工作目录", value.cwd],
+    ["系统错误", value.osCode],
+    ["退出码", value.exitCode],
+    ["信号", value.signal],
+    ["日志", value.logPath],
+  ].filter(([, detail]) => detail !== undefined && detail !== null && detail !== "");
+});
 
 // 配置
 const pythonVersion = ref("");
@@ -1113,6 +1206,42 @@ const clearTerminal = () => {
   addTerminalLog("终端已清空", "info");
 };
 
+const copyStartupDiagnostic = async () => {
+  if (!activeDiagnostic.value) return;
+  const content = JSON.stringify(
+    {
+      error: backendEngineStore.error || undefined,
+      recoveryHint: backendEngineStore.recoveryHint || undefined,
+      diagnostic: activeDiagnostic.value,
+    },
+    null,
+    2
+  );
+  try {
+    await copyToClipboard(content);
+    $q.notify({ type: "positive", message: "启动诊断已复制" });
+  } catch (error) {
+    $q.notify({
+      type: "negative",
+      message: `复制启动诊断失败：${error?.message || "未知错误"}`,
+    });
+  }
+};
+
+const openStartupLog = async () => {
+  try {
+    const result = await window.electron?.ipcRenderer?.invoke?.("open-startup-log");
+    if (!result?.success) {
+      throw new Error(result?.error || "无法打开启动日志");
+    }
+  } catch (error) {
+    $q.notify({
+      type: "negative",
+      message: `打开启动日志失败：${error?.message || "未知错误"}`,
+    });
+  }
+};
+
 const flushPendingTerminalLogs = () => {
   terminalFlushTimerId = 0;
   if (pendingTerminalLogs.length === 0) {
@@ -1184,7 +1313,15 @@ const queueTerminalLog = (message, type = "info") => {
 };
 // IPC 监听器处理后端输出
 const handleBackendOutput = (event, data) => {
-  queueTerminalLog(data.message, data.type);
+  if (typeof data === "string") {
+    queueTerminalLog(data, "info");
+    return;
+  }
+  queueTerminalLog(data?.message, data?.type);
+};
+
+const handlePythonInstallPath = (event, path) => {
+  addTerminalLog(`安装包已下载至: ${path}`, "info");
 };
 
 const markEnvironmentReadyForRunningProcess = () => {
@@ -1205,31 +1342,31 @@ const markEnvironmentReadyForRunningProcess = () => {
 const setServiceStartingFromProcess = () => {
   markEnvironmentReadyForRunningProcess();
   currentStep.value = 3;
-  serviceStatus.value = "starting";
-  serviceStatusText.value = "进程已启动，等待接口就绪...";
+  backendEngineStore.setPreparing("verifying", {
+    processRunning: true,
+    ready: false,
+  });
 };
 
 // 检查服务状态的函数
 const checkServiceStatus = async () => {
   try {
     const result = await window.electron.ipcRenderer.invoke("check-backend-status");
-    if (result.success && result.running) {
-      if (observedBackendRunning.value) {
-        serviceStatus.value = "running";
-        serviceStatusText.value = "运行中";
-        // 设置环境状态为已配置
+    if (result?.success) {
+      backendEngineStore.applyServiceEvent(result);
+      if (result.state === "failed" || result.state === "stopping") {
+        return;
+      } else if (result.running || result.ready) {
         markEnvironmentReadyForRunningProcess();
-      } else {
+      } else if (result.processRunning && (!result.state || result.state === "starting")) {
         setServiceStartingFromProcess();
       }
-    } else {
-      serviceStatus.value = "stopped";
-      serviceStatusText.value = "已停止";
     }
   } catch (error) {
     console.error("检查服务状态失败:", error);
-    serviceStatus.value = "stopped";
-    serviceStatusText.value = "已停止";
+    if (!backendEngineStore.processRunning) {
+      backendEngineStore.setStopped();
+    }
   }
 };
 
@@ -1621,20 +1758,28 @@ const syncServiceProcessStatus = async () => {
 
   try {
     const result = await window.electron.ipcRenderer.invoke("check-backend-status");
-    if (result.success && result.running) {
+    if (result?.success) {
+      backendEngineStore.applyServiceEvent(result);
+    }
+    if (result?.success && (result.state === "failed" || result.state === "stopping")) {
+      return;
+    }
+    if (result?.success && (result.running || result.ready)) {
+      markEnvironmentReadyForRunningProcess();
+      return;
+    }
+    if (result?.success && result.processRunning) {
       setServiceStartingFromProcess();
       return;
     }
 
     if (!isBackendPreparing.value && serviceStatus.value === "starting") {
-      serviceStatus.value = "stopped";
-      serviceStatusText.value = "已停止";
+      backendEngineStore.setStopped(result || {});
     }
   } catch (error) {
     console.error("同步服务进程状态失败:", error);
     if (!isBackendPreparing.value && serviceStatus.value === "starting") {
-      serviceStatus.value = "stopped";
-      serviceStatusText.value = "已停止";
+      backendEngineStore.setFailed(error?.message || "同步服务进程状态失败");
     }
   }
 };
@@ -2108,36 +2253,41 @@ const startService = async () => {
     modelDir: backendConfig.modelDir || "",
   });
   if (!pathsValid) {
-    serviceStatus.value = "stopped";
-    serviceStatusText.value = "已停止";
-    return;
+    backendEngineStore.setStopped();
+    return { success: false, error: "后端路径配置无效" };
   }
 
   serviceLoading.value = true;
-  serviceStatus.value = "starting";
-  serviceStatusText.value = "启动中...";
+  backendEngineStore.setPreparing("startingEngine");
   addTerminalLog(
     `启动后端服务... 端口: ${backendConfig.port}, 设备: ${backendConfig.device}, 模型: ${backendConfig.model}`,
     "info"
   );
 
   try {
-    const result = await window.electron.ipcRenderer.invoke(
-      "start-backend-service",
-      {
-        port: backendConfig.port,
-        device: backendConfig.device,
-        model: backendConfig.model,
-        modelDir: backendConfig.modelDir || "",
-        samReleaseBeforeProcessing: backendConfig.samReleaseBeforeProcessing,
-      }
-    );
+    const options = {
+      port: backendConfig.port,
+      device: backendConfig.device,
+      model: backendConfig.model,
+      modelDir: backendConfig.modelDir || "",
+      samReleaseBeforeProcessing: backendConfig.samReleaseBeforeProcessing,
+    };
+    const startAction = getBackendEngineAction("start");
+    const result = startAction
+      ? await startAction(options)
+      : await window.electron.ipcRenderer.invoke("start-backend-service", options);
 
     if (result.success) {
       const actualPort = Number(result.port || backendConfig.port);
       await syncRuntimeBackendPort(actualPort);
-      serviceStatus.value = "running";
-      serviceStatusText.value = "运行中";
+      if (!startAction) {
+        backendEngineStore.setRunning({
+          ...result,
+          port: actualPort,
+          processRunning: true,
+          ready: true,
+        });
+      }
       addTerminalLog(
         `后端服务启动成功，端口: ${actualPort}`,
         "success"
@@ -2147,18 +2297,21 @@ const startService = async () => {
         "success"
       );
       addTerminalLog(
-        `请耐心等待直到本页面出现以下内容：INFO: Uvicorn running on http://127.0.0.1:${actualPort} (Press CTRL+C to quit)`,
+        "后端健康检查已通过，可以开始使用。",
         "success"
       );
     } else {
-      serviceStatus.value = "stopped";
-      serviceStatusText.value = "已停止";
+      backendEngineStore.setFailed(result);
       addTerminalLog(`后端服务启动失败: ${result.error}`, "error");
+      if (result.recoveryHint) {
+        addTerminalLog(result.recoveryHint, "warning");
+      }
     }
+    return result;
   } catch (error) {
-    serviceStatus.value = "stopped";
-    serviceStatusText.value = "已停止";
+    backendEngineStore.setFailed(error?.message || "后端服务启动失败");
     addTerminalLog(`后端服务启动失败: ${error.message}`, "error");
+    return { success: false, error: error?.message || "后端服务启动失败" };
   } finally {
     serviceLoading.value = false;
   }
@@ -2167,24 +2320,37 @@ const startService = async () => {
 // 停止服务
 const stopService = async () => {
   serviceLoading.value = true;
-  serviceStatus.value = "stopping";
-  serviceStatusText.value = "停止中...";
+  backendEngineStore.setStopping({
+    processRunning: backendEngineStore.processRunning,
+  });
   addTerminalLog("停止后端服务...", "info");
 
   try {
-    const result = await window.electron.ipcRenderer.invoke(
-      "stop-backend-service"
-    );
+    const stopAction = getBackendEngineAction("stop");
+    const result = stopAction
+      ? await stopAction()
+      : await window.electron.ipcRenderer.invoke("stop-backend-service");
 
-    if (result.success) {
-      serviceStatus.value = "stopped";
-      serviceStatusText.value = "已停止";
-      addTerminalLog("后端服务已停止", "success");
+    if (backendEngineStore.applyStopResult(result)) {
+      addTerminalLog(
+        result?.cancelled ? "已取消正在进行的后端启动" : "后端服务已停止",
+        "success"
+      );
     } else {
-      addTerminalLog(`停止后端服务失败: ${result.error}`, "error");
+      addTerminalLog(`停止后端服务失败: ${result?.error || "未知错误"}`, "error");
+      await checkServiceStatus();
+      if (backendEngineStore.status === "stopping") {
+        backendEngineStore.setFailed(result);
+      }
     }
+    return result;
   } catch (error) {
     addTerminalLog(`停止后端服务失败: ${error.message}`, "error");
+    await checkServiceStatus();
+    if (backendEngineStore.status === "stopping") {
+      backendEngineStore.setFailed(error?.message || "停止后端服务失败");
+    }
+    return { success: false, error: error?.message || "停止后端服务失败" };
   } finally {
     serviceLoading.value = false;
   }
@@ -2192,10 +2358,34 @@ const stopService = async () => {
 
 // 重启服务
 const restartService = async () => {
-  await stopService();
-  setTimeout(() => {
-    startService();
-  }, 2000);
+  fallbackMatDefaultModelIfNeeded({ notify: true, log: true });
+  const restartAction = getBackendEngineAction("restart");
+  if (!restartAction) {
+    const stopResult = await stopService();
+    if (stopResult?.success || !backendEngineStore.processRunning) {
+      return await startService();
+    }
+    return stopResult;
+  }
+
+  serviceLoading.value = true;
+  addTerminalLog("重启后端服务...", "info");
+  try {
+    const result = await restartAction({
+      port: backendConfig.port,
+      device: backendConfig.device,
+      model: backendConfig.model,
+      modelDir: backendConfig.modelDir || "",
+      samReleaseBeforeProcessing: backendConfig.samReleaseBeforeProcessing,
+    });
+    addTerminalLog(
+      result?.success ? "后端服务重启成功" : `后端服务重启失败: ${result?.error}`,
+      result?.success ? "success" : "error"
+    );
+    return result;
+  } finally {
+    serviceLoading.value = false;
+  }
 };
 
 // 执行命令
@@ -2234,11 +2424,10 @@ onMounted(() => {
     checkEnvironment();
   }
   if (window.electron && window.electron.ipcRenderer) {
-    window.electron.ipcRenderer.on('backend-output', handleBackendOutput);
-    // 监听Python安装路径消息
-    window.electron.ipcRenderer.on('python-install-path', (event, path) => {
-      addTerminalLog(`安装包已下载至: ${path}`, 'info');
-    });
+    removeBackendOutputListener =
+      window.electron.ipcRenderer.on('backend-output', handleBackendOutput) || null;
+    removePythonInstallPathListener =
+      window.electron.ipcRenderer.on('python-install-path', handlePythonInstallPath) || null;
   }
   if (typeof window !== "undefined" && window.__MOONSHINE_E2E__ === true) {
     window.__MOONSHINE_BACKEND_MANAGER_TEST__ = {
@@ -2269,9 +2458,10 @@ onMounted(() => {
   }
 });
 onUnmounted(() => {
-  if (window.electron && window.electron.ipcRenderer) {
-    window.electron.ipcRenderer.removeListener('backend-output', handleBackendOutput);
-  }
+  removeBackendOutputListener?.();
+  removeBackendOutputListener = null;
+  removePythonInstallPathListener?.();
+  removePythonInstallPathListener = null;
   if (typeof window !== "undefined" && window.__MOONSHINE_BACKEND_MANAGER_TEST__) {
     delete window.__MOONSHINE_BACKEND_MANAGER_TEST__;
   }
@@ -2397,6 +2587,28 @@ onUnmounted(() => {
 .terminal-line {
   margin-bottom: 2px;
   word-wrap: break-word;
+}
+
+.diagnostic-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.diagnostic-output {
+  max-height: 160px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.08);
+  color: inherit;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  user-select: text;
 }
 .terminal-line--info {
   color: #ffffff;

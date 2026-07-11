@@ -482,22 +482,22 @@ function runAssertions() {
   assertPattern({
     file: "src-electron/electron-main.js",
     description: "Electron main checks backend paths before service startup",
-    pattern: /ipcMain\.handle\("start-backend-service"[\s\S]*buildBackendPathValidationResult\(\{[\s\S]*backendProjectPath: global\.projectPath,/,
+    pattern: /async function launchBackendService\(event, config, signal\)[\s\S]*buildBackendPathValidationResult\(\{[\s\S]*backendProjectPath: global\.projectPath,[\s\S]*ipcMain\.handle\("start-backend-service"[\s\S]*launchBackendService\(event, config, abortController\.signal\)/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",
     description: "Packaged backend startup honors the configured model directory before falling back to bundled models",
-    pattern: /function resolveEffectiveModelDir\(input = \{\}\)[\s\S]*const configuredModelDir = String\(modelDir \|\| ""\)\.trim\(\);[\s\S]*return configuredModelDir \|\| getEffectiveBundledModelDir\(\);[\s\S]*if \(isBundledBackendMode\(global\.projectPath\)\)[\s\S]*const effectiveModelDir = resolveEffectiveModelDir\(\{[\s\S]*modelDir: config\?\.modelDir \|\| "",[\s\S]*args\.push\(`--model-dir=\$\{effectiveModelDir\}`\)/,
+    pattern: /function resolveEffectiveModelDir\(input = \{\}\)[\s\S]*const configuredModelDir = String\(modelDir \|\| ""\)\.trim\(\);[\s\S]*return configuredModelDir \|\| getEffectiveBundledModelDir\(\);[\s\S]*if \(isBundledBackendMode\(global\.projectPath\)\)[\s\S]*const effectiveModelDir = resolveEffectiveModelDir\(\{[\s\S]*modelDir: (?:config\?\.|launchConfig\.)modelDir \|\| "",[\s\S]*args\.push\(`--model-dir=\$\{effectiveModelDir\}`\)/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",
-    description: "Bundled runtime preparation skips relocation only after Python and backend dependencies are usable",
-    pattern: /async function verifyBundledPythonRuntime\(options = \{\}\)[\s\S]*const checkDependencies = options\.checkDependencies === true;[\s\S]*import fastapi,uvicorn,numpy,PIL,torch,transformers[\s\S]*const existingRuntime = await verifyBundledPythonRuntime\(\{[\s\S]*checkDependencies: true,[\s\S]*Bundled Python runtime is already usable\. Refreshing runtime state/,
+    description: "Bundled runtime preparation verifies dependencies through the structured import probe before skipping relocation",
+    pattern: /async function verifyBundledPythonRuntime\(options = \{\}\)[\s\S]*const checkDependencies = options\.checkDependencies === true;[\s\S]*probePythonDependencies\([\s\S]*\["fastapi", "uvicorn", "numpy", "PIL", "torch", "transformers"\][\s\S]*const existingRuntime = await verifyBundledPythonRuntime\(\{[\s\S]*checkDependencies: true,/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",
-    description: "Bundled runtime relocation warnings are downgraded only when the verified runtime is still usable",
-    pattern: /catch \(error\) \{[\s\S]*const fallbackRuntime = await verifyBundledPythonRuntime\(\{[\s\S]*checkDependencies: true,[\s\S]*Bundled runtime relocation reported a warning, but Python is usable/,
+    description: "Bundled runtime relocation warnings preserve structured diagnostics after a successful fallback verification",
+    pattern: /catch \(error\) \{(?=[\s\S]*const fallbackRuntime = await verifyBundledPythonRuntime\(\{[\s\S]*checkDependencies: true)(?=[\s\S]*const relocationFailure = to(?:Logged)?StartupFailure\(error, \{[\s\S]*code: "BUNDLED_RUNTIME_RELOCATION_FAILED")(?=[\s\S]*if \(fallbackRuntime\.success\) \{[\s\S]*sendLog\?\.\([\s\S]*"warning",[\s\S]*\{(?=[\s\S]*diagnostic: relocationFailure\.diagnostic)(?=[\s\S]*recoveryHint: relocationFailure\.recoveryHint)(?=[\s\S]*diagnosticId: relocationFailure\.diagnostic(?:\?\.|\.)id))[\s\S]*/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",
@@ -506,43 +506,74 @@ function runAssertions() {
   });
   assertPatternOrder({
     file: "src-electron/electron-main.js",
-    description: "Electron main resolves an available backend port before spawning backend",
+    description: "Electron main resolves an available backend port before delegating startup to BackendProcessSupervisor",
     patterns: [
-      /const portResolution = await resolveAvailableBackendPort\(config\?\.port\);/,
+      /const portResolution = await resolveAvailableBackendPort\((?:config\?\.|launchConfig\.)port\);/,
       /`--port=\$\{portResolution\.port\}`/,
-      /backendProcess = spawn\(backendPython, args,/,
-      /backendServicePort = portResolution\.port;/,
+      /const startResult = await backendSupervisor\.start\(\{/,
+      /port: portResolution\.port,/,
     ],
   });
   assertPattern({
     file: "src-electron/electron-main.js",
-    description: "Backend startup returns the actual runtime port",
-    pattern: /return \{[\s\S]*success: true,[\s\S]*port: portResolution\.port,[\s\S]*requestedPort: portResolution\.requestedPort,[\s\S]*portChanged: portResolution\.portChanged,/,
+    description: "Electron main constructs the shared BackendProcessSupervisor",
+    pattern: /backendSupervisor\s*=\s*new BackendProcessSupervisor\(\{/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",
-    description: "Backend status reports the current runtime port",
-    pattern: /ipcMain\.handle\("check-backend-status"[\s\S]*port: backendServicePort,/,
+    description: "Backend startup IPC returns the supervisor result with the actual runtime port",
+    pattern: /async function launchBackendService\(event, config, signal\)[\s\S]*const startResult = await backendSupervisor\.start\(\{[\s\S]*return \{[\s\S]*\.\.\.startResult,[\s\S]*requestedPort: portResolution\.requestedPort,[\s\S]*portChanged: portResolution\.portChanged,[\s\S]*ipcMain\.handle\("start-backend-service"[\s\S]*launchBackendService\(event, config, abortController\.signal\)/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Backend stop IPC delegates to BackendProcessSupervisor",
+    pattern: /async function stopBackendServiceAndPendingLaunch\(reason\)[\s\S]*let stopResult = await backendSupervisor\.stop\(\);[\s\S]*ipcMain\.handle\("stop-backend-service"[\s\S]*stopBackendServiceAndPendingLaunch\("Backend stop was requested\."\)/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Backend status IPC delegates readiness semantics to BackendProcessSupervisor",
+    pattern: /ipcMain\.handle\("check-backend-status", async \(\) => (?:backendSupervisor\.getStatus\(\)|\{\s*return backendSupervisor\.getStatus\(\);\s*\})\);/,
+  });
+  assertAbsentPattern({
+    file: "src-electron/electron-main.js",
+    description: "Electron main no longer maintains legacy backend process or port globals",
+    pattern: /\bbackendProcess\b|\bbackendServicePort\b/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Backend readiness uses the uncached health endpoint and validates its JSON contract",
+    pattern: /async function probeBackendHealth\(port, options = \{\}\)[\s\S]*\/api\/v1\/health\?_=[\s\S]*cache: "no-store",[\s\S]*"Cache-Control": "no-cache, no-store, must-revalidate",[\s\S]*const body = await response\.json\(\);[\s\S]*return body\?\.status === "ok";/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Backend output keeps legacy fields and adds lifecycle diagnostic metadata",
+    pattern: /function createBackendOutputPayload\(message, type = "info", metadata = \{\}\)[\s\S]*message: String\(message \?\? ""\),[\s\S]*type,[\s\S]*stream: metadata\.stream[\s\S]*stage: metadata\.stage[\s\S]*timestamp,[\s\S]*diagnosticId:/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Startup log IPC accepts no path and opens only the application startup log",
+    pattern: /ipcMain\.handle\("open-startup-log", async \(\) => \{[\s\S]*shell\.openPath\(STARTUP_LOG_PATH\)[\s\S]*logPath: STARTUP_LOG_PATH/,
   });
   assertPatternOrder({
     file: "src/layouts/MainLayout.vue",
-    description: "Silent backend auto-start syncs actual backend port before health checks",
+    description: "Automatic backend startup reuses the shared lifecycle action and syncs the actual runtime port",
     patterns: [
-      /const startResult = await invoke\("start-backend-service",/,
-      /await syncBackendRuntimePort\(startResult\.port \|\| generalConfig\.backendPort \|\| 8080\);/,
-      /backendEngineStore\.setPhase\("verifying"\);/,
-      /reachable = await checkBackendStatus\(\{ notifyOnFailure: false \}\);/,
+      /const startBackendService = async \(options = \{\}\) => \{/,
+      /const result = await invoke\("start-backend-service", options\);/,
+      /await syncBackendRuntimePort\(actualPort\);/,
+      /backendEngineStore\.setRunning\(\{/,
+      /const startResult = await startBackendService\(\{/,
     ],
   });
   assertPatternOrder({
     file: "src/components/global/BackendManager.vue",
-    description: "Backend manager syncs and displays the actual runtime port after manual start",
+    description: "Backend manager delegates manual startup to the shared lifecycle action and syncs the actual runtime port",
     patterns: [
-      /const result = await window\.electron\.ipcRenderer\.invoke\(/,
+      /const startAction = getBackendEngineAction\("start"\);/,
+      /\? await startAction\(options\)/,
       /const actualPort = Number\(result\.port \|\| backendConfig\.port\);/,
       /await syncRuntimeBackendPort\(actualPort\);/,
       /后端服务启动成功，端口: \$\{actualPort\}/,
-      /已更新前端 API 端口配置为: \$\{actualPort\}/,
     ],
   });
   assertPattern({
@@ -692,7 +723,7 @@ function runAssertions() {
   assertPattern({
     file: "src-electron/electron-main.js",
     description: "Electron confirms window close while image or video tasks are processing",
-    pattern: /const activeProcessingTasks = new Map\(\)[\s\S]*ipcMain\.on\("set-active-processing-task"[\s\S]*mainWindow\.on\("close"[\s\S]*showMessageBoxSync[\s\S]*任务仍在处理中/,
+    pattern: /const activeProcessingTasks = new Map\(\)[\s\S]*ipcMain\.on\("set-active-processing-task"[\s\S]*(?:mainWindow|windowInstance)\.on\("close"[\s\S]*showMessageBoxSync[\s\S]*任务仍在处理中/,
   });
   assertPattern({
     file: "src/pages/IndexPage.vue",
