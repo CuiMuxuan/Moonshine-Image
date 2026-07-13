@@ -112,7 +112,7 @@ function runAssertions() {
   assertPattern({
     file: "src/components/global/GlobalSettings.vue",
     description: "File management exposes configurable temp cleanup controls",
-    pattern: /临时文件清理[\s\S]*允许自动清理[\s\S]*v-model="localConfig\.fileManagement\.tempCleanup\.enabled"[\s\S]*应用启动时执行[\s\S]*v-model="localConfig\.fileManagement\.tempCleanup\.onStartup"[\s\S]*v-model\.number="localConfig\.fileManagement\.tempCleanup\.maxAgeDays"[\s\S]*cleanup-app-temp-files/,
+    pattern: /v-bind="settingsHelp\.tempCleanup"[\s\S]*data-testid="global-settings-cleanup-temp-files-button"[\s\S]*v-model="localConfig\.fileManagement\.tempCleanup\.enabled"[\s\S]*data-testid="global-settings-temp-cleanup-enabled"[\s\S]*v-model="localConfig\.fileManagement\.tempCleanup\.onStartup"[\s\S]*data-testid="global-settings-temp-cleanup-on-startup"[\s\S]*v-model\.number="localConfig\.fileManagement\.tempCleanup\.maxAgeDays"[\s\S]*data-testid="global-settings-temp-cleanup-max-age-days"[\s\S]*cleanup-app-temp-files/,
   });
   assertPattern({
     file: "src/components/global/GlobalSettings.vue",

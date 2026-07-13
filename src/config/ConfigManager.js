@@ -3,6 +3,7 @@ import {
   validateShortcutConfig,
 } from "src/utils/shortcutConfig";
 import {
+  APP_CONFIG_INTEGER_LIMITS,
   alignConfigWithDefaultSchema,
   CONFIG_SCHEMA_VERSION,
   createDefaultAppConfig,
@@ -10,6 +11,7 @@ import {
   DEFAULT_BRAND_COLORS,
   DEFAULT_IMAGE_BRUSH,
   DEFAULT_IMAGE_OUTPUT_QUALITY,
+  DEFAULT_MANAGED_FOLDER_NAMES,
   DEFAULT_MASKING_CONFIG,
   DEFAULT_TEMP_CLEANUP,
   DEFAULT_THEME_MODE,
@@ -19,9 +21,13 @@ import {
   IMAGE_PROCESSING_METHOD_OPTIONS,
   IMAGE_OUTPUT_FORMAT_OPTIONS,
   IMAGE_OUTPUT_NAMING_MODES,
+  getManagedFolderNameValidationError,
+  isFiniteIntegerInRange,
   isPlainObject,
   isTypeCompatible,
   migrateLegacyConfigShape,
+  normalizeIntegerInRange,
+  normalizeManagedFolderName,
   UI_BUTTON_SIZE_OPTIONS,
   VIDEO_ENCODING_QUALITY_PRESET_OPTIONS,
   VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS,
@@ -40,7 +46,11 @@ const normalizeHexColor = (value, fallback) => {
 };
 
 const normalizeBrushConfig = (brush = {}, fallback = DEFAULT_IMAGE_BRUSH) => ({
-  size: Math.max(1, Math.round(Number(brush.size ?? fallback.size) || fallback.size)),
+  size: normalizeIntegerInRange(
+    brush.size,
+    fallback.size,
+    APP_CONFIG_INTEGER_LIMITS.brushSize
+  ),
   color: normalizeHexColor(brush.color, fallback.color),
   alpha: clamp(Number(brush.alpha ?? fallback.alpha) || fallback.alpha, 0.05, 1),
 });
@@ -143,11 +153,8 @@ const normalizeModelDir = (value) => {
   return value;
 };
 
-const normalizeInteger = (value, fallback, min, max = Number.MAX_SAFE_INTEGER) => {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return fallback;
-  return clamp(Math.round(numeric), min, max);
-};
+const normalizeInteger = (value, fallback, min, max = Number.POSITIVE_INFINITY) =>
+  normalizeIntegerInRange(value, fallback, { min, max });
 
 export {
   DEFAULT_BRAND_COLORS,
@@ -235,26 +242,23 @@ export class ConfigManager {
       {
         value: config.advanced?.imageHistoryLimit,
         name: "图片历史记录上限",
-        min: 1,
+        ...APP_CONFIG_INTEGER_LIMITS.imageHistoryLimit,
       },
       {
         value: config.advanced?.imageWarningSize,
         name: "图片警告大小",
-        min: 1,
+        ...APP_CONFIG_INTEGER_LIMITS.imageWarningSize,
       },
       {
         value: config.advanced?.stateSaveLimit,
         name: "状态保存上限大小",
-        min: 10,
+        ...APP_CONFIG_INTEGER_LIMITS.stateSaveLimit,
       },
     ];
 
     numberFields.forEach((field) => {
-      if (typeof field.value !== "number" || Number.isNaN(field.value) || field.value < field.min) {
-        errors.push(`${field.name}必须大于等于 ${field.min}。`);
-      }
-      if (field.max && field.value > field.max) {
-        errors.push(`${field.name}不能超过 ${field.max}。`);
+      if (!isFiniteIntegerInRange(field.value, field)) {
+        errors.push(`${field.name}必须是 ${field.min}-${field.max} 范围内的整数。`);
       }
     });
 
@@ -363,6 +367,21 @@ export class ConfigManager {
       }
     });
 
+    const fileManagement = config.fileManagement || {};
+    if (typeof fileManagement.downloadPath !== "string") {
+      errors.push("下载与导出路径必须是字符串。");
+    }
+    if (typeof fileManagement.tempPath !== "string") {
+      errors.push("临时文件路径必须是字符串。");
+    }
+    [
+      { value: fileManagement.imageFolderName, name: "图片输出" },
+      { value: fileManagement.videoFolderName, name: "视频输出" },
+    ].forEach(({ value, name }) => {
+      const error = getManagedFolderNameValidationError(value);
+      if (error) errors.push(`${name}${error}`);
+    });
+
     const tempCleanup = config.fileManagement?.tempCleanup || {};
     const tempCleanupKeys = Object.keys(tempCleanup);
     if (
@@ -403,8 +422,8 @@ export class ConfigManager {
         return;
       }
 
-      if (typeof value.size !== "number" || Number.isNaN(value.size) || value.size < 1) {
-        errors.push(`${name}的大小必须大于等于 1。`);
+      if (!isFiniteIntegerInRange(value.size, APP_CONFIG_INTEGER_LIMITS.brushSize)) {
+        errors.push(`${name}的大小必须是 1-120 范围内的整数。`);
       }
 
       if (typeof value.alpha !== "number" || Number.isNaN(value.alpha)) {
@@ -434,16 +453,9 @@ export class ConfigManager {
 
     videoFields.forEach((field) => {
       const value = video[field.key];
-      if (typeof value !== "number" || Number.isNaN(value)) {
-        errors.push(`${field.name}必须是数字。`);
-        return;
-      }
-      if (value < field.min) {
-        errors.push(`${field.name}必须大于等于 ${field.min}。`);
-        return;
-      }
-      if (field.max !== undefined && value > field.max) {
-        errors.push(`${field.name}必须在 ${field.min}-${field.max} 范围内。`);
+      if (!isFiniteIntegerInRange(value, field)) {
+        const range = field.max === undefined ? `大于等于 ${field.min}` : `${field.min}-${field.max}`;
+        errors.push(`${field.name}必须是${range}的整数。`);
       }
     });
 
@@ -584,6 +596,22 @@ export class ConfigManager {
 
     merged.fileManagement = {
       ...merged.fileManagement,
+      downloadPath:
+        typeof merged.fileManagement?.downloadPath === "string"
+          ? merged.fileManagement.downloadPath
+          : this.defaultConfig.fileManagement.downloadPath,
+      tempPath:
+        typeof merged.fileManagement?.tempPath === "string"
+          ? merged.fileManagement.tempPath
+          : this.defaultConfig.fileManagement.tempPath,
+      imageFolderName: normalizeManagedFolderName(
+        merged.fileManagement?.imageFolderName,
+        DEFAULT_MANAGED_FOLDER_NAMES.image
+      ),
+      videoFolderName: normalizeManagedFolderName(
+        merged.fileManagement?.videoFolderName,
+        DEFAULT_MANAGED_FOLDER_NAMES.video
+      ),
       tempCleanup: {
         enabled: normalizeBoolean(
           merged.fileManagement?.tempCleanup?.enabled,
@@ -616,6 +644,24 @@ export class ConfigManager {
 
     merged.advanced = {
       ...merged.advanced,
+      imageHistoryLimit: normalizeInteger(
+        merged.advanced?.imageHistoryLimit,
+        this.defaultConfig.advanced.imageHistoryLimit,
+        APP_CONFIG_INTEGER_LIMITS.imageHistoryLimit.min,
+        APP_CONFIG_INTEGER_LIMITS.imageHistoryLimit.max
+      ),
+      imageWarningSize: normalizeInteger(
+        merged.advanced?.imageWarningSize,
+        this.defaultConfig.advanced.imageWarningSize,
+        APP_CONFIG_INTEGER_LIMITS.imageWarningSize.min,
+        APP_CONFIG_INTEGER_LIMITS.imageWarningSize.max
+      ),
+      stateSaveLimit: normalizeInteger(
+        merged.advanced?.stateSaveLimit,
+        this.defaultConfig.advanced.stateSaveLimit,
+        APP_CONFIG_INTEGER_LIMITS.stateSaveLimit.min,
+        APP_CONFIG_INTEGER_LIMITS.stateSaveLimit.max
+      ),
       imageProcessingMethod: IMAGE_PROCESSING_METHOD_OPTIONS.includes(
         merged.advanced?.imageProcessingMethod
       )

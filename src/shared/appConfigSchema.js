@@ -42,6 +42,71 @@ export const IMAGE_OUTPUT_FORMAT_OPTIONS = Object.freeze([
 ]);
 export const DEFAULT_IMAGE_OUTPUT_QUALITY = 95;
 
+export const APP_CONFIG_INTEGER_LIMITS = Object.freeze({
+  imageHistoryLimit: Object.freeze({ min: 1, max: 100 }),
+  imageWarningSize: Object.freeze({ min: 1, max: 1000 }),
+  stateSaveLimit: Object.freeze({ min: 10, max: 500 }),
+  brushSize: Object.freeze({ min: 1, max: 120 }),
+  minMaskArea: Object.freeze({ min: 1, max: 1000000 }),
+  batchFrameCount: Object.freeze({ min: 1 }),
+});
+
+export const DEFAULT_MANAGED_FOLDER_NAMES = Object.freeze({
+  image: "images",
+  video: "videos",
+});
+
+const WINDOWS_RESERVED_FOLDER_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+const WINDOWS_INVALID_FOLDER_CHARACTERS = /[<>:"/\\|?*]/;
+const containsControlCharacter = (value) =>
+  Array.from(value).some((character) => character.charCodeAt(0) <= 31);
+
+export const getManagedFolderNameValidationError = (value) => {
+  if (typeof value !== "string") {
+    return "目录名必须是字符串。";
+  }
+  if (!value || !value.trim()) {
+    return "目录名不能为空。";
+  }
+  if (value === "." || value === "..") {
+    return "目录名不能使用点目录。";
+  }
+  if (WINDOWS_INVALID_FOLDER_CHARACTERS.test(value) || containsControlCharacter(value)) {
+    return "目录名不能包含路径分隔符或系统保留字符。";
+  }
+  if (/[ .]$/.test(value)) {
+    return "目录名不能以空格或句点结尾。";
+  }
+
+  const windowsBaseName = value.split(".", 1)[0].replace(/[ .]+$/g, "");
+  if (WINDOWS_RESERVED_FOLDER_NAME.test(windowsBaseName)) {
+    return "目录名不能使用 Windows 系统保留名称。";
+  }
+  return "";
+};
+
+export const isValidManagedFolderName = (value) =>
+  getManagedFolderNameValidationError(value) === "";
+
+export const normalizeManagedFolderName = (value, fallback) =>
+  isValidManagedFolderName(value) ? value : fallback;
+
+export const isFiniteIntegerInRange = (value, limits = {}) =>
+  typeof value === "number" &&
+  Number.isFinite(value) &&
+  Number.isInteger(value) &&
+  (limits.min === undefined || value >= limits.min) &&
+  (limits.max === undefined || value <= limits.max);
+
+export const normalizeIntegerInRange = (value, fallback, limits = {}) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  const rounded = Math.round(numeric);
+  const minimum = limits.min ?? Number.NEGATIVE_INFINITY;
+  const maximum = limits.max ?? Number.POSITIVE_INFINITY;
+  return Math.min(maximum, Math.max(minimum, rounded));
+};
+
 export const DEFAULT_BRAND_COLORS = Object.freeze({
   primary: "#8a71d4",
   secondary: "#c1bee6",
@@ -119,8 +184,8 @@ export const createDefaultAppConfig = () => ({
   fileManagement: {
     downloadPath: "",
     tempPath: "",
-    imageFolderName: "images",
-    videoFolderName: "videos",
+    imageFolderName: DEFAULT_MANAGED_FOLDER_NAMES.image,
+    videoFolderName: DEFAULT_MANAGED_FOLDER_NAMES.video,
     tempCleanup: { ...DEFAULT_TEMP_CLEANUP },
   },
   advanced: {
@@ -253,6 +318,15 @@ export const migrateLegacyConfigShape = (rawConfig = {}) => {
       };
       delete migrated.fileManagement.autoCleanTemp;
     }
+
+    migrated.fileManagement.imageFolderName = normalizeManagedFolderName(
+      migrated.fileManagement.imageFolderName,
+      DEFAULT_MANAGED_FOLDER_NAMES.image
+    );
+    migrated.fileManagement.videoFolderName = normalizeManagedFolderName(
+      migrated.fileManagement.videoFolderName,
+      DEFAULT_MANAGED_FOLDER_NAMES.video
+    );
   }
 
   if (

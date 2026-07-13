@@ -18,38 +18,67 @@
 
       <q-tab-panels v-model="tab" animated class="bg-transparent">
         <q-tab-panel name="info" class="q-pa-none">
-          <div class="info-grid">
-            <div class="info-item">
-              <span class="label">文件名</span>
-              <span class="value ellipsis">{{ videoInfo?.name || "-" }}</span>
+          <section class="video-info" aria-label="视频信息">
+            <div class="video-file-summary">
+              <div class="video-file-icon" aria-hidden="true">
+                <q-icon name="movie" size="22px" />
+              </div>
+              <div class="video-file-copy">
+                <div class="video-file-heading">
+                  <span
+                    class="video-file-name"
+                    tabindex="0"
+                    :aria-label="`文件名：${displayFileName}`"
+                    @click="fileNameTooltipVisible = true"
+                    @focus="fileNameTooltipVisible = true"
+                    @blur="fileNameTooltipVisible = false"
+                    @keydown.esc.stop="fileNameTooltipVisible = false"
+                  >
+                    {{ displayFileName }}
+                    <q-tooltip v-model="fileNameTooltipVisible" class="video-file-tooltip">
+                      {{ displayFileName }}
+                    </q-tooltip>
+                  </span>
+                  <q-badge
+                    outline
+                    :color="videoStore.currentSourceIsReplacement ? 'orange-8' : 'primary'"
+                    class="video-source-badge"
+                  >
+                    {{ sourceLabel }}
+                  </q-badge>
+                </div>
+              </div>
             </div>
-            <div class="info-item">
-              <span class="label">时长</span>
-              <span class="value">{{ durationText }}</span>
+
+            <dl class="media-info-grid" aria-label="媒体信息">
+              <div class="media-info-item">
+                <dt>时长</dt>
+                <dd :class="{ 'is-pending': metadataPending }">{{ durationText }}</dd>
+              </div>
+              <div class="media-info-item">
+                <dt>原始分辨率</dt>
+                <dd :class="{ 'is-pending': metadataPending }">{{ originalSizeText }}</dd>
+              </div>
+              <div class="media-info-item">
+                <dt>显示尺寸</dt>
+                <dd :class="{ 'is-pending': metadataPending }">{{ displaySizeText }}</dd>
+              </div>
+              <div class="media-info-item">
+                <dt>文件大小</dt>
+                <dd>{{ fileSizeText }}</dd>
+              </div>
+            </dl>
+
+            <div class="processing-info-section">
+              <div class="info-section-title">处理信息</div>
+              <dl class="processing-info-grid" aria-label="处理信息">
+                <div class="media-info-item">
+                  <dt>每批帧数</dt>
+                  <dd>{{ batchSizeText }}</dd>
+                </div>
+              </dl>
             </div>
-            <div class="info-item">
-              <span class="label">原始分辨率</span>
-              <span class="value">{{ exportSizeText }}</span>
-            </div>
-            <div class="info-item">
-              <span class="label">预览分辨率</span>
-              <span class="value">{{ previewSizeText }}</span>
-            </div>
-            <div class="info-item">
-              <span class="label">文件大小</span>
-              <span class="value">{{ fileSizeText }}</span>
-            </div>
-            <div class="info-item">
-              <span class="label">每批帧数</span>
-              <span class="value">{{ computedBatchSize || "-" }}</span>
-            </div>
-            <div class="info-item">
-              <span class="label">当前来源</span>
-              <span class="value">
-                {{ videoStore.currentSourceIsReplacement ? "替换后视频" : "原始上传视频" }}
-              </span>
-            </div>
-          </div>
+          </section>
         </q-tab-panel>
 
         <q-tab-panel name="runtime" class="q-pa-none">
@@ -484,6 +513,11 @@ const props = defineProps({
     type: Number,
     default: 0,
   },
+  metadataState: {
+    type: String,
+    default: "",
+    validator: (value) => ["", "idle", "loading", "ready", "failed"].includes(value),
+  },
   canRun: {
     type: Boolean,
     default: false,
@@ -624,6 +658,7 @@ const normalizeTabName = (value) => {
 
 const tab = ref(normalizeTabName(props.activeTab));
 const showHistoryDialog = ref(false);
+const fileNameTooltipVisible = ref(false);
 const actionButtonsRef = ref(null);
 const actionButtonMode = ref("full");
 let actionButtonsObserver = null;
@@ -632,14 +667,58 @@ const FULL_ACTION_WIDTH = 236;
 const SHORT_ACTION_WIDTH = 150;
 
 const videoInfo = computed(() => videoStore.getVideoFileInfo());
-const durationText = computed(() => formatSeconds(videoStore.videoDuration));
+const isPositiveFinite = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0;
+};
+const normalizeDimensionText = (value) => {
+  const match = String(value || "")
+    .trim()
+    .match(/^(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)$/i);
+  if (!match || !isPositiveFinite(match[1]) || !isPositiveFinite(match[2])) return "";
+  return `${Math.round(Number(match[1]))} x ${Math.round(Number(match[2]))}`;
+};
+const displayFileName = computed(() => {
+  const name = String(videoInfo.value?.name || "").trim();
+  return name.split(/[\\/]/).filter(Boolean).pop() || "未命名视频";
+});
+const sourceLabel = computed(() =>
+  videoStore.currentSourceIsReplacement ? "替换源" : "原始视频"
+);
+const normalizedOriginalSize = computed(() => normalizeDimensionText(props.exportSizeText));
+const normalizedDisplaySize = computed(() => normalizeDimensionText(props.previewSizeText));
+const hasResolvedMetadata = computed(
+  () =>
+    isPositiveFinite(videoStore.videoDuration) ||
+    Boolean(normalizedOriginalSize.value) ||
+    Boolean(normalizedDisplaySize.value)
+);
+const metadataPending = computed(() =>
+  props.metadataState ? props.metadataState === "loading" : !hasResolvedMetadata.value
+);
+const metadataFallbackText = computed(() => (metadataPending.value ? "读取中…" : "—"));
+const durationText = computed(() =>
+  isPositiveFinite(videoStore.videoDuration)
+    ? formatSeconds(Number(videoStore.videoDuration))
+    : metadataFallbackText.value
+);
+const originalSizeText = computed(
+  () => normalizedOriginalSize.value || metadataFallbackText.value
+);
+const displaySizeText = computed(
+  () => normalizedDisplaySize.value || metadataFallbackText.value
+);
 const fileSizeText = computed(() => {
-  const size = Number(videoInfo.value?.size || 0);
-  if (!size) return "-";
+  const size = Number(videoInfo.value?.size);
+  if (!Number.isFinite(size) || size <= 0) return "—";
 
   const units = ["B", "KB", "MB", "GB"];
   const index = Math.min(units.length - 1, Math.floor(Math.log(size) / Math.log(1024)));
   return `${(size / 1024 ** index).toFixed(2)} ${units[index]}`;
+});
+const batchSizeText = computed(() => {
+  const size = Number(props.computedBatchSize);
+  return Number.isFinite(size) && size > 0 ? String(Math.round(size)) : "—";
 });
 const backendPreparingText = computed(
   () => props.enginePreparingLabel || props.engineRunTooltip || "正在启动后端服务"
@@ -856,25 +935,148 @@ onUnmounted(() => {
 
 <style scoped>
 .resource-manage {
+  --video-info-border: rgba(17, 24, 39, 0.1);
+  --video-info-label: #6b7280;
+  --video-info-surface: rgba(255, 255, 255, 0.58);
+  --video-info-surface-strong: rgba(249, 250, 251, 0.9);
+  --video-info-value: #111827;
+
   display: flex;
   flex-direction: column;
+  max-width: 100%;
+  min-width: 0;
 }
 
-.info-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 10px;
+.video-info {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
 }
 
-.info-item {
+.video-file-summary {
+  align-items: center;
+  background: var(--video-info-surface-strong);
+  border: 1px solid var(--video-info-border);
+  border-radius: 6px;
   display: flex;
-  justify-content: space-between;
   gap: 10px;
-  font-size: 13px;
+  min-width: 0;
+  padding: 10px;
 }
 
-.label {
-  color: #6b7280;
+.video-file-icon {
+  align-items: center;
+  background: rgba(var(--q-primary-rgb, 25, 118, 210), 0.1);
+  border-radius: 6px;
+  color: var(--q-primary);
+  display: flex;
+  flex: 0 0 36px;
+  height: 36px;
+  justify-content: center;
+  width: 36px;
+}
+
+.video-file-copy,
+.video-file-heading {
+  min-width: 0;
+}
+
+.video-file-copy {
+  flex: 1 1 auto;
+}
+
+.video-file-heading {
+  align-items: flex-start;
+  display: flex;
+  gap: 8px;
+}
+
+.video-file-name {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--video-info-value);
+  display: -webkit-box;
+  flex: 1 1 auto;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.video-file-name:focus-visible {
+  border-radius: 3px;
+  outline: 2px solid var(--q-primary);
+  outline-offset: 2px;
+}
+
+.video-file-tooltip {
+  max-width: min(360px, calc(100vw - 32px));
+  overflow-wrap: anywhere;
+}
+
+.video-source-badge {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  white-space: nowrap;
+}
+
+.media-info-grid,
+.processing-info-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  margin: 10px 0 0;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.media-info-item {
+  background: var(--video-info-surface);
+  border: 1px solid var(--video-info-border);
+  border-radius: 6px;
+  min-width: 0;
+  padding: 9px 10px;
+}
+
+.media-info-item dt,
+.media-info-item dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.media-info-item dt {
+  color: var(--video-info-label);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.media-info-item dd {
+  color: var(--video-info-value);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1.35;
+  margin-top: 4px;
+}
+
+.media-info-item dd.is-pending {
+  color: var(--video-info-label);
+  font-weight: 500;
+}
+
+.processing-info-section {
+  margin-top: 12px;
+  min-width: 0;
+}
+
+.info-section-title {
+  color: var(--video-info-label);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
 }
 
 .field-label {
@@ -882,11 +1084,6 @@ onUnmounted(() => {
   font-size: 12px;
   font-weight: 600;
   margin-bottom: 6px;
-}
-
-.value {
-  color: #111827;
-  text-align: right;
 }
 
 .mask-title-row {
@@ -934,10 +1131,16 @@ onUnmounted(() => {
   white-space: pre-line;
 }
 
-.resource-manage--dark .info-item .label,
-.resource-manage--dark .info-item .value,
+.resource-manage--dark {
+  --video-info-border: rgba(255, 255, 255, 0.1);
+  --video-info-label: #b5b7bd;
+  --video-info-surface: rgba(255, 255, 255, 0.045);
+  --video-info-surface-strong: rgba(255, 255, 255, 0.065);
+  --video-info-value: #f2f3f5;
+}
+
 .resource-manage--dark .field-label {
-  color: #fff;
+  color: #d6d7db;
 }
 
 .mask-list {

@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { resolveVideoEncodingQualityPolicy } from "../src/utils/videoProcessingPolicies.js";
+import { formatTimelineDuration } from "../src/utils/videoTimelineFormat.js";
 import {
   buildProcessingConfigSnapshot,
   hasProcessingConfigMismatch,
@@ -336,6 +337,38 @@ function runAssertions() {
     description: "Unknown video encoding preset falls back to performance",
     actual: resolveVideoEncodingQualityPolicy({ encodingQualityPreset: "unknown" }).preset,
     expected: "performance",
+  });
+
+  logSection("Playback Timeline Format");
+  for (const [input, expected] of [
+    [0, "0.0s"],
+    [1.25, "1.3s"],
+    [9.99, "10.0s"],
+    [59.96, "1m0.0s"],
+    [3599.96, "1h0m0.0s"],
+    [-1, "0.0s"],
+    [Number.NaN, "0.0s"],
+  ]) {
+    assertValue({
+      description: `Video timeline duration formats ${String(input)} with one decimal place`,
+      actual: formatTimelineDuration(input),
+      expected,
+    });
+  }
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video page imports the shared one-decimal timeline formatter",
+    pattern: /import \{ formatTimelineDuration \} from "src\/utils\/videoTimelineFormat";/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Default and fullscreen controls continue to share timelineTimeText",
+    pattern: /(?=[\s\S]*timeline-time-display--dark[\s\S]*\{\{ timelineTimeText \}\})(?=[\s\S]*timeline-time-display--light[\s\S]*\{\{ timelineTimeText \}\})(?=[\s\S]*const timelineTimeText = computed\([\s\S]*formatTimelineDuration\(videoStore\.currentTime\)[\s\S]*formatTimelineDuration\([\s\S]*videoStore\.videoDuration)[\s\S]*/,
+  });
+  assertAbsentPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "Video page no longer keeps a precision-dependent inline timeline formatter",
+    pattern: /const formatTimelineDuration\s*=/,
   });
 
   const samMask = {
@@ -998,9 +1031,9 @@ function runAssertions() {
     pattern: /(?=[\s\S]*emit\('remove-mask', mask\.id\))(?=[\s\S]*"remove-mask")(?![\s\S]*emit\('remove-sam-video-object')(?![\s\S]*"remove-sam-video-object")[\s\S]*/,
   });
   assertPattern({
-    file: "src-electron/electron-main.js",
+    file: "src-electron/config-safety.js",
     description: "App temp cleanup includes persisted SAM video mask asset directories",
-    pattern: /buildTempCleanupTargets[\s\S]*"moonshine-videos"[\s\S]*"moonshine-sam-video-masks"/,
+    pattern: /(?=[\s\S]*buildTempCleanupTargets)(?=[\s\S]*"moonshine-videos")(?=[\s\S]*"moonshine-sam-video-masks")[\s\S]*/,
   });
   assertPattern({
     file: "src/components/video/VideoPreviewOverlay.vue",

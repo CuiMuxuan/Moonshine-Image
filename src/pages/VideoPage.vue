@@ -20,6 +20,7 @@
               :last-output-path="lastOutputPath"
               :processing-succeeded="processingSucceeded"
               :last-output-is-preview="lastOutputIsPreview"
+              :metadata-state="videoMetadataState"
               :preview-trial-seconds="previewTrialSeconds"
               :preview-trial-options="previewTrialOptions"
               :can-replace-source="canReplaceCurrentSource"
@@ -875,6 +876,12 @@ import {
   VIDEO_TASK_META_FILE_NAME,
 } from "src/utils/videoProcessingResume";
 import { resolveVideoEncodingQualityPolicy } from "src/utils/videoProcessingPolicies";
+import { formatTimelineDuration } from "src/utils/videoTimelineFormat";
+import {
+  normalizeVideoPreviewTrialSeconds,
+  resolveVideoPreviewTrialSelection,
+  VIDEO_PREVIEW_TRIAL_DURATIONS,
+} from "src/utils/videoPreviewTrial";
 import {
   buildBackendPathBlockedMessage,
   validateBackendPathsForConfig,
@@ -938,6 +945,7 @@ const lastOutputPath = ref("");
 const lastOutputIsPreview = ref(false);
 const exportFpsMode = ref("source");
 const previewTrialSeconds = ref(3);
+const videoMetadataState = ref("idle");
 const currentModel = ref("lama");
 const VIDEO_PROCESSING_MODEL_IDS = ["lama", "mat", "slbr"];
 const MASK_INPAINT_MODEL_IDS = ["lama", "mat"];
@@ -1031,7 +1039,6 @@ const FINAL_CONCAT_PROGRESS_BASE = 0.9;
 const FINAL_CONCAT_NO_AUDIO_PROGRESS_SPAN = 0.08;
 const FINAL_CONCAT_WITH_AUDIO_PROGRESS_SPAN = 0.05;
 const FINAL_AUDIO_MIX_PROGRESS = 0.95;
-const VIDEO_PREVIEW_TRIAL_DURATIONS = [3, 10];
 const PROCESSING_ETA_MODES = {
   DYNAMIC: "dynamic",
   FREEZE: "freeze",
@@ -1087,6 +1094,10 @@ const exportFps = computed(() => {
 const historyEntries = computed(() => [...videoStore.videoHistory].reverse());
 const canReplaceCurrentSource = computed(
   () => Boolean(lastOutputPath.value) && processingSucceeded.value && !lastOutputIsPreview.value
+);
+
+const configuredPreviewTrialSeconds = computed(() =>
+  normalizeVideoPreviewTrialSeconds(configStore.config.video?.previewTrialSeconds)
 );
 const canOpenOutput = computed(
   () =>
@@ -3106,25 +3117,6 @@ const increaseTimelineZoom = () => {
   setTimelineZoomPercent(timelineZoomPercent.value + timelineZoomStep);
 };
 
-const formatTimelineDuration = (input) => {
-  const totalSeconds = Math.max(Number(input || 0), 0);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds - hours * 3600 - minutes * 60;
-  const normalizedSeconds = Number(
-    seconds.toFixed(seconds < 10 && hours === 0 && minutes === 0 ? 2 : 1)
-  );
-  const secondText = `${normalizedSeconds}s`;
-
-  if (hours > 0) {
-    return `${hours}h${minutes}m${secondText}`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m${secondText}`;
-  }
-  return secondText;
-};
-
 const normalizeVideoResourceTab = (value) => {
   if (value === "masks") return "runtime";
   if (value === "runtime" || value === "info") return value;
@@ -3144,6 +3136,7 @@ const captureVideoUiState = () => ({
   timelineZoomPercent: timelineZoomPercent.value,
   timelineScrollLeft: timelineScrollLeft.value,
   previewTrialSeconds: previewTrialSeconds.value,
+  previewTrialConfigBaseline: configuredPreviewTrialSeconds.value,
   currentModel: currentModel.value,
   modelParameterValues: JSON.parse(JSON.stringify(modelParameterValues.value || {})),
   resourceManageTab: normalizeVideoResourceTab(resourceManageTab.value),
@@ -3180,10 +3173,11 @@ const restoreVideoUiState = async (uiState = {}) => {
   );
   timelineScrollLeft.value = Math.max(0, Number(uiState.timelineScrollLeft || 0));
 
-  const restoredPreviewTrialSeconds = Number(uiState.previewTrialSeconds);
-  if (VIDEO_PREVIEW_TRIAL_DURATIONS.includes(restoredPreviewTrialSeconds)) {
-    previewTrialSeconds.value = restoredPreviewTrialSeconds;
-  }
+  previewTrialSeconds.value = resolveVideoPreviewTrialSelection({
+    configuredValue: configuredPreviewTrialSeconds.value,
+    savedValue: uiState.previewTrialSeconds,
+    savedConfigBaseline: uiState.previewTrialConfigBaseline,
+  });
 
   const restoredPlaybackRate = Number(uiState.playbackRate);
   if (Number.isFinite(restoredPlaybackRate) && restoredPlaybackRate > 0) {
@@ -3533,6 +3527,7 @@ watch(
     }
 
     if (!file) {
+      videoMetadataState.value = "idle";
       timelineRows.value = [];
       sourceFps.value = 30;
       timelineZoomPercent.value = 0;
@@ -3544,6 +3539,8 @@ watch(
       }
       return;
     }
+
+    videoMetadataState.value = "loading";
 
     const mountToken = videoMountLoadingState.externallyManaged
       ? videoMountLoadingState.token
@@ -3567,6 +3564,7 @@ watch(
       );
       await waitForVideoReady(VIDEO_READY_TIMEOUT_MS);
       if (!isActiveVideoMountLoading(mountToken)) return;
+      videoMetadataState.value = "ready";
 
       updateVideoMountLoading(
         mountToken,
@@ -3583,6 +3581,7 @@ watch(
       );
     } catch (error) {
       if (isActiveVideoMountLoading(mountToken)) {
+        videoMetadataState.value = "failed";
         console.warn("Failed to prepare video page:", error);
         $q.notify({
           type: "warning",
@@ -3659,6 +3658,14 @@ watch(
     await nextTick();
     syncTimelineViewport({ center: videoStore.currentTime > 0.0005 });
   }
+);
+
+watch(
+  configuredPreviewTrialSeconds,
+  (seconds) => {
+    previewTrialSeconds.value = seconds;
+  },
+  { immediate: true }
 );
 
 watch(
@@ -4968,13 +4975,10 @@ const buildCurrentProcessingConfigSnapshot = ({
   });
 
 const getConfiguredPreviewTrialSeconds = () => {
-  const configured = Number(
-    previewTrialSeconds.value || configStore.config.video?.previewTrialSeconds || 3
+  return normalizeVideoPreviewTrialSeconds(
+    previewTrialSeconds.value,
+    configuredPreviewTrialSeconds.value
   );
-  if (VIDEO_PREVIEW_TRIAL_DURATIONS.includes(configured)) {
-    return configured;
-  }
-  return 3;
 };
 
 const getOutputDirectory = (sourcePath) => {
@@ -9022,7 +9026,7 @@ const unregisterVideoE2ETestBridge = () => {
 
 onMounted(async () => {
   await configStore.loadConfig();
-  previewTrialSeconds.value = getConfiguredPreviewTrialSeconds();
+  previewTrialSeconds.value = configuredPreviewTrialSeconds.value;
   applyVideoBrushDefaults();
   await restoreVideoUiState(appStateStore.restoreUIState("video") || {});
   await loadVideoModelOptions({ preferredModel: currentModel.value });

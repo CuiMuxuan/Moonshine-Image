@@ -11,9 +11,7 @@
       <q-btn
         :flat="currentRoute !== 'image'"
         :unelevated="currentRoute === 'image'"
-        :color="currentRoute === 'image' ? 'white' : 'primary'"
-        :text-color="currentRoute === 'image' ? 'primary' : 'white'"
-        class="nav-btn q-mr-xs"
+        :class="['nav-btn', 'q-mr-xs', { 'nav-btn--active': currentRoute === 'image' }]"
         data-testid="nav-image-button"
         :disable="navigationDisabled"
         @click="handleRouteChange('image')"
@@ -25,9 +23,7 @@
       <q-btn
         :flat="currentRoute !== 'video'"
         :unelevated="currentRoute === 'video'"
-        :color="currentRoute === 'video' ? 'white' : 'primary'"
-        :text-color="currentRoute === 'video' ? 'primary' : 'white'"
-        class="nav-btn"
+        :class="['nav-btn', { 'nav-btn--active': currentRoute === 'video' }]"
         data-testid="nav-video-button"
         :disable="navigationDisabled"
         @click="handleRouteChange('video')"
@@ -179,10 +175,32 @@ const openNovelLink = () => openExternalLink("https://www.jjwxc.net/oneauthor.ph
 }
 
 .nav-btn {
+  --toolbar-nav-active-background: #ffffff;
+  --toolbar-nav-active-foreground: var(--q-primary, #1976d2);
+  --toolbar-nav-active-outline: transparent;
+  --toolbar-nav-focus-ring: rgba(255, 255, 255, 0.82);
   border-radius: 8px;
   padding: 8px 16px;
-  transition: all 0.3s ease;
+  transition: background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
   min-width: 120px;
+}
+
+.nav-btn--active {
+  background: var(--toolbar-nav-active-background);
+  color: var(--toolbar-nav-active-foreground);
+  box-shadow: inset 0 0 0 1px var(--toolbar-nav-active-outline);
+}
+
+.nav-btn:focus-visible {
+  outline: 2px solid var(--toolbar-nav-focus-ring);
+  outline-offset: 2px;
+}
+
+:global(body.body--dark) .nav-btn {
+  --toolbar-nav-active-background: #2f2f32;
+  --toolbar-nav-active-foreground: rgba(255, 255, 255, 0.92);
+  --toolbar-nav-active-outline: rgba(255, 255, 255, 0.14);
+  --toolbar-nav-focus-ring: rgba(255, 255, 255, 0.72);
 }
 
 .nav-icon {

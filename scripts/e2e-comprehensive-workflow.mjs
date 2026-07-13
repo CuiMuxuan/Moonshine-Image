@@ -1099,8 +1099,10 @@ async function testVideoWorkflow(page) {
   await page.waitForSelector('[data-testid="video-page"]', { timeout: 60000 });
   await waitForPageBridge(page, "__MOONSHINE_VIDEO_TEST__");
 
-  const afterUpload = await page.evaluate(async () => {
-    const file = new File(["moonshine-e2e-video"], "Moonshine-E2E.UPPER.MP4", {
+  const longVideoFileName =
+    "Moonshine-E2E-这是一个用于验证超长文件名不会撑开视频信息面板的示例视频-UPPER.MP4";
+  const afterUpload = await page.evaluate(async (fileName) => {
+    const file = new File(["moonshine-e2e-video"], fileName, {
       type: "video/mp4",
       lastModified: Date.now(),
     });
@@ -1110,11 +1112,52 @@ async function testVideoWorkflow(page) {
       duration: 5,
       fps: 30,
     });
-  });
+  }, longVideoFileName);
 
   assert(afterUpload.hasVideoFile, "Video upload should mark a video file as loaded.");
-  assert(afterUpload.videoFileName === "Moonshine-E2E.UPPER.MP4", "Video upload should preserve file name.");
+  assert(afterUpload.videoFileName === longVideoFileName, "Video upload should preserve file name.");
   assert(afterUpload.videoWidth === 320 && afterUpload.videoHeight === 180, "Video metadata should be stored.");
+
+  const videoInfo = page.locator(".video-info");
+  await videoInfo.waitFor({ state: "visible", timeout: 20000 });
+  await page.getByText("显示尺寸", { exact: true }).waitFor({ state: "visible", timeout: 20000 });
+  await page.getByText("处理信息", { exact: true }).waitFor({ state: "visible", timeout: 20000 });
+  const videoInfoLayout = await videoInfo.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+    panelWidth: element.closest(".left-panel")?.getBoundingClientRect().width || 0,
+  }));
+  assert(
+    videoInfoLayout.scrollWidth <= videoInfoLayout.clientWidth + 1,
+    `Video information must not overflow horizontally: ${JSON.stringify(videoInfoLayout)}`
+  );
+  assert(
+    videoInfoLayout.panelWidth >= 240 && videoInfoLayout.panelWidth <= 360,
+    `Video information should remain usable in a 240-360px sidebar: ${videoInfoLayout.panelWidth}`
+  );
+
+  const fileNameElement = page.locator(".video-file-name");
+  await fileNameElement.focus();
+  await page.waitForSelector(".q-tooltip", { state: "visible", timeout: 10000 });
+  await page.keyboard.press("Tab");
+  await page.waitForSelector(".q-tooltip", { state: "hidden", timeout: 10000 });
+
+  if (process.env.MOONSHINE_E2E_SCREENSHOTS === "1") {
+    const screenshotDir = path.join(repoRoot, "output", "playwright");
+    fs.mkdirSync(screenshotDir, { recursive: true });
+    await page.screenshot({
+      path: path.join(screenshotDir, "video-info-light.png"),
+      fullPage: true,
+    });
+    await page.click('[data-testid="toggle-theme-button"]');
+    await page.waitForSelector("body.body--dark", { state: "attached", timeout: 20000 });
+    await page.screenshot({
+      path: path.join(screenshotDir, "video-info-dark.png"),
+      fullPage: true,
+    });
+    await page.click('[data-testid="toggle-theme-button"]');
+    await page.waitForSelector("body:not(.body--dark)", { state: "attached", timeout: 20000 });
+  }
 
   const maskCreateResult = await page.evaluate(() =>
     window.__MOONSHINE_VIDEO_TEST__.createMask({
@@ -1174,7 +1217,7 @@ async function testVideoWorkflow(page) {
   assert(afterProcessingUndo.restored, "Video processing undo should restore the prior entry.");
   assert(afterProcessingUndo.snapshot.historyLength === 0, "Video processing undo should clear consumed history.");
   assert(
-    afterProcessingUndo.snapshot.currentSourceName === "Moonshine-E2E.UPPER.MP4",
+    afterProcessingUndo.snapshot.currentSourceName === longVideoFileName,
     "Video processing undo should restore original source name."
   );
 

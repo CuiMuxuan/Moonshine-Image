@@ -7,11 +7,28 @@
       <q-card-section class="settings-header row items-center q-pb-none">
         <div class="text-h6">全局设置</div>
         <q-space />
-        <q-btn icon="close" flat round dense v-close-popup />
+        <q-btn
+          icon="close"
+          flat
+          round
+          dense
+          class="settings-icon-button"
+          aria-label="关闭全局设置"
+          v-close-popup
+        />
       </q-card-section>
 
       <q-card-section class="settings-tabs-section q-pt-sm">
-        <q-tabs v-model="activeTab" dense align="justify" active-color="primary" indicator-color="primary">
+        <q-tabs
+          v-model="activeTab"
+          dense
+          align="justify"
+          active-color="primary"
+          indicator-color="primary"
+          outside-arrows
+          mobile-arrows
+          class="settings-main-tabs"
+        >
           <q-tab
             name="general"
             label="通用配置"
@@ -47,7 +64,7 @@
           <q-tab-panels v-model="activeTab" animated class="bg-transparent">
             <q-tab-panel name="general" class="q-px-none">
               <div class="section">
-                <div class="row items-center q-mb-md">
+                <div class="row items-center q-mb-md settings-section-heading">
                   <div>
                     <div class="text-subtitle1 text-weight-medium">快捷键配置</div>
                     <div class="text-caption text-grey-7">
@@ -55,6 +72,16 @@
                     </div>
                   </div>
                   <q-space />
+                  <q-btn
+                    flat
+                    round
+                    dense
+                    icon="help_outline"
+                    class="settings-help-button"
+                    aria-label="查看快捷键配置说明"
+                    data-testid="settings-help-shortcuts"
+                    @click="openSettingsHelp('shortcuts')"
+                  />
                   <q-btn outline color="primary" icon="restart_alt" label="恢复全部默认" @click="restoreAllShortcutDefaults" />
                 </div>
 
@@ -113,16 +140,59 @@
               class="q-px-none"
               data-testid="global-settings-backend-panel"
             >
-              <div class="section q-gutter-md">
-                <q-input v-model.number="localConfig.general.backendPort" label="后端端口" type="number" :min="1024" :max="65535" :error="portError" :error-message="portErrorMessage" data-testid="global-settings-backend-port" @update:model-value="validatePort" />
-                <q-select v-model="localConfig.general.launchMode" label="启动方式" emit-value map-options :options="launchModeOptions" />
-                <q-input v-model="localConfig.general.backendProjectPath" label="后端项目路径" readonly>
-                  <template #append><q-btn round dense flat icon="folder" @click="selectBackendProjectPath" /></template>
-                </q-input>
-                <q-input v-model="localConfig.general.modelDir" label="模型目录" readonly>
-                  <template #append><q-btn round dense flat icon="folder" @click="selectModelPath" /></template>
-                </q-input>
-                <q-select v-model="localConfig.general.defaultModel" label="默认模型" emit-value map-options :options="defaultBackendModelOptions" />
+              <div class="section settings-panel-grid">
+                <SettingsPanel v-bind="settingsHelp.backendPort" @request-help="openSettingsHelp">
+                  <q-input
+                    v-model.number="localConfig.general.backendPort"
+                    label="后端端口"
+                    type="number"
+                    :min="1024"
+                    :max="65535"
+                    :step="1"
+                    outlined
+                    dense
+                    :error="portError"
+                    :error-message="portErrorMessage"
+                    data-testid="global-settings-backend-port"
+                    @update:model-value="validatePort"
+                  />
+                </SettingsPanel>
+                <SettingsPanel v-bind="settingsHelp.launchMode" @request-help="openSettingsHelp">
+                  <q-select
+                    v-model="localConfig.general.launchMode"
+                    label="启动方式"
+                    emit-value
+                    map-options
+                    outlined
+                    dense
+                    :options="launchModeOptions"
+                  />
+                </SettingsPanel>
+                <SettingsPanel v-bind="settingsHelp.backendProjectPath" @request-help="openSettingsHelp">
+                  <q-input v-model="localConfig.general.backendProjectPath" label="后端项目路径" outlined dense readonly>
+                    <template #append>
+                      <q-btn round dense flat icon="folder" class="settings-icon-button" aria-label="选择后端项目路径" @click="selectBackendProjectPath" />
+                    </template>
+                  </q-input>
+                </SettingsPanel>
+                <SettingsPanel v-bind="settingsHelp.modelDir" @request-help="openSettingsHelp">
+                  <q-input v-model="localConfig.general.modelDir" label="模型目录" outlined dense readonly>
+                    <template #append>
+                      <q-btn round dense flat icon="folder" class="settings-icon-button" aria-label="选择模型目录" @click="selectModelPath" />
+                    </template>
+                  </q-input>
+                </SettingsPanel>
+                <SettingsPanel v-bind="settingsHelp.defaultModel" @request-help="openSettingsHelp">
+                  <q-select
+                    v-model="localConfig.general.defaultModel"
+                    label="默认模型"
+                    emit-value
+                    map-options
+                    outlined
+                    dense
+                    :options="defaultBackendModelOptions"
+                  />
+                </SettingsPanel>
               </div>
             </q-tab-panel>
 
@@ -139,21 +209,32 @@
 
             <q-tab-panel name="files" class="q-px-none">
               <div class="section q-gutter-md">
-                <q-input v-model="localConfig.fileManagement.downloadPath" label="下载 / 导出路径" readonly>
-                  <template #append><q-btn round dense flat icon="folder" @click="selectDownloadPath" /></template>
-                </q-input>
-                <q-input v-model="localConfig.fileManagement.tempPath" label="临时文件路径" readonly>
-                  <template #append><q-btn round dense flat icon="folder" @click="selectTempPath" /></template>
-                </q-input>
-                <div class="grid">
-                  <q-input v-model="localConfig.fileManagement.imageFolderName" label="图片输出文件夹名" />
-                  <q-input v-model="localConfig.fileManagement.videoFolderName" label="视频输出文件夹名" />
+                <div class="settings-panel-grid">
+                  <SettingsPanel v-bind="settingsHelp.downloadPath" @request-help="openSettingsHelp">
+                    <q-input v-model="localConfig.fileManagement.downloadPath" label="下载 / 导出路径" outlined dense readonly>
+                      <template #append>
+                        <q-btn round dense flat icon="folder" class="settings-icon-button" aria-label="选择下载或导出路径" @click="selectDownloadPath" />
+                      </template>
+                    </q-input>
+                  </SettingsPanel>
+                  <SettingsPanel v-bind="settingsHelp.tempPath" @request-help="openSettingsHelp">
+                    <q-input v-model="localConfig.fileManagement.tempPath" label="临时文件路径" outlined dense readonly>
+                      <template #append>
+                        <q-btn round dense flat icon="folder" class="settings-icon-button" aria-label="选择临时文件路径" @click="selectTempPath" />
+                      </template>
+                    </q-input>
+                  </SettingsPanel>
+                  <SettingsPanel v-bind="settingsHelp.imageFolderName" @request-help="openSettingsHelp">
+                    <q-input v-model="localConfig.fileManagement.imageFolderName" label="图片输出文件夹名" outlined dense />
+                  </SettingsPanel>
+                  <SettingsPanel v-bind="settingsHelp.videoFolderName" @request-help="openSettingsHelp">
+                    <q-input v-model="localConfig.fileManagement.videoFolderName" label="视频输出文件夹名" outlined dense />
+                  </SettingsPanel>
                 </div>
 
-                <div class="mini-block">
+                <SettingsPanel v-bind="settingsHelp.tempCleanup" @request-help="openSettingsHelp">
                   <div class="cleanup-row">
                     <div class="cleanup-copy">
-                      <div class="text-subtitle2 text-weight-medium q-mb-sm">临时文件清理</div>
                       <div class="text-caption text-grey-7">
                         清理配置临时目录下的图片和视频中间文件，最近失败现场可按需保留。
                       </div>
@@ -238,21 +319,33 @@
                       data-testid="global-settings-video-failure-retention-count"
                     />
                   </div>
-                </div>
+                </SettingsPanel>
               </div>
             </q-tab-panel>
 
             <q-tab-panel name="appearance" class="q-px-none">
               <div class="section q-gutter-lg">
                 <div class="startup-preferences-row">
-                  <div class="startup-preference">
-                    <div class="startup-preference-label">开始动画</div>
-                    <q-toggle v-model="localConfig.ui.showStartupAnimation" color="primary" />
-                  </div>
-                  <div class="startup-preference">
-                    <div class="startup-preference-label">静默启动</div>
-                    <q-toggle v-model="localConfig.general.autoStart" color="primary" />
-                  </div>
+                  <SettingsPanel v-bind="settingsHelp.startupAnimation" @request-help="openSettingsHelp">
+                    <div class="settings-toggle-control">
+                      <span>{{ localConfig.ui.showStartupAnimation ? "已启用" : "已关闭" }}</span>
+                      <q-toggle
+                        v-model="localConfig.ui.showStartupAnimation"
+                        color="primary"
+                        aria-label="启动动画"
+                      />
+                    </div>
+                  </SettingsPanel>
+                  <SettingsPanel v-bind="settingsHelp.autoStart" @request-help="openSettingsHelp">
+                    <div class="settings-toggle-control">
+                      <span>{{ localConfig.general.autoStart ? "已启用" : "已关闭" }}</span>
+                      <q-toggle
+                        v-model="localConfig.general.autoStart"
+                        color="primary"
+                        aria-label="自动启动后端"
+                      />
+                    </div>
+                  </SettingsPanel>
                 </div>
 
                 <div class="block">
@@ -265,9 +358,20 @@
                     <div v-for="item in themeColorFields" :key="item.key" class="mini-block">
                       <div class="text-caption text-grey-7 q-mb-xs">{{ item.label }}</div>
                       <div class="color-row">
-                        <input v-model="localConfig.ui.brandColors[item.key]" type="color" class="native-color-input" />
+                        <input
+                          v-model="localConfig.ui.brandColors[item.key]"
+                          type="color"
+                          class="native-color-input"
+                          :aria-label="`${item.label}颜色选择器`"
+                        />
                         <q-input v-model="localConfig.ui.brandColors[item.key]" dense outlined :label="item.key" />
                       </div>
+                      <p
+                        class="settings-inline-description"
+                        :data-testid="`settings-help-theme-${item.key}`"
+                      >
+                        {{ item.description }}
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -279,6 +383,9 @@
                     <q-btn outline color="primary" icon="restart_alt" label="恢复默认" @click="resetButtonSize" />
                   </div>
                   <q-select v-model="localConfig.ui.buttonSize" outlined emit-value map-options :options="buttonSizeOptions" label="绘制工具按钮大小" />
+                  <div class="text-caption text-grey-7 q-mt-sm">
+                    {{ settingsHelp.buttonSize.description }}
+                  </div>
                 </div>
 
                 <div class="block">
@@ -297,12 +404,18 @@
                       </div>
                       <div class="q-gutter-md">
                         <div class="color-row">
-                          <input v-model="localConfig.advanced[item.key].color" type="color" class="native-color-input" />
+                          <input
+                            v-model="localConfig.advanced[item.key].color"
+                            type="color"
+                            class="native-color-input"
+                            :aria-label="`${item.label}颜色选择器`"
+                          />
                           <q-input v-model="localConfig.advanced[item.key].color" dense outlined label="颜色" />
                         </div>
-                        <q-slider v-model="localConfig.advanced[item.key].size" label label-always :min="1" :max="120" :step="1"><template #prepend>大小</template></q-slider>
-                        <q-slider v-model="localConfig.advanced[item.key].alpha" label label-always :min="0.05" :max="1" :step="0.05"><template #prepend>透明度</template></q-slider>
+                        <q-slider v-model="localConfig.advanced[item.key].size" label label-always :min="1" :max="120" :step="1" :aria-label="`${item.label}画笔大小`"><template #prepend>大小</template></q-slider>
+                        <q-slider v-model="localConfig.advanced[item.key].alpha" label label-always :min="0.05" :max="1" :step="0.05" :aria-label="`${item.label}画笔透明度`"><template #prepend>透明度</template></q-slider>
                       </div>
+                      <div class="text-caption text-grey-7 q-mt-sm">{{ item.description }}</div>
                     </div>
                   </div>
                 </div>
@@ -320,22 +433,52 @@
                 <q-tab-panels v-model="advancedTab" animated class="bg-transparent">
                   <q-tab-panel name="image" class="q-pa-none">
                     <div class="q-gutter-lg">
-                      <div class="grid">
-                        <q-input v-model.number="localConfig.advanced.imageHistoryLimit" label="图片历史记录上限" type="number" :min="1" :max="100" />
-                        <q-input v-model.number="localConfig.advanced.imageWarningSize" label="图片警告大小（MB）" type="number" :min="1" :max="1000" />
+                      <div class="settings-panel-grid">
+                        <SettingsPanel v-bind="settingsHelp.imageHistoryLimit" @request-help="openSettingsHelp">
+                          <q-input
+                            v-model.number="localConfig.advanced.imageHistoryLimit"
+                            label="图片历史记录上限"
+                            type="number"
+                            :min="1"
+                            :max="100"
+                            :step="1"
+                            outlined
+                            dense
+                          />
+                        </SettingsPanel>
+                        <SettingsPanel v-bind="settingsHelp.imageWarningSize" @request-help="openSettingsHelp">
+                          <q-input
+                            v-model.number="localConfig.advanced.imageWarningSize"
+                            label="图片警告大小（MB）"
+                            type="number"
+                            :min="1"
+                            :max="1000"
+                            :step="1"
+                            outlined
+                            dense
+                          />
+                        </SettingsPanel>
+                        <SettingsPanel v-bind="settingsHelp.stateSaveLimit" @request-help="openSettingsHelp">
+                          <q-input
+                            v-model.number="localConfig.advanced.stateSaveLimit"
+                            label="状态保存上限大小（MB）"
+                            type="number"
+                            :min="10"
+                            :max="500"
+                            :step="1"
+                            outlined
+                            dense
+                          />
+                        </SettingsPanel>
                       </div>
-                      <q-input v-model.number="localConfig.advanced.stateSaveLimit" label="状态保存上限大小（MB）" type="number" :min="10" :max="500" />
 
-                      <div class="mini-block">
-                        <div class="text-subtitle2 text-weight-medium q-mb-sm">图片处理方式</div>
-                        <q-select v-model="localConfig.advanced.imageProcessingMethod" :options="imageProcessingOptions" emit-value map-options outlined dense :disable="!canChangeImageProcessingMethod">
-                          <template #hint>{{ getImageProcessingHint() }}</template>
-                        </q-select>
+                      <SettingsPanel v-bind="settingsHelp.imageProcessingMethod" @request-help="openSettingsHelp">
+                        <q-select v-model="localConfig.advanced.imageProcessingMethod" :options="imageProcessingOptions" emit-value map-options outlined dense :disable="!canChangeImageProcessingMethod" />
                         <div v-if="!canChangeImageProcessingMethod" class="text-caption text-orange q-mt-xs">当前已有图片载入，暂时不能切换处理方式。</div>
-                      </div>
+                        <template #description>{{ getImageProcessingHint() }}</template>
+                      </SettingsPanel>
 
-                      <div class="mini-block">
-                        <div class="text-subtitle2 text-weight-medium q-mb-sm">智能选区默认模型</div>
+                      <SettingsPanel v-bind="settingsHelp.imageSmartSelectionModel" @request-help="openSettingsHelp">
                         <q-select
                           v-model="localConfig.masking.imageSmartSelectionDefaultModel"
                           label="图片处理页默认智能选区模型"
@@ -346,16 +489,14 @@
                           outlined
                           dense
                           data-testid="global-settings-image-sam-default-model"
-                        >
-                          <template #hint>{{ getImageSamDefaultHint() }}</template>
-                        </q-select>
-                        <div class="text-caption text-grey-7 q-mt-xs">
-                          SAM1/SAM2.1 用于点选和框选；SAM3/SAM3.1 用于文本智选。未安装模型需先在模型管理中下载或放置。
-                        </div>
-                      </div>
+                        />
+                      </SettingsPanel>
 
-                      <div class="mini-block">
-                        <div class="text-subtitle2 text-weight-medium q-mb-sm">智能选区渲染缓存</div>
+                      <SettingsPanel
+                        v-bind="settingsHelp.samRenderCache"
+                        aria-label="智能选区渲染缓存"
+                        @request-help="openSettingsHelp"
+                      >
                         <div class="grid">
                           <q-toggle
                             v-model="localConfig.masking.samRenderCacheEnabled"
@@ -388,6 +529,7 @@
                             type="number"
                             :min="1"
                             :max="50"
+                            :step="1"
                             dense
                             outlined
                             data-testid="global-settings-sam-render-cache-max-contexts"
@@ -398,6 +540,7 @@
                             type="number"
                             :min="32"
                             :max="1024"
+                            :step="1"
                             dense
                             outlined
                             data-testid="global-settings-sam-render-cache-max-memory"
@@ -408,6 +551,7 @@
                             type="number"
                             :min="1024"
                             :max="12000"
+                            :step="1"
                             dense
                             outlined
                             data-testid="global-settings-sam-render-cache-large-side"
@@ -418,6 +562,7 @@
                             type="number"
                             :min="0"
                             :max="10"
+                            :step="1"
                             dense
                             outlined
                             data-testid="global-settings-sam-neighbor-preload-count"
@@ -426,10 +571,9 @@
                         <div class="text-caption text-grey-7 q-mt-xs">
                           缓存仅保存在当前程序会话中，用于减少多图切换时 SAM 蒙版重新渲染等待；超过数量、内存或大图阈值后会自动淘汰，不影响原始候选数据。
                         </div>
-                      </div>
+                      </SettingsPanel>
 
-                      <div class="mini-block">
-                        <div class="text-subtitle2 text-weight-medium q-mb-sm">图片输出格式与质量</div>
+                      <SettingsPanel v-bind="settingsHelp.imageOutput" @request-help="openSettingsHelp">
                         <div class="grid">
                           <q-select
                             v-model="localConfig.advanced.imageOutputFormat"
@@ -439,9 +583,7 @@
                             map-options
                             outlined
                             dense
-                          >
-                            <template #hint>{{ getImageOutputFormatHint() }}</template>
-                          </q-select>
+                          />
                           <q-input
                             v-model.number="localConfig.advanced.imageOutputQuality"
                             label="JPG / WebP 输出质量"
@@ -453,24 +595,20 @@
                             dense
                           />
                         </div>
-                        <div class="text-caption text-grey-7 q-mt-sm">
-                          PNG 为无损编码，质量参数仅用于 JPG / WebP。强制 JPG 输出透明图时会使用白色背景合成。
-                        </div>
-                      </div>
+                        <template #description>{{ getImageOutputFormatHint() }}</template>
+                      </SettingsPanel>
 
-                      <div class="mini-block">
-                        <div class="text-subtitle2 text-weight-medium q-mb-sm">图片输出命名方式</div>
+                      <SettingsPanel v-bind="settingsHelp.imageOutputNaming" @request-help="openSettingsHelp">
                         <q-btn-toggle v-model="localConfig.advanced.imageOutputNamingMode" spread unelevated toggle-color="primary" :color="$q.dark.isActive ? 'grey-9' : 'grey-3'" :text-color="$q.dark.isActive ? 'grey-2' : 'dark'" :options="imageNamingOptions" />
                         <q-input v-if="localConfig.advanced.imageOutputNamingMode === 'prefixUuid'" v-model.trim="localConfig.advanced.imageOutputFixedPrefix" outlined label="固定前缀" class="q-mt-md" />
-                      </div>
+                      </SettingsPanel>
                     </div>
 
                   </q-tab-panel>
 
                   <q-tab-panel name="video" class="q-pa-none">
                     <div class="q-gutter-lg">
-                      <div class="mini-block">
-                        <div class="text-subtitle2 text-weight-medium q-mb-sm">视频处理引擎</div>
+                      <SettingsPanel v-bind="settingsHelp.videoProcessingEngine" @request-help="openSettingsHelp">
                         <q-select
                           v-model="localConfig.advanced.videoProcessingEngine"
                           label="导出与封装引擎"
@@ -480,15 +618,12 @@
                           outlined
                           dense
                           data-testid="global-settings-video-processing-engine"
-                        >
-                          <template #hint>{{ getVideoProcessingEngineHint() }}</template>
-                        </q-select>
-                      </div>
+                        />
+                        <template #description>{{ getVideoProcessingEngineHint() }}</template>
+                      </SettingsPanel>
 
-                      <div class="mini-block">
-                        <div class="row items-center q-mb-sm">
-                          <div class="text-subtitle2 text-weight-medium">视频处理增强</div>
-                          <q-space />
+                      <SettingsPanel v-bind="settingsHelp.videoTemporalEnhancement" @request-help="openSettingsHelp">
+                        <template #actions>
                           <q-btn
                             outline
                             dense
@@ -499,7 +634,7 @@
                             class="settings-action-button"
                             @click="resetVideoTemporalEnhancement"
                           />
-                        </div>
+                        </template>
                         <div class="settings-toggle-grid">
                           <div class="startup-preference startup-preference--compact">
                             <div class="startup-preference-label">启用增强</div>
@@ -614,16 +749,16 @@
                             label="最小 Mask 面积"
                             type="number"
                             :min="1"
+                            :max="1000000"
                             :step="1"
                             outlined
                             dense
                             :disable="!localConfig.video.temporalEnhancement.enabled"
                           />
                         </div>
-                      </div>
+                      </SettingsPanel>
 
-                      <div class="mini-block">
-                        <div class="text-subtitle2 text-weight-medium q-mb-sm">智能选区默认模型</div>
+                      <SettingsPanel v-bind="settingsHelp.videoSmartSelectionModel" @request-help="openSettingsHelp">
                         <q-select
                           v-model="localConfig.masking.videoSmartSelectionDefaultModel"
                           label="视频处理页默认智能选区模型"
@@ -634,50 +769,107 @@
                           outlined
                           dense
                           data-testid="global-settings-video-sam-default-model"
-                        >
-                          <template #hint>{{ getVideoSamDefaultHint() }}</template>
-                        </q-select>
-                        <div class="text-caption text-grey-7 q-mt-xs">
-                          当前视频智能选区走 SAM2.1 视频传播能力，因此只提供 SAM2.1 型号。
-                        </div>
-                      </div>
+                        />
+                      </SettingsPanel>
 
-                      <div class="grid">
-                        <q-input v-model.number="localConfig.video.batchFrameCount" label="固定批次帧数" type="number" :min="1" />
-                        <q-select
-                          v-model="localConfig.video.intermediateFrameStrategy"
-                          label="视频中间帧策略"
-                          emit-value
-                          map-options
-                          :options="videoIntermediateFrameStrategyOptions"
-                          data-testid="global-settings-video-intermediate-frame-strategy"
-                        >
-                          <template #hint>{{ getVideoIntermediateFrameStrategyHint() }}</template>
-                        </q-select>
-                        <q-select
-                          v-model="localConfig.video.encodingQualityPreset"
-                          label="视频编码质量"
-                          emit-value
-                          map-options
-                          :options="videoEncodingQualityPresetOptions"
-                          data-testid="global-settings-video-encoding-quality-preset"
-                        >
-                          <template #hint>{{ getVideoEncodingQualityPresetHint() }}</template>
-                        </q-select>
-                        <q-select
-                          v-model="localConfig.video.inpaintColorStabilization"
-                          label="补洞颜色稳定"
-                          emit-value
-                          map-options
-                          :options="videoInpaintColorStabilizationOptions"
-                          data-testid="global-settings-video-inpaint-color-stabilization"
-                        >
-                          <template #hint>{{ getVideoInpaintColorStabilizationHint() }}</template>
-                        </q-select>
-                        <q-input v-model.number="localConfig.video.historyLimit" label="视频历史记录上限" type="number" :min="1" :max="50" />
-                        <q-input v-model.number="localConfig.video.batchRetryCount" label="批次重试次数" type="number" :min="1" :max="10" />
-                        <q-input v-model.number="localConfig.video.proxyMaxSide" label="代理预览最大边长" type="number" :min="256" :max="4096" />
-                        <q-select v-model="localConfig.video.previewTrialSeconds" label="样片试跑时长" emit-value map-options :options="previewTrialOptions" />
+                      <div class="settings-panel-grid">
+                        <SettingsPanel v-bind="settingsHelp.videoBatchFrameCount" @request-help="openSettingsHelp">
+                          <q-input
+                            v-model.number="localConfig.video.batchFrameCount"
+                            label="固定批次帧数"
+                            type="number"
+                            :min="1"
+                            :step="1"
+                            outlined
+                            dense
+                          />
+                        </SettingsPanel>
+                        <SettingsPanel v-bind="settingsHelp.videoIntermediateFrameStrategy" @request-help="openSettingsHelp">
+                          <q-select
+                            v-model="localConfig.video.intermediateFrameStrategy"
+                            label="视频中间帧策略"
+                            emit-value
+                            map-options
+                            outlined
+                            dense
+                            :options="videoIntermediateFrameStrategyOptions"
+                            data-testid="global-settings-video-intermediate-frame-strategy"
+                          />
+                          <template #description>{{ getVideoIntermediateFrameStrategyHint() }}</template>
+                        </SettingsPanel>
+                        <SettingsPanel v-bind="settingsHelp.videoEncodingQuality" @request-help="openSettingsHelp">
+                          <q-select
+                            v-model="localConfig.video.encodingQualityPreset"
+                            label="视频编码质量"
+                            emit-value
+                            map-options
+                            outlined
+                            dense
+                            :options="videoEncodingQualityPresetOptions"
+                            data-testid="global-settings-video-encoding-quality-preset"
+                          />
+                          <template #description>{{ getVideoEncodingQualityPresetHint() }}</template>
+                        </SettingsPanel>
+                        <SettingsPanel v-bind="settingsHelp.videoColorStabilization" @request-help="openSettingsHelp">
+                          <q-select
+                            v-model="localConfig.video.inpaintColorStabilization"
+                            label="补洞颜色稳定"
+                            emit-value
+                            map-options
+                            outlined
+                            dense
+                            :options="videoInpaintColorStabilizationOptions"
+                            data-testid="global-settings-video-inpaint-color-stabilization"
+                          />
+                          <template #description>{{ getVideoInpaintColorStabilizationHint() }}</template>
+                        </SettingsPanel>
+                        <SettingsPanel v-bind="settingsHelp.videoHistoryLimit" @request-help="openSettingsHelp">
+                          <q-input
+                            v-model.number="localConfig.video.historyLimit"
+                            label="视频历史记录上限"
+                            type="number"
+                            :min="1"
+                            :max="50"
+                            :step="1"
+                            outlined
+                            dense
+                          />
+                        </SettingsPanel>
+                        <SettingsPanel v-bind="settingsHelp.videoBatchRetryCount" @request-help="openSettingsHelp">
+                          <q-input
+                            v-model.number="localConfig.video.batchRetryCount"
+                            label="批次重试次数"
+                            type="number"
+                            :min="1"
+                            :max="10"
+                            :step="1"
+                            outlined
+                            dense
+                          />
+                        </SettingsPanel>
+                        <SettingsPanel v-bind="settingsHelp.videoProxyMaxSide" @request-help="openSettingsHelp">
+                          <q-input
+                            v-model.number="localConfig.video.proxyMaxSide"
+                            label="代理预览最大边长"
+                            type="number"
+                            :min="256"
+                            :max="4096"
+                            :step="1"
+                            outlined
+                            dense
+                          />
+                        </SettingsPanel>
+                        <SettingsPanel v-bind="settingsHelp.previewTrialSeconds" @request-help="openSettingsHelp">
+                          <q-select
+                            v-model="localConfig.video.previewTrialSeconds"
+                            label="样片试跑时长"
+                            emit-value
+                            map-options
+                            outlined
+                            dense
+                            :options="previewTrialOptions"
+                          />
+                        </SettingsPanel>
                       </div>
                     </div>
 
@@ -713,6 +905,34 @@
     </q-card>
   </q-dialog>
 
+  <q-dialog v-model="showSettingsHelpDialog" class="settings-help-dialog">
+    <q-card class="settings-help-card" data-testid="settings-help-dialog">
+      <q-card-section class="row items-center q-pb-none">
+        <q-icon name="help_outline" color="primary" size="24px" />
+        <div class="text-h6 q-ml-sm">{{ activeSettingsHelp.title }}</div>
+        <q-space />
+        <q-btn
+          flat
+          round
+          dense
+          icon="close"
+          class="settings-icon-button"
+          aria-label="关闭设置说明"
+          v-close-popup
+        />
+      </q-card-section>
+      <q-card-section>
+        <p class="settings-help-summary">{{ activeSettingsHelp.description }}</p>
+        <ul v-if="activeSettingsHelp.details?.length" class="settings-help-details">
+          <li v-for="detail in activeSettingsHelp.details" :key="detail">{{ detail }}</li>
+        </ul>
+      </q-card-section>
+      <q-card-actions align="right">
+        <q-btn flat no-caps color="primary" label="知道了" v-close-popup />
+      </q-card-actions>
+    </q-card>
+  </q-dialog>
+
   <q-dialog v-model="showConfirmDialog" persistent class="confirm-dialog">
     <q-card style="min-width: min(480px, calc(100vw - 32px))">
       <q-card-section class="row items-center q-pb-none">
@@ -732,6 +952,7 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
 import { useQuasar } from "quasar";
 import ModelManagementPanel from "src/components/global/ModelManagementPanel.vue";
+import SettingsPanel from "src/components/global/SettingsPanel.vue";
 import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_MASKING_CONFIG, DEFAULT_TEMP_CLEANUP, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT, UI_BUTTON_SIZE_OPTIONS, VIDEO_ENCODING_QUALITY_PRESET_OPTIONS, VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS, VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS, VIDEO_PROCESSING_ENGINE_OPTIONS, VIDEO_TEMPORAL_ENHANCEMENT_MODES } from "src/config/ConfigManager";
 import { createDefaultShortcuts, formatShortcutKeys, getShortcutDefinition, getShortcutTokenFromKeyboardEvent, getShortcutsByGroup, normalizeShortcutKeys, SHORTCUT_GROUP_META, SHORTCUT_GROUPS, validateShortcutConfig } from "src/utils/shortcutConfig";
 import { useAppStateStore } from "src/stores/appState";
@@ -899,16 +1120,134 @@ const fallbackSamModels = [
   },
 ];
 const themeColorFields = [
-  { key: "primary", label: "Primary" },
-  { key: "secondary", label: "Secondary" },
-  { key: "accent", label: "Accent" },
-  { key: "positive", label: "Positive" },
-  { key: "negative", label: "Negative" },
-  { key: "info", label: "Info" },
-  { key: "warning", label: "Warning" },
+  { key: "primary", label: "Primary", description: "主要操作、选中状态和重点交互使用的品牌色。" },
+  { key: "secondary", label: "Secondary", description: "次要操作与辅助界面元素使用的品牌色。" },
+  { key: "accent", label: "Accent", description: "需要额外强调但不属于主操作的界面元素使用此颜色。" },
+  { key: "positive", label: "Positive", description: "成功、完成和可用状态使用的反馈颜色。" },
+  { key: "negative", label: "Negative", description: "错误、失败和高风险操作使用的反馈颜色。" },
+  { key: "info", label: "Info", description: "一般信息、提示和处理中状态使用的反馈颜色。" },
+  { key: "warning", label: "Warning", description: "警告、需注意和可能影响结果的状态使用此颜色。" },
 ];
-const brushConfigFields = [{ key: "imageBrushDefault", label: "图片默认画笔" }, { key: "videoBrushDefault", label: "视频默认画笔" }];
+const brushConfigFields = [
+  { key: "imageBrushDefault", label: "图片默认画笔", description: "作为图片蒙版绘制工具首次打开时的颜色、大小和透明度。" },
+  { key: "videoBrushDefault", label: "视频默认画笔", description: "作为视频蒙版绘制工具首次打开时的颜色、大小和透明度。" },
+];
 const buttonSizeOptions = UI_BUTTON_SIZE_OPTIONS.slice().reverse().map((value) => ({ label: value.toUpperCase(), value }));
+
+const createSettingsHelp = (helpTopic, title, description, helpMode = "inline", details = []) =>
+  Object.freeze({ helpTopic, title, description, helpMode, details });
+
+const settingsHelp = Object.freeze({
+  shortcuts: createSettingsHelp(
+    "shortcuts",
+    "快捷键配置",
+    "快捷键只在对应功能页面且焦点不在输入框时生效。录制会按动作要求自动收集一至三个按键。",
+    "dialog",
+    [
+      "按下“录制”后直接输入组合键；按 Esc 可随时取消本次录制。",
+      "单键、双键和三键动作必须保持规定的按键数量。",
+      "同一作用域内的重复组合会阻止保存，输入框获得焦点时不会触发页面快捷键。",
+    ]
+  ),
+  backendPort: createSettingsHelp("backend-port", "后端端口", "后端服务监听的本机端口，修改后会重新加载页面以应用。"),
+  launchMode: createSettingsHelp("launch-mode", "启动方式", "CUDA 模式优先使用显卡；CPU 模式兼容性更高，但处理速度通常较慢。"),
+  backendProjectPath: createSettingsHelp("backend-project-path", "后端项目路径", "外部 Python 后端所在目录，应包含项目运行所需的完整文件。"),
+  modelDir: createSettingsHelp("model-directory", "模型目录", "集中存放处理模型的目录，后端启动和模型管理会共同使用。"),
+  defaultModel: createSettingsHelp("default-backend-model", "默认模型", "新建图片处理任务时优先选用的补洞模型。"),
+  downloadPath: createSettingsHelp("download-path", "下载 / 导出路径", "图片和视频未指定其他位置时默认保存到此目录。"),
+  tempPath: createSettingsHelp("temp-path", "临时文件路径", "处理过程中的帧、缓存和中间结果保存在此目录。"),
+  imageFolderName: createSettingsHelp("image-folder-name", "图片输出文件夹名", "批量导出图片时在导出根目录下创建的单级文件夹。"),
+  videoFolderName: createSettingsHelp("video-folder-name", "视频输出文件夹名", "批量导出视频时在导出根目录下创建的单级文件夹。"),
+  tempCleanup: createSettingsHelp(
+    "temp-cleanup",
+    "临时文件清理",
+    "按保留时间清理应用临时目录中的图片、视频中间文件和已完成任务现场。",
+    "dialog",
+    [
+      "自动清理关闭时不会在启动阶段执行，但仍可使用“立即清理”。",
+      "最近失败现场用于故障排查；启用保留后，仅删除超过保留数量的较旧现场。",
+      "清理范围仅限应用管理的临时子目录，不会处理导出目录或其他任意路径。",
+    ]
+  ),
+  startupAnimation: createSettingsHelp("startup-animation", "启动动画", "控制应用启动阶段是否显示过渡动画。"),
+  autoStart: createSettingsHelp("auto-start-backend", "自动启动后端", "应用打开后自动准备并启动后端服务；关闭后可在主界面手动启动。"),
+  buttonSize: createSettingsHelp("drawing-button-size", "绘制工具按钮大小", "调整图片和视频绘制工具按钮的默认尺寸，不改变画布或导出结果。"),
+  imageHistoryLimit: createSettingsHelp("image-history-limit", "图片历史记录上限", "限制图片处理页可撤销和恢复的历史步骤数量。"),
+  imageWarningSize: createSettingsHelp("image-warning-size", "图片警告大小", "单张图片超过该体积时提示资源占用风险，并影响自动传输策略。"),
+  stateSaveLimit: createSettingsHelp("state-save-limit", "状态保存上限", "限制页面状态持久化体积，避免过大的会话数据拖慢保存与恢复。"),
+  imageProcessingMethod: createSettingsHelp(
+    "image-processing-method",
+    "图片处理方式",
+    "自动模式会按图片数量、单图体积和总量选择路径或 Base64；路径模式更节省内存，Base64 更适合少量小图。"
+  ),
+  imageSmartSelectionModel: createSettingsHelp(
+    "image-smart-selection-model",
+    "智能选区默认模型",
+    "SAM1/SAM2.1 支持点选与框选，SAM3/SAM3.1 支持文本智选。未安装的模型需先在模型管理中准备。"
+  ),
+  samRenderCache: createSettingsHelp(
+    "sam-render-cache",
+    "智能选区渲染缓存",
+    "控制智能选区候选蒙版的会话缓存、预热与显存释放策略。",
+    "dialog",
+    [
+      "渲染缓存只保存在当前程序会话中，不会修改或覆盖原始候选数据。",
+      "数量、内存和大图阈值共同决定淘汰时机；相邻图片预热可减少连续切换等待。",
+      "处理模型运行前释放 SAM 显存可降低显存不足风险，但下次智能选区需要重新加载模型。",
+    ]
+  ),
+  imageOutput: createSettingsHelp(
+    "image-output-format-quality",
+    "图片输出格式与质量",
+    "PNG 为无损格式；JPG 文件较小但不支持透明；WebP 兼顾压缩率与透明。质量参数只作用于 JPG 和 WebP。"
+  ),
+  imageOutputNaming: createSettingsHelp("image-output-naming", "图片输出命名方式", "可沿用原文件名，或使用固定前缀和 UUID 避免重名覆盖。"),
+  videoProcessingEngine: createSettingsHelp(
+    "video-processing-engine",
+    "视频处理引擎",
+    "自动模式按素材和环境选择导出方案；FFmpeg 兼容面更广，WebAV 可在支持的素材上减少额外中间转换。"
+  ),
+  videoTemporalEnhancement: createSettingsHelp(
+    "video-temporal-enhancement",
+    "视频处理增强",
+    "通过相邻帧 Mask、结果和纹理信息减少视频补洞中的闪烁与边缘跳动。",
+    "dialog",
+    [
+      "场景变化阈值用于在镜头切换时停止沿用旧缓存，避免跨场景污染。",
+      "Mask IoU、中心位移和最小面积共同判断候选区域是否适合跨帧融合。",
+      "融合强度越高，画面连续性通常越强，但快速运动场景可能保留更多上一帧特征。",
+      "诊断日志仅用于本地排查增强过程，不会上传处理素材。",
+    ]
+  ),
+  videoSmartSelectionModel: createSettingsHelp(
+    "video-smart-selection-model",
+    "智能选区默认模型",
+    "视频智能选区依赖 SAM2.1 的跨帧传播能力，因此这里只列出可用于视频传播的 SAM2.1 型号。"
+  ),
+  videoBatchFrameCount: createSettingsHelp("video-batch-frame-count", "固定批次帧数", "每批帧数越大，处理吞吐可能更高，但同时占用更多内存和显存。"),
+  videoIntermediateFrameStrategy: createSettingsHelp(
+    "video-intermediate-frame-strategy",
+    "视频中间帧策略",
+    "性能优先使用较小的 JPG 中间帧，质量优先使用 PNG 降低重复压缩损失，均衡模式介于两者之间。"
+  ),
+  videoEncodingQuality: createSettingsHelp(
+    "video-encoding-quality",
+    "视频编码质量",
+    "较高质量会降低重复编码造成的亮度和细节漂移，但编码时间、文件体积和磁盘读写都会增加。"
+  ),
+  videoColorStabilization: createSettingsHelp(
+    "video-color-stabilization",
+    "补洞颜色稳定",
+    "在补洞区域与原视频之间校正颜色变化，可减少闪烁；强校正可能影响本来就快速变化的光照。"
+  ),
+  videoHistoryLimit: createSettingsHelp("video-history-limit", "视频历史记录上限", "限制视频编辑过程保留的撤销和恢复步骤数量。"),
+  videoBatchRetryCount: createSettingsHelp("video-batch-retry-count", "批次重试次数", "单个视频批次失败后允许自动重新执行的最大次数。"),
+  videoProxyMaxSide: createSettingsHelp("video-proxy-max-side", "代理预览最大边长", "限制预览代理的长边尺寸；较小更流畅，较大更便于观察细节。"),
+  previewTrialSeconds: createSettingsHelp("preview-trial-seconds", "样片试跑时长", "视频处理页新任务默认截取的样片长度，可在实际试跑前临时调整。"),
+});
+const settingsHelpByTopic = Object.freeze(
+  Object.fromEntries(Object.values(settingsHelp).map((item) => [item.helpTopic, item]))
+);
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -922,6 +1261,16 @@ const showDialog = computed({ get: () => props.modelValue, set: (value) => emit(
 const activeTab = ref("general");
 const advancedTab = ref("image");
 const selectedModelId = ref("lama");
+const activeSettingsHelpTopic = ref("");
+const activeSettingsHelp = computed(
+  () => settingsHelpByTopic[activeSettingsHelpTopic.value] || settingsHelp.shortcuts
+);
+const showSettingsHelpDialog = computed({
+  get: () => Boolean(activeSettingsHelpTopic.value),
+  set: (value) => {
+    if (!value) activeSettingsHelpTopic.value = "";
+  },
+});
 const saving = ref(false);
 const cleaningTempFiles = ref(false);
 const showConfirmDialog = ref(false);
@@ -986,6 +1335,13 @@ const isTempCleanupDisabled = computed(
   () => saving.value || cleaningTempFiles.value || Boolean(globalLoadingState.value?.showing)
 );
 
+const openSettingsHelp = (topic) => {
+  const help = settingsHelpByTopic[topic];
+  if (help?.helpMode === "dialog") {
+    activeSettingsHelpTopic.value = topic;
+  }
+};
+
 const validatePort = (port) => {
   if (!port || port < 1024 || port > 65535) {
     portError.value = true;
@@ -1004,21 +1360,6 @@ const getVideoEncodingQualityPresetHint = () =>
   videoEncodingQualityPresetOptions.find((item) => item.value === (localConfig.value.video?.encodingQualityPreset || "performance"))?.description || "";
 const getVideoInpaintColorStabilizationHint = () =>
   videoInpaintColorStabilizationOptions.find((item) => item.value === (localConfig.value.video?.inpaintColorStabilization || "auto"))?.description || "";
-const getSamDefaultHint = (options, modelId) => {
-  const selected = options.find((item) => item.value === modelId);
-  if (selected) return selected.label;
-  return modelId ? `${modelId}（未在当前模型注册表中找到）` : "";
-};
-const getImageSamDefaultHint = () =>
-  getSamDefaultHint(
-    imageSamDefaultModelOptions.value,
-    localConfig.value.masking?.imageSmartSelectionDefaultModel
-  );
-const getVideoSamDefaultHint = () =>
-  getSamDefaultHint(
-    videoSamDefaultModelOptions.value,
-    localConfig.value.masking?.videoSmartSelectionDefaultModel
-  );
 const getBrushConfig = (key) => localConfig.value.advanced?.[key] || DEFAULT_IMAGE_BRUSH;
 const getShortcutDisplayValue = (actionId) => formatShortcutKeys(recordingShortcutId.value === actionId && recordingKeys.value.length ? recordingKeys.value : localConfig.value.shortcuts?.[actionId] || []);
 const stopShortcutRecording = () => { recordingShortcutId.value = ""; recordingKeys.value = []; };
@@ -1322,12 +1663,21 @@ onUnmounted(() => {
   z-index: 3000 !important;
 }
 .settings-card {
+  --settings-card-surface: #ffffff;
+  --settings-block-surface: rgba(255, 255, 255, 0.72);
+  --settings-mini-surface: rgba(255, 255, 255, 0.72);
+  --settings-toggle-surface: rgba(255, 255, 255, 0.72);
+  --settings-border: rgba(17, 24, 39, 0.08);
+  --settings-text-primary: rgba(17, 24, 39, 0.92);
+  --settings-text-secondary: rgba(17, 24, 39, 0.62);
+  --settings-field-surface: transparent;
   width: min(1040px, calc(100vw - clamp(16px, 4vw, 48px)));
   max-width: calc(100vw - clamp(16px, 4vw, 48px));
   height: min(900px, calc(100vh - clamp(16px, 4vh, 48px)));
   max-height: calc(100vh - clamp(16px, 4vh, 48px));
   display: flex;
   flex-direction: column;
+  background: var(--settings-card-surface);
   overflow: hidden;
 }
 .settings-header,
@@ -1336,6 +1686,10 @@ onUnmounted(() => {
   flex: 0 0 auto;
 }
 .settings-tabs-section { padding-bottom: 0; }
+.settings-main-tabs :deep(.q-tab) {
+  min-width: 112px;
+  min-height: 44px;
+}
 .settings-content-section {
   flex: 1 1 auto;
   min-height: 0;
@@ -1344,7 +1698,10 @@ onUnmounted(() => {
 .settings-scroll-area { height: 100%; }
 .section { padding-top: 4px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
-.block, .mini-block { border: 1px solid rgba(17, 24, 39, 0.08); border-radius: 16px; background: rgba(255, 255, 255, 0.72); }
+.settings-panel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.block, .mini-block { border: 1px solid var(--settings-border); border-radius: 16px; }
+.block { background: var(--settings-block-surface); }
+.mini-block { background: var(--settings-mini-surface); }
 .block { padding: 16px; }
 .mini-block { padding: 14px; }
 .shortcut-row { display: grid; grid-template-columns: minmax(0, 1fr) 220px auto; gap: 12px; align-items: center; padding: 14px; border-radius: 14px; background: rgba(119, 88, 196, 0.05); border: 1px solid rgba(119, 88, 196, 0.08); }
@@ -1360,16 +1717,32 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .settings-action-button :deep(.q-icon.on-left) { margin-right: 0; }
+.settings-section-heading { gap: 8px; }
+.settings-help-button {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  color: var(--settings-text-secondary);
+}
+.settings-icon-button {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+}
 .cleanup-row { display: flex; align-items: center; gap: 16px; }
 .cleanup-copy { flex: 1 1 auto; min-width: 0; }
 .cleanup-button { flex: 0 0 auto; }
 .color-row { display: flex; align-items: center; gap: 12px; }
 .native-color-input { width: 52px; height: 40px; border: 0; padding: 0; background: transparent; cursor: pointer; }
 .color-row :deep(.q-field) { flex: 1 1 auto; }
+.settings-inline-description { margin: 10px 0 0; color: var(--settings-text-secondary); font-size: 12px; line-height: 1.55; }
 .brush-dot { display: inline-block; border-radius: 999px; border: 1px solid rgba(255,255,255,.72); box-shadow: 0 0 0 1px rgba(17,24,39,.08); }
 .startup-preferences-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.settings-toggle-control { display: flex; min-height: 44px; align-items: center; justify-content: space-between; gap: 16px; color: var(--settings-text-secondary); }
 .settings-toggle-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; align-items: center; }
-.startup-preference { display: flex; align-items: center; justify-content: space-between; min-height: 56px; padding: 12px 16px; border: 1px solid rgba(17, 24, 39, 0.08); border-radius: 16px; background: rgba(255, 255, 255, 0.72); }
+.startup-preference { display: flex; align-items: center; justify-content: space-between; min-height: 56px; padding: 12px 16px; border: 1px solid var(--settings-border); border-radius: 16px; background: var(--settings-toggle-surface); }
 .startup-preference--compact { min-height: 44px; padding: 8px 12px; }
 .startup-preference-label { font-size: 15px; font-weight: 500; }
 .settings-info-banner {
@@ -1382,6 +1755,13 @@ onUnmounted(() => {
   color: #735000;
   border: 1px solid rgba(230, 172, 0, 0.28);
 }
+.settings-help-dialog { z-index: 3100 !important; }
+:deep(.settings-help-dialog .q-dialog),
+:deep(.settings-help-dialog .q-dialog__backdrop) { z-index: 3100 !important; }
+.settings-help-card { width: min(560px, calc(100vw - 32px)); }
+.settings-help-summary { margin: 0; line-height: 1.7; }
+.settings-help-details { margin: 14px 0 0; padding-left: 20px; }
+.settings-help-details li { margin-top: 8px; line-height: 1.65; }
 .confirm-dialog { z-index: 3100 !important; }
 :deep(.confirm-dialog .q-dialog), :deep(.confirm-dialog .q-dialog__backdrop) { z-index: 3100 !important; }
 :global(body.body--dark) .settings-card {
@@ -1389,8 +1769,16 @@ onUnmounted(() => {
   color: rgba(255, 255, 255, 0.9);
 }
 .settings-card--dark {
-  background: #242426;
-  color: rgba(255, 255, 255, 0.9);
+  --settings-card-surface: #242426;
+  --settings-block-surface: #2f2f32;
+  --settings-mini-surface: #363638;
+  --settings-toggle-surface: #303033;
+  --settings-border: rgba(255, 255, 255, 0.12);
+  --settings-text-primary: rgba(255, 255, 255, 0.9);
+  --settings-text-secondary: rgba(255, 255, 255, 0.62);
+  --settings-field-surface: rgba(255, 255, 255, 0.045);
+  background: var(--settings-card-surface);
+  color: var(--settings-text-primary);
 }
 :global(body.body--dark) .settings-card :deep(.text-grey-7),
 .settings-card--dark :deep(.text-grey-7) {
@@ -1402,16 +1790,15 @@ onUnmounted(() => {
 .settings-card--dark .block,
 .settings-card--dark .mini-block,
 .settings-card--dark .startup-preference {
-  background: #2f2f32;
-  border-color: rgba(255, 255, 255, 0.12);
+  border-color: var(--settings-border);
 }
 :global(body.body--dark) .mini-block,
 .settings-card--dark .mini-block {
-  background: #363638;
+  background: var(--settings-mini-surface);
 }
 :global(body.body--dark) .startup-preference,
 .settings-card--dark .startup-preference {
-  background: #303033;
+  background: var(--settings-toggle-surface);
 }
 :global(body.body--dark) .shortcut-row,
 .settings-card--dark .shortcut-row {
@@ -1437,7 +1824,7 @@ onUnmounted(() => {
 }
 :global(body.body--dark) .settings-card :deep(.q-field--outlined .q-field__control),
 .settings-card--dark :deep(.q-field--outlined .q-field__control) {
-  background: rgba(255, 255, 255, 0.045);
+  background: var(--settings-field-surface);
 }
 :global(body.body--dark) .settings-card :deep(.q-field--outlined .q-field__native),
 :global(body.body--dark) .settings-card :deep(.q-field--outlined .q-field__label),

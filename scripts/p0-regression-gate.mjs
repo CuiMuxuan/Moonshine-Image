@@ -84,6 +84,12 @@ function runP0Gate() {
   });
 
   runCommand({
+    label: "Settings Safety And Behavior Tests",
+    command: npmCommand,
+    args: ["run", "test:settings"],
+  });
+
+  runCommand({
     label: "Lint",
     command: npmCommand,
     args: ["run", "lint"],

@@ -742,6 +742,16 @@ function runAssertions() {
     pattern: /data-testid="nav-image-button"[\s\S]*data-testid="nav-video-button"[\s\S]*data-testid="toggle-theme-button"/,
   });
   assertPattern({
+    file: "src/components/global/MainToolbar.vue",
+    description: "Main toolbar provides a dark-mode navigation active state",
+    pattern: /nav-btn--active[\s\S]*:global\(body\.body--dark\)[\s\S]*--toolbar-nav-active-background:\s*#2f2f32/,
+  });
+  assertAbsentPattern({
+    file: "src/components/global/MainToolbar.vue",
+    description: "Main toolbar does not hard-code a white active navigation background",
+    pattern: /:color="currentRoute === '(?:image|video)' \? 'white' : 'primary'"/,
+  });
+  assertPattern({
     file: "src/components/global/GlobalSettings.vue",
     description: "Global settings exposes backend tab, backend port and save button test ids",
     pattern: /data-testid="global-settings-tab-backend"[\s\S]*data-testid="global-settings-backend-port"[\s\S]*data-testid="global-settings-save-button"/,
