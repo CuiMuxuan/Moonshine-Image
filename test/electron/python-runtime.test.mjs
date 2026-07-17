@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  BACKEND_RUNTIME_IMPORT_MODULES,
   IMPORT_PROBE_PREFIX,
   buildImportProbeScript,
   classifyPythonCandidateResult,
@@ -247,4 +248,32 @@ test("builds and parses structured per-module import probes", () => {
   const invalid = parseImportProbeResult({ stdout: "plain output", exitCode: 1 });
   assert.equal(invalid.parsed, false);
   assert.equal(invalid.code, "PYTHON_IMPORT_PROBE_INVALID_OUTPUT");
+});
+
+test("backend runtime probes every startup dependency and the API entrypoint", () => {
+  assert.deepEqual(BACKEND_RUNTIME_IMPORT_MODULES, [
+    "fastapi",
+    "uvicorn",
+    "numpy",
+    "PIL",
+    "torch",
+    "transformers",
+    "cv2",
+    "socketio",
+    "loguru",
+    "tqdm",
+    "moonshine_server.api",
+  ]);
+
+  const script = buildImportProbeScript();
+  BACKEND_RUNTIME_IMPORT_MODULES.forEach((moduleName) => {
+    assert.match(script, new RegExp(`"${moduleName.replaceAll(".", "\\.")}"`));
+  });
+
+  const entrypointFailure = parseImportProbeResult({
+    stdout: `${IMPORT_PROBE_PREFIX}{"ok":false,"missing":["moonshine_server.api"],"errors":{"moonshine_server.api":"ImportError: DLL load failed"}}`,
+    exitCode: 1,
+  });
+  assert.equal(entrypointFailure.success, false);
+  assert.deepEqual(entrypointFailure.missingModules, ["moonshine_server.api"]);
 });

@@ -38,7 +38,7 @@
         :class="$q.dark.isActive ? 'bg-primary text-secondary' : 'bg-secondary text-primary'"
       >
         <div class="toolbar-button-row">
-          <span class="toolbar-button-wrap">
+          <span v-if="maskToolsAvailable" class="toolbar-button-wrap">
             <div
               class="mask-mode-toggle"
               role="group"
@@ -135,6 +135,7 @@
           </span>
 
           <q-btn
+            data-testid="image-toolbar-toggle-settings"
             flat
             icon="more_vert"
             color="primary"
@@ -172,6 +173,10 @@ const props = defineProps({
   currentModelRequiresMask: {
     type: Boolean,
     default: true,
+  },
+  maskToolsEnabled: {
+    type: Boolean,
+    default: false,
   },
   showMaskTools: {
     type: Boolean,
@@ -247,6 +252,9 @@ const fileAccept = computed(() =>
 );
 
 const toolbarTextVisible = computed(() => $q.screen.gt.sm);
+const maskToolsAvailable = computed(
+  () => props.currentModelRequiresMask || props.maskToolsEnabled
+);
 
 const smartSelectionDisabledReason = computed(() => {
   if (!props.backendReady) return "后端服务启动成功后可用";
@@ -292,7 +300,7 @@ const maskModeButtonLabel = (button) =>
 
 const baseMaskModeDisabledReason = computed(() => {
   if (!props.selectedFile) return "请先选择图片";
-  if (!props.currentModelRequiresMask) {
+  if (!maskToolsAvailable.value) {
     return "当前模型不需要蒙版，蒙版工具暂不可用";
   }
   return "";

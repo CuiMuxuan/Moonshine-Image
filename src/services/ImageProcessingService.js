@@ -3,6 +3,7 @@ import { useFileManagerStore } from 'src/stores/fileManager'
 import { useConfigStore } from 'src/stores/config'
 import { classifyMoonshineError } from 'src/services/ErrorClassifier';
 import { buildImageOutputRequestOptions } from 'src/utils/imageOutputOptions';
+import { withImageProcessingSummary } from 'src/utils/imageProcessingResults';
 
 // Extract raw base64 from a data URL.
 const getBase64FromDataURL = (dataUrl) => {
@@ -27,6 +28,27 @@ const getRequestItemId = (requestData, index) => {
     return requestData.data[index].id;
   }
   return undefined;
+};
+
+const extractPreparedRequestMetadata = (requestData = {}) => {
+  const {
+    _clientFailures = [],
+    _sourceIndexes = [],
+    _requestedCount,
+    _cleanupDirectory,
+    ...payload
+  } = requestData || {};
+  return {
+    payload,
+    metadata: {
+      clientFailures: Array.isArray(_clientFailures) ? _clientFailures : [],
+      sourceIndexes: Array.isArray(_sourceIndexes) ? _sourceIndexes : [],
+      requestedCount: Number.isFinite(Number(_requestedCount))
+        ? Math.max(0, Math.floor(Number(_requestedCount)))
+        : undefined,
+      cleanupDirectory: String(_cleanupDirectory || ''),
+    },
+  };
 };
 
 const resolveInpaintColorStabilization = () => {
@@ -90,17 +112,29 @@ const performInpainting = async (fileId) => {
 // Call batch inpaint API.
 const performBatchInpainting = async (requestData) => {
   try {
-    requestData = attachInpaintOptions(requestData);
-    validateRequestData(requestData);
-    console.log('发送批量处理请求:', requestData);
+    const preparedRequest = extractPreparedRequestMetadata(requestData);
+    const payload = attachInpaintOptions(preparedRequest.payload);
+    if (
+      Array.isArray(payload.data) &&
+      payload.data.length === 0 &&
+      preparedRequest.metadata.clientFailures.length > 0
+    ) {
+      return await processBatchResults(
+        { processed_count: 0, success_count: 0, results: [] },
+        payload,
+        preparedRequest.metadata
+      );
+    }
+    validateRequestData(payload);
+    console.log('发送批量处理请求:', payload);
 
-    const response = await api.post('/api/v1/batch_inpaint', requestData, {
+    const response = await api.post('/api/v1/batch_inpaint', payload, {
       headers: {
         'Content-Type': 'application/json',
       }
     });
 
-    return await processBatchResults(response, requestData);
+    return await processBatchResults(response, payload, preparedRequest.metadata);
   } catch (error) {
     console.error('调用batch_inpaint API时出错:', error);
 
@@ -116,14 +150,23 @@ const performBatchInpainting = async (requestData) => {
 
 const performMoonshineImageProcessing = async (requestData) => {
   try {
-    validateMoonshineImageRequestData(requestData);
-    const response = await api.post('/api/v1/moonshine/image/process', requestData, {
+    const preparedRequest = extractPreparedRequestMetadata(requestData);
+    const payload = preparedRequest.payload;
+    if (payload.data?.length === 0 && preparedRequest.metadata.clientFailures.length > 0) {
+      return await processBatchResults(
+        { processed_count: 0, success_count: 0, results: [] },
+        payload,
+        preparedRequest.metadata
+      );
+    }
+    validateMoonshineImageRequestData(payload);
+    const response = await api.post('/api/v1/moonshine/image/process', payload, {
       headers: {
         'Content-Type': 'application/json',
       }
     });
 
-    return await processBatchResults(response, requestData);
+    return await processBatchResults(response, payload, preparedRequest.metadata);
   } catch (error) {
     console.error('调用Moonshine图片处理API时出错:', error);
 
@@ -137,7 +180,7 @@ const performMoonshineImageProcessing = async (requestData) => {
   }
 };
 
-const processBatchResults = async (response, requestData = {}) => {
+const processBatchResults = async (response, requestData = {}, metadata = {}) => {
   const fileManagerStore = useFileManagerStore();
   const processedResults = [];
 
@@ -146,6 +189,9 @@ const processBatchResults = async (response, requestData = {}) => {
       const result = response.results[i] || {};
       const resultIndex = Number.isInteger(result.index) ? result.index : i;
       const resultId = result.id || getRequestItemId(requestData, resultIndex);
+      const sourceIndex = Number.isInteger(metadata.sourceIndexes?.[resultIndex])
+        ? metadata.sourceIndexes[resultIndex]
+        : resultIndex;
       const resultPayload = result.result;
 
       if (result.success && resultPayload) {
@@ -155,17 +201,27 @@ const processBatchResults = async (response, requestData = {}) => {
               format: result.format,
               mimeType: result.mime_type,
               extension: result.extension,
+              applyScope: result.apply_scope,
+              inferenceStrategy: result.inference_strategy,
             });
           }
 
           processedResults.push({
             id: resultId,
             success: true,
-            index: resultIndex,
+            index: sourceIndex,
             result: resultPayload,
             format: result.format,
             mime_type: result.mime_type,
-            extension: result.extension
+            extension: result.extension,
+            apply_scope: result.apply_scope,
+            inference_strategy: result.inference_strategy,
+            bboxEmptyRatio: result.bboxEmptyRatio,
+            effectiveMaskCoverage: result.effectiveMaskCoverage,
+            fullTileCount: result.fullTileCount,
+            localTileCount: result.localTileCount,
+            tileSavingRatio: result.tileSavingRatio,
+            fallback_reason: result.fallback_reason,
           });
         } catch (error) {
           console.error(`处理文件 ${resultId} 的结果时出错:`, error);
@@ -173,7 +229,8 @@ const processBatchResults = async (response, requestData = {}) => {
             id: resultId,
             success: false,
             error: error.message,
-            index: resultIndex
+            error_code: 'RESULT_WRITE_FAILED',
+            index: sourceIndex
           });
         }
       } else {
@@ -181,18 +238,29 @@ const processBatchResults = async (response, requestData = {}) => {
           id: resultId,
           success: false,
           error: result.error || '处理失败',
-          index: resultIndex
+          error_code: result.error_code,
+          skipped: result.skipped === true,
+          apply_scope: result.apply_scope,
+          index: sourceIndex
         });
       }
     }
   }
 
-  return {
+  processedResults.push(...(metadata.clientFailures || []));
+  processedResults.sort((left, right) => (left?.index ?? 0) - (right?.index ?? 0));
+
+  return withImageProcessingSummary({
+    success: response.success,
+    status: undefined,
+    total_count: metadata.requestedCount ?? response.total_count,
     processed_count: response.processed_count,
     success_count: response.success_count,
+    failed_count: response.failed_count,
+    skipped_count: response.skipped_count,
     total_time: response.total_time,
     results: processedResults
-  };
+  });
 };
 
 // Call folder batch API.
@@ -202,11 +270,12 @@ const performFolderInpainting = async (folderData) => {
       ...folderData,
       color_stabilization: resolveInpaintColorStabilization(),
     };
-    return await api.post('/api/v1/batch_inpaint_by_folder', folderData, {
+    const response = await api.post('/api/v1/batch_inpaint_by_folder', folderData, {
       headers: {
         'Content-Type': 'application/json',
       },
     });
+    return withImageProcessingSummary(response);
   } catch (error) {
     console.error('调用batch_inpaint_by_folder API时出错:', error);
 
@@ -222,11 +291,12 @@ const performFolderInpainting = async (folderData) => {
 
 const performMoonshineFolderProcessing = async (folderData) => {
   try {
-    return await api.post('/api/v1/moonshine/image/process_folder', folderData, {
+    const response = await api.post('/api/v1/moonshine/image/process_folder', folderData, {
       headers: {
         'Content-Type': 'application/json',
       },
     });
+    return withImageProcessingSummary(response);
   } catch (error) {
     console.error('调用Moonshine文件夹处理API时出错:', error);
 
@@ -237,6 +307,19 @@ const performMoonshineFolderProcessing = async (folderData) => {
       throw new Error(classifyMoonshineError(error, 'Moonshine文件夹处理失败').message);
     }
     throw new Error(`请求配置错误: ${error.message}`);
+  }
+};
+
+const inspectMoonshineFolderMasks = async (folderData) => {
+  try {
+    return await api.post('/api/v1/moonshine/image/inspect_folder_masks', folderData, {
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+  } catch (error) {
+    console.error('调用SLBR文件夹蒙版预检API时出错:', error);
+    throw new Error(classifyMoonshineError(error, 'SLBR文件夹蒙版预检失败').message);
   }
 };
 
@@ -326,6 +409,7 @@ export default {
   performMoonshineImageProcessing,
   performFolderInpainting,
   performMoonshineFolderProcessing,
+  inspectMoonshineFolderMasks,
   getBase64FromDataURL,
   fileToBase64,
   validateRequestData

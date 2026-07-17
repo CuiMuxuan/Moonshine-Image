@@ -21,6 +21,7 @@ import {
   IMAGE_PROCESSING_METHOD_OPTIONS,
   IMAGE_OUTPUT_FORMAT_OPTIONS,
   IMAGE_OUTPUT_NAMING_MODES,
+  SLBR_LOCAL_INFERENCE_STRATEGY_OPTIONS,
   getManagedFolderNameValidationError,
   isFiniteIntegerInRange,
   isPlainObject,
@@ -170,6 +171,7 @@ export {
   IMAGE_PROCESSING_METHOD_OPTIONS,
   IMAGE_OUTPUT_FORMAT_OPTIONS,
   IMAGE_OUTPUT_NAMING_MODES,
+  SLBR_LOCAL_INFERENCE_STRATEGY_OPTIONS,
   VIDEO_ENCODING_QUALITY_PRESET_OPTIONS,
   VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS,
   VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS,
@@ -254,6 +256,16 @@ export class ConfigManager {
         name: "状态保存上限大小",
         ...APP_CONFIG_INTEGER_LIMITS.stateSaveLimit,
       },
+      {
+        value: config.advanced?.slbrLocalBBoxEmptyRatioThreshold,
+        name: "SLBR 局部外接矩形空白率阈值",
+        ...APP_CONFIG_INTEGER_LIMITS.slbrLocalBBoxEmptyRatioThreshold,
+      },
+      {
+        value: config.advanced?.slbrLocalEdgeFeatherPx,
+        name: "SLBR 局部边缘融合像素",
+        ...APP_CONFIG_INTEGER_LIMITS.slbrLocalEdgeFeatherPx,
+      },
     ];
 
     numberFields.forEach((field) => {
@@ -316,6 +328,15 @@ export class ConfigManager {
       !IMAGE_PROCESSING_METHOD_OPTIONS.includes(config.advanced.imageProcessingMethod)
     ) {
       errors.push("图片处理方式必须是 auto、path 或 base64。");
+    }
+
+    if (
+      config.advanced?.slbrLocalInferenceStrategy &&
+      !SLBR_LOCAL_INFERENCE_STRATEGY_OPTIONS.includes(
+        config.advanced.slbrLocalInferenceStrategy
+      )
+    ) {
+      errors.push("SLBR 局部推理策略无效。");
     }
 
     if (
@@ -667,6 +688,23 @@ export class ConfigManager {
       )
         ? merged.advanced.imageProcessingMethod
         : "auto",
+      slbrLocalInferenceStrategy: SLBR_LOCAL_INFERENCE_STRATEGY_OPTIONS.includes(
+        merged.advanced?.slbrLocalInferenceStrategy
+      )
+        ? merged.advanced.slbrLocalInferenceStrategy
+        : "auto",
+      slbrLocalBBoxEmptyRatioThreshold: normalizeInteger(
+        merged.advanced?.slbrLocalBBoxEmptyRatioThreshold,
+        this.defaultConfig.advanced.slbrLocalBBoxEmptyRatioThreshold,
+        APP_CONFIG_INTEGER_LIMITS.slbrLocalBBoxEmptyRatioThreshold.min,
+        APP_CONFIG_INTEGER_LIMITS.slbrLocalBBoxEmptyRatioThreshold.max
+      ),
+      slbrLocalEdgeFeatherPx: normalizeInteger(
+        merged.advanced?.slbrLocalEdgeFeatherPx,
+        this.defaultConfig.advanced.slbrLocalEdgeFeatherPx,
+        APP_CONFIG_INTEGER_LIMITS.slbrLocalEdgeFeatherPx.min,
+        APP_CONFIG_INTEGER_LIMITS.slbrLocalEdgeFeatherPx.max
+      ),
       imageOutputFormat: IMAGE_OUTPUT_FORMAT_OPTIONS.includes(
         String(merged.advanced?.imageOutputFormat || "").toLowerCase()
       )

@@ -19,6 +19,10 @@ import {
   isStrictSubdirectoryPath,
   isValidConfiguredDirectoryPath,
   normalizeConfiguredDirectoryPath,
+  removeManagedTempRunDirectory,
+  removeManagedTempRunDirectoryAsync,
+  resolveManagedTempFile,
+  resolveCopyFileTarget,
 } from "../src-electron/config-safety.js";
 
 test("managed output folder names allow ordinary Chinese and Latin names", () => {
@@ -123,6 +127,82 @@ test("temporary cleanup targets are always strict children of the configured roo
   );
 });
 
+test("managed temporary file resolution only accepts ordinary files in declared roots", () => {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "moonshine-file-cleanup-"));
+  const allowedDirectory = path.join(sandbox, "moonshine-videos");
+  const allowedFile = path.join(allowedDirectory, "source.mp4");
+  const outsideFile = path.join(path.dirname(sandbox), "moonshine-outside-file.tmp");
+  const directoryTarget = path.join(allowedDirectory, "nested");
+
+  try {
+    fs.mkdirSync(directoryTarget, { recursive: true });
+    fs.writeFileSync(allowedFile, "temporary");
+    fs.writeFileSync(outsideFile, "outside");
+
+    assert.deepEqual(
+      resolveManagedTempFile({
+        filePath: allowedFile,
+        tempRoot: sandbox,
+        allowedParentDirectories: [allowedDirectory],
+      }),
+      { exists: true, filePath: path.resolve(allowedFile) }
+    );
+    assert.throws(
+      () =>
+        resolveManagedTempFile({
+          filePath: outsideFile,
+          tempRoot: sandbox,
+          allowedParentDirectories: [allowedDirectory],
+        }),
+      /outside the allowed managed temporary paths/
+    );
+    assert.throws(
+      () =>
+        resolveManagedTempFile({
+          filePath: directoryTarget,
+          tempRoot: sandbox,
+          allowedParentDirectories: [allowedDirectory],
+        }),
+      /not a file/
+    );
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+    fs.rmSync(outsideFile, { force: true });
+  }
+});
+
+test("managed temporary file resolution rejects symbolic links in the allowed path", () => {
+  const root = path.join(path.parse(process.cwd()).root, "moonshine-temp");
+  const allowedDirectory = path.join(root, "moonshine-videos");
+  const targetFile = path.join(allowedDirectory, "linked", "source.mp4");
+  const normalStats = {
+    isFile: () => true,
+    isSymbolicLink: () => false,
+  };
+  const linkedStats = {
+    isFile: () => false,
+    isSymbolicLink: () => true,
+  };
+  const fsImpl = {
+    existsSync: () => true,
+    lstatSync: (candidate) =>
+      path.resolve(candidate) === path.resolve(path.join(allowedDirectory, "linked"))
+        ? linkedStats
+        : normalStats,
+  };
+
+  assert.throws(
+    () =>
+      resolveManagedTempFile({
+        filePath: targetFile,
+        tempRoot: root,
+        allowedParentDirectories: [allowedDirectory],
+        fsImpl,
+      }),
+    /symbolic-link temporary path/
+  );
+});
+
 test("temporary cleanup removes only stale entries inside a managed subdirectory", () => {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "moonshine-config-safety-"));
   assert.equal(isStrictSubdirectoryPath(sandbox, os.tmpdir()), true);
@@ -180,4 +260,174 @@ test("temporary cleanup removes only stale entries inside a managed subdirectory
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
+});
+
+test("temporary run cleanup removes only an allowed per-run directory", () => {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "moonshine-run-cleanup-"));
+  const imageDirectory = path.join(sandbox, "images");
+  const runParent = path.join(imageDirectory, "chain-inputs");
+  const runDirectory = path.join(runParent, "run-1");
+  const siblingRunDirectory = path.join(runParent, "run-2");
+  const rootSentinel = path.join(sandbox, "keep.txt");
+
+  try {
+    fs.mkdirSync(path.join(runDirectory, "nested"), { recursive: true });
+    fs.mkdirSync(siblingRunDirectory, { recursive: true });
+    fs.writeFileSync(path.join(runDirectory, "nested", "remove.txt"), "remove");
+    fs.writeFileSync(path.join(siblingRunDirectory, "keep.txt"), "keep");
+    fs.writeFileSync(rootSentinel, "keep");
+
+    const result = removeManagedTempRunDirectory({
+      directory: runDirectory,
+      tempRoot: sandbox,
+      allowedRunParentDirectories: [runParent],
+    });
+
+    assert.equal(result.removed, true);
+    assert.equal(fs.existsSync(runDirectory), false);
+    assert.equal(fs.existsSync(siblingRunDirectory), true);
+    assert.equal(fs.existsSync(rootSentinel), true);
+    assert.equal(
+      removeManagedTempRunDirectory({
+        directory: runDirectory,
+        tempRoot: sandbox,
+        allowedRunParentDirectories: [runParent],
+      }).removed,
+      false
+    );
+    assert.throws(
+      () =>
+        removeManagedTempRunDirectory({
+          directory: sandbox,
+          tempRoot: sandbox,
+          allowedRunParentDirectories: [runParent],
+        }),
+      /per-run temporary directory/
+    );
+    assert.throws(
+      () =>
+        removeManagedTempRunDirectory({
+          directory: runParent,
+          tempRoot: sandbox,
+          allowedRunParentDirectories: [runParent],
+        }),
+      /per-run temporary directory/
+    );
+    assert.throws(
+      () =>
+        removeManagedTempRunDirectory({
+          directory: path.join(path.dirname(sandbox), "outside-run"),
+          tempRoot: sandbox,
+          allowedRunParentDirectories: [runParent],
+        }),
+      /per-run temporary directory/
+    );
+    assert.throws(
+      () =>
+        removeManagedTempRunDirectory({
+          directory: path.join(siblingRunDirectory, "nested"),
+          tempRoot: sandbox,
+          allowedRunParentDirectories: [runParent],
+        }),
+      /per-run temporary directory/
+    );
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("temporary run cleanup can remove a nested run asynchronously", async () => {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "moonshine-run-cleanup-async-"));
+  const runParent = path.join(sandbox, "images", "folder-chain-inputs");
+  const runDirectory = path.join(runParent, "run-1");
+  const siblingRunDirectory = path.join(runParent, "run-2");
+
+  try {
+    fs.mkdirSync(path.join(runDirectory, "nested"), { recursive: true });
+    fs.mkdirSync(siblingRunDirectory, { recursive: true });
+    fs.writeFileSync(path.join(runDirectory, "nested", "remove.txt"), "remove");
+    fs.writeFileSync(path.join(siblingRunDirectory, "keep.txt"), "keep");
+
+    const result = await removeManagedTempRunDirectoryAsync({
+      directory: runDirectory,
+      tempRoot: sandbox,
+      allowedRunParentDirectories: [runParent],
+    });
+
+    assert.equal(result.removed, true);
+    assert.equal(fs.existsSync(runDirectory), false);
+    assert.equal(fs.existsSync(siblingRunDirectory), true);
+    assert.equal(
+      (
+        await removeManagedTempRunDirectoryAsync({
+          directory: runDirectory,
+          tempRoot: sandbox,
+          allowedRunParentDirectories: [runParent],
+        })
+      ).removed,
+      false
+    );
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test("temporary run cleanup rejects symbolic links in the managed path", () => {
+  const root = path.join(path.parse(process.cwd()).root, "moonshine-temp");
+  const runParent = path.join(root, "images", "chain-inputs");
+  const linkedParent = runParent;
+  let removed = false;
+  const directoryStats = {
+    isDirectory: () => true,
+    isSymbolicLink: () => false,
+  };
+  const symbolicLinkStats = {
+    isDirectory: () => false,
+    isSymbolicLink: () => true,
+  };
+  const fsImpl = {
+    existsSync: () => true,
+    lstatSync: (candidate) =>
+      path.resolve(candidate) === path.resolve(linkedParent)
+        ? symbolicLinkStats
+        : directoryStats,
+    rmSync: () => {
+      removed = true;
+    },
+  };
+
+  assert.throws(
+    () =>
+      removeManagedTempRunDirectory({
+        directory: path.join(linkedParent, "run-1"),
+        tempRoot: root,
+        allowedRunParentDirectories: [runParent],
+        fsImpl,
+      }),
+    /symbolic-link/
+  );
+  assert.equal(removed, false);
+});
+
+test("copy target conflict policy preserves rename by default and supports strict errors", () => {
+  const target = path.join(path.parse(process.cwd()).root, "outputs", "result.png");
+  const fsImpl = { existsSync: () => true };
+  const now = new Date("2026-07-16T01:02:03.456Z");
+
+  assert.equal(
+    resolveCopyFileTarget(target, { fsImpl, now }),
+    path.join(path.dirname(target), "result_2026-07-16T01-02-03-456Z.png")
+  );
+  assert.equal(
+    resolveCopyFileTarget(target, { fsImpl: { existsSync: () => false }, now }),
+    target
+  );
+  assert.throws(
+    () => resolveCopyFileTarget(target, { fsImpl, conflictPolicy: "error", now }),
+    (error) => error?.code === "COPY_TARGET_EXISTS"
+  );
+  assert.throws(
+    () => resolveCopyFileTarget(target, { fsImpl, conflictPolicy: "overwrite", now }),
+    /conflict policy/
+  );
 });

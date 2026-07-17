@@ -26,7 +26,7 @@
             "
             ref="editorRef"
             :selected-file="currentFile.originalFile"
-            :show-masker="showMaskTools && currentModelRequiresMask"
+            :show-masker="showMaskTools && currentModelCanUseMaskTools"
             :drawing-mode="isMaskDrawingMode"
             :smart-selection-mode="isSmartSelectionMode"
             :current-model="currentModel"
@@ -59,6 +59,51 @@
 
       <!-- 底部工具栏 -->
     </div>
+
+    <ImageProcessingResultDialog
+      v-model="processingResultDialog.open"
+      :title="processingResultDialog.title"
+      :summary="processingResultDialog.summary"
+    />
+
+    <q-dialog
+      v-model="slbrMissingMaskDialog.open"
+      @hide="handleSlbrMissingMaskDialogHide"
+    >
+      <q-card style="width: min(560px, 92vw)">
+        <q-card-section>
+          <div class="text-subtitle1">部分图片没有可用蒙版</div>
+          <div class="text-caption text-grey-7 q-mt-xs">
+            已选 {{ slbrMissingMaskDialog.totalCount }} 张，{{ slbrMissingMaskDialog.validCount }} 张可局部处理，{{ slbrMissingMaskDialog.missingFiles.length }} 张缺失或为空白蒙版。
+          </div>
+          <div class="text-caption text-grey-7 q-mt-xs">
+            当前局部策略：{{ slbrLocalInferenceStrategyLabel }}。实际 Tile 节省会在任务完成后显示。
+          </div>
+        </q-card-section>
+        <q-separator />
+        <q-card-section class="q-pt-sm">
+          <q-list dense>
+            <q-item
+              v-for="file in slbrMissingMaskDialog.missingFiles.slice(0, 8)"
+              :key="file.id"
+            >
+              <q-item-section>{{ file.name }}</q-item-section>
+            </q-item>
+          </q-list>
+          <div
+            v-if="slbrMissingMaskDialog.missingFiles.length > 8"
+            class="text-caption text-grey-7 q-mt-sm"
+          >
+            另有 {{ slbrMissingMaskDialog.missingFiles.length - 8 }} 张图片未显示。
+          </div>
+        </q-card-section>
+        <q-card-actions align="right" class="q-pa-md q-gutter-sm">
+          <q-btn flat no-caps label="取消并补充蒙版" @click="resolveSlbrMissingMaskDecision('cancel')" />
+          <q-btn flat no-caps label="跳过无蒙版图片" @click="resolveSlbrMissingMaskDecision('skip')" />
+          <q-btn color="primary" unelevated no-caps label="无蒙版图片按全图处理" @click="resolveSlbrMissingMaskDecision('full')" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
   </q-page>
 </template>
 
@@ -85,6 +130,18 @@ import { useConfiguredShortcuts } from "src/composables/useConfiguredShortcuts";
 import InpaintService from "src/services/ImageProcessingService";
 import { buildImageOutputBaseName, splitFileName } from "src/utils/fileNaming";
 import { buildImageOutputRequestOptions } from "src/utils/imageOutputOptions";
+import {
+  buildCollisionAwareRelativePath,
+  buildRelativeStemLookup,
+  collectFolderStemCollisions,
+  collectRelativeStemCollisions,
+  reserveUniqueRelativeStemPath,
+  resolveRelativeStemMatch,
+  selectStagedSourceSize,
+} from "src/utils/folderPathMapping";
+import {
+  withImageProcessingSummary,
+} from "src/utils/imageProcessingResults";
 import { MASK_TOOL_MODES } from "src/utils/maskTool";
 import {
   clearActiveProcessingTask,
@@ -110,6 +167,7 @@ import FileExplorer from "../components/common/FileExplorer.vue";
 import Workspace from "../components/common/Workspace.vue";
 import ProcessingToolbar from "../components/image/ImageProcessingToolbar.vue";
 import ImageSettingsDrawer from "../components/image/ImageSettingsDrawer.vue";
+import ImageProcessingResultDialog from "../components/image/ImageProcessingResultDialog.vue";
 import { onBeforeRouteLeave } from "vue-router";
 
 const $q = useQuasar();
@@ -170,6 +228,20 @@ const savePath = ref("");
 const savePathSourceMode = ref("managed");
 const folderPath = ref("");
 const maskFolderPath = ref("");
+const slbrApplyScope = ref("full");
+const slbrFolderMissingMaskBehavior = ref("full");
+const slbrMissingMaskDialog = ref({
+  open: false,
+  totalCount: 0,
+  validCount: 0,
+  missingFiles: [],
+  resolve: null,
+});
+const processingResultDialog = ref({
+  open: false,
+  title: "",
+  summary: {},
+});
 const modelParameterValues = ref({});
 const editorRef = ref(null);
 const isImageLoaded = ref(false);
@@ -218,13 +290,6 @@ const normalizeRelativePath = (value = "") =>
 const getPathExtension = (filePath = "") => {
   const match = String(filePath || "").match(/(\.[^./\\]+)$/);
   return match?.[1] || "";
-};
-
-const replacePathExtension = (filePath = "", extension = "") => {
-  const normalizedExtension = extension
-    ? extension.startsWith(".") ? extension : `.${extension}`
-    : getPathExtension(filePath) || ".png";
-  return String(filePath || "image").replace(/(\.[^./\\]+)?$/, normalizedExtension);
 };
 
 const splitRelativePath = (relativePath = "") => {
@@ -446,8 +511,23 @@ const currentProcessingModelLabel = computed(
 const currentModelRequiresMask = computed(() =>
   imageModelMetadata.value.requiresMask !== false
 );
+const isSlbrModel = computed(() => currentModel.value === "slbr");
+const isSlbrLocalScope = computed(
+  () => isSlbrModel.value && slbrApplyScope.value === "local"
+);
+const currentModelCanUseMaskTools = computed(
+  () => currentModelRequiresMask.value || isSlbrLocalScope.value
+);
+const slbrLocalInferenceStrategyLabel = computed(
+  () =>
+    ({
+      auto: "自动",
+      full: "整图推理后局部写回",
+      smart_tiles: "智能局部 Tile",
+    })[configStore.config.advanced?.slbrLocalInferenceStrategy || "auto"] || "自动"
+);
 const isSmartSelectionMode = computed(
-  () => Boolean(showMaskTools.value && currentModelRequiresMask.value && maskMode.value === "smart")
+  () => Boolean(showMaskTools.value && currentModelCanUseMaskTools.value && maskMode.value === "smart")
 );
 const samTextSupportedModelIds = ["sam3_1_multiplex", "sam3"];
 const getSamEnabledCapability = (model, ...capabilities) => {
@@ -580,7 +660,7 @@ const isImageMaskerReady = computed(
   () =>
     Boolean(
       currentFile.value &&
-        currentModelRequiresMask.value &&
+        currentModelCanUseMaskTools.value &&
         showMaskTools.value &&
         editorRef.value?.isMaskerReady?.()
     )
@@ -639,6 +719,8 @@ const toggleFileSelection = (file) => {
 const handleModelChange = (model, { notify = true } = {}) => {
   if (!model) return;
   rememberMaskToolsPreference();
+  slbrApplyScope.value = "full";
+  slbrFolderMissingMaskBehavior.value = "full";
   currentModel.value = model;
   appStateStore.setSharedCurrentModel?.(model);
   const metadata = modelRegistryStore.imageModels.find((item) => item.id === model) || {};
@@ -694,9 +776,6 @@ const openModelManagement = (modelId = currentModel.value) => {
   });
 };
 
-const modelSupportsMaskTools = (metadata = imageModelMetadata.value) =>
-  metadata.requiresMask !== false;
-
 const rememberMaskToolsPreference = () => {
   if (currentModelRequiresMask.value) {
     maskToolsPreferredVisible.value = Boolean(showMaskTools.value);
@@ -711,7 +790,7 @@ const setMaskToolsVisible = (
   if (persist) {
     maskToolsPreferredVisible.value = nextValue;
   }
-  showMaskTools.value = currentModelRequiresMask.value ? nextValue : false;
+  showMaskTools.value = currentModelCanUseMaskTools.value ? nextValue : false;
   if (!showMaskTools.value) {
     setMaskMode("off", { persist: false });
   } else if (maskMode.value === "off") {
@@ -722,19 +801,64 @@ const setMaskToolsVisible = (
   }
 };
 
-const applyModelRuntimeState = (metadata = imageModelMetadata.value) => {
-  ensureModelParameterDefaults(metadata);
-  if (!modelSupportsMaskTools(metadata)) {
+const syncMaskToolStateForContext = (
+  state = {},
+  { persist = currentModelRequiresMask.value } = {}
+) => {
+  if (!currentModelCanUseMaskTools.value) {
     showMaskTools.value = false;
     setMaskMode("off", { persist: false });
     return;
   }
 
-  showMaskTools.value = maskToolsPreferredVisible.value;
-  setMaskMode(
-    showMaskTools.value ? resolvePreferredMaskMode() : "off",
-    { persist: false, notifyUnavailable: false }
-  );
+  const nextVisible = state.showMaskTools ?? true;
+  if (!nextVisible) {
+    setMaskToolsVisible(false, { persist });
+    return;
+  }
+
+  const requestedMode = ["manual", "smart"].includes(state.maskMode)
+    ? state.maskMode
+    : state.drawingMode === true
+      ? "manual"
+      : resolvePreferredMaskMode();
+  const nextMode = requestedMode === "smart" && !samSmartSelectionAvailable.value
+    ? "manual"
+    : requestedMode;
+  setMaskMode(nextMode, {
+    persist: persist && currentModelRequiresMask.value,
+    notifyUnavailable: false,
+  });
+};
+
+const applyModelRuntimeState = (metadata = imageModelMetadata.value) => {
+  ensureModelParameterDefaults(metadata);
+  if (!currentModelCanUseMaskTools.value) {
+    showMaskTools.value = false;
+    setMaskMode("off", { persist: false });
+    return;
+  }
+
+  syncMaskToolStateForContext({
+    showMaskTools: currentModelRequiresMask.value
+      ? maskToolsPreferredVisible.value
+      : showMaskTools.value || isSlbrLocalScope.value,
+    maskMode: maskMode.value === "off" ? resolvePreferredMaskMode() : maskMode.value,
+    drawingMode: runtimeUiStore.imageMaskDrawingEnabled,
+  }, { persist: false });
+};
+
+const setSlbrApplyScope = (value) => {
+  if (!isSlbrModel.value) return;
+  slbrApplyScope.value = value === "local" ? "local" : "full";
+  if (!isSlbrLocalScope.value) {
+    syncMaskToolStateForContext({ showMaskTools: false }, { persist: false });
+    return;
+  }
+  syncMaskToolStateForContext({
+    showMaskTools: true,
+    maskMode: maskMode.value === "off" ? resolvePreferredMaskMode() : maskMode.value,
+  }, { persist: false });
 };
 
 // 处理全选
@@ -1080,8 +1204,8 @@ const setMaskMode = (value, { persist = true, notifyUnavailable = true } = {}) =
     }
     return;
   }
-  maskMode.value = currentModelRequiresMask.value ? nextMode : "off";
-  showMaskTools.value = maskMode.value !== "off" && currentModelRequiresMask.value;
+  maskMode.value = currentModelCanUseMaskTools.value ? nextMode : "off";
+  showMaskTools.value = maskMode.value !== "off" && currentModelCanUseMaskTools.value;
   setMaskDrawingMode(maskMode.value === "manual", { persist });
   if (persist && currentModelRequiresMask.value) {
     maskToolsPreferredVisible.value = showMaskTools.value;
@@ -1266,19 +1390,20 @@ useConfiguredShortcuts({
 });
 
 const captureMaskUiState = () => ({
-  showMaskTools: maskToolsPreferredVisible.value,
+  showMaskTools: showMaskTools.value,
+  maskMode: maskMode.value,
   drawingMode: runtimeUiStore.imageMaskDrawingEnabled,
 });
 
 const restoreMaskUiState = (maskUiState = {}) => {
-  setMaskToolsVisible(maskUiState.showMaskTools ?? maskToolsPreferredVisible.value, {
-    persist: true,
-  });
-  if (currentModelRequiresMask.value) {
-    setMaskDrawingMode(maskUiState.drawingMode ?? runtimeUiStore.imageMaskDrawingEnabled);
-    return;
-  }
-  setMaskDrawingMode(false, { persist: false });
+  syncMaskToolStateForContext(
+    {
+      showMaskTools: maskUiState.showMaskTools ?? currentModelCanUseMaskTools.value,
+      maskMode: maskUiState.maskMode,
+      drawingMode: maskUiState.drawingMode,
+    },
+    { persist: currentModelRequiresMask.value }
+  );
 };
 
 const clearMasksForProcessedFileIds = async (processedFileIds = []) => {
@@ -1375,6 +1500,108 @@ const notifyProcessingInputWarnings = () => {
   });
 };
 
+const showProcessingResultDetails = (summary, title = "批量处理结果") => {
+  processingResultDialog.value = {
+    open: true,
+    title,
+    summary,
+  };
+};
+
+const notifyProcessingOutcome = (
+  response = {},
+  {
+    title = "批量处理结果",
+    completedMessage = "处理完成",
+    partialMessage = "部分图片处理完成，请查看失败详情",
+    skippedMessage = "本次任务中的图片均已跳过",
+    failedMessage = "图片处理失败",
+  } = {}
+) => {
+  const summary = withImageProcessingSummary(response);
+  const messages = {
+    completed: completedMessage,
+    partial: partialMessage,
+    skipped: skippedMessage,
+    failed: failedMessage,
+  };
+  const types = {
+    completed: "positive",
+    partial: "warning",
+    skipped: "info",
+    failed: "negative",
+  };
+  const issueResults = (summary.results || []).filter((result) => result?.success !== true);
+  $q.notify({
+    type: types[summary.status] || "negative",
+    message: messages[summary.status] || failedMessage,
+    position: "top",
+    timeout: summary.status === "completed" ? 5000 : 7000,
+    ...(issueResults.length > 0
+      ? {
+          actions: [
+            {
+              label: "查看详情",
+              color: "white",
+              handler: () => showProcessingResultDetails(summary, title),
+            },
+          ],
+        }
+      : {}),
+  });
+  return summary;
+};
+
+const cleanupTempRunDirectory = async (directoryPath, label = "临时输入") => {
+  if (!directoryPath || !window.electron?.ipcRenderer?.invoke) return true;
+  try {
+    const result = await window.electron.ipcRenderer.invoke("cleanup-temp-directory", {
+      directoryPath,
+    });
+    if (result?.success) return true;
+    throw new Error(result?.error || "临时目录清理失败");
+  } catch (error) {
+    console.warn(`${label}清理失败:`, directoryPath, error);
+    $q.notify({
+      type: "warning",
+      message: `${label}未能自动清理，处理结果不受影响。可稍后在全局设置中清理临时文件。`,
+      position: "top",
+      timeout: 6000,
+    });
+    return false;
+  }
+};
+
+const cleanupPageProcessingInputs = async (preferredDirectory = "") => {
+  const directories = new Set([
+    preferredDirectory,
+    ...fileManagerStore.consumeProcessingInputCleanupDirectories(),
+  ].filter(Boolean));
+  for (const directoryPath of directories) {
+    await cleanupTempRunDirectory(directoryPath, "页面批量临时输入");
+  }
+};
+
+const ensureStagingDiskSpace = async (targetPath, requiredBytes) => {
+  if (!targetPath || !window.electron?.ipcRenderer?.invoke) return true;
+  const result = await window.electron.ipcRenderer.invoke("ensure-disk-space", {
+    targetPath,
+    requiredBytes: Math.max(0, Math.ceil(Number(requiredBytes) || 0)),
+    operation: "文件夹批处理临时输入",
+  });
+  if (!result?.success) {
+    throw new Error(result?.error || "临时输入磁盘空间不足");
+  }
+  return true;
+};
+
+const estimateBase64ByteLength = (value = "") => {
+  const raw = String(value || "").split(",").pop() || "";
+  if (!raw) return 0;
+  const padding = raw.endsWith("==") ? 2 : raw.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((raw.length * 3) / 4) - padding);
+};
+
 const base64ToArrayBuffer = (base64Data = "") => {
   const raw = String(base64Data || "").split(",").pop() || "";
   const binaryString = atob(raw);
@@ -1423,17 +1650,26 @@ const createFolderStagingContext = () => {
   const stagingRoot = joinRendererPath(tempRoot, imageFolder, "folder-chain-inputs", runId);
   const imageInputFolder = joinRendererPath(stagingRoot, "images");
   const maskInputFolder = joinRendererPath(stagingRoot, "masks");
+  const templateInputFolder = joinRendererPath(stagingRoot, "template");
   return {
     ...fileManagerStore.createProcessingInputContext(config, "path"),
     stagingRoot,
     imageInputFolder,
     maskInputFolder,
+    templateInputFolder,
+    templateMaskPath: "",
+    usesStagedImages: false,
+    usesStagedMasks: false,
     stagedImageToFileId: new Map(),
   };
 };
 
 const copyFileToPath = async (source, target) => {
-  const result = await window.electron.ipcRenderer.invoke("copy-file", { source, target });
+  const result = await window.electron.ipcRenderer.invoke("copy-file", {
+    source,
+    target,
+    conflictPolicy: "error",
+  });
   if (!result?.success) {
     throw new Error(result?.error || `复制文件失败: ${source}`);
   }
@@ -1452,21 +1688,25 @@ const buildMaskPathMap = async (targetMaskFolderPath) => {
   const maskFiles = targetMaskFolderPath
     ? await listImageFilesFromFolder(targetMaskFolderPath)
     : [];
-  const byStem = new Map();
   let templatePath = "";
   maskFiles.forEach((file) => {
     const stem = getFileStem(file.name).toLowerCase();
     if (stem === "mask_template") {
       templatePath = file.path;
     }
-    if (stem && !byStem.has(stem)) {
-      byStem.set(stem, file.path);
-    }
   });
-  return { byStem, templatePath };
+  return {
+    files: maskFiles,
+    lookup: buildRelativeStemLookup(maskFiles),
+    templatePath,
+  };
 };
 
-const buildStagedFolderInputs = async ({ requiresMask = false } = {}) => {
+const buildStagedFolderInputs = async ({
+  requiresMask = false,
+  forceMaskTemplate = false,
+  onContextCreated,
+} = {}) => {
   if (!window.electron?.ipcRenderer?.invoke || !folderPath.value) {
     return null;
   }
@@ -1483,9 +1723,19 @@ const buildStagedFolderInputs = async ({ requiresMask = false } = {}) => {
       file: loadedByPath.get(normalizeComparablePath(entry.path)),
     }))
     .filter(({ file }) => Boolean(file));
-  const needsStaging = matchedEntries.some(
-    ({ file }) => (file.history?.length || 0) > 1 || Boolean(file.mask?.data)
+  const currentMaskAvailable = Boolean(fileManagerStore.currentFile?.mask?.data);
+  const maskMap = requiresMask ? await buildMaskPathMap(maskFolderPath.value) : null;
+  const needsImageStaging = matchedEntries.some(
+    ({ file }) =>
+      (file.history?.length || 0) > 1 ||
+      (requiresMask && Boolean(file.mask?.data))
   );
+  const shouldIncludeTemplate = Boolean(
+    requiresMask &&
+      (currentMaskAvailable || maskMap?.templatePath) &&
+      (needsImageStaging || forceMaskTemplate)
+  );
+  const needsStaging = needsImageStaging || shouldIncludeTemplate;
 
   if (!needsStaging) {
     return null;
@@ -1495,18 +1745,115 @@ const buildStagedFolderInputs = async ({ requiresMask = false } = {}) => {
   if (!context) {
     return null;
   }
-  const maskMap = requiresMask ? await buildMaskPathMap(maskFolderPath.value) : null;
-  if (requiresMask && fileManagerStore.currentFile?.mask?.data) {
+  onContextCreated?.(context);
+
+  const collisionKeys = collectRelativeStemCollisions(folderImages);
+  const ambiguousTargetStems = collectFolderStemCollisions(folderImages);
+  const usedStagedStemKeys = new Set();
+  if (shouldIncludeTemplate && !forceMaskTemplate) {
+    usedStagedStemKeys.add("mask_template");
+  }
+  const stagedEntries = folderImages.map((entry) => {
+    const loadedFile = loadedByPath.get(normalizeComparablePath(entry.path));
+    const latestInput = loadedFile
+      ? fileManagerStore.getLatestImageInputSource(loadedFile)
+      : null;
+    const sourceExtension =
+      latestInput?.imageSource?.extension ||
+      getPathExtension(latestInput?.imageSource?.data) ||
+      getPathExtension(entry.name) ||
+      ".png";
+    const collisionAwarePath = buildCollisionAwareRelativePath(
+      entry,
+      sourceExtension,
+      collisionKeys
+    );
+    const targetRelativePath = reserveUniqueRelativeStemPath(
+      collisionAwarePath,
+      usedStagedStemKeys,
+      sourceExtension
+    );
+    return { entry, loadedFile, latestInput, sourceExtension, targetRelativePath };
+  });
+
+  let estimatedPayloadBytes = 0;
+  if (needsImageStaging) {
+    for (const { entry, loadedFile, latestInput } of stagedEntries) {
+      const imageSource = latestInput?.imageSource;
+      let latestPathSize = 0;
+      if (
+        imageSource?.type === "path" &&
+        imageSource.data &&
+        normalizeComparablePath(imageSource.data) !== normalizeComparablePath(entry.path)
+      ) {
+        latestPathSize = await fileManagerStore.getPathFileSizeBytes(imageSource.data);
+      }
+      estimatedPayloadBytes += selectStagedSourceSize({
+        sourceType: imageSource?.type || "original",
+        fallbackSize: entry.size,
+        inlineSize: estimateBase64ByteLength(imageSource?.data),
+        pathSize: latestPathSize,
+      });
+
+      if (!requiresMask) {
+        continue;
+      }
+      if (loadedFile?.mask?.data) {
+        estimatedPayloadBytes += estimateBase64ByteLength(loadedFile.mask.data);
+        continue;
+      }
+      const sourceMask = resolveRelativeStemMatch(entry, maskMap?.lookup, {
+        ambiguousTargetStems,
+      });
+      estimatedPayloadBytes += Math.max(0, Number(sourceMask?.size) || 0);
+    }
+  }
+  if (shouldIncludeTemplate) {
+    if (currentMaskAvailable) {
+      estimatedPayloadBytes += estimateBase64ByteLength(
+        fileManagerStore.currentFile.mask.data
+      );
+    } else {
+      const templateEntry = (maskMap?.files || []).find(
+        (entry) =>
+          normalizeComparablePath(entry.path) ===
+          normalizeComparablePath(maskMap?.templatePath)
+      );
+      estimatedPayloadBytes += Math.max(0, Number(templateEntry?.size) || 0);
+    }
+  }
+  await ensureStagingDiskSpace(context.stagingRoot, estimatedPayloadBytes);
+
+  const stagedTemplateFolder = forceMaskTemplate
+    ? context.templateInputFolder
+    : context.maskInputFolder;
+  const stagedTemplateName = forceMaskTemplate ? "mask.png" : "mask_template.png";
+  if (shouldIncludeTemplate && fileManagerStore.currentFile?.mask?.data) {
+    context.templateMaskPath = joinRendererPath(
+      stagedTemplateFolder,
+      stagedTemplateName
+    );
     await saveBase64ToPath(
       fileManagerStore.currentFile.mask.data,
-      joinRendererPath(context.maskInputFolder, "mask_template.png")
+      context.templateMaskPath
     );
-  } else if (requiresMask && maskMap?.templatePath) {
+  } else if (shouldIncludeTemplate && maskMap?.templatePath) {
+    context.templateMaskPath = joinRendererPath(
+      stagedTemplateFolder,
+      stagedTemplateName
+    );
     await copyFileToPath(
       maskMap.templatePath,
-      joinRendererPath(context.maskInputFolder, "mask_template.png")
+      context.templateMaskPath
     );
   }
+
+  if (!needsImageStaging) {
+    return context;
+  }
+
+  context.usesStagedImages = true;
+  context.usesStagedMasks = requiresMask;
 
   fileManagerStore.processingConfig = {
     ...fileManagerStore.processingConfig,
@@ -1517,15 +1864,17 @@ const buildStagedFolderInputs = async ({ requiresMask = false } = {}) => {
   };
   fileManagerStore.lastProcessingInputWarnings = [];
 
-  for (const entry of folderImages) {
-    const loadedFile = loadedByPath.get(normalizeComparablePath(entry.path));
-    const sourcePath = loadedFile
-      ? await fileManagerStore.resolveLatestImageInput(loadedFile, "path", context)
-      : entry.path;
-    const sourceExtension = getPathExtension(sourcePath) || getPathExtension(entry.name) || ".png";
-    const targetRelativePath = replacePathExtension(entry.relativePath || entry.name, sourceExtension);
+  for (const { entry, loadedFile, latestInput, targetRelativePath } of stagedEntries) {
     const targetImagePath = joinRendererPath(context.imageInputFolder, targetRelativePath);
-    const copiedImagePath = await copyFileToPath(sourcePath, targetImagePath);
+    let copiedImagePath = targetImagePath;
+    if (latestInput?.imageSource?.type === "base64" && latestInput.imageSource.data) {
+      copiedImagePath = await saveBase64ToPath(latestInput.imageSource.data, targetImagePath);
+    } else {
+      const sourcePath = loadedFile
+        ? await fileManagerStore.resolveLatestImageInput(loadedFile, "path", context)
+        : entry.path;
+      copiedImagePath = await copyFileToPath(sourcePath, targetImagePath);
+    }
 
     if (loadedFile) {
       context.stagedImageToFileId.set(
@@ -1548,9 +1897,11 @@ const buildStagedFolderInputs = async ({ requiresMask = false } = {}) => {
       await saveBase64ToPath(loadedFile.mask.data, maskTargetPath);
       continue;
     }
-    const sourceMaskPath = maskMap?.byStem?.get(getFileStem(entry.name).toLowerCase());
-    if (sourceMaskPath) {
-      await copyFileToPath(sourceMaskPath, maskTargetPath);
+    const sourceMask = resolveRelativeStemMatch(entry, maskMap?.lookup, {
+      ambiguousTargetStems,
+    });
+    if (sourceMask?.path) {
+      await copyFileToPath(sourceMask.path, maskTargetPath);
     }
   }
 
@@ -1831,7 +2182,19 @@ const runCurrentModel = async () => {
   }
 };
 // 运行去除模型
-const getCurrentModelOptions = () => ({ ...modelParameterValues.value });
+const getCurrentModelOptions = () => ({
+  ...modelParameterValues.value,
+  ...(isSlbrModel.value
+    ? {
+        local_inference_strategy:
+          configStore.config.advanced?.slbrLocalInferenceStrategy || "auto",
+        local_bbox_empty_ratio_threshold:
+          configStore.config.advanced?.slbrLocalBBoxEmptyRatioThreshold ?? 50,
+        local_edge_feather_px:
+          configStore.config.advanced?.slbrLocalEdgeFeatherPx ?? 2,
+      }
+    : {}),
+});
 
 const isMaskInpaintModel = (modelId = currentModel.value) => (
   MASK_INPAINT_MODEL_IDS.includes(String(modelId || "").trim().toLowerCase())
@@ -1874,6 +2237,106 @@ const ensureBackendInpaintModel = async () => {
     return false;
   }
 };
+
+const getMaskImageSource = (mask) => {
+  if (mask?.displayUrl) return mask.displayUrl;
+  const data = String(mask?.data || "").trim();
+  if (!data) return "";
+  return data.startsWith("data:") ? data : `data:image/png;base64,${data}`;
+};
+
+const inspectSlbrLocalMask = async (file) => {
+  // Local requests transmit mask.data; a preview-only mask cannot be processed.
+  if (!String(file?.mask?.data || "").trim()) {
+    return { file, valid: false, reason: "missing" };
+  }
+  const source = getMaskImageSource(file?.mask);
+  if (!source) return { file, valid: false, reason: "missing" };
+
+  try {
+    const selectedPixels = await new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => {
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = image.naturalWidth;
+          canvas.height = image.naturalHeight;
+          const context = canvas.getContext("2d", { willReadFrequently: true });
+          context.drawImage(image, 0, 0);
+          const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+          let usesAlpha = false;
+          for (let index = 3; index < pixels.length; index += 4) {
+            if (pixels[index] < 255) {
+              usesAlpha = true;
+              break;
+            }
+          }
+          for (let index = 0; index < pixels.length; index += 4) {
+            if (
+              (usesAlpha && pixels[index + 3] > 0) ||
+              (!usesAlpha && (pixels[index] + pixels[index + 1] + pixels[index + 2]) / 3 > 127)
+            ) {
+              resolve(true);
+              return;
+            }
+          }
+          resolve(false);
+        } catch (error) {
+          reject(error);
+        }
+      };
+      image.onerror = () => reject(new Error("无法读取蒙版"));
+      image.src = source;
+    });
+    return { file, valid: selectedPixels, reason: selectedPixels ? "" : "empty" };
+  } catch (error) {
+    console.warn("Failed to inspect SLBR local mask:", file?.name, error);
+    return { file, valid: false, reason: "invalid" };
+  }
+};
+
+const inspectSlbrLocalMasks = async (files) => {
+  const entries = [];
+  for (const file of files) {
+    entries.push(await inspectSlbrLocalMask(file));
+  }
+  return {
+    validFiles: entries.filter((entry) => entry.valid).map((entry) => entry.file),
+    missingFiles: entries.filter((entry) => !entry.valid).map((entry) => entry.file),
+  };
+};
+
+const resolveSlbrMissingMaskDecision = (decision) => {
+  const resolve = slbrMissingMaskDialog.value.resolve;
+  slbrMissingMaskDialog.value = {
+    ...slbrMissingMaskDialog.value,
+    open: false,
+    resolve: null,
+  };
+  resolve?.(decision);
+};
+
+const handleSlbrMissingMaskDialogHide = () => {
+  const resolve = slbrMissingMaskDialog.value.resolve;
+  if (!resolve) return;
+  slbrMissingMaskDialog.value = {
+    ...slbrMissingMaskDialog.value,
+    open: false,
+    resolve: null,
+  };
+  resolve("cancel");
+};
+
+const requestSlbrMissingMaskDecision = ({ totalCount, validFiles, missingFiles }) =>
+  new Promise((resolve) => {
+    slbrMissingMaskDialog.value = {
+      open: true,
+      totalCount,
+      validCount: validFiles.length,
+      missingFiles,
+      resolve,
+    };
+  });
 
 const runSlbrModel = async () => {
   let filesToProcess = [];
@@ -1921,11 +2384,55 @@ const runSlbrModel = async () => {
     return;
   }
 
+  const localScope = isSlbrLocalScope.value;
+  let missingMaskDecision = "";
+  let validLocalMaskIds = new Set();
+  let skippedMissingMaskCount = 0;
+  let skippedMissingMaskFiles = [];
+  if (localScope) {
+    const maskPreflight = await inspectSlbrLocalMasks(filesToProcess);
+    validLocalMaskIds = new Set(maskPreflight.validFiles.map((file) => file.id));
+    if (maskPreflight.missingFiles.length > 0) {
+      missingMaskDecision = await requestSlbrMissingMaskDecision({
+        totalCount: filesToProcess.length,
+        validFiles: maskPreflight.validFiles,
+        missingFiles: maskPreflight.missingFiles,
+      });
+      if (missingMaskDecision === "cancel") return;
+      if (missingMaskDecision === "skip") {
+        skippedMissingMaskFiles = maskPreflight.missingFiles;
+        filesToProcess = maskPreflight.validFiles;
+        skippedMissingMaskCount = maskPreflight.missingFiles.length;
+      }
+    }
+    if (filesToProcess.length === 0) {
+      notifyProcessingOutcome({
+        status: "skipped",
+        total_count: skippedMissingMaskFiles.length,
+        results: skippedMissingMaskFiles.map((file, index) => ({
+          id: file.id,
+          index,
+          file_name: file.name,
+          success: false,
+          skipped: true,
+          apply_scope: "skip",
+          error: "缺失或为空白蒙版",
+        })),
+      }, {
+        title: "SLBR 局部处理结果",
+        skippedMessage: "没有带可用蒙版的图片可供局部处理",
+      });
+      return;
+    }
+  }
+
   for (const file of filesToProcess) {
     const proceed = await checkHistoryLimit(file.id);
     if (!proceed) return;
   }
 
+  const maskUiState = captureMaskUiState();
+  let processingInputCleanupDirectory = "";
   try {
     setImageProcessingGuard(true, `正在处理 ${filesToProcess.length} 张图像`);
     loadingControl.show(
@@ -1934,22 +2441,77 @@ const runSlbrModel = async () => {
     isPageDisabled.value = true;
 
     const requestData = await fileManagerStore.prepareMoonshineImageProcessData(
-      filesToProcess
+      filesToProcess,
+      { includeMasks: localScope }
     );
+    processingInputCleanupDirectory = requestData._cleanupDirectory || "";
     notifyProcessingInputWarnings();
     requestData.model_id = "slbr";
     requestData.options = getCurrentModelOptions();
+    if (localScope) {
+      requestData.apply_scope = "mask";
+      requestData.mask_type = "base64";
+      requestData.data = requestData.data.map((item) => {
+        if (validLocalMaskIds.has(item.id)) {
+          return { ...item, apply_scope: "mask" };
+        }
+        const fullImageItem = { ...item };
+        delete fullImageItem.mask;
+        return { ...fullImageItem, apply_scope: "full" };
+      });
+    }
 
     const response = await InpaintService.performMoonshineImageProcessing(requestData);
-    const successfulResults = (response.results || []).filter((result) => result?.success);
+    const responseWithSkipped = skippedMissingMaskCount > 0
+      ? withImageProcessingSummary({
+          ...response,
+          status: undefined,
+          total_count: (response.total_count || response.results?.length || 0) + skippedMissingMaskCount,
+          results: [
+            ...(response.results || []),
+            ...skippedMissingMaskFiles.map((file, index) => ({
+              id: file.id,
+              index: filesToProcess.length + index,
+              file_name: file.name,
+              success: false,
+              skipped: true,
+              apply_scope: "skip",
+              error: "缺失或为空白蒙版",
+            })),
+          ],
+        })
+      : response;
+    const successfulResults = (responseWithSkipped.results || []).filter(
+      (result) => result?.success
+    );
     if (successfulResults.length > 0) {
-      $q.notify({
-        type: "positive",
-        message: `成功处理了 ${successfulResults.length} 张图像，总共 ${response.processed_count} 张`,
-        position: "top",
+      await finalizeSuccessfulMaskRun(maskUiState, {
+        processedFileIds: successfulResults
+          .map((result) => result.id)
+          .filter((id) => typeof id === "string" && id.length > 0),
+      });
+      const localCount = successfulResults.filter(
+        (result) => result.apply_scope === "mask"
+      ).length;
+      const fullCount = successfulResults.filter(
+        (result) => result.apply_scope === "full"
+      ).length;
+      const skippedCount = localScope ? skippedMissingMaskCount : 0;
+      notifyProcessingOutcome(responseWithSkipped, {
+        title: "SLBR 图片处理结果",
+        completedMessage: localScope
+          ? `完成 ${successfulResults.length} 张：局部 ${localCount} 张，全图 ${fullCount} 张，跳过 ${skippedCount} 张`
+          : `成功处理了 ${successfulResults.length} 张图像，总共 ${responseWithSkipped.total_count} 张`,
+        partialMessage: localScope
+          ? `部分完成：局部 ${localCount} 张，全图 ${fullCount} 张，跳过 ${responseWithSkipped.skipped_count} 张，失败 ${responseWithSkipped.failed_count} 张`
+          : `部分完成：成功 ${responseWithSkipped.success_count} 张，失败 ${responseWithSkipped.failed_count} 张`,
       });
     } else {
-      throw new Error(response.results?.[0]?.error || "处理结果为空");
+      notifyProcessingOutcome(responseWithSkipped, {
+        title: "SLBR 图片处理结果",
+        skippedMessage: "本次 SLBR 任务中的图片均已跳过",
+        failedMessage: responseWithSkipped.results?.[0]?.error || "透明水印去除失败",
+      });
     }
   } catch (error) {
     $q.notify({
@@ -1959,7 +2521,9 @@ const runSlbrModel = async () => {
     });
     console.error("透明水印去除失败:", error);
   } finally {
+    await cleanupPageProcessingInputs(processingInputCleanupDirectory);
     setImageProcessingGuard(false);
+    restoreMaskUiState(maskUiState);
     loadingControl.hide();
     isPageDisabled.value = false;
   }
@@ -2054,6 +2618,7 @@ const runRemoveModel = async () => {
     if (!proceed) return;
   }
 
+  let processingInputCleanupDirectory = "";
   try {
     const modelLabel = currentProcessingModelLabel.value;
     const imageProgressLabel = `正在使用 ${modelLabel} 处理图片 0/${filesToProcess.length}`;
@@ -2073,6 +2638,7 @@ const runRemoveModel = async () => {
     const requestData = await fileManagerStore.prepareBatchInpaintData(
       filesToProcess
     );
+    processingInputCleanupDirectory = requestData._cleanupDirectory || "";
     notifyProcessingInputWarnings();
 
     // 调用API
@@ -2085,16 +2651,17 @@ const runRemoveModel = async () => {
           .map((result) => result.id)
           .filter((id) => typeof id === "string" && id.length > 0),
       });
-      // 显示成功通知
-      $q.notify({
-        type: "positive",
-        message: `成功处理了 ${
-          successfulResults.length
-        } 张图像，总共 ${response.processed_count} 张`,
-        position: "top",
+      notifyProcessingOutcome(response, {
+        title: `${currentProcessingModelLabel.value} 图片处理结果`,
+        completedMessage: `成功处理了 ${successfulResults.length} 张图像，总共 ${response.total_count} 张`,
+        partialMessage: `部分完成：成功 ${response.success_count} 张，失败 ${response.failed_count} 张`,
       });
     } else {
-      throw new Error(response.results?.[0]?.error || "处理结果为空");
+      notifyProcessingOutcome(response, {
+        title: `${currentProcessingModelLabel.value} 图片处理结果`,
+        skippedMessage: "本次任务中的图片均已跳过",
+        failedMessage: response.results?.[0]?.error || "图像处理失败",
+      });
     }
   } catch (error) {
     // 显示错误通知
@@ -2105,6 +2672,7 @@ const runRemoveModel = async () => {
     });
     console.error("图像处理失败:", error);
   } finally {
+    await cleanupPageProcessingInputs(processingInputCleanupDirectory);
     setImageProcessingGuard(false);
     restoreMaskUiState(maskUiState);
     loadingControl.hide();
@@ -2114,6 +2682,7 @@ const runRemoveModel = async () => {
 
 const processFolderImages = async () => {
   const maskUiState = captureMaskUiState();
+  let stagingContext = null;
   try {
     const modelLabel = currentProcessingModelLabel.value;
     setImageProcessingGuard(true, `正在使用 ${modelLabel} 批量处理文件夹图像`);
@@ -2128,37 +2697,42 @@ const processFolderImages = async () => {
     isPageDisabled.value = true;
 
     // 实现文件夹处理逻辑
-    const stagingContext = await buildStagedFolderInputs({ requiresMask: true });
+    stagingContext = await buildStagedFolderInputs({
+      requiresMask: true,
+      onContextCreated: (context) => {
+        stagingContext = context;
+      },
+    });
     notifyProcessingInputWarnings();
 
     const folderData = {
       device: cudaAvailable.value ? "cuda" : "cpu",
-      image_folder: stagingContext?.imageInputFolder || folderPath.value,
-      mask_folder: stagingContext?.maskInputFolder || maskFolderPath.value,
+      image_folder: stagingContext?.usesStagedImages
+        ? stagingContext.imageInputFolder
+        : folderPath.value,
+      mask_folder: stagingContext?.usesStagedMasks
+        ? stagingContext.maskInputFolder
+        : maskFolderPath.value,
       output_folder: effectiveSavePath.value,
       ...getImageOutputRequestOptions(),
     };
     // 调用文件夹处理API
     const response = await InpaintService.performFolderInpainting(folderData);
     // 处理返回结果
-    if (response.success) {
+    if (response.success_count > 0) {
       const processedFileIds = await appendFolderResultsToLoadedFiles(
         response,
         stagingContext
       );
       await finalizeSuccessfulMaskRun(maskUiState, { processedFileIds });
-      const result = response;
-      $q.notify({
-        type: "positive",
-        message: `文件夹处理完成！共处理 ${
-          result.processed_count
-        } 张图像，耗时 ${result.total_time.toFixed(2)} 秒，请查看输出文件夹`,
-        position: "top",
-        timeout: 5000,
-      });
-    } else {
-      throw new Error(response.message || "处理失败");
     }
+    notifyProcessingOutcome(response, {
+      title: `${currentProcessingModelLabel.value} 文件夹处理结果`,
+      completedMessage: `文件夹处理完成，共处理 ${response.total_count} 张图像，耗时 ${Number(response.total_time || 0).toFixed(2)} 秒`,
+      partialMessage: `文件夹部分处理完成：成功 ${response.success_count} 张，失败 ${response.failed_count} 张，跳过 ${response.skipped_count} 张`,
+      skippedMessage: "文件夹中的图片均已跳过",
+      failedMessage: response.message || response.results?.[0]?.error || "文件夹处理失败",
+    });
   } catch (error) {
     $q.notify({
       type: "negative",
@@ -2167,6 +2741,7 @@ const processFolderImages = async () => {
     });
     console.error("处理文件夹失败:", error);
   } finally {
+    await cleanupTempRunDirectory(stagingContext?.stagingRoot, "文件夹批处理临时输入");
     setImageProcessingGuard(false);
     restoreMaskUiState(maskUiState);
     loadingControl.hide();
@@ -2175,6 +2750,22 @@ const processFolderImages = async () => {
 };
 // 下载按钮点击事件处理函数
 const processSlbrFolderImages = async () => {
+  const localScope = isSlbrLocalScope.value;
+  const missingMaskBehavior = slbrFolderMissingMaskBehavior.value;
+  if (localScope && missingMaskBehavior === "current_mask") {
+    const currentMaskCheck = await inspectSlbrLocalMask(fileManagerStore.currentFile);
+    if (!currentMaskCheck.valid) {
+      $q.notify({
+        type: "warning",
+        message: "使用当前蒙版前，请先在当前图片上创建非空蒙版",
+        position: "top",
+      });
+      return;
+    }
+  }
+
+  const maskUiState = captureMaskUiState();
+  let stagingContext = null;
   try {
     setImageProcessingGuard(true, "正在批量处理文件夹图像");
     loadingControl.show(
@@ -2182,29 +2773,98 @@ const processSlbrFolderImages = async () => {
     );
     isPageDisabled.value = true;
 
-    const stagingContext = await buildStagedFolderInputs({ requiresMask: false });
+    stagingContext = await buildStagedFolderInputs({
+      requiresMask: localScope,
+      forceMaskTemplate: localScope && missingMaskBehavior === "current_mask",
+      onContextCreated: (context) => {
+        stagingContext = context;
+      },
+    });
     notifyProcessingInputWarnings();
+
+    const stagedImageFolder = stagingContext?.usesStagedImages
+      ? stagingContext.imageInputFolder
+      : folderPath.value;
+    const stagedMaskFolder = stagingContext?.usesStagedMasks
+      ? stagingContext.maskInputFolder
+      : maskFolderPath.value || "";
+
+    if (localScope) {
+      const preflight = await InpaintService.inspectMoonshineFolderMasks({
+        image_folder: stagedImageFolder,
+        output_folder: effectiveSavePath.value || null,
+        mask_folder: stagedMaskFolder || null,
+        template_mask_path:
+          missingMaskBehavior === "current_mask"
+            ? stagingContext?.templateMaskPath || null
+            : null,
+        missing_mask_behavior: missingMaskBehavior,
+      });
+      if (preflight?.success === false || preflight?.status === "failed") {
+        throw new Error(preflight?.message || preflight?.error || "SLBR 文件夹蒙版预检失败");
+      }
+      $q.notify({
+        type: "info",
+        message: `局部预检：${preflight.total_count || 0} 张图片，局部 ${preflight.mask_count || 0} 张，全图回退 ${preflight.full_count || 0} 张，跳过 ${preflight.skipped_count || 0} 张，缺失 ${preflight.missing_count || 0} 张，空白 ${preflight.empty_count || 0} 张。`,
+        position: "top",
+        timeout: 4500,
+      });
+      if ((preflight.total_count || 0) === 0) {
+        $q.notify({
+          type: "info",
+          message: "输入文件夹中没有可处理的图片",
+          position: "top",
+        });
+        return;
+      }
+      if ((preflight.skipped_count || 0) === preflight.total_count) {
+        notifyProcessingOutcome(preflight, {
+          title: "SLBR 文件夹蒙版预检",
+          skippedMessage: "文件夹中的图片均因缺少可用蒙版而跳过",
+        });
+        return;
+      }
+    }
 
     const folderData = {
       model_id: "slbr",
       device: cudaAvailable.value ? "cuda" : "cpu",
-      image_folder: stagingContext?.imageInputFolder || folderPath.value,
+      image_folder: stagedImageFolder,
       output_folder: effectiveSavePath.value,
       options: getCurrentModelOptions(),
       ...getImageOutputRequestOptions(),
+      ...(localScope
+        ? {
+            apply_scope: "mask",
+            mask_folder: stagedMaskFolder,
+            template_mask_path:
+              missingMaskBehavior === "current_mask"
+                ? stagingContext?.templateMaskPath || ""
+                : "",
+            missing_mask_behavior: missingMaskBehavior,
+          }
+        : {}),
     };
     const response = await InpaintService.performMoonshineFolderProcessing(folderData);
-    if (response.success) {
-      await appendFolderResultsToLoadedFiles(response, stagingContext);
-      $q.notify({
-        type: "positive",
-        message: `文件夹处理完成，共处理 ${response.processed_count} 张图像，成功 ${response.success_count} 张`,
-        position: "top",
-        timeout: 5000,
-      });
-    } else {
-      throw new Error(response.message || response.error || "处理失败");
+    if (response.success_count > 0) {
+      const processedFileIds = await appendFolderResultsToLoadedFiles(response, stagingContext);
+      await finalizeSuccessfulMaskRun(maskUiState, { processedFileIds });
     }
+    const localCount = (response.results || []).filter(
+      (result) => result?.success && result.apply_scope === "mask"
+    ).length;
+    const fullCount = (response.results || []).filter(
+      (result) => result?.success && result.apply_scope === "full"
+    ).length;
+    notifyProcessingOutcome(response, {
+      title: "SLBR 文件夹处理结果",
+      completedMessage: localScope
+        ? `文件夹处理完成：局部 ${localCount} 张，全图 ${fullCount} 张，跳过 ${response.skipped_count} 张`
+        : `文件夹处理完成，共处理 ${response.total_count} 张图像，成功 ${response.success_count} 张`,
+      partialMessage: `文件夹部分处理完成：局部 ${localCount} 张，全图 ${fullCount} 张，失败 ${response.failed_count} 张，跳过 ${response.skipped_count} 张`,
+      skippedMessage: "文件夹中的图片均已跳过",
+      failedMessage: response.message || response.results?.[0]?.error || "透明水印文件夹处理失败",
+    });
   } catch (error) {
     $q.notify({
       type: "negative",
@@ -2213,7 +2873,9 @@ const processSlbrFolderImages = async () => {
     });
     console.error("透明水印文件夹处理失败:", error);
   } finally {
+    await cleanupTempRunDirectory(stagingContext?.stagingRoot, "SLBR 文件夹临时输入");
     setImageProcessingGuard(false);
+    restoreMaskUiState(maskUiState);
     loadingControl.hide();
     isPageDisabled.value = false;
   }
@@ -2385,6 +3047,13 @@ const registerImageE2ETestBridge = () => {
       outputFormat: requestData.output_format,
       outputQuality: requestData.output_quality,
       dataLength: Array.isArray(requestData.data) ? requestData.data.length : 0,
+      clientFailureCount: Array.isArray(requestData._clientFailures)
+        ? requestData._clientFailures.length
+        : 0,
+      clientFailureCodes: Array.isArray(requestData._clientFailures)
+        ? requestData._clientFailures.map((result) => result.error_code)
+        : [],
+      cleanupDirectory: requestData._cleanupDirectory || "",
       firstImageKind:
         /^[a-zA-Z]:[\\/]/.test(firstImageText) ||
         firstImageText.startsWith("/") ||
@@ -2443,6 +3112,14 @@ const registerImageE2ETestBridge = () => {
     },
     setCurrentModel: (modelId) => {
       handleModelChange(modelId, { notify: false });
+      return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
+    },
+    reloadImageModels: async () => {
+      await loadImageModelOptions({ preferredModel: currentModel.value });
+      return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
+    },
+    setSlbrApplyScope: (value) => {
+      setSlbrApplyScope(value);
       return window.__MOONSHINE_IMAGE_TEST__.getSnapshot();
     },
     setMaskToolsVisible: (value) => {
@@ -2559,6 +3236,9 @@ const registerImageE2ETestBridge = () => {
       smartSelectionMode: isSmartSelectionMode.value,
       maskToolsPreferredVisible: maskToolsPreferredVisible.value,
       currentModelRequiresMask: currentModelRequiresMask.value,
+      currentModelCanUseMaskTools: currentModelCanUseMaskTools.value,
+      slbrApplyScope: slbrApplyScope.value,
+      isSlbrLocalScope: isSlbrLocalScope.value,
       imageDrawingEnabled: isMaskDrawingMode.value,
       imageDrawingPreference: runtimeUiStore.imageMaskDrawingEnabled,
       fileCount: fileManagerStore.files.length,
@@ -2869,6 +3549,7 @@ const syncLayoutFooter = () => {
       showMaskTools: showMaskTools.value,
       maskMode: maskMode.value,
       currentModelRequiresMask: currentModelRequiresMask.value,
+      maskToolsEnabled: currentModelCanUseMaskTools.value,
       smartSelectionAvailable: samSmartSelectionAvailable.value,
       backendReady: backendEngineValue.value.isRunning,
       hasProcessedImages: hasProcessedImages.value,
@@ -3092,6 +3773,8 @@ const syncLayoutDrawers = () => {
       currentMask: currentMask.value,
       folderPath: folderPath.value,
       maskFolderPath: maskFolderPath.value,
+      slbrApplyScope: slbrApplyScope.value,
+      slbrFolderMissingMaskBehavior: slbrFolderMissingMaskBehavior.value,
       savePath: effectiveSavePath.value,
       canOpenSavePath: canOpenSavePath.value,
       backendRunning: backendRunning.value,
@@ -3104,6 +3787,7 @@ const syncLayoutDrawers = () => {
       "update:current-model": handleDrawerModelChange,
       "open-model-management": openModelManagement,
       "open-backend-manager": backendEngineValue.value.openDiagnostics,
+      "update:slbr-apply-scope": setSlbrApplyScope,
       "update:action-scope": (value) => {
         actionScope.value = value;
       },
@@ -3113,6 +3797,11 @@ const syncLayoutDrawers = () => {
       },
       "update:mask-folder-path": (value) => {
         maskFolderPath.value = value;
+      },
+      "update:slbr-folder-missing-mask-behavior": (value) => {
+        slbrFolderMissingMaskBehavior.value = ["current_mask", "full", "skip"].includes(value)
+          ? value
+          : "full";
       },
       "update:model-parameter": updateModelParameter,
       "apply-recommended-parameters": applyRecommendedModelParameters,

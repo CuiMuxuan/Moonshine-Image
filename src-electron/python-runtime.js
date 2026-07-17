@@ -12,14 +12,22 @@ export const PYTHON_ENV_KEYS_TO_REMOVE = Object.freeze([
   "CONDA_SHLVL",
 ]);
 
-export const DEFAULT_IMPORT_PROBE_MODULES = Object.freeze([
+export const BACKEND_RUNTIME_IMPORT_MODULES = Object.freeze([
   "fastapi",
   "uvicorn",
   "numpy",
   "PIL",
   "torch",
   "transformers",
+  "cv2",
+  "socketio",
+  "loguru",
+  "tqdm",
+  "moonshine_server.api",
 ]);
+
+export const DEFAULT_IMPORT_PROBE_MODULES = BACKEND_RUNTIME_IMPORT_MODULES;
+export const BACKEND_RUNTIME_IMPORT_TIMEOUT_MS = 60_000;
 
 export const IMPORT_PROBE_PREFIX = "MOONSHINE_IMPORT_PROBE=";
 

@@ -1,6 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  buildCollisionAwareRelativePath,
+  buildRelativeStemLookup,
+  collectRelativeStemCollisions,
+  resolveRelativeStemMatch,
+} from "../src/utils/folderPathMapping.js";
+import { summarizeImageProcessingResults } from "../src/utils/imageProcessingResults.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -40,8 +47,124 @@ function logSection(title) {
   console.log(`\n[${title}]`);
 }
 
+function assertEqual(actual, expected, description) {
+  if (actual !== expected) {
+    throw new Error(
+      `Assertion failed: ${description}\nExpected: ${String(expected)}\nActual: ${String(actual)}`
+    );
+  }
+  console.log(`PASS  ${description}`);
+}
+
+function runImageProcessingUtilityAssertions() {
+  logSection("Folder Mapping and Result Aggregation");
+
+  const maskLookup = buildRelativeStemLookup([
+    { path: "C:/masks/a/foo.png", relativePath: "a/foo.png", name: "foo.png" },
+    { path: "C:/masks/b/foo.png", relativePath: "b/foo.png", name: "foo.png" },
+    { path: "C:/masks/only/bar.png", relativePath: "only/bar.png", name: "bar.png" },
+  ]);
+  assertEqual(
+    resolveRelativeStemMatch({ relativePath: "b/foo.jpg", name: "foo.jpg" }, maskLookup)?.path,
+    "C:/masks/b/foo.png",
+    "Folder masks prefer an exact relative-path stem match"
+  );
+  assertEqual(
+    resolveRelativeStemMatch({ relativePath: "other/foo.jpg", name: "foo.jpg" }, maskLookup),
+    null,
+    "Folder masks reject an ambiguous duplicate-stem fallback"
+  );
+  assertEqual(
+    resolveRelativeStemMatch({ relativePath: "other/bar.jpg", name: "bar.jpg" }, maskLookup)?.path,
+    "C:/masks/only/bar.png",
+    "Folder masks retain the unique-stem compatibility fallback"
+  );
+  const extensionLookup = buildRelativeStemLookup([
+    { path: "C:/masks/same.jpg", relativePath: "same.jpg", name: "same.jpg" },
+    { path: "C:/masks/same.png", relativePath: "same.png", name: "same.png" },
+  ]);
+  assertEqual(
+    resolveRelativeStemMatch(
+      { relativePath: "same.jpg", name: "same.jpg" },
+      extensionLookup
+    )?.path,
+    "C:/masks/same.jpg",
+    "Folder masks resolve same-stem extension collisions by exact relative path"
+  );
+
+  const folderImages = [
+    { relativePath: "same.jpg", name: "same.jpg" },
+    { relativePath: "same.png", name: "same.png" },
+    { relativePath: "nested/same.jpg", name: "same.jpg" },
+  ];
+  const collisions = collectRelativeStemCollisions(folderImages);
+  assertEqual(
+    buildCollisionAwareRelativePath(folderImages[0], ".jpg", collisions),
+    "same_jpg.jpg",
+    "Staging suffixes only a colliding source extension"
+  );
+  assertEqual(
+    buildCollisionAwareRelativePath(folderImages[2], ".jpg", collisions),
+    "nested/same.jpg",
+    "Staging keeps non-colliding nested names unchanged"
+  );
+
+  assertEqual(
+    summarizeImageProcessingResults({
+      total_count: 2,
+      results: [{ success: true }, { success: true }],
+    }).status,
+    "completed",
+    "Result aggregation reports all-success batches as completed"
+  );
+  assertEqual(
+    summarizeImageProcessingResults({
+      total_count: 3,
+      results: [{ success: true }, { success: false }, { skipped: true }],
+    }).status,
+    "partial",
+    "Result aggregation reports mixed batches as partial"
+  );
+  assertEqual(
+    summarizeImageProcessingResults({
+      total_count: 2,
+      results: [{ skipped: true }, { apply_scope: "skip" }],
+    }).status,
+    "skipped",
+    "Result aggregation reports all-skipped batches separately"
+  );
+  assertEqual(
+    summarizeImageProcessingResults({
+      total_count: 1,
+      results: [{ success: false, error: "missing" }],
+    }).success,
+    false,
+    "Result aggregation keeps failed batches incompatible with success"
+  );
+  assertEqual(
+    summarizeImageProcessingResults({
+      success: true,
+      status: "completed",
+      total_count: 0,
+      results: [],
+    }).status,
+    "completed",
+    "Result aggregation preserves an explicit empty-folder completion status"
+  );
+  assertEqual(
+    summarizeImageProcessingResults({
+      processed_count: 1,
+      results: [{ success: true }, { success: false }],
+    }).total_count,
+    2,
+    "Result aggregation does not hide failed legacy folder entries behind success-only counts"
+  );
+}
+
 function runAssertions() {
   console.log("Running P1 image regression assertions...");
+
+  runImageProcessingUtilityAssertions();
 
   logSection("Output Config");
   assertPattern({
@@ -122,7 +245,7 @@ function runAssertions() {
   assertPattern({
     file: "src/shared/appConfigSchema.js",
     description: "Shared config schema keeps version and page-level default SAM model settings",
-    pattern: /CONFIG_SCHEMA_VERSION = 13[\s\S]*VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*defaultSamModel:\s*"sam_vit_b"[\s\S]*defaultSam2Model:\s*"sam2_1_hiera_large"[\s\S]*defaultSam3Model:\s*"sam3_1_multiplex"[\s\S]*imageSmartSelectionDefaultModel:\s*"sam_vit_b"[\s\S]*videoSmartSelectionDefaultModel:\s*"sam2_1_hiera_large"[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4[\s\S]*masking:\s*\{[\s\S]*DEFAULT_MASKING_CONFIG/,
+    pattern: /CONFIG_SCHEMA_VERSION = 14[\s\S]*SLBR_LOCAL_INFERENCE_STRATEGY_OPTIONS[\s\S]*VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*defaultSamModel:\s*"sam_vit_b"[\s\S]*defaultSam2Model:\s*"sam2_1_hiera_large"[\s\S]*defaultSam3Model:\s*"sam3_1_multiplex"[\s\S]*imageSmartSelectionDefaultModel:\s*"sam_vit_b"[\s\S]*videoSmartSelectionDefaultModel:\s*"sam2_1_hiera_large"[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4[\s\S]*advanced:\s*\{[\s\S]*slbrLocalInferenceStrategy:\s*"auto"[\s\S]*slbrLocalBBoxEmptyRatioThreshold:\s*50[\s\S]*slbrLocalEdgeFeatherPx:\s*2[\s\S]*masking:\s*\{[\s\S]*DEFAULT_MASKING_CONFIG/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",
@@ -871,6 +994,73 @@ function runAssertions() {
     file: "scripts/e2e-sam-smart-selection-ui.mjs",
     description: "SAM UI smoke test checks SAM1/SAM2.1 options, SAM3 point/text flows, batch cleanup, and mask lifecycle matrix",
     pattern: /(?=[\s\S]*enabledCapabilities)(?=[\s\S]*imagePoint: true)(?=[\s\S]*imagePoint: false)(?=[\s\S]*imageText: true)(?=[\s\S]*\/api\/v1\/moonshine\/sam\/predict)(?=[\s\S]*lastSamPredictRequest)(?=[\s\S]*samModelOptions\.includes\("sam_vit_b"\))(?=[\s\S]*samModelOptions\.includes\("sam2_1_hiera_large"\))(?=[\s\S]*samModelOptions\.includes\("sam3"\))(?=[\s\S]*samModelOptions\.includes\("sam3_1_multiplex"\))(?=[\s\S]*defaultSamTextModelId === "sam3")(?=[\s\S]*model_id === "sam3")(?=[\s\S]*SAM text prompt should be enabled when SAM3 is installed)(?=[\s\S]*Current-image and selected-images text search should be enabled)(?=[\s\S]*data-testid="sam-text-batch-button")(?=[\s\S]*distinct dark-mode style)(?=[\s\S]*runBatchMixedMaskCleanupRegression)(?=[\s\S]*runUnselectedSamFallbackPreservationRegression)(?=[\s\S]*runMaskLifecycleMatrixRegression)(?=[\s\S]*selectedManualOnly)(?=[\s\S]*canvasHasMask)(?=[\s\S]*unselectedMixed[\s\S]*hasBaseSnapshotDataUrl)(?=[\s\S]*drawManualMaskStrokeOnCanvas)(?=[\s\S]*Manual edits made after processing on an unselected SAM-only image should be stored as its SAM base layer)[\s\S]*/,
+  });
+
+  logSection("Startup Diagnostics and SLBR Scope");
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Bundled runtime relocation persists raw stderr but emits only one concise terminal warning after a successful recheck",
+    pattern: /(?=[\s\S]*const logRelocationStderr = \(text\) => \{[\s\S]*startupLogger\.warning\(message,[\s\S]*BUNDLED_RUNTIME_RELOCATION_STDERR)(?=[\s\S]*onStderr: logRelocationStderr)(?=[\s\S]*内置 Python 运行时重定位出现警告[\s\S]*诊断编号：\$\{diagnosticId\}[\s\S]*打开启动日志)[\s\S]*/,
+  });
+  assertAbsentPattern({
+    file: "src-electron/electron-main.js",
+    description: "Bundled runtime relocation no longer forwards raw stderr as terminal warnings",
+    pattern: /onStderr:\s*\(text\)\s*=>\s*sendLog\?\.\(text,\s*"warning"\)/,
+  });
+  assertPattern({
+    file: "src/components/global/BackendManager.vue",
+    description: "Backend environment detection keeps one in-flight task and gives each item an independent terminal state",
+    pattern: /(?=[\s\S]*const environmentItemStates = reactive\(\{)(?=[\s\S]*let environmentCheckPromise = null)(?=[\s\S]*const isEnvironmentItemChecking = \(item\) =>)(?=[\s\S]*q-spinner v-if="isEnvironmentItemChecking\('project'\)")(?=[\s\S]*getEnvironmentItemLabel\(\s*'project')(?=[\s\S]*const runEnvironmentCheck = async \([\s\S]*setAllEnvironmentItemStates\("checking"\)[\s\S]*setEnvironmentItemState\("project", "success"\)[\s\S]*finally \{[\s\S]*finishUncheckedEnvironmentItems\(\);[\s\S]*environmentCheckCompleted\.value = true;)(?=[\s\S]*const checkEnvironment = \(options = \{\}\) => \{[\s\S]*if \(environmentCheckPromise\) \{[\s\S]*return environmentCheckPromise;)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/components/image/ImageSettingsDrawer.vue",
+    description: "SLBR scope selector is rendered only in the right settings drawer as a full-width two-part control",
+    pattern: /(?=[\s\S]*v-if="currentModel === 'slbr'")(?=[\s\S]*data-testid="slbr-apply-scope-drawer")(?=[\s\S]*class="slbr-apply-scope-toggle")(?=[\s\S]*\.slbr-apply-scope-toggle \{[\s\S]*width: 100%)(?=[\s\S]*flex: 1 1 50%)(?=[\s\S]*@update:model-value="\$emit\('update:slbr-apply-scope', \$event\)")(?=[\s\S]*"update:slbr-apply-scope")([\s\S]*)/,
+  });
+  assertAbsentPattern({
+    file: "src/components/image/ImageProcessingToolbar.vue",
+    description: "Image footer no longer owns an SLBR scope selector",
+    pattern: /slbrApplyScope|update:slbr-apply-scope|slbr-scope-wrap/,
+  });
+  assertPattern({
+    file: "src/pages/IndexPage.vue",
+    description: "Image page wires SLBR scope updates from the right drawer to the existing scope handler",
+    pattern: /ImageSettingsDrawer[\s\S]*slbrApplyScope: slbrApplyScope\.value[\s\S]*"update:slbr-apply-scope": setSlbrApplyScope/,
+  });
+  assertPattern({
+    file: "src/pages/IndexPage.vue",
+    description: "SLBR clears masks only for successful selected or folder results",
+    pattern: /const runSlbrModel = async \(\) => \{[\s\S]*const successfulResults = \(responseWithSkipped\.results \|\| \[\]\)\.filter[\s\S]*await finalizeSuccessfulMaskRun\(maskUiState, \{[\s\S]*processedFileIds: successfulResults[\s\S]*const processSlbrFolderImages = async \(\) => \{[\s\S]*const processedFileIds = await appendFolderResultsToLoadedFiles\(response, stagingContext\);[\s\S]*await finalizeSuccessfulMaskRun\(maskUiState, \{ processedFileIds \}\);/,
+  });
+  assertPattern({
+    file: "src/pages/IndexPage.vue",
+    description: "Folder staging uses relative-path mask matching, deterministic collision names, disk preflight, and run-scoped cleanup",
+    pattern: /(?=[\s\S]*buildRelativeStemLookup)(?=[\s\S]*resolveRelativeStemMatch\(entry, maskMap\?\.lookup,[\s\S]*ambiguousTargetStems)(?=[\s\S]*collectRelativeStemCollisions\(folderImages\))(?=[\s\S]*reserveUniqueRelativeStemPath)(?=[\s\S]*ensureStagingDiskSpace)(?=[\s\S]*conflictPolicy: "error")(?=[\s\S]*cleanup-temp-directory)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/IndexPage.vue",
+    description: "Folder staging disk preflight counts each final image, mask, and isolated template source exactly once",
+    pattern: /(?=[\s\S]*const stagedEntries = folderImages\.map)(?=[\s\S]*selectStagedSourceSize\(\{[\s\S]*sourceType: imageSource\?\.type)(?=[\s\S]*resolveRelativeStemMatch\(entry, maskMap\?\.lookup,[\s\S]*ambiguousTargetStems)(?=[\s\S]*if \(shouldIncludeTemplate\)[\s\S]*estimatedPayloadBytes \+=)(?=[\s\S]*ensureStagingDiskSpace\(context\.stagingRoot, estimatedPayloadBytes\))(?=[\s\S]*context\.templateInputFolder)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/IndexPage.vue",
+    description: "SLBR folder processing uses the shared backend mask inspection before inference",
+    pattern: /processSlbrFolderImages[\s\S]*inspectMoonshineFolderMasks\(\{[\s\S]*missing_mask_behavior: missingMaskBehavior[\s\S]*preflight\.skipped_count[\s\S]*performMoonshineFolderProcessing/,
+  });
+  assertPattern({
+    file: "src/stores/fileManager.js",
+    description: "Page batches report invalid latest paths per item without falling back to the original image",
+    pattern: /(?=[\s\S]*class ProcessingInputError)(?=[\s\S]*INPUT_PATH_MISSING)(?=[\s\S]*clientFailures\.push\(buildProcessingInputFailure)(?=[\s\S]*_clientFailures: clientFailures)(?![\s\S]*最新结果文件不存在，已改用原图)[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/stores/fileManager.js",
+    description: "Page chain-input runs are registered for cleanup before the first save can fail",
+    pattern: /(?=[\s\S]*consumeProcessingInputCleanupDirectories)(?=[\s\S]*materializeBase64ImageToTempPath[\s\S]*pendingProcessingInputCleanupDirectories\.push\(context\.chainInputPath\)[\s\S]*invoke\("save-file")[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/services/ImageProcessingService.js",
+    description: "Image services skip empty requests caused by client input failures and merge four-state results",
+    pattern: /(?=[\s\S]*extractPreparedRequestMetadata)(?=[\s\S]*payload\.data\.length === 0)(?=[\s\S]*metadata\.clientFailures)(?=[\s\S]*withImageProcessingSummary)(?=[\s\S]*inspectMoonshineFolderMasks)[\s\S]*/,
   });
 
   logSection("Bulk Import");

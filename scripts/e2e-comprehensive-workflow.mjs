@@ -319,6 +319,49 @@ async function installElectronMock(context) {
       0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
     const savedFiles = new Map();
+    const createSuccessfulEnvironmentResult = () => ({
+      success: true,
+      backendMode: "external",
+      path: savedConfig.general.backendProjectPath,
+      pythonVersion: "3.12.11",
+      pythonSource: "E2E project virtual environment",
+      venvName: ".venv",
+    });
+    const backendEnvironmentMock = {
+      prepareDelayMs: 0,
+      invocationCounts: {},
+      serviceResult: { success: true, state: "stopped", running: false },
+      projectResult: null,
+      prepareResult: null,
+      dependenciesResult: null,
+    };
+    const recordBackendEnvironmentInvocation = (channel) => {
+      backendEnvironmentMock.invocationCounts[channel] =
+        (backendEnvironmentMock.invocationCounts[channel] || 0) + 1;
+    };
+    const delay = (milliseconds) =>
+      new Promise((resolve) => window.setTimeout(resolve, Math.max(0, milliseconds)));
+    window.__MOONSHINE_BACKEND_ENVIRONMENT_MOCK__ = {
+      reset(options = {}) {
+        backendEnvironmentMock.prepareDelayMs = Number(options.prepareDelayMs || 0);
+        backendEnvironmentMock.invocationCounts = {};
+        backendEnvironmentMock.serviceResult = options.serviceResult || {
+          success: true,
+          state: "stopped",
+          running: false,
+        };
+        backendEnvironmentMock.projectResult = options.projectResult || null;
+        backendEnvironmentMock.prepareResult = options.prepareResult || null;
+        backendEnvironmentMock.dependenciesResult = options.dependenciesResult || null;
+      },
+      getSnapshot() {
+        return {
+          prepareDelayMs: backendEnvironmentMock.prepareDelayMs,
+          invocationCounts: { ...backendEnvironmentMock.invocationCounts },
+          serviceResult: { ...backendEnvironmentMock.serviceResult },
+        };
+      },
+    };
 
     const normalizePath = (input) => String(input || "").replace(/\//g, "\\");
     const basename = (input) => normalizePath(input).split("\\").filter(Boolean).at(-1) || "";
@@ -386,17 +429,35 @@ async function installElectronMock(context) {
         case "validate-backend-paths":
           return { valid: true, invalidPaths: [] };
         case "check-backend-status":
-          return { success: true, running: false };
+          recordBackendEnvironmentInvocation(channel);
+          return backendEnvironmentMock.serviceResult;
         case "check-python":
           return { success: true, version: "Python 3.12.11 (E2E)" };
         case "check-project":
-          return { success: true, path: payload || savedConfig.general.backendProjectPath };
+          recordBackendEnvironmentInvocation(channel);
+          return (
+            backendEnvironmentMock.projectResult || {
+              success: true,
+              backendMode: "external",
+              path: payload || savedConfig.general.backendProjectPath,
+            }
+          );
+        case "prepare-project-python":
+          recordBackendEnvironmentInvocation(channel);
+          if (backendEnvironmentMock.prepareDelayMs > 0) {
+            await delay(backendEnvironmentMock.prepareDelayMs);
+          }
+          return backendEnvironmentMock.prepareResult || createSuccessfulEnvironmentResult();
         case "check-venv":
         case "check-dependencies":
-          return { success: true };
+          recordBackendEnvironmentInvocation(channel);
+          return backendEnvironmentMock.dependenciesResult || { success: true };
         case "get-resources-path":
           return "C:\\Moonshine-E2E\\resources";
         case "get-file-stats":
+          if (normalizePath(payload).includes("__missing__")) {
+            return { success: false, error: "File does not exist" };
+          }
           return buildStats(payload);
         case "get-files-stats":
           return {
@@ -404,13 +465,25 @@ async function installElectronMock(context) {
             files: (Array.isArray(payload) ? payload : []).map(buildStats),
           };
         case "list-image-files":
-          return {
+          {
+            const files = [
+              {
+                ...buildStats("C:\\Moonshine-E2E\\folder\\alpha.png").data,
+                path: "C:\\Moonshine-E2E\\folder\\alpha.png",
+                relativePath: "alpha.png",
+              },
+              {
+                ...buildStats("C:\\Moonshine-E2E\\folder\\beta.webp").data,
+                path: "C:\\Moonshine-E2E\\folder\\beta.webp",
+                relativePath: "beta.webp",
+              },
+            ];
+            return {
             success: true,
-            files: [
-              buildStats("C:\\Moonshine-E2E\\folder\\alpha.png"),
-              buildStats("C:\\Moonshine-E2E\\folder\\beta.webp"),
-            ],
-          };
+              data: files,
+              files,
+            };
+          }
         case "save-file": {
           const filePath = payload?.filePath || payload?.path || "";
           const normalizedPath = normalizePath(filePath);
@@ -443,6 +516,7 @@ async function installElectronMock(context) {
         case "ensure-directory":
         case "cleanup-temp-file":
         case "cleanup-temp-files":
+        case "cleanup-temp-directory":
           return { success: true };
         case "cleanup-video-processing-temp":
           return { success: true };
@@ -676,6 +750,95 @@ async function testImageWorkflow(page) {
     "Switching back to Lama should restore the previously closed mask toolbar."
   );
 
+  const slbrScopeRoundTrip = await page.evaluate(() => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    bridge.setCurrentModel("slbr");
+    const full = bridge.getSnapshot();
+    const local = bridge.setSlbrApplyScope("local");
+    const backToFull = bridge.setSlbrApplyScope("full");
+    bridge.setCurrentModel("lama");
+    return { full, local, backToFull };
+  });
+  assert(
+    slbrScopeRoundTrip.full.slbrApplyScope === "full" &&
+      slbrScopeRoundTrip.full.currentModelCanUseMaskTools === false &&
+      slbrScopeRoundTrip.full.showMaskTools === false,
+    "SLBR should retain full-image processing as its default scope."
+  );
+  assert(
+    slbrScopeRoundTrip.local.slbrApplyScope === "local" &&
+      slbrScopeRoundTrip.local.isSlbrLocalScope === true &&
+      slbrScopeRoundTrip.local.currentModelCanUseMaskTools === true &&
+      slbrScopeRoundTrip.local.showMaskTools === true,
+    "SLBR local scope should expose the existing mask tools."
+  );
+  assert(
+    slbrScopeRoundTrip.backToFull.slbrApplyScope === "full" &&
+      slbrScopeRoundTrip.backToFull.currentModelCanUseMaskTools === false &&
+      slbrScopeRoundTrip.backToFull.showMaskTools === false,
+    "Returning SLBR to full-image scope should hide mask tools again."
+  );
+
+  await page.evaluate(() => {
+    window.electron.ipcRenderer.send("backend-service-state", {
+      state: "running",
+      running: true,
+      processRunning: true,
+      ready: true,
+      readyAt: Date.now(),
+    });
+    window.__MOONSHINE_IMAGE_TEST__.setCurrentModel("slbr");
+  });
+  await page.click('[data-testid="image-toolbar-toggle-settings"]');
+  const slbrScopeDrawer = page.locator(
+    '.image-page-right-layout-drawer [data-testid="slbr-apply-scope-drawer"]'
+  );
+  await slbrScopeDrawer.waitFor({ state: "visible", timeout: 20000 });
+  assert(
+    (await slbrScopeDrawer.count()) === 1,
+    "SLBR scope selector should be rendered exactly once in the right settings drawer."
+  );
+  const slbrScopeLayout = await slbrScopeDrawer.evaluate((node) => {
+    const controlWidth = node.getBoundingClientRect().width;
+    const buttonWidths = [...node.querySelectorAll(".q-btn")].map(
+      (button) => button.getBoundingClientRect().width
+    );
+    return { controlWidth, buttonWidths };
+  });
+  assert(
+    slbrScopeLayout.buttonWidths.length === 2 &&
+      Math.abs(slbrScopeLayout.buttonWidths[0] - slbrScopeLayout.buttonWidths[1]) <= 1 &&
+      Math.abs(
+        slbrScopeLayout.buttonWidths[0] +
+          slbrScopeLayout.buttonWidths[1] -
+          slbrScopeLayout.controlWidth
+      ) <= 4,
+    "SLBR scope selector should use two equal-width controls across the right drawer."
+  );
+  await slbrScopeDrawer.locator(".q-btn", { hasText: "局部" }).click();
+  await page.waitForFunction(
+    () => window.__MOONSHINE_IMAGE_TEST__?.getSnapshot().slbrApplyScope === "local",
+    null,
+    { timeout: 10000 }
+  );
+  const drawerLocalScope = await page.evaluate(() => window.__MOONSHINE_IMAGE_TEST__.getSnapshot());
+  assert(
+    drawerLocalScope.currentModelCanUseMaskTools && drawerLocalScope.showMaskTools,
+    "Selecting local scope in the drawer should enable the existing mask tools."
+  );
+  await slbrScopeDrawer.locator(".q-btn", { hasText: "全图" }).click();
+  await page.waitForFunction(
+    () => window.__MOONSHINE_IMAGE_TEST__?.getSnapshot().slbrApplyScope === "full",
+    null,
+    { timeout: 10000 }
+  );
+  const drawerFullScope = await page.evaluate(() => window.__MOONSHINE_IMAGE_TEST__.getSnapshot());
+  assert(
+    !drawerFullScope.currentModelCanUseMaskTools && !drawerFullScope.showMaskTools,
+    "Returning to full scope in the drawer should hide the local mask tools."
+  );
+  await page.evaluate(() => window.__MOONSHINE_IMAGE_TEST__.setCurrentModel("lama"));
+
   const maskUrl = await createDataUrl(page, { fillStyle: "rgba(0,0,0,1)" });
   const resultUrl = await createDataUrl(page, { fillStyle: "rgba(0,128,255,0.85)" });
   const afterMask = await page.evaluate((maskDataUrl) => {
@@ -752,6 +915,39 @@ async function testImageWorkflow(page) {
     "Path transport should materialize the latest Base64 result into chain-inputs for the next model."
   );
 
+  const invalidPathBatch = await page.evaluate(async () => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    const originalFileId = bridge.getSnapshot().currentFileId;
+    const valid = bridge.addPathFile({
+      name: "valid-input.png",
+      type: "image/png",
+      size: 1024,
+      path: "C:\\Moonshine-E2E\\inputs\\valid-input.png",
+    });
+    const missing = bridge.addPathFile({
+      name: "missing-input.png",
+      type: "image/png",
+      size: 1024,
+      path: "C:\\Moonshine-E2E\\inputs\\__missing__-input.png",
+    });
+    const request = await bridge.prepareMoonshineImageProcessData([
+      valid.fileId,
+      missing.fileId,
+    ]);
+    bridge.setCurrentFile(originalFileId);
+    return request;
+  });
+  assert(
+    invalidPathBatch.dataLength === 1 &&
+      invalidPathBatch.clientFailureCount === 1 &&
+      invalidPathBatch.clientFailureCodes[0] === "INPUT_PATH_MISSING",
+    "Page batches should keep valid inputs and report a missing effective path per image."
+  );
+  assert(
+    invalidPathBatch.cleanupDirectory === "",
+    "Pure path page batches should not create a chain-inputs cleanup directory."
+  );
+
   const afterPathResult = await page.evaluate(async () => {
     const bridge = window.__MOONSHINE_IMAGE_TEST__;
     const snapshot = bridge.getSnapshot();
@@ -777,6 +973,40 @@ async function testImageWorkflow(page) {
   assert(
     !afterMaskModelFinalize.currentHasMask,
     "Successful mask-required processing should clear the processed image mask."
+  );
+
+  const slbrLocalMaskLifecycle = await page.evaluate(async (maskDataUrl) => {
+    const bridge = window.__MOONSHINE_IMAGE_TEST__;
+    bridge.setCurrentModel("slbr");
+    bridge.setSlbrApplyScope("local");
+    bridge.setMaskMode("manual");
+    const fileId = bridge.getSnapshot().currentFileId;
+    bridge.setMask(fileId, maskDataUrl);
+    const before = bridge.getSnapshot();
+    const afterSuccess = await bridge.finalizeSuccessfulMaskRun([fileId]);
+    const afterRegistryRefresh = await bridge.reloadImageModels();
+    bridge.setSlbrApplyScope("full");
+    bridge.setCurrentModel("lama");
+    return { before, afterSuccess, afterRegistryRefresh };
+  }, maskUrl);
+  assert(
+    slbrLocalMaskLifecycle.before.slbrApplyScope === "local" &&
+      slbrLocalMaskLifecycle.before.maskMode === "manual" &&
+      slbrLocalMaskLifecycle.before.currentHasMask,
+    "SLBR local processing regression should begin with a visible manual mask."
+  );
+  assert(
+    slbrLocalMaskLifecycle.afterSuccess.slbrApplyScope === "local" &&
+      slbrLocalMaskLifecycle.afterSuccess.showMaskTools === true &&
+      slbrLocalMaskLifecycle.afterSuccess.maskMode === "manual" &&
+      slbrLocalMaskLifecycle.afterSuccess.currentHasMask === false,
+    "Successful SLBR local processing should clear the mask while preserving local manual tools."
+  );
+  assert(
+    slbrLocalMaskLifecycle.afterRegistryRefresh.slbrApplyScope === "local" &&
+      slbrLocalMaskLifecycle.afterRegistryRefresh.showMaskTools === true &&
+      slbrLocalMaskLifecycle.afterRegistryRefresh.maskMode === "manual",
+    "Refreshing the model registry should preserve active SLBR local mask tools."
   );
 
   const afterUndo = await page.evaluate(() => {
@@ -1226,6 +1456,77 @@ async function testVideoWorkflow(page) {
   );
   assert(afterMaskDelete.maskCount === 0, "Video mask deletion should remove the selected mask.");
 
+  const slbrTrackScopeWorkflow = await page.evaluate(async () => {
+    const bridge = window.__MOONSHINE_VIDEO_TEST__;
+    const noTrackScope = bridge.resolveSlbrTrackScope({ time: 2 });
+
+    const fullTrack = bridge.createMask({ name: "E2E 全帧轨道", startTime: 1, endTime: 4 });
+    const fullTrackScope = bridge.resolveSlbrTrackScope({ time: 2 });
+    const outsideFullTrackScope = bridge.resolveSlbrTrackScope({ time: 4.5 });
+    await bridge.removeSelectedMask();
+
+    const localTrack = bridge.createMask({ name: "E2E 局部轨道", startTime: 1, endTime: 4 });
+    const localTrackScope = bridge.resolveSlbrTrackScope({
+      time: 2,
+      paintedTrackIds: [localTrack.maskId],
+      localMaskHasPixels: true,
+    });
+    const emptyLocalFrameScope = bridge.resolveSlbrTrackScope({
+      time: 2,
+      paintedTrackIds: [localTrack.maskId],
+      localMaskHasPixels: false,
+    });
+
+    bridge.createMask({ name: "E2E 重叠全帧轨道", startTime: 1, endTime: 4 });
+    const overlapScope = bridge.resolveSlbrTrackScope({
+      time: 2,
+      paintedTrackIds: [localTrack.maskId],
+      localMaskHasPixels: true,
+    });
+    const samTrack = bridge.createEmptySamVideoTrack({ name: "E2E SLBR SAM 轨道" });
+    const samScope = bridge.resolveSlbrTrackScope({ time: 2, localMaskHasPixels: true });
+
+    const legacyRange = bridge.createLegacyProcessingRange({
+      name: "E2E 旧范围",
+      startTime: 1,
+      endTime: 3,
+    });
+    const migration = bridge.migrateLegacyProcessingRanges();
+    return {
+      noTrackScope,
+      fullTrackScope,
+      outsideFullTrackScope,
+      localTrackScope,
+      emptyLocalFrameScope,
+      overlapScope,
+      samTrackId: samTrack.maskId,
+      samScope,
+      legacyRangeId: legacyRange.rangeId,
+      migration,
+    };
+  });
+  assert(
+    slbrTrackScopeWorkflow.noTrackScope === "full" &&
+      slbrTrackScopeWorkflow.fullTrackScope === "full" &&
+      slbrTrackScopeWorkflow.outsideFullTrackScope === "skip",
+    "SLBR video should keep no-track compatibility and use empty standard tracks as full-frame ranges."
+  );
+  assert(
+    slbrTrackScopeWorkflow.localTrackScope === "mask" &&
+      slbrTrackScopeWorkflow.emptyLocalFrameScope === "skip" &&
+      slbrTrackScopeWorkflow.overlapScope === "mask" &&
+      slbrTrackScopeWorkflow.samScope === "mask",
+    "SLBR video should make painted/SAM tracks local, skip empty local frames, and prefer local over full overlaps."
+  );
+  assert(
+    slbrTrackScopeWorkflow.legacyRangeId &&
+      slbrTrackScopeWorkflow.migration.snapshot.processingRangeCount === 0 &&
+      slbrTrackScopeWorkflow.migration.snapshot.legacyProcessingRangeIds.includes(
+        slbrTrackScopeWorkflow.legacyRangeId
+      ),
+    "Legacy SLBR processing ranges should migrate once into marked blank standard tracks."
+  );
+
   const samVideoWriteback = await page.evaluate(() => {
     const bridge = window.__MOONSHINE_VIDEO_TEST__;
     const emptyTrack = bridge.createEmptySamVideoTrack({
@@ -1306,6 +1607,294 @@ async function testBackendTerminalRefresh(page) {
     timeout: 60000,
   });
   await waitForPageBridge(page, "__MOONSHINE_BACKEND_MANAGER_TEST__");
+  await page.waitForFunction(
+    () => {
+      const state = window.__MOONSHINE_BACKEND_MANAGER_TEST__?.getEnvironmentCheckSnapshot?.();
+      return Boolean(state?.completed && !state.checking);
+    },
+    null,
+    { timeout: 20000 }
+  );
+
+  const delayedCheckStart = await page.evaluate(() => {
+    window.__MOONSHINE_BACKEND_ENVIRONMENT_MOCK__.reset({ prepareDelayMs: 2000 });
+    return window.__MOONSHINE_BACKEND_MANAGER_TEST__.startEnvironmentCheck();
+  });
+  assert(
+    delayedCheckStart.checking && delayedCheckStart.inFlight,
+    "Manual environment recheck should enter one visible in-flight lifecycle."
+  );
+  await page.waitForFunction(
+    () => {
+      const state = window.__MOONSHINE_BACKEND_MANAGER_TEST__?.getEnvironmentCheckSnapshot?.();
+      return (
+        state?.itemStates?.project === "success" &&
+        state?.itemStates?.python === "checking" &&
+        state?.itemStates?.venv === "checking"
+      );
+    },
+    null,
+    { timeout: 10000 }
+  );
+  await page.waitForTimeout(50);
+  const checkingPythonLabel = (
+    await page.locator('[data-testid="backend-environment-python-status"]').textContent()
+  )?.trim();
+  assert(
+    checkingPythonLabel === "正在检测",
+    `Python should keep the neutral checking label while project detection is already complete (received ${JSON.stringify(checkingPythonLabel)}).`
+  );
+
+  await page.click('[data-testid="backend-manager-close-button"]');
+  await page.waitForSelector(".backend-dialog", { state: "hidden", timeout: 10000 });
+  await page.click('[data-testid="open-backend-manager-button"]');
+  await page.waitForFunction(
+    () => {
+      const state = window.__MOONSHINE_BACKEND_MANAGER_TEST__?.getEnvironmentCheckSnapshot?.();
+      return Boolean(state?.completed && !state.checking && !state.inFlight);
+    },
+    null,
+    { timeout: 10000 }
+  );
+  const reattachedCheck = await page.evaluate(() => ({
+    state: window.__MOONSHINE_BACKEND_MANAGER_TEST__.getEnvironmentCheckSnapshot(),
+    mock: window.__MOONSHINE_BACKEND_ENVIRONMENT_MOCK__.getSnapshot(),
+  }));
+  assert(
+    reattachedCheck.mock.invocationCounts["check-project"] === 1 &&
+      reattachedCheck.mock.invocationCounts["prepare-project-python"] === 1 &&
+      reattachedCheck.mock.invocationCounts["check-dependencies"] === 1,
+    `Closing and reopening BackendManager should attach to the existing check without duplicate IPC (received ${JSON.stringify(reattachedCheck.mock.invocationCounts)}).`
+  );
+  assert(
+    Object.values(reattachedCheck.state.itemStates).every((state) => state === "success"),
+    "The reattached environment check should finish with all successful item states."
+  );
+
+  const bundledVerified = await page.evaluate(async () => {
+    window.__MOONSHINE_BACKEND_ENVIRONMENT_MOCK__.reset({
+      prepareResult: {
+        success: true,
+        backendMode: "bundled",
+        path: "C:\\Moonshine-E2E\\bundled-backend",
+        pythonVersion: "3.12.11",
+        pythonSource: "bundled offline runtime",
+        venvName: "bundled-runtime",
+        dependenciesVerified: true,
+      },
+    });
+    window.__MOONSHINE_BACKEND_MANAGER_TEST__.startEnvironmentCheck();
+    while (window.__MOONSHINE_BACKEND_MANAGER_TEST__.getEnvironmentCheckSnapshot().inFlight) {
+      await new Promise((resolve) => window.setTimeout(resolve, 10));
+    }
+    return {
+      state: window.__MOONSHINE_BACKEND_MANAGER_TEST__.getEnvironmentCheckSnapshot(),
+      mock: window.__MOONSHINE_BACKEND_ENVIRONMENT_MOCK__.getSnapshot(),
+    };
+  });
+  assert(
+    !bundledVerified.mock.invocationCounts["check-dependencies"] &&
+      bundledVerified.state.itemStates.dependencies === "success",
+    "A fully verified bundled runtime should not repeat the heavyweight dependency probe."
+  );
+
+  const serviceWinsDelayedFailure = await page.evaluate(async () => {
+    window.__MOONSHINE_BACKEND_ENVIRONMENT_MOCK__.reset({
+      prepareDelayMs: 500,
+      prepareResult: {
+        success: false,
+        code: "PYTHON_AUTO_SETUP_FAILED",
+        error: "Stale delayed Python failure.",
+      },
+    });
+    window.__MOONSHINE_BACKEND_MANAGER_TEST__.startEnvironmentCheck();
+    while (
+      window.__MOONSHINE_BACKEND_MANAGER_TEST__.getEnvironmentCheckSnapshot().itemStates
+        .project !== "success"
+    ) {
+      await new Promise((resolve) => window.setTimeout(resolve, 10));
+    }
+    window.electron.ipcRenderer.send("backend-service-state", {
+      state: "running",
+      running: true,
+      processRunning: true,
+      ready: true,
+    });
+    while (window.__MOONSHINE_BACKEND_MANAGER_TEST__.getEnvironmentCheckSnapshot().inFlight) {
+      await new Promise((resolve) => window.setTimeout(resolve, 10));
+    }
+    const state = window.__MOONSHINE_BACKEND_MANAGER_TEST__.getEnvironmentCheckSnapshot();
+    window.electron.ipcRenderer.send("backend-service-state", {
+      state: "stopped",
+      running: false,
+      processRunning: false,
+      ready: false,
+    });
+    return state;
+  });
+  assert(
+    !serviceWinsDelayedFailure.error &&
+      Object.values(serviceWinsDelayedFailure.itemStates).every(
+        (state) => state === "success"
+      ),
+    "A running service should win over a stale delayed environment failure."
+  );
+
+  const preparingWithoutProcess = await page.evaluate(async () => {
+    window.__MOONSHINE_BACKEND_ENVIRONMENT_MOCK__.reset({
+      serviceResult: {
+        success: true,
+        state: "preparing",
+        running: false,
+        processRunning: false,
+        ready: false,
+      },
+      prepareResult: {
+        success: false,
+        code: "SYSTEM_PYTHON_UNSUPPORTED",
+        error: "Unsupported Python version.",
+      },
+    });
+    window.__MOONSHINE_BACKEND_MANAGER_TEST__.startEnvironmentCheck({
+      syncServiceStatus: true,
+    });
+    while (window.__MOONSHINE_BACKEND_MANAGER_TEST__.getEnvironmentCheckSnapshot().inFlight) {
+      await new Promise((resolve) => window.setTimeout(resolve, 10));
+    }
+    return window.__MOONSHINE_BACKEND_MANAGER_TEST__.getEnvironmentCheckSnapshot();
+  });
+  assert(
+    preparingWithoutProcess.error &&
+      preparingWithoutProcess.itemStates.python === "failure",
+    "A preparing status without a running process must not hide a real environment failure."
+  );
+
+  const projectFailure = await page.evaluate(async () => {
+    window.__MOONSHINE_BACKEND_ENVIRONMENT_MOCK__.reset({
+      projectResult: {
+        success: false,
+        code: "PROJECT_PATH_NOT_FOUND",
+        error: "Backend project path does not exist.",
+      },
+    });
+    window.__MOONSHINE_BACKEND_MANAGER_TEST__.startEnvironmentCheck();
+    while (window.__MOONSHINE_BACKEND_MANAGER_TEST__.getEnvironmentCheckSnapshot().inFlight) {
+      await new Promise((resolve) => window.setTimeout(resolve, 10));
+    }
+    return window.__MOONSHINE_BACKEND_MANAGER_TEST__.getEnvironmentCheckSnapshot();
+  });
+  assert(
+    projectFailure.itemStates.project === "failure" &&
+      projectFailure.itemStates.python === "blocked" &&
+      projectFailure.itemStates.venv === "blocked" &&
+      projectFailure.itemStates.dependencies === "blocked",
+    "A missing project should fail only the project and terminally block dependent checks."
+  );
+  await page.waitForTimeout(50);
+  const blockedPythonLabel = (
+    await page.locator('[data-testid="backend-environment-python-status"]').textContent()
+  )?.trim();
+  assert(
+    blockedPythonLabel === "前置检测未通过",
+    `Blocked environment items should not fall back to the idle placeholder (received ${JSON.stringify(blockedPythonLabel)}).`
+  );
+
+  const pythonFailure = await page.evaluate(async () => {
+    window.__MOONSHINE_BACKEND_ENVIRONMENT_MOCK__.reset({
+      prepareResult: {
+        success: false,
+        code: "SYSTEM_PYTHON_UNSUPPORTED",
+        diagnostic: { stage: "python-version-check" },
+        error: "Unsupported Python version.",
+      },
+    });
+    window.__MOONSHINE_BACKEND_MANAGER_TEST__.startEnvironmentCheck();
+    while (window.__MOONSHINE_BACKEND_MANAGER_TEST__.getEnvironmentCheckSnapshot().inFlight) {
+      await new Promise((resolve) => window.setTimeout(resolve, 10));
+    }
+    return window.__MOONSHINE_BACKEND_MANAGER_TEST__.getEnvironmentCheckSnapshot();
+  });
+  assert(
+    pythonFailure.itemStates.project === "success" &&
+      pythonFailure.itemStates.python === "failure" &&
+      pythonFailure.itemStates.venv === "blocked" &&
+      pythonFailure.itemStates.dependencies === "blocked",
+    "Nested Python diagnostics should map to the Python item in the prepare lifecycle."
+  );
+
+  const dependencyFailure = await page.evaluate(async () => {
+    window.__MOONSHINE_BACKEND_ENVIRONMENT_MOCK__.reset({
+      dependenciesResult: {
+        success: false,
+        code: "PYTHON_DEPENDENCIES_MISSING",
+        error: "Dependencies are missing.",
+      },
+    });
+    window.__MOONSHINE_BACKEND_MANAGER_TEST__.startEnvironmentCheck();
+    while (window.__MOONSHINE_BACKEND_MANAGER_TEST__.getEnvironmentCheckSnapshot().inFlight) {
+      await new Promise((resolve) => window.setTimeout(resolve, 10));
+    }
+    return window.__MOONSHINE_BACKEND_MANAGER_TEST__.getEnvironmentCheckSnapshot();
+  });
+  assert(
+    dependencyFailure.itemStates.project === "success" &&
+      dependencyFailure.itemStates.python === "success" &&
+      dependencyFailure.itemStates.venv === "success" &&
+      dependencyFailure.itemStates.dependencies === "failure",
+    "Dependency failures should preserve successful prerequisite item states."
+  );
+
+  const runningService = await page.evaluate(async () => {
+    window.__MOONSHINE_BACKEND_ENVIRONMENT_MOCK__.reset({
+      serviceResult: {
+        success: true,
+        state: "running",
+        running: true,
+        processRunning: true,
+        ready: true,
+      },
+    });
+    window.__MOONSHINE_BACKEND_MANAGER_TEST__.startEnvironmentCheck({
+      syncServiceStatus: true,
+    });
+    while (window.__MOONSHINE_BACKEND_MANAGER_TEST__.getEnvironmentCheckSnapshot().inFlight) {
+      await new Promise((resolve) => window.setTimeout(resolve, 10));
+    }
+    return {
+      state: window.__MOONSHINE_BACKEND_MANAGER_TEST__.getEnvironmentCheckSnapshot(),
+      mock: window.__MOONSHINE_BACKEND_ENVIRONMENT_MOCK__.getSnapshot(),
+    };
+  });
+  assert(
+    runningService.mock.invocationCounts["check-backend-status"] >= 1 &&
+      !runningService.mock.invocationCounts["prepare-project-python"] &&
+      !runningService.mock.invocationCounts["check-dependencies"] &&
+      Object.values(runningService.state.itemStates).every((state) => state === "success"),
+    `A running backend service should confirm all items without repeating environment setup (received ${JSON.stringify(runningService)}).`
+  );
+  await page.evaluate(() => {
+    window.__MOONSHINE_BACKEND_ENVIRONMENT_MOCK__.reset();
+    window.electron.ipcRenderer.send("backend-service-state", {
+      state: "stopped",
+      running: false,
+      processRunning: false,
+      ready: false,
+    });
+  });
+
+  const independentEnvironmentState = await page.evaluate(() =>
+    window.__MOONSHINE_BACKEND_MANAGER_TEST__.setEnvironmentItemStates({
+      project: "success",
+      python: "checking",
+      venv: "checking",
+      dependencies: "checking",
+    })
+  );
+  assert(
+    independentEnvironmentState.project === "success" &&
+      independentEnvironmentState.python === "checking",
+    "Backend manager should retain a completed project item while later checks are still running."
+  );
 
   const initial = await page.evaluate(() => {
     const bridge = window.__MOONSHINE_BACKEND_MANAGER_TEST__;

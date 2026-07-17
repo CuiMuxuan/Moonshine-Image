@@ -392,9 +392,9 @@ function runAssertions() {
     buildProcessingConfigSnapshot({ masks: [{ ...samMask, ...maskOverrides }] });
   const baselineSamSnapshot = buildSamSnapshot();
   assertValue({
-    description: "Video processing snapshot uses signature version 2",
+    description: "Video processing snapshot uses signature version 3",
     actual: baselineSamSnapshot.signatureVersion,
-    expected: 2,
+    expected: 3,
   });
   assertValue({
     description: "SAM display-only changes do not invalidate resume signature",
@@ -462,8 +462,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/shared/appConfigSchema.js",
-    description: "Video intermediate, encoding quality and color stabilization strategies default safely in schema v13",
-    pattern: /CONFIG_SCHEMA_VERSION = 13[\s\S]*VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS = Object\.freeze\(\[[\s\S]*"performance"[\s\S]*"balanced"[\s\S]*"quality"[\s\S]*VIDEO_ENCODING_QUALITY_PRESET_OPTIONS = Object\.freeze\(\[[\s\S]*"performance"[\s\S]*"balanced"[\s\S]*"stable"[\s\S]*"highStable"[\s\S]*"nearLossless"[\s\S]*VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS = Object\.freeze\(\[[\s\S]*"off"[\s\S]*"auto"[\s\S]*"enhanced"[\s\S]*videoProcessingEngine:\s*"auto"[\s\S]*intermediateFrameStrategy:\s*"performance"[\s\S]*encodingQualityPreset:\s*"performance"[\s\S]*inpaintColorStabilization:\s*"auto"[\s\S]*frameExtractionFormat:\s*"jpg"[\s\S]*legacySchemaVersion[\s\S]*migrated\.video\.intermediateFrameStrategy = "performance"[\s\S]*migrated\.video\.encodingQualityPreset = "performance"[\s\S]*migrated\.video\.inpaintColorStabilization = "auto"/,
+    description: "Video intermediate, encoding quality and color stabilization strategies default safely in schema v14",
+    pattern: /CONFIG_SCHEMA_VERSION = 14[\s\S]*VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS = Object\.freeze\(\[[\s\S]*"performance"[\s\S]*"balanced"[\s\S]*"quality"[\s\S]*VIDEO_ENCODING_QUALITY_PRESET_OPTIONS = Object\.freeze\(\[[\s\S]*"performance"[\s\S]*"balanced"[\s\S]*"stable"[\s\S]*"highStable"[\s\S]*"nearLossless"[\s\S]*VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS = Object\.freeze\(\[[\s\S]*"off"[\s\S]*"auto"[\s\S]*"enhanced"[\s\S]*videoProcessingEngine:\s*"auto"[\s\S]*intermediateFrameStrategy:\s*"performance"[\s\S]*encodingQualityPreset:\s*"performance"[\s\S]*inpaintColorStabilization:\s*"auto"[\s\S]*frameExtractionFormat:\s*"jpg"[\s\S]*legacySchemaVersion[\s\S]*migrated\.video\.intermediateFrameStrategy = "performance"[\s\S]*migrated\.video\.encodingQualityPreset = "performance"[\s\S]*migrated\.video\.inpaintColorStabilization = "auto"/,
   });
   assertPattern({
     file: "src/components/global/GlobalSettings.vue",
@@ -525,7 +525,7 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "Shared mask files are scoped to the current batch to avoid cross-batch cleanup collisions",
-    pattern: /mask_batch_\$\{String\(batchNumber\)\.padStart\([\s\S]*\)\}_shared_\$\{sanitizeMaskSignatureForFileName\(signature\)\}\.jpg/,
+    pattern: /mask_batch_\$\{String\(batchNumber\)\.padStart\([\s\S]*\)\}_shared_\$\{sanitizeMaskSignatureForFileName\(signature\)\}\.\$\{maskFormat\}/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -598,40 +598,65 @@ function runAssertions() {
   });
   assertPattern({
     file: "server/moonshine_server/schema.py",
-    description: "Video batch request allows MAT, requires masks for LaMa/MAT, and keeps SLBR no-mask compatible",
-    pattern: /(?=[\s\S]*class VideoBatchInpaintRequest\(BaseModel\):)(?=[\s\S]*if values\.model_id in \{"lama", "mat"\}:)(?=[\s\S]*mask_path is required when model_id is lama or mat)(?=[\s\S]*if values\.model_id not in \{"lama", "mat", "slbr"\}:)[\s\S]*/,
+    description: "Video batch request keeps legacy SLBR full frames compatible and requires a mask only for SLBR local frames",
+    pattern: /(?=[\s\S]*class VideoBatchFrameItem\(BaseModel\):)(?=[\s\S]*apply_scope: Literal\["full", "mask"\] = Field\("full"\))(?=[\s\S]*if values\.model_id in \{"lama", "mat"\}:)(?=[\s\S]*mask_path is required when model_id is lama or mat)(?=[\s\S]*if values\.model_id == "slbr":)(?=[\s\S]*mask_path is required for local SLBR video frames)(?=[\s\S]*if values\.model_id not in \{"lama", "mat", "slbr"\}:)[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
-    description: "Video batch artifact staging renders masks only for mask inpaint models and posts reusable mask paths",
-    pattern: /(?=[\s\S]*const frameRequiresMask = isMaskInpaintModel\(modelId\))(?=[\s\S]*const maskPathBySignature = new Map\(\))(?=[\s\S]*frameRequiresMask \? maskRenderer\.render\(ts\) : Promise\.resolve\(null\))(?=[\s\S]*normalizeMaskRenderResult\(maskRenderResult\))(?=[\s\S]*maskPathBySignature\.get\(signature\))(?=[\s\S]*\.\.\.\(frameRequiresMask \? \{ mask_path: frameMaskPath \} : \{\}\))[\s\S]*/,
+    description: "Video batch staging chooses SLBR full, local, or skipped frames from the shared track plan",
+    pattern: /(?=[\s\S]*const frameRequiresMask = isMaskInpaintModel\(modelId\))(?=[\s\S]*const shouldRenderSlbrLocalMask =)(?=[\s\S]*resolveVideoSlbrFrameScope\()(?=[\s\S]*VIDEO_SLBR_FRAME_SCOPES\.SKIP)(?=[\s\S]*VIDEO_SLBR_FRAME_SCOPES\.MASK)(?=[\s\S]*apply_scope: slbrApplyScope)(?=[\s\S]*maskPathBySignature\.get\(signature\))[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
-    description: "Video disk-space estimation counts mask artifacts for LaMa/MAT and skips masks for SLBR",
-    pattern: /ensureVideoProcessingDiskSpace\(\{[\s\S]*hasMask: isMaskInpaintModel\(requestedModelId\),/,
+    description: "Video disk-space estimation includes local SLBR mask artifacts without charging full-frame SLBR",
+    pattern: /ensureVideoProcessingDiskSpace\(\{[\s\S]*hasMask:[\s\S]*isMaskInpaintModel\(requestedModelId\)[\s\S]*requestedModelId === "slbr"[\s\S]*videoStore\.masks\.some/,
   });
   assertPattern({
     file: "server/moonshine_server/api.py",
-    description: "Backend video batch keeps SLBR in the no-mask branch and sends LaMa/MAT through ModelManager mask inpaint",
-    pattern: /(?=[\s\S]*model_id = str\(req\.model_id or "lama"\)\.strip\(\)\.lower\(\) or "lama")(?=[\s\S]*if model_id == "slbr":[\s\S]*slbr_runner = self\._get_slbr_runner\(\))(?=[\s\S]*if model_id == "slbr":[\s\S]*slbr_runner\.infer_bgr)(?=[\s\S]*else:[\s\S]*mask = self\._load_mask_from_path)(?=[\s\S]*processed_bgr = self\.model_manager\(image, mask, inpaint_req\))[\s\S]*/,
+    description: "Backend video batch routes SLBR full frames to full inference and local frames through the shared local runner",
+    pattern: /(?=[\s\S]*model_id = str\(req\.model_id or "lama"\)\.strip\(\)\.lower\(\) or "lama")(?=[\s\S]*if model_id == "slbr":[\s\S]*slbr_runner = self\._get_slbr_runner\(\))(?=[\s\S]*apply_scope = str\(getattr\(item, "apply_scope", "full"\) or "full"\))(?=[\s\S]*if apply_scope == "mask":)(?=[\s\S]*slbr_runner\.infer_bgr_local\([\s\S]*local_inference_strategy[\s\S]*local_bbox_empty_ratio_threshold[\s\S]*local_edge_feather_px)(?=[\s\S]*else:[\s\S]*slbr_runner\.infer_bgr\()(?=[\s\S]*processed_bgr = self\.model_manager\(image, mask, inpaint_req\))[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/pages/VideoPage.vue",
+    description: "SLBR video derives per-frame behavior from standard and SAM tracks, and migrates legacy ranges before processing",
+    pattern: /(?=[\s\S]*from "src\/utils\/videoSlbrScope")(?=[\s\S]*videoStore\.migrateProcessingRangesToMaskTracks\(\))(?=[\s\S]*buildVideoSlbrTrackPlan\(\{[\s\S]*paintedTrackIds: maskRenderer\?\.paintedTrackIds)(?=[\s\S]*resolveVideoSlbrFrameScope\()[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/stores/videoManager.js",
+    description: "Legacy SLBR processing ranges migrate idempotently into blank standard tracks with a source marker",
+    pattern: /(?=[\s\S]*legacyProcessingRangeId)(?=[\s\S]*const migrateProcessingRangesToMaskTracks = \(\{)(?=[\s\S]*knownMarkers)(?=[\s\S]*clearSourceRanges)(?=[\s\S]*processingRanges\.value = \[\])[\s\S]*/,
+  });
+  assertPattern({
+    file: "src/components/video/ResourceManage.vue",
+    description: "SLBR uses the shared mask and SAM creation controls instead of a separate processing-range UI",
+    pattern: /(?=[\s\S]*label="新建蒙版")(?=[\s\S]*label="智能选区")(?=[\s\S]*q-list bordered separator class="mask-list"[\s\S]*v-for="mask in videoStore\.masks")(?=[\s\S]*当前没有轨道，SLBR 将整段全帧处理。)[\s\S]*/,
+  });
+  assertAbsentPattern({
+    file: "src/components/video/ResourceManage.vue",
+    description: "Resource manager no longer exposes the legacy SLBR processing-range list",
+    pattern: /createProcessingRange|videoStore\.processingRanges|增加范围|selectProcessingRange/,
+  });
+  assertAbsentPattern({
+    file: "src/components/video/VideoMaskEditor.vue",
+    description: "Right-side mask editor no longer branches into a SLBR-only processing-range editor",
+    pattern: /selectedProcessingRange|ProcessingRange|processingRange|slbr-range-hint/,
   });
 
   logSection("Video Mask IO Optimization");
   assertPattern({
     file: "src/pages/VideoPage.vue",
-    description: "Video temporary masks remain JPG while mask signatures can reuse batch-scoped shared JPG files",
-    pattern: /(?=[\s\S]*const maskName = `mask_\$\{String\(frameIndex\)\.padStart\(6, "0"\)\}\.jpg`)(?=[\s\S]*mimeType: "image\/jpeg")(?=[\s\S]*`mask_batch_\$\{String\(batchNumber\)\.padStart\([\s\S]*\)\}_shared_\$\{sanitizeMaskSignatureForFileName\(signature\)\}\.jpg`)[\s\S]*/,
+    description: "LaMa/MAT retain JPEG masks while SLBR local frames use lossless single-channel PNG masks",
+    pattern: /(?=[\s\S]*const maskFormat = modelId === "slbr" \? "png" : "jpg")(?=[\s\S]*const maskName = `mask_\$\{String\(frameIndex\)\.padStart\(6, "0"\)\}\.\$\{maskFormat\}`)(?=[\s\S]*encodeMaskImageAsJpegBlob[\s\S]*mimeType: "image\/jpeg")(?=[\s\S]*encodeMaskImageAsSingleChannelPngBlob)(?=[\s\S]*header\[9\] = 0)(?=[\s\S]*new Blob\(\[pngBytes\], \{ type: "image\/png" \}\))(?=[\s\S]*sanitizeMaskSignatureForFileName\(signature\)\}\.\$\{maskFormat\}`)[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "Frontend skips backend work for empty mask frames while keeping result frame paths complete",
-    pattern: /(?=[\s\S]*const cloneBlobForOutput = async[\s\S]*createImageBitmap\(blob\)[\s\S]*mimeType: targetMimeType)(?=[\s\S]*resultFrameFormat,[\s\S]*imageQuality = INPUT_FRAME_QUALITY)(?=[\s\S]*const resultName = `result_\$\{String\(frameIndex\)\.padStart\(6, "0"\)\}\.\$\{resultFrameFormat\}`)(?=[\s\S]*if \(!maskArtifact\?\.hasMask\) \{[\s\S]*skippedEmptyMaskCount \+= 1[\s\S]*skipBackendReason = "empty-mask"[\s\S]*cloneBlobForOutput\(frameBlob, resultFrameFormat, undefined, undefined, imageQuality\))(?=[\s\S]*if \(\(modelId !== "slbr" \|\| shouldProcessFrame\) && !skipBackendReason\))(?=[\s\S]*const batchSkipsBackend = currentBatch\.batchItems\.length === 0)(?=[\s\S]*validateVideoBatchResponse[\s\S]*batch\.batchResultPaths)[\s\S]*/,
+    pattern: /(?=[\s\S]*const cloneBlobForOutput = async[\s\S]*createImageBitmap\(blob\)[\s\S]*mimeType: targetMimeType)(?=[\s\S]*resultFrameFormat,[\s\S]*imageQuality = INPUT_FRAME_QUALITY)(?=[\s\S]*const resultName = `result_\$\{String\(frameIndex\)\.padStart\(6, "0"\)\}\.\$\{resultFrameFormat\}`)(?=[\s\S]*if \(!maskArtifact\?\.hasMask\) \{[\s\S]*skippedEmptyMaskCount \+= 1[\s\S]*skipBackendReason = "empty-mask"[\s\S]*cloneBlobForOutput\(frameBlob, resultFrameFormat, undefined, undefined, imageQuality\))(?=[\s\S]*skipBackendReason = "inactive-local-mask")(?=[\s\S]*if \(!skipBackendReason\))(?=[\s\S]*const batchSkipsBackend = currentBatch\.batchItems\.length === 0)(?=[\s\S]*validateVideoBatchResponse[\s\S]*batch\.batchResultPaths)[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "Batch-local identical binary masks reuse the same maskPath by signature",
-    pattern: /(?=[\s\S]*signature: `\$\{canvas\.width\}x\$\{canvas\.height\}_\$\{signatureHash)(?=[\s\S]*const maskPathBySignature = new Map\(\))(?=[\s\S]*const reusableMaskPath = signature \? maskPathBySignature\.get\(signature\) : "")(?=[\s\S]*maskPathBySignature\.set\(signature, frameMaskPath\))[\s\S]*/,
+    pattern: /(?=[\s\S]*signature: `\$\{canvas\.width\}x\$\{canvas\.height\}_\$\{signatureHash)(?=[\s\S]*const maskPathBySignature = new Map\(\))(?=[\s\S]*const reusableMaskPath = signature \? maskPathBySignature\.get\(signature\) : "")(?=[\s\S]*maskPathBySignature\.set\(signature, nextMaskPath\))[\s\S]*/,
   });
   assertPattern({
     file: "server/moonshine_server/api.py",
@@ -888,7 +913,7 @@ function runAssertions() {
   assertPattern({
     file: "src/components/video/ResourceManage.vue",
     description: "Video resource manager places SAM smart selection at the same level as creating a manual mask",
-    pattern: /(?=[\s\S]*isSlbrModel \? '增加范围' : '新建蒙版')(?=[\s\S]*label="智能选区")(?=[\s\S]*samVideoActionDisabled)(?=[\s\S]*samVideoActionTooltip)(?=[\s\S]*run-sam-video-selection)(?=[\s\S]*mask\.type === ['"]samVideo['"])(?=[\s\S]*emit\('remove-mask', mask\.id\))(?![\s\S]*setSamVideoObjectEnabled)(?![\s\S]*remove-sam-video-object)[\s\S]*/,
+    pattern: /(?=[\s\S]*label="新建蒙版")(?=[\s\S]*label="智能选区")(?=[\s\S]*samVideoActionDisabled)(?=[\s\S]*samVideoActionTooltip)(?=[\s\S]*run-sam-video-selection)(?=[\s\S]*mask\.type === ['"]samVideo['"])(?=[\s\S]*emit\('remove-mask', mask\.id\))(?![\s\S]*setSamVideoObjectEnabled)(?![\s\S]*remove-sam-video-object)[\s\S]*/,
   });
   assertPattern({
     file: "src/stores/videoManager.js",
@@ -968,7 +993,7 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "Mask inpaint video processing writes temporary frame masks as JPEG files by binarizing source alpha",
-    pattern: /(?=[\s\S]*const maskName = `mask_\$\{String\(frameIndex\)\.padStart\(6, "0"\)\}\.jpg`)(?=[\s\S]*encodeMaskImageAsJpegBlob\(canvas, width, height\))(?=[\s\S]*const maskValue = data\[index \+ 3\] > 0 \? 255 : 0)(?=[\s\S]*data\[index \+ 3\] = 255)(?=[\s\S]*mimeType: "image\/jpeg")(?=[\s\S]*quality: 0\.92)[\s\S]*/,
+    pattern: /(?=[\s\S]*const maskFormat = modelId === "slbr" \? "png" : "jpg")(?=[\s\S]*encodeMaskImageAsJpegBlob\(canvas, width, height\))(?=[\s\S]*encodeMaskImageAsSingleChannelPngBlob)(?=[\s\S]*const maskValue = data\[index \+ 3\] > 0 \? 255 : 0)(?=[\s\S]*data\[index \+ 3\] = 255)(?=[\s\S]*mimeType: "image\/jpeg")(?=[\s\S]*quality: 0\.92)[\s\S]*/,
   });
   assertPattern({
     file: "src/components/video/VideoPreviewOverlay.vue",
@@ -993,7 +1018,7 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "Final SAM video mask renderer auto-expands masks for LaMa/MAT with the shared utility before processing",
-    pattern: /(?=[\s\S]*expandSamMaskImageDataForLama,[\s\S]*from "src\/utils\/samMaskAutoExpand")(?=[\s\S]*createBinaryAlphaMaskBitmap[\s\S]*expandForLama = false)(?=[\s\S]*if \(expandForLama\)[\s\S]*expandSamMaskImageDataForLama\(imageData)(?=[\s\S]*createCombinedMaskRenderer = async \(\{ masks, width, height, modelId = currentModel\.value \}\))(?=[\s\S]*shouldAutoExpandSamVideoMasks = isMaskInpaintModel\(modelId\))(?=[\s\S]*"lama-expanded"[\s\S]*"original")(?=[\s\S]*createBinaryAlphaMaskBitmap\(image, width, height, \{[\s\S]*expandForLama: shouldAutoExpandSamVideoMasks)[\s\S]*/,
+    pattern: /(?=[\s\S]*expandSamMaskImageDataForLama,[\s\S]*from "src\/utils\/samMaskAutoExpand")(?=[\s\S]*createBinaryAlphaMaskBitmap[\s\S]*expandForLama = false)(?=[\s\S]*if \(expandForLama\)[\s\S]*expandSamMaskImageDataForLama\(imageData)(?=[\s\S]*createCombinedMaskRenderer = async \(\{[\s\S]*maskFormat = "jpg")(?=[\s\S]*shouldAutoExpandSamVideoMasks = isMaskInpaintModel\(modelId\))(?=[\s\S]*"lama-expanded"[\s\S]*"original")(?=[\s\S]*createBinaryAlphaMaskBitmap\(image, width, height, \{[\s\S]*expandForLama: shouldAutoExpandSamVideoMasks)[\s\S]*/,
   });
   assertPattern({
     file: "src/stores/videoManager.js",

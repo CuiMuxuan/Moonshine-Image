@@ -74,7 +74,12 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/components/video/ResourceManage.vue",
-    description: "Video resource panel supports SLBR processing ranges list",
+    description: "Video resource panel removes the legacy SLBR processing-range list",
+    pattern: /isSlbrModel\s*\?\s*"当前没有轨道，SLBR 将整段全帧处理。"/,
+  });
+  assertAbsentPattern({
+    file: "src/components/video/ResourceManage.vue",
+    description: "Video resource panel no longer exposes legacy processing ranges",
     pattern: /videoStore\.processingRanges/,
   });
   assertPattern({
@@ -99,8 +104,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
-    description: "Video page includes SLBR frame filtering function",
-    pattern: /const shouldProcessFrameWithSlbr = \(\{[\s\S]*ranges[\s\S]*\}\) =>/,
+    description: "Video page builds a shared SLBR track plan for per-frame decisions",
+    pattern: /buildVideoSlbrTrackPlan\(\{[\s\S]*paintedTrackIds:\s*maskRenderer\?\.paintedTrackIds/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -109,8 +114,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
-    description: "Video page uses processing ranges only for SLBR",
-    pattern: /requestedModelId\s*===\s*"slbr"\s*\?\s*getEnabledProcessingRanges\(\)\s*:\s*\[\]/,
+    description: "Video page migrates legacy processing ranges before SLBR processing",
+    pattern: /if\s*\(requestedModelId\s*===\s*"slbr"\)\s*\{\s*videoStore\.migrateProcessingRangesToMaskTracks\(\);/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -124,8 +129,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
-    description: "Video SLBR pipeline skips backend frames outside selected ranges",
-    pattern: /if \(modelId === "slbr" && !shouldProcessFrame\)/,
+    description: "Video SLBR pipeline applies shared track scopes and skips inactive local frames",
+    pattern: /resolveVideoSlbrFrameScope\(\{[\s\S]*localMaskHasPixels:[\s\S]*if\s*\(slbrApplyScope\s*===\s*VIDEO_SLBR_FRAME_SCOPES\.SKIP\)/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -256,17 +261,17 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/IndexPage.vue",
     description: "Image page preserves mask toolbar preference across non-mask model switches",
-    pattern: /const maskToolsPreferredVisible = ref\(true\);[\s\S]*const rememberMaskToolsPreference = \(\) => \{[\s\S]*maskToolsPreferredVisible\.value = Boolean\(showMaskTools\.value\);[\s\S]*showMaskTools\.value = maskToolsPreferredVisible\.value;/,
+    pattern: /const maskToolsPreferredVisible = ref\(true\);[\s\S]*const rememberMaskToolsPreference = \(\) => \{[\s\S]*if \(currentModelRequiresMask\.value\) \{[\s\S]*maskToolsPreferredVisible\.value = Boolean\(showMaskTools\.value\);[\s\S]*const applyModelRuntimeState[\s\S]*showMaskTools: currentModelRequiresMask\.value[\s\S]*\? maskToolsPreferredVisible\.value[\s\S]*: showMaskTools\.value \|\| isSlbrLocalScope\.value/,
   });
   assertPattern({
     file: "src/pages/IndexPage.vue",
     description: "Image page hides unsupported mask tools without overwriting drawing preference",
-    pattern: /if \(!modelSupportsMaskTools\(metadata\)\) \{[\s\S]*showMaskTools\.value = false;[\s\S]*setMaskDrawingMode\(false, \{ persist: false \}\);/,
+    pattern: /if \(!currentModelCanUseMaskTools\.value\) \{[\s\S]*showMaskTools\.value = false;[\s\S]*setMaskMode\("off", \{ persist: false \}\);/,
   });
   assertPattern({
     file: "src/pages/IndexPage.vue",
-    description: "Image page captures preferred drawing mode instead of temporary disabled state",
-    pattern: /const captureMaskUiState = \(\) => \(\{[\s\S]*showMaskTools: maskToolsPreferredVisible\.value,[\s\S]*drawingMode: runtimeUiStore\.imageMaskDrawingEnabled,/,
+    description: "Image page captures the actual mask toolbar, mode, and drawing state",
+    pattern: /const captureMaskUiState = \(\) => \(\{[\s\S]*showMaskTools: showMaskTools\.value,[\s\S]*maskMode: maskMode\.value,[\s\S]*drawingMode: runtimeUiStore\.imageMaskDrawingEnabled,/,
   });
   assertPattern({
     file: "src/pages/IndexPage.vue",
@@ -282,8 +287,8 @@ function runAssertions() {
     file: "src/services/ImageProcessingService.js",
     description: "Moonshine image API call validates request payload before POST",
     patterns: [
-      /validateMoonshineImageRequestData\(requestData\);/,
-      /api\.post\('\/api\/v1\/moonshine\/image\/process', requestData/,
+      /validateMoonshineImageRequestData\(payload\);/,
+      /api\.post\('\/api\/v1\/moonshine\/image\/process', payload/,
     ],
   });
 
@@ -324,7 +329,7 @@ function runAssertions() {
     file: "src/components/global/BackendManager.vue",
     description: "Backend manager checks backend paths before environment diagnosis",
     patterns: [
-      /const checkEnvironment = async \(\) => \{/,
+      /const runEnvironmentCheck = async \(/,
       /const pathsValid = await ensureBackendPathsValid\(\{\}\);/,
       /if \(!pathsValid\) \{/,
     ],
@@ -389,7 +394,7 @@ function runAssertions() {
   assertPattern({
     file: "src/shared/appConfigSchema.js",
     description: "Shared config schema owns SAM render cache defaults",
-    pattern: /CONFIG_SCHEMA_VERSION = 13[\s\S]*VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS[\s\S]*DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT[\s\S]*enabled:\s*false[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4[\s\S]*samReleaseBeforeProcessing:\s*true/,
+    pattern: /CONFIG_SCHEMA_VERSION = 14[\s\S]*VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS[\s\S]*DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT[\s\S]*enabled:\s*false[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4[\s\S]*samReleaseBeforeProcessing:\s*true/,
   });
   assertPattern({
     file: "src/config/ConfigManager.js",
@@ -492,12 +497,17 @@ function runAssertions() {
   assertPattern({
     file: "src-electron/electron-main.js",
     description: "Bundled runtime preparation verifies dependencies through the structured import probe before skipping relocation",
-    pattern: /async function verifyBundledPythonRuntime\(options = \{\}\)[\s\S]*const checkDependencies = options\.checkDependencies === true;[\s\S]*probePythonDependencies\([\s\S]*\["fastapi", "uvicorn", "numpy", "PIL", "torch", "transformers"\][\s\S]*const existingRuntime = await verifyBundledPythonRuntime\(\{[\s\S]*checkDependencies: true,/,
+    pattern: /async function verifyBundledPythonRuntime\(options = \{\}\)[\s\S]*const checkDependencies = options\.checkDependencies === true;[\s\S]*probeBackendPythonDependencies\(bundledPython,[\s\S]*const existingRuntime = await verifyBundledPythonRuntime\(\{[\s\S]*checkDependencies: true,/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",
-    description: "Bundled runtime relocation warnings preserve structured diagnostics after a successful fallback verification",
-    pattern: /catch \(error\) \{(?=[\s\S]*const fallbackRuntime = await verifyBundledPythonRuntime\(\{[\s\S]*checkDependencies: true)(?=[\s\S]*const relocationFailure = to(?:Logged)?StartupFailure\(error, \{[\s\S]*code: "BUNDLED_RUNTIME_RELOCATION_FAILED")(?=[\s\S]*if \(fallbackRuntime\.success\) \{[\s\S]*sendLog\?\.\([\s\S]*"warning",[\s\S]*\{(?=[\s\S]*diagnostic: relocationFailure\.diagnostic)(?=[\s\S]*recoveryHint: relocationFailure\.recoveryHint)(?=[\s\S]*diagnosticId: relocationFailure\.diagnostic(?:\?\.|\.)id))[\s\S]*/,
+    description: "Bundled runtime fallback emits one renderer-safe warning with a diagnostic ID and log path",
+    pattern: /catch \(error\) \{(?=[\s\S]*const fallbackRuntime = await verifyBundledPythonRuntime\(\{[\s\S]*checkDependencies: true)(?=[\s\S]*const relocationFailure = to(?:Logged)?StartupFailure\(error, \{[\s\S]*code: "BUNDLED_RUNTIME_RELOCATION_FAILED")(?=[\s\S]*if \(fallbackRuntime\.success\) \{[\s\S]*const diagnosticId = relocationFailure\.diagnostic\?\.id)(?=[\s\S]*sendLog\?\.\([\s\S]*"warning",[\s\S]*\{(?=[\s\S]*diagnosticId)(?=[\s\S]*recoveryHint)(?=[\s\S]*logPath: STARTUP_LOG_PATH))[\s\S]*/,
+  });
+  assertAbsentPattern({
+    file: "src-electron/electron-main.js",
+    description: "Bundled runtime fallback does not send raw diagnostic stderr to the renderer",
+    pattern: /内置 Python 运行时重定位出现警告[\s\S]*?"warning",\s*\{[^}]*diagnostic:\s*relocationFailure\.diagnostic/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",

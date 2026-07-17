@@ -3,12 +3,17 @@ import {
   normalizeShortcutConfig,
 } from "../utils/shortcutConfig.js";
 
-export const CONFIG_SCHEMA_VERSION = 13;
+export const CONFIG_SCHEMA_VERSION = 14;
 
 export const DEFAULT_THEME_MODE = "light";
 export const DEFAULT_UI_BUTTON_SIZE = "sm";
 export const UI_BUTTON_SIZE_OPTIONS = Object.freeze(["xs", "sm", "md"]);
 export const IMAGE_PROCESSING_METHOD_OPTIONS = Object.freeze(["auto", "path", "base64"]);
+export const SLBR_LOCAL_INFERENCE_STRATEGY_OPTIONS = Object.freeze([
+  "auto",
+  "full",
+  "smart_tiles",
+]);
 export const VIDEO_PROCESSING_ENGINE_OPTIONS = Object.freeze(["auto", "webav", "ffmpeg"]);
 export const VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS = Object.freeze([
   "performance",
@@ -46,6 +51,8 @@ export const APP_CONFIG_INTEGER_LIMITS = Object.freeze({
   imageHistoryLimit: Object.freeze({ min: 1, max: 100 }),
   imageWarningSize: Object.freeze({ min: 1, max: 1000 }),
   stateSaveLimit: Object.freeze({ min: 10, max: 500 }),
+  slbrLocalBBoxEmptyRatioThreshold: Object.freeze({ min: 1, max: 99 }),
+  slbrLocalEdgeFeatherPx: Object.freeze({ min: 0, max: 16 }),
   brushSize: Object.freeze({ min: 1, max: 120 }),
   minMaskArea: Object.freeze({ min: 1, max: 1000000 }),
   batchFrameCount: Object.freeze({ min: 1 }),
@@ -193,6 +200,9 @@ export const createDefaultAppConfig = () => ({
     imageWarningSize: 50,
     stateSaveLimit: 100,
     imageProcessingMethod: "auto",
+    slbrLocalInferenceStrategy: "auto",
+    slbrLocalBBoxEmptyRatioThreshold: 50,
+    slbrLocalEdgeFeatherPx: 2,
     imageOutputFormat: "auto",
     imageOutputQuality: DEFAULT_IMAGE_OUTPUT_QUALITY,
     imageOutputNamingMode: "original",

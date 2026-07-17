@@ -312,6 +312,10 @@ const reconcileMask = (mask = {}, duration = 0) => {
     fixedTimeRange: type === MASK_TRACK_TYPES.SAM_VIDEO ? true : Boolean(mask.fixedTimeRange),
     editable: type === MASK_TRACK_TYPES.SAM_VIDEO ? false : mask.editable !== false,
     endStateExplicit: Boolean(mask.endStateExplicit),
+    legacyProcessingRangeId:
+      type === MASK_TRACK_TYPES.STANDARD && mask.legacyProcessingRangeId
+        ? String(mask.legacyProcessingRangeId)
+        : null,
     keyframes: sortMaskKeyframes([startKeyframe, ...userKeyframes, endKeyframe]),
   };
 
@@ -662,10 +666,14 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
       )
     );
 
+    const migration = migrateProcessingRangesToMaskTracks({
+      selectedRangeId: snapshot.selectedProcessingRangeId,
+    });
+
     selectedMaskId.value =
       snapshot.selectedMaskId && masks.value.some((item) => item.id === snapshot.selectedMaskId)
         ? snapshot.selectedMaskId
-        : null;
+        : migration.selectedMaskId || null;
 
     const mask = selectedMaskId.value ? getMaskById(selectedMaskId.value) : null;
     selectedKeyframeId.value =
@@ -673,11 +681,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
       mask?.keyframes.some((item) => item.id === snapshot.selectedKeyframeId)
         ? snapshot.selectedKeyframeId
         : null;
-    selectedProcessingRangeId.value =
-      snapshot.selectedProcessingRangeId &&
-      processingRanges.value.some((item) => item.id === snapshot.selectedProcessingRangeId)
-        ? snapshot.selectedProcessingRangeId
-        : processingRanges.value[0]?.id || null;
+    selectedProcessingRangeId.value = null;
 
     currentTime.value = clamp(Number(snapshot.currentTime || 0), 0, duration);
     playbackRate.value = Math.max(0.1, Number(snapshot.playbackRate || 1));
@@ -899,6 +903,9 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     startTime = 0,
     endTime = videoDuration.value,
     transform = DEFAULT_TRANSFORM,
+    legacyProcessingRangeId = null,
+    select = true,
+    enableDrawing = true,
   } = {}) => {
     const duration = Math.max(0, videoDuration.value || 0);
     const clampedStart = clamp(Number(startTime || 0), 0, duration);
@@ -921,6 +928,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
         startTime: clampedStart,
         endTime: clampedEnd,
         endStateExplicit: false,
+        legacyProcessingRangeId,
         keyframes: [
         {
           id: uuidv4(),
@@ -945,12 +953,86 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
 
     masks.value = [...masks.value, mask];
     ensureMaskDrawHistory(mask.id, mask.baseMaskDataUrl || "");
-    selectMask(mask.id, null);
-    updateMaskTool({
-      drawingEnabled: true,
-      mode: MASK_TOOL_MODES.DRAW,
-    });
+    if (select) {
+      selectMask(mask.id, null);
+    }
+    if (enableDrawing) {
+      updateMaskTool({
+        drawingEnabled: true,
+        mode: MASK_TOOL_MODES.DRAW,
+      });
+    }
     return mask;
+  };
+
+  const getLegacyProcessingRangeMarker = (range = {}, index = 0, sourcePrefix = "legacy") => {
+    const sourceId = String(range.id || "").trim();
+    if (sourceId) return sourceId;
+
+    return [
+      sourcePrefix,
+      index,
+      String(range.name || "处理范围").trim(),
+      Number(range.startTime || 0).toFixed(4),
+      Number(range.endTime || 0).toFixed(4),
+    ].join(":");
+  };
+
+  const migrateProcessingRangesToMaskTracks = ({
+    ranges = processingRanges.value,
+    clearSourceRanges = true,
+    selectedRangeId = selectedProcessingRangeId.value,
+    sourcePrefix = "legacy-processing-range",
+  } = {}) => {
+    const sourceRanges = Array.isArray(ranges) ? ranges : [];
+    const knownMarkers = new Set(
+      masks.value
+        .map((mask) => String(mask?.legacyProcessingRangeId || "").trim())
+        .filter(Boolean)
+    );
+    const migratedMasks = [];
+    let selectedMigratedMaskId = "";
+
+    sourceRanges.forEach((range, index) => {
+      const marker = getLegacyProcessingRangeMarker(range, index, sourcePrefix);
+      if (knownMarkers.has(marker)) return;
+
+      const normalizedRange = reconcileProcessingRange(range, videoDuration.value);
+      const mask = createMask({
+        name: normalizedRange.name || `范围 ${index + 1}`,
+        startTime: normalizedRange.startTime,
+        endTime: normalizedRange.endTime,
+        legacyProcessingRangeId: marker,
+        select: false,
+        enableDrawing: false,
+      });
+      knownMarkers.add(marker);
+      migratedMasks.push(mask);
+      if (String(range?.id || "") === String(selectedRangeId || "")) {
+        selectedMigratedMaskId = mask.id;
+      }
+    });
+
+    if (clearSourceRanges) {
+      processingRanges.value = [];
+      selectedProcessingRangeId.value = null;
+    }
+
+    if (
+      !selectedMigratedMaskId &&
+      !getMaskById(selectedMaskId.value) &&
+      migratedMasks.length > 0
+    ) {
+      selectedMigratedMaskId = migratedMasks[0].id;
+    }
+    if (selectedMigratedMaskId) {
+      selectMask(selectedMigratedMaskId, null);
+    }
+
+    return {
+      migratedMasks,
+      selectedMaskId: selectedMigratedMaskId || null,
+    };
   };
 
   const getSamVideoTrackName = () => {
@@ -1999,6 +2081,7 @@ export const useVideoManagerStore = defineStore("videoManager", () => {
     createSamVideoMaskTrack,
     updateSamVideoMaskTrackResult,
     createProcessingRange,
+    migrateProcessingRangesToMaskTracks,
     removeMask,
     removeProcessingRange,
     selectMask,

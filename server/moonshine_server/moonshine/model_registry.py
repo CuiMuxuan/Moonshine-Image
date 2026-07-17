@@ -314,9 +314,10 @@ MODEL_MANIFEST = (
         "minimumVram": 2048,
         "runCapabilities": {
             "scopes": ["selected", "folder"],
-            "folderInputs": ["imageFolder"],
+            "folderInputs": ["imageFolder", "maskFolder"],
             "batchActions": ["deleteSelected"],
             "outputRequired": True,
+            "localApplication": True,
         },
         "parameters": {
             "tile_size": {

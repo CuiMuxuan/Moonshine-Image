@@ -73,6 +73,7 @@ const buildMaskComparisonState = (masks = []) =>
         enabled: mask?.enabled !== false,
         startTime: normalizeNumber(mask?.startTime),
         endTime: normalizeNumber(mask?.endTime),
+        legacyProcessingRangeId: String(mask?.legacyProcessingRangeId || ""),
         baseMaskSignature: hashString(mask?.baseMaskDataUrl || ""),
         keyframes: (Array.isArray(mask?.keyframes) ? mask.keyframes : []).map((keyframe) => ({
           type: String(keyframe?.type || ""),
@@ -96,6 +97,7 @@ const buildMaskComparisonState = (masks = []) =>
 
 const buildRangeComparisonState = (ranges = []) =>
   (Array.isArray(ranges) ? ranges : []).map((range) => ({
+    id: String(range?.id || ""),
     name: String(range?.name || ""),
     enabled: range?.enabled !== false,
     startTime: normalizeNumber(range?.startTime),
@@ -123,7 +125,7 @@ export const buildProcessingConfigSnapshot = ({
   temporalEnhancement = null,
 } = {}) => {
   const comparisonPayload = {
-    signatureVersion: 2,
+    signatureVersion: 3,
     fps: normalizeNumber(fps, 4),
     exportFpsMode: String(exportFpsMode || "source"),
     batchSize: Math.max(1, Math.round(Number(batchSize || 1))),

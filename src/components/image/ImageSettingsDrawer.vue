@@ -78,6 +78,28 @@
             @open-model-management="$emit('open-model-management', $event)"
           />
 
+          <div v-if="currentModel === 'slbr'" class="q-mt-md slbr-apply-scope">
+            <div class="field-label">SLBR 处理方式</div>
+            <q-btn-toggle
+              data-testid="slbr-apply-scope-drawer"
+              aria-label="SLBR 处理方式"
+              :model-value="slbrApplyScope"
+              unelevated
+              square
+              no-caps
+              toggle-color="primary"
+              toggle-text-color="white"
+              :color="$q.dark.isActive ? 'grey-9' : 'grey-3'"
+              :text-color="$q.dark.isActive ? 'grey-3' : 'primary'"
+              class="slbr-apply-scope-toggle"
+              :options="[
+                { label: '全图', value: 'full', icon: 'image' },
+                { label: '局部', value: 'local', icon: 'crop' },
+              ]"
+              @update:model-value="$emit('update:slbr-apply-scope', $event)"
+            />
+          </div>
+
           <div class="q-mt-md">
             <div class="field-label">作用范围</div>
             <div class="scope-options">
@@ -96,6 +118,13 @@
                   {{ option.disableReason }}
                 </q-tooltip>
               </q-btn>
+            </div>
+          </div>
+
+          <div v-if="isSlbrLocalScope" class="q-mt-md slbr-local-notice">
+            <div class="field-label">SLBR 局部处理</div>
+            <div class="text-caption text-grey-7">
+              仅将结果写回蒙版内，局部结果固定使用 PNG。
             </div>
           </div>
 
@@ -245,11 +274,24 @@
           />
 
           <folder-selector
-            v-if="backendAvailable && needsFolderInput('maskFolder')"
+            v-if="backendAvailable && needsFolderInput('maskFolder') && (currentModel !== 'slbr' || isSlbrLocalScope)"
             :model-value="maskFolderPath"
             label="蒙版文件夹"
             class="q-mt-md"
             @update:model-value="$emit('update:mask-folder-path', $event)"
+          />
+
+          <q-select
+            v-if="isSlbrLocalScope && normalizedActionScope.value.value === 'folder'"
+            :model-value="slbrFolderMissingMaskBehavior"
+            :options="slbrFolderMissingMaskOptions"
+            label="蒙版缺失时"
+            emit-value
+            map-options
+            outlined
+            dense
+            class="q-mt-md"
+            @update:model-value="$emit('update:slbr-folder-missing-mask-behavior', $event)"
           />
 
           <folder-selector
@@ -341,6 +383,14 @@ const props = defineProps({
     type: String,
     default: "",
   },
+  slbrApplyScope: {
+    type: String,
+    default: "full",
+  },
+  slbrFolderMissingMaskBehavior: {
+    type: String,
+    default: "full",
+  },
   savePath: {
     type: String,
     default: "",
@@ -367,6 +417,8 @@ const emit = defineEmits([
   "update:select-all",
   "update:folder-path",
   "update:mask-folder-path",
+  "update:slbr-apply-scope",
+  "update:slbr-folder-missing-mask-behavior",
   "update:model-parameter",
   "apply-recommended-parameters",
   "update:save-path",
@@ -436,6 +488,18 @@ const recommendedParameters = computed(() => parameters.value.recommended || {})
 const hasCurrentMask = computed(() =>
   Boolean(props.currentMask?.data || props.currentMask?.displayUrl)
 );
+const isSlbrLocalScope = computed(
+  () => props.currentModel === "slbr" && props.slbrApplyScope === "local"
+);
+const slbrFolderMissingMaskOptions = computed(() => [
+  {
+    label: "使用当前蒙版",
+    value: "current_mask",
+    disable: !hasCurrentMask.value,
+  },
+  { label: "按整图处理", value: "full" },
+  { label: "跳过图片", value: "skip" },
+]);
 const hasActionButtons = computed(() =>
   supportedBatchActions.value.some((actionId) => supportsAction(actionId))
 );
@@ -717,6 +781,27 @@ const getNumberRules = (field) => [
   text-align: center;
 }
 
+.slbr-apply-scope-toggle {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(17, 24, 39, 0.18);
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.slbr-apply-scope-toggle :deep(.q-btn) {
+  flex: 1 1 50%;
+  min-width: 0;
+  min-height: 38px;
+}
+
+.slbr-apply-scope-toggle :deep(.q-btn__content) {
+  justify-content: center;
+  white-space: nowrap;
+}
+
 .parameter-grid,
 .action-grid {
   display: grid;
@@ -828,6 +913,11 @@ const getNumberRules = (field) => [
 .image-settings-drawer--dark .empty-copy,
 .image-settings-drawer--dark .backend-status-message {
   color: rgba(255, 255, 255, 0.62);
+}
+
+:global(body.body--dark) .slbr-apply-scope-toggle,
+.image-settings-drawer--dark .slbr-apply-scope-toggle {
+  border-color: rgba(255, 255, 255, 0.2);
 }
 
 :global(body.body--dark) .section-heading,

@@ -59,6 +59,7 @@ from moonshine_server.image_output import (
     normalize_image_format,
     resolve_image_output_spec,
 )
+from moonshine_server.mask_image import decode_binary_mask
 from moonshine_server.inpaint_color_stabilization import (
     apply_inpaint_color_stabilization,
     try_flat_background_fill,
@@ -88,6 +89,7 @@ from moonshine_server.schema import (
     BatchInpaintRequest, 
     BatchInpaintByFolderRequest,
     MoonshineImageProcessRequest,
+    MoonshineImageFolderInspectRequest,
     MoonshineImageFolderProcessRequest,
     VideoBatchInpaintRequest,
     MoonshineModelRegistryRequest,
@@ -112,11 +114,16 @@ class SamVideoPollingAccessLogFilter(logging.Filter):
         return "/result" in message or "/cancel" in message
 from moonshine_server.moonshine.slbr_runner import (
     SlbrRunner,
+    clamp_local_bbox_empty_ratio_threshold,
+    clamp_local_edge_feather_px,
     clamp_tile_batch,
     clamp_tile_size,
     get_overlap_for_tile_size,
+    normalize_local_inference_strategy,
     read_image_bgr,
     recommend_slbr_params,
+    iter_folder_local_plans,
+    summarize_processing_results,
 )
 from moonshine_server.moonshine.model_registry import (
     build_model_status,
@@ -249,6 +256,7 @@ class Api:
         self.add_api_route("/api/v1/moonshine/sam/video/propagate/jobs/{task_id}/cancel", self.api_moonshine_sam_video_propagate_job_cancel, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/sam/text/predict", self.api_moonshine_sam_text_predict, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/image/process", self.api_moonshine_image_process, methods=["POST"])
+        self.add_api_route("/api/v1/moonshine/image/inspect_folder_masks", self.api_moonshine_image_inspect_folder_masks, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/image/process_folder", self.api_moonshine_image_process_folder, methods=["POST"])
         
         # self.app.mount("/", StaticFiles(directory=WEB_APP_DIR, html=True), name="assets")
@@ -666,6 +674,15 @@ class Api:
             "tile_size": tile_size,
             "tile_batch": tile_batch,
             "overlap": get_overlap_for_tile_size(tile_size),
+            "local_inference_strategy": normalize_local_inference_strategy(
+                getattr(options, "local_inference_strategy", "auto")
+            ),
+            "local_bbox_empty_ratio_threshold": clamp_local_bbox_empty_ratio_threshold(
+                getattr(options, "local_bbox_empty_ratio_threshold", 50)
+            ),
+            "local_edge_feather_px": clamp_local_edge_feather_px(
+                getattr(options, "local_edge_feather_px", 2)
+            ),
         }
 
     @staticmethod
@@ -1127,24 +1144,7 @@ class Api:
         return image, alpha_channel, infos, image_format_from_path(image_value)
 
     def _decode_item_mask(self, mask_value: str, mask_type: str):
-        if mask_type == "base64":
-            encoded_mask = self._normalize_base64_payload(mask_value)
-            mask_data = base64.b64decode(encoded_mask)
-            mask_pil = Image.open(io.BytesIO(mask_data))
-        else:
-            if not os.path.exists(mask_value):
-                raise FileNotFoundError(f"Mask file not found: {mask_value}")
-            mask_pil = Image.open(mask_value)
-
-        if mask_pil.mode == "RGBA":
-            _, _, _, alpha = mask_pil.split()
-            mask = np.array(alpha)
-            mask[mask > 0] = 255
-            mask[mask == 0] = 0
-        else:
-            mask = np.array(mask_pil.convert("L"))
-            mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)[1]
-        return mask
+        return decode_binary_mask(mask_value, mask_type)
 
     def _save_result_image(
         self,
@@ -1172,7 +1172,7 @@ class Api:
         return output_path
 
     def api_moonshine_image_process(self, req: MoonshineImageProcessRequest):
-        """Process images through no-mask Moonshine image models."""
+        """Process SLBR images, optionally applying local results through a mask."""
         self._release_sam_runtime_before_processing("moonshine_image_process")
         runner = self._get_moonshine_runner(req.model_id)
         options = self._normalize_moonshine_options(req.options)
@@ -1193,19 +1193,47 @@ class Api:
                     item.image, req.image_type
                 )
                 image_bgr = cv2.cvtColor(image_rgb.astype(np.uint8), cv2.COLOR_RGB2BGR)
-                clean_bgr, _ = runner.infer_bgr(
-                    image_bgr,
-                    tile_size=options["tile_size"],
-                    tile_batch=options["tile_batch"],
-                )
+                apply_scope = item.apply_scope or req.apply_scope
+                local_diagnostics = None
+                if apply_scope == "mask":
+                    mask = self._decode_item_mask(item.mask, req.mask_type)
+                    if mask.shape[:2] != image_bgr.shape[:2]:
+                        mask = cv2.resize(
+                            mask,
+                            (image_bgr.shape[1], image_bgr.shape[0]),
+                            interpolation=cv2.INTER_NEAREST,
+                        )
+                    clean_bgr, local_diagnostics = runner.infer_bgr_local(
+                        image_bgr,
+                        mask,
+                        tile_size=options["tile_size"],
+                        tile_batch=options["tile_batch"],
+                        strategy=options["local_inference_strategy"],
+                        bbox_empty_ratio_threshold=options[
+                            "local_bbox_empty_ratio_threshold"
+                        ],
+                        edge_feather_px=options["local_edge_feather_px"],
+                    )
+                    output_spec = self._resolve_result_spec(
+                        "png",
+                        req.output_quality,
+                        source_format,
+                        alpha_channel,
+                    )
+                else:
+                    clean_bgr, _ = runner.infer_bgr(
+                        image_bgr,
+                        tile_size=options["tile_size"],
+                        tile_batch=options["tile_batch"],
+                    )
+                    output_spec = self._resolve_result_spec(
+                        req.output_format,
+                        req.output_quality,
+                        source_format,
+                        alpha_channel,
+                    )
                 clean_rgb = cv2.cvtColor(clean_bgr.astype(np.uint8), cv2.COLOR_BGR2RGB)
                 serializable_result = concat_alpha_channel(clean_rgb, alpha_channel)
-                output_spec = self._resolve_result_spec(
-                    req.output_format,
-                    req.output_quality,
-                    source_format,
-                    alpha_channel,
-                )
                 result_bytes = self._encode_result_array(
                     serializable_result,
                     output_spec,
@@ -1222,15 +1250,33 @@ class Api:
                 else:
                     result_data = self._build_result_payload(result_bytes, output_spec)
 
-                results.append(
-                    {
-                        "id": item_id,
-                        "index": index,
-                        "result": result_data,
-                        "success": True,
-                        **self._build_result_meta(output_spec),
-                    }
-                )
+                result = {
+                    "id": item_id,
+                    "index": index,
+                    "result": result_data,
+                    "success": True,
+                    "apply_scope": apply_scope,
+                    "inference_strategy": (
+                        local_diagnostics["inference_strategy"]
+                        if local_diagnostics
+                        else "full"
+                    ),
+                    **self._build_result_meta(output_spec),
+                }
+                if local_diagnostics:
+                    result.update(
+                        {
+                            "bboxEmptyRatio": local_diagnostics["bbox_empty_ratio"],
+                            "effectiveMaskCoverage": local_diagnostics[
+                                "effective_mask_coverage"
+                            ],
+                            "fullTileCount": local_diagnostics["full_tile_count"],
+                            "localTileCount": local_diagnostics["local_tile_count"],
+                            "tileSavingRatio": local_diagnostics["tile_saving_ratio"],
+                            "fallback_reason": local_diagnostics["fallback_reason"] or None,
+                        }
+                    )
+                results.append(result)
                 torch_gc()
             except Exception as e:
                 if isinstance(e, DiskSpaceError):
@@ -1246,15 +1292,14 @@ class Api:
                 )
 
         total_time = time.time() - start_time
+        summary = summarize_processing_results(results)
         return JSONResponse(
             content=jsonable_encoder(
                 {
                     "results": results,
                     "total_time": total_time,
                     "processed_count": len(results),
-                    "success_count": sum(
-                        1 for result in results if result.get("success", False)
-                    ),
+                    **summary,
                 }
             )
         )
@@ -1446,8 +1491,85 @@ class Api:
                 })
             )
 
+    def api_moonshine_image_inspect_folder_masks(
+        self, req: MoonshineImageFolderInspectRequest
+    ):
+        """Inspect effective SLBR folder mask behavior without loading the model."""
+        try:
+            plans = list(
+                iter_folder_local_plans(
+                    req.image_folder,
+                    req.output_folder,
+                    mask_folder=req.mask_folder,
+                    template_mask_path=req.template_mask_path,
+                    missing_mask_behavior=req.missing_mask_behavior,
+                    include_mask=False,
+                )
+            )
+            mask_count = sum(1 for plan in plans if plan["apply_scope"] == "mask")
+            full_count = sum(1 for plan in plans if plan["apply_scope"] == "full")
+            skipped_count = sum(1 for plan in plans if plan["apply_scope"] == "skip")
+            error_count = sum(1 for plan in plans if plan["apply_scope"] == "error")
+            missing_count = sum(
+                1 for plan in plans if plan.get("mask_status") == "missing"
+            )
+            empty_count = sum(
+                1 for plan in plans if plan.get("mask_status") == "empty"
+            )
+            status = (
+                "failed"
+                if plans and error_count == len(plans)
+                else "partial"
+                if error_count
+                else "completed"
+            )
+            public_plans = [
+                {
+                    key: value
+                    for key, value in plan.items()
+                    if key not in {"output_collision", "output_stem"}
+                }
+                for plan in plans
+            ]
+            return JSONResponse(
+                content=jsonable_encoder(
+                    {
+                        "success": status != "failed",
+                        "status": status,
+                        "total_count": len(plans),
+                        "mask_count": mask_count,
+                        "full_count": full_count,
+                        "skipped_count": skipped_count,
+                        "missing_count": missing_count,
+                        "empty_count": empty_count,
+                        "error_count": error_count,
+                        "results": public_plans,
+                    }
+                )
+            )
+        except Exception as e:
+            logger.exception(f"Moonshine folder mask inspection failed: {str(e)}")
+            return JSONResponse(
+                status_code=400,
+                content=jsonable_encoder(
+                    {
+                        "success": False,
+                        "status": "failed",
+                        "error": str(e),
+                        "total_count": 0,
+                        "mask_count": 0,
+                        "full_count": 0,
+                        "skipped_count": 0,
+                        "missing_count": 0,
+                        "empty_count": 0,
+                        "error_count": 0,
+                        "results": [],
+                    }
+                ),
+            )
+
     def api_moonshine_image_process_folder(self, req: MoonshineImageFolderProcessRequest):
-        """Process a folder through a no-mask Moonshine image model."""
+        """Process a folder through a Moonshine image model."""
         start_time = time.time()
         try:
             self._release_sam_runtime_before_processing("moonshine_image_process_folder")
@@ -1467,22 +1589,35 @@ class Api:
                 tile_batch=options["tile_batch"],
                 output_format=req.output_format,
                 output_quality=req.output_quality,
+                apply_scope=req.apply_scope,
+                mask_folder=req.mask_folder,
+                template_mask_path=req.template_mask_path,
+                missing_mask_behavior=req.missing_mask_behavior,
+                local_inference_strategy=options["local_inference_strategy"],
+                local_bbox_empty_ratio_threshold=options[
+                    "local_bbox_empty_ratio_threshold"
+                ],
+                local_edge_feather_px=options["local_edge_feather_px"],
             )
             total_time = time.time() - start_time
+            summary = summarize_processing_results(results)
+            status_messages = {
+                "completed": "Folder processing completed",
+                "partial": "Folder processing partially completed",
+                "skipped": "Folder processing skipped",
+                "failed": "Folder processing failed",
+            }
 
             return JSONResponse(
                 content=jsonable_encoder(
                     {
-                        "success": True,
-                        "message": "Folder processing completed",
+                        "message": status_messages[summary["status"]],
                         "total_time": total_time,
                         "processed_count": len(results),
-                        "success_count": sum(
-                            1 for result in results if result.get("success", False)
-                        ),
                         "image_folder": str(image_path),
                         "output_folder": str(output_path),
                         "results": results,
+                        **summary,
                     }
                 )
             )
@@ -1493,7 +1628,12 @@ class Api:
                 content=jsonable_encoder(
                     {
                         "success": False,
+                        "status": "failed",
                         "error": str(e),
+                        "total_count": 0,
+                        "success_count": 0,
+                        "failed_count": 0,
+                        "skipped_count": 0,
                     }
                 ),
             )
@@ -1718,21 +1858,64 @@ class Api:
 
                 if model_id == "slbr":
                     image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-                    processed_bgr, _ = slbr_runner.infer_bgr(
-                        image_bgr,
-                        tile_size=slbr_options["tile_size"],
-                        tile_batch=slbr_options["tile_batch"],
-                    )
+                    apply_scope = str(getattr(item, "apply_scope", "full") or "full")
+                    local_diagnostics = None
+                    if apply_scope == "mask":
+                        mask_cache_key = (os.path.abspath(item.mask_path), False)
+                        cached_mask = mask_cache.get(mask_cache_key)
+                        if cached_mask is None:
+                            cached_mask = self._load_mask_from_path(item.mask_path, False)
+                            mask_cache[mask_cache_key] = cached_mask
+                        mask = cached_mask.copy()
+                        if image.shape[:2] != mask.shape[:2]:
+                            mask = cv2.resize(
+                                mask,
+                                (image.shape[1], image.shape[0]),
+                                interpolation=cv2.INTER_NEAREST,
+                            )
+                        mask_nonzero_pixels = int(np.count_nonzero(mask))
+                        if mask_nonzero_pixels <= 0:
+                            self._save_processed_frame(item.output_path, image_bgr, alpha_channel)
+                            results.append(
+                                {
+                                    "frame_index": item.frame_index,
+                                    "output_path": item.output_path,
+                                    "success": True,
+                                    "skipped": True,
+                                    "skip_reason": "empty-mask",
+                                    "apply_scope": apply_scope,
+                                }
+                            )
+                            continue
+                        processed_bgr, local_diagnostics = slbr_runner.infer_bgr_local(
+                            image_bgr,
+                            mask,
+                            tile_size=slbr_options["tile_size"],
+                            tile_batch=slbr_options["tile_batch"],
+                            strategy=slbr_options["local_inference_strategy"],
+                            bbox_empty_ratio_threshold=slbr_options[
+                                "local_bbox_empty_ratio_threshold"
+                            ],
+                            edge_feather_px=slbr_options["local_edge_feather_px"],
+                        )
+                    else:
+                        processed_bgr, _ = slbr_runner.infer_bgr(
+                            image_bgr,
+                            tile_size=slbr_options["tile_size"],
+                            tile_batch=slbr_options["tile_batch"],
+                        )
                     self._save_processed_frame(
                         item.output_path, processed_bgr.astype(np.uint8), alpha_channel
                     )
-                    results.append(
-                        {
-                            "frame_index": item.frame_index,
-                            "output_path": item.output_path,
-                            "success": True,
-                        }
-                    )
+                    result_item = {
+                        "frame_index": item.frame_index,
+                        "output_path": item.output_path,
+                        "success": True,
+                        "apply_scope": apply_scope,
+                    }
+                    if local_diagnostics is not None:
+                        result_item["local_diagnostics"] = local_diagnostics
+                    results.append(result_item)
                 else:
                     mask_cache_key = (
                         os.path.abspath(item.mask_path),

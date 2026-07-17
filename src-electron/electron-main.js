@@ -75,6 +75,7 @@ import { BackendProcessSupervisor } from "./backend-process-supervisor.js";
 import {
   createDiagnostic,
   createStartupLogger,
+  StartupProcessError,
   toStartupFailure,
 } from "./startup-diagnostics.js";
 import { runStartupProcess } from "./startup-process.js";
@@ -89,8 +90,14 @@ import {
   cleanupManagedTempDirectory,
   isValidConfiguredDirectoryPath,
   normalizeConfiguredDirectoryPath,
+  removeManagedTempRunDirectoryAsync,
+  resolveManagedTempFile,
+  resolveCopyFileTarget,
+  resolveStrictTempSubdirectory,
 } from "./config-safety.js";
+import { VIDEO_TASK_DIRECTORY_PREFIX } from "../src/utils/videoProcessingResume.js";
 import {
+  BACKEND_RUNTIME_IMPORT_TIMEOUT_MS,
   buildImportProbeScript,
   createImportProbeArgs,
   createIsolatedPythonEnv,
@@ -1423,7 +1430,7 @@ async function ensurePackagedBackendIntegrity(projectPath) {
     }
 
     if (shouldCopy) {
-      ensureDiskSpace(targetPath, {
+      ensureDiskSpace(targetDir, {
         requiredBytes: Number(entry.size || getFileSize(sourcePath)),
         operation: "复制后端运行资源",
       });
@@ -1526,6 +1533,16 @@ async function runBundledCondaUnpack(sendLog, options = {}) {
   const pythonPath = getBundledPythonPath();
   const exeCandidate = path.join(envPath, "Scripts", "conda-unpack.exe");
   const scriptCandidate = path.join(envPath, "Scripts", "conda-unpack-script.py");
+  const logRelocationStderr = (text) => {
+    const message = String(text || "");
+    if (!message.trim()) return;
+    void startupLogger.warning(message, {
+      code: "BUNDLED_RUNTIME_RELOCATION_STDERR",
+      stage: "bundled-runtime-relocation",
+      stream: "stderr",
+      source: "conda-unpack",
+    });
+  };
 
   sendLog?.("Relocating bundled Python runtime...", "info");
   sendLog?.("请耐心等待直到本页面出现以下内容：Bundled backend dependencies are ready.", "info");
@@ -1538,7 +1555,7 @@ async function runBundledCondaUnpack(sendLog, options = {}) {
       recoveryHint: "Re-extract the application to a writable directory and check security software.",
       signal: options.signal,
       onStdout: (text) => sendLog?.(text, "info"),
-      onStderr: (text) => sendLog?.(text, "warning"),
+      onStderr: logRelocationStderr,
     });
     return;
   }
@@ -1555,7 +1572,7 @@ async function runBundledCondaUnpack(sendLog, options = {}) {
         recoveryHint: "Re-extract the application to a writable directory and check security software.",
         signal: options.signal,
         onStdout: (text) => sendLog?.(text, "info"),
-        onStderr: (text) => sendLog?.(text, "warning"),
+        onStderr: logRelocationStderr,
       }
     );
     return;
@@ -1678,16 +1695,12 @@ async function verifyBundledPythonRuntime(options = {}) {
   }
 
   if (checkDependencies) {
-    const dependencyResult = await probePythonDependencies(
-      bundledPython,
-      ["fastapi", "uvicorn", "numpy", "PIL", "torch", "transformers"],
-      {
-        cwd: getPackagedBackendRuntimeProjectPath(),
-        timeout: 30000,
-        env: getBundledRuntimeCommandEnv(),
-        signal: options.signal,
-      }
-    );
+    const dependencyResult = await probeBackendPythonDependencies(bundledPython, {
+      cwd: getPackagedBackendRuntimeProjectPath(),
+      timeout: BACKEND_RUNTIME_IMPORT_TIMEOUT_MS,
+      env: getBundledRuntimeCommandEnv(),
+      signal: options.signal,
+    });
     if (!dependencyResult.success) {
       return {
         success: false,
@@ -1696,6 +1709,8 @@ async function verifyBundledPythonRuntime(options = {}) {
         missingModules: dependencyResult.missingModules,
         dependencyErrors: dependencyResult.errors,
         stderr: dependencyResult.stderr,
+        diagnostic: dependencyResult.diagnostic,
+        attempts: dependencyResult.attempts,
       };
     }
   }
@@ -1742,6 +1757,7 @@ async function ensureBundledRuntimeReady(sendLog, options = {}) {
 
   const runtimeMetadata = readJsonFile(getPackagedRuntimeMetadataPath());
 
+  let verifiedRuntime = null;
   await withBundledRuntimeLock(async () => {
     const state = getBundledRuntimeState();
     if (!hasBundledRuntimeStateChanged(runtimeMetadata)) {
@@ -1757,6 +1773,7 @@ async function ensureBundledRuntimeReady(sendLog, options = {}) {
         "Bundled Python runtime is already usable. Refreshing runtime state...",
         "info"
       );
+      verifiedRuntime = existingRuntime;
       writeBundledRuntimeState(runtimeMetadata, existingRuntime.pythonPath);
       return;
     }
@@ -1766,7 +1783,7 @@ async function ensureBundledRuntimeReady(sendLog, options = {}) {
     if (appMoved) {
       sendLog?.(
         "Detected that the packaged app path changed. Re-running bundled runtime relocation...",
-        "warning"
+        "info"
       );
     }
 
@@ -1787,19 +1804,23 @@ async function ensureBundledRuntimeReady(sendLog, options = {}) {
         logPath: STARTUP_LOG_PATH,
       });
       if (fallbackRuntime.success) {
+        const diagnosticId = relocationFailure.diagnostic?.id || "unknown";
+        const recoveryHint =
+          "已验证内置运行时可用。可点击右上角“打开启动日志”查看完整重定位输出。";
         sendLog?.(
-          `Bundled runtime relocation reported a warning, but Python is usable: ${error.message}`,
+          `内置 Python 运行时重定位出现警告，但已通过 Python 与依赖校验，服务将继续启动。诊断编号：${diagnosticId}。可点击右上角“打开启动日志”查看完整详情。`,
           "warning",
           {
-            diagnostic: relocationFailure.diagnostic,
-            diagnosticId: relocationFailure.diagnostic.id,
-            recoveryHint: relocationFailure.recoveryHint,
+            diagnosticId,
+            recoveryHint,
+            logPath: STARTUP_LOG_PATH,
           }
         );
         void startupLogger.warning(relocationFailure.error, {
-          recoveryHint: relocationFailure.recoveryHint,
+          recoveryHint,
           diagnostic: relocationFailure.diagnostic,
         });
+        verifiedRuntime = fallbackRuntime;
         writeBundledRuntimeState(runtimeMetadata, fallbackRuntime.pythonPath);
         return;
       }
@@ -1832,16 +1853,45 @@ async function ensureBundledRuntimeReady(sendLog, options = {}) {
       signal: options.signal,
     });
     if (!preparedRuntime.success) {
-      throw new Error(preparedRuntime.error || "Bundled Python runtime verification failed.");
+      const runtimeError = new StartupProcessError(
+        preparedRuntime.error || "Bundled Python runtime verification failed.",
+        {
+          diagnostic: {
+            ...(preparedRuntime.diagnostic || {}),
+            code: preparedRuntime.code || "BUNDLED_RUNTIME_VERIFICATION_FAILED",
+            stage: "bundled-runtime-verification",
+            stderrTail:
+              preparedRuntime.stderr || preparedRuntime.diagnostic?.stderrTail || "",
+            attempts:
+              preparedRuntime.attempts || preparedRuntime.diagnostic?.attempts || [],
+            logPath: STARTUP_LOG_PATH,
+          },
+          userMessage:
+            preparedRuntime.error || "Bundled Python runtime verification failed.",
+          recoveryHint:
+            "Re-extract the application and inspect the startup log for the failed Python import.",
+        }
+      );
+      void startupLogger.error(runtimeError.message, {
+        code: runtimeError.startupCode,
+        recoveryHint: runtimeError.recoveryHint,
+        diagnostic: runtimeError.diagnostic,
+        missingModules: preparedRuntime.missingModules || [],
+        dependencyErrors: preparedRuntime.dependencyErrors || {},
+      });
+      throw runtimeError;
     }
 
+    verifiedRuntime = preparedRuntime;
     writeBundledRuntimeState(runtimeMetadata, preparedRuntime.pythonPath);
   }, options);
 
-  const runtimeResult = await verifyBundledPythonRuntime({
-    checkDependencies: true,
-    signal: options.signal,
-  });
+  const runtimeResult =
+    verifiedRuntime ||
+    (await verifyBundledPythonRuntime({
+      checkDependencies: true,
+      signal: options.signal,
+    }));
   if (!runtimeResult.success) {
     return augmentStartupFailure(runtimeResult, {
       code: runtimeResult.code || "BUNDLED_RUNTIME_UNUSABLE",
@@ -1854,6 +1904,7 @@ async function ensureBundledRuntimeReady(sendLog, options = {}) {
     path: getPackagedBackendRuntimeProjectPath(),
     pythonPath: runtimeResult.pythonPath,
     pythonVersion: runtimeResult.pythonVersion,
+    dependenciesVerified: true,
     pythonSource: "bundled offline runtime",
     venvName: "bundled-runtime",
     venvPath: getBundledRuntimeEnvPath(),
@@ -1945,8 +1996,8 @@ async function getPythonVersionFromCommand(pythonCommand, args = [], options = {
   }
 }
 
-async function probePythonDependencies(pythonCommand, modules, options = {}) {
-  const args = createImportProbeArgs(modules);
+async function probeBackendPythonDependencies(pythonCommand, options = {}) {
+  const args = createImportProbeArgs();
   let processResult;
   let failureMetadata = {};
   try {
@@ -4132,8 +4183,9 @@ ipcMain.handle("delete-file", async (event, filePath) => {
   }
 });
 // IPC handler - copy file
-ipcMain.handle("copy-file", async (event, { source, target }) => {
+ipcMain.handle("copy-file", async (event, payload = {}) => {
   try {
+    const { source, target, conflictPolicy = "rename" } = payload;
     // Check whether the source file exists
     if (!fs.existsSync(source)) {
       throw new Error(`Source file does not exist: ${source}`);
@@ -4145,27 +4197,24 @@ ipcMain.handle("copy-file", async (event, { source, target }) => {
       fs.mkdirSync(targetDir, { recursive: true });
     }
 
-    let finalTarget = target;
-    if (fs.existsSync(target)) {
-      const fileExt = path.extname(target);
-      const baseName = path.basename(target, fileExt);
-      const dirName = path.dirname(target);
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      finalTarget = path.join(dirName, `${baseName}_${timestamp}${fileExt}`);
-    }
+    const finalTarget = resolveCopyFileTarget(target, { conflictPolicy });
 
     // Copy file
     ensureDiskSpace(finalTarget, {
       requiredBytes: getFileSize(source),
       operation: "复制文件",
     });
-    fs.copyFileSync(source, finalTarget);
+    fs.copyFileSync(
+      source,
+      finalTarget,
+      conflictPolicy === "error" ? fs.constants.COPYFILE_EXCL : 0
+    );
 
     console.log(`File copied successfully: ${source} -> ${finalTarget}`);
     return { success: true, targetPath: finalTarget };
   } catch (error) {
     console.error("Failed to copy file:", error);
-    return { success: false, error: error.message };
+    return { success: false, code: error.code, error: error.message };
   }
 });
 // IPC handler - select file
@@ -4718,19 +4767,17 @@ ipcMain.handle("check-dependencies", async () => {
         return augmentStartupFailure(bundledResult, { stage: "check-dependencies" });
       }
 
-      const dependencyResult = await probePythonDependencies(
-        bundledResult.pythonPath,
-        ["fastapi", "uvicorn", "numpy", "PIL", "torch", "transformers"],
+      return createDependencyCheckResponse(
         {
-          cwd: bundledResult.path,
-          timeout: 30000,
-          env: getBundledRuntimeCommandEnv(),
+          success: true,
+          missingModules: [],
+          errors: {},
+        },
+        {
+          successMessage: "Bundled backend dependencies are ready.",
+          stage: "check-dependencies",
         }
       );
-      return createDependencyCheckResponse(dependencyResult, {
-        code: "BUNDLED_DEPENDENCIES_UNUSABLE",
-        stage: "check-dependencies",
-      });
     }
 
     const integrityResult = await ensurePackagedBackendIntegrity(global.projectPath);
@@ -4753,15 +4800,11 @@ ipcMain.handle("check-dependencies", async () => {
       );
     }
 
-    const dependencyResult = await probePythonDependencies(
-      venvInfo.pythonPath,
-      ["fastapi", "uvicorn", "numpy", "PIL", "torch", "transformers"],
-      {
-        cwd: global.projectPath,
-        timeout: 30000,
-        env: getIsolatedPythonCommandEnv(venvInfo.venvPath),
-      }
-    );
+    const dependencyResult = await probeBackendPythonDependencies(venvInfo.pythonPath, {
+      cwd: global.projectPath,
+      timeout: BACKEND_RUNTIME_IMPORT_TIMEOUT_MS,
+      env: getIsolatedPythonCommandEnv(venvInfo.venvPath),
+    });
     return createDependencyCheckResponse(dependencyResult, {
       code: "PYTHON_DEPENDENCIES_MISSING",
       stage: "check-dependencies",
@@ -5671,7 +5714,7 @@ ipcMain.handle("get-file-stats", async (event, filePath) => {
     return buildFileStatsPayload(filePath);
   } catch (error) {
     console.error("Failed to get file stats:", error);
-    return { success: false, error: error.message };
+    return { success: false, code: error.code, error: error.message };
   }
 });
 
@@ -5829,11 +5872,40 @@ ipcMain.handle("save-temp-video", async (event, { fileName, buffer }) => {
 // IPC handler - cleanup temporary file
 ipcMain.handle("cleanup-temp-file", async (event, filePath) => {
   try {
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+    const runtimeDefaults = createRuntimeDefaultConfig();
+    const tempRoot = normalizeConfiguredDirectoryPath(
+      globalConfig.fileManagement?.tempPath,
+      runtimeDefaults.fileManagement.tempPath
+    );
+    const imageDirectory = resolveStrictTempSubdirectory(
+      tempRoot,
+      globalConfig.fileManagement?.imageFolderName ||
+        runtimeDefaults.fileManagement.imageFolderName
+    );
+    const target = resolveManagedTempFile({
+      filePath,
+      tempRoot,
+      allowedParentDirectories: [
+        path.join(imageDirectory, "chain-inputs"),
+        path.join(imageDirectory, "folder-chain-inputs"),
+        path.join(tempRoot, "moonshine-videos"),
+        path.join(tempRoot, "moonshine-sam-video-masks"),
+      ],
+      allowedTempRootChildPrefixes: [VIDEO_TASK_DIRECTORY_PREFIX],
+    });
+    if (!target.exists) {
+      return { success: true, removed: false, filePath: target.filePath };
     }
+    fs.unlinkSync(target.filePath);
+    return { success: true, removed: true, filePath: target.filePath };
   } catch (error) {
     console.error("Failed to clean up temporary file:", error);
+    return {
+      success: false,
+      removed: false,
+      code: error.code || "TEMP_FILE_CLEANUP_FAILED",
+      error: error.message,
+    };
   }
 });
 // IPC handler - cleanup temporary files
@@ -5849,6 +5921,39 @@ ipcMain.handle("cleanup-temp-files", async (event, tempDir) => {
     }
   } catch (error) {
     console.error("Failed to clean up temporary files:", error);
+  }
+});
+
+ipcMain.handle("cleanup-temp-directory", async (event, payload = {}) => {
+  const directoryPath = payload?.directoryPath;
+  try {
+    const runtimeDefaults = createRuntimeDefaultConfig();
+    const tempRoot = normalizeConfiguredDirectoryPath(
+      globalConfig.fileManagement?.tempPath,
+      runtimeDefaults.fileManagement.tempPath
+    );
+    const imageDirectory = resolveStrictTempSubdirectory(
+      tempRoot,
+      globalConfig.fileManagement?.imageFolderName ||
+        runtimeDefaults.fileManagement.imageFolderName
+    );
+    const allowedRunParentDirectories = ["chain-inputs", "folder-chain-inputs"].map(
+      (folderName) => path.join(imageDirectory, folderName)
+    );
+    const result = await removeManagedTempRunDirectoryAsync({
+      directory: directoryPath,
+      tempRoot,
+      allowedRunParentDirectories,
+    });
+    return { success: true, ...result };
+  } catch (error) {
+    console.error("Failed to clean up managed temporary directory:", error);
+    return {
+      success: false,
+      removed: false,
+      code: error.code || "TEMP_RUN_CLEANUP_FAILED",
+      error: error.message,
+    };
   }
 });
 

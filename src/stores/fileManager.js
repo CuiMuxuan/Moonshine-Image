@@ -91,10 +91,14 @@ const getImageMetadataFromResult = (resultData, metadata = {}) => {
   const mimeType = metadata.mimeType || metadata.mime_type || dataUrlMime || "";
   const extension = metadata.extension || getExtensionFromMimeType(mimeType);
   const format = normalizeImageFormat(metadata.format || extension) || getImageFormatFromMimeType(mimeType);
+  const applyScope = metadata.applyScope || metadata.apply_scope || "";
+  const inferenceStrategy = metadata.inferenceStrategy || metadata.inference_strategy || "";
   return {
     format,
     mimeType: mimeType || (format === "jpg" ? "image/jpeg" : format ? `image/${format}` : ""),
     extension: extension || (format ? `.${format}` : ".png"),
+    ...(applyScope ? { applyScope } : {}),
+    ...(inferenceStrategy ? { inferenceStrategy } : {}),
   };
 };
 
@@ -173,6 +177,31 @@ const createPathFileData = (descriptor = {}) => {
 const buildMissingFileMessage = (fileName = "当前文件") =>
   `${fileName} 对应的本地文件已被删除、移动或不可访问，请重新导入后再试`;
 
+const PROCESSING_INPUT_ERROR_MESSAGES = Object.freeze({
+  INPUT_PATH_MISSING: "文件不存在或路径已失效",
+  INPUT_PATH_INVALID: "图片路径无效",
+  INPUT_READ_FAILED: "图片文件无法读取",
+});
+
+class ProcessingInputError extends Error {
+  constructor(code, fileName, details = "") {
+    const reason = PROCESSING_INPUT_ERROR_MESSAGES[code] || "图片输入无效";
+    super(`${fileName || "当前文件"}：${reason}${details ? `（${details}）` : ""}`);
+    this.name = "ProcessingInputError";
+    this.code = code;
+    this.userMessage = reason;
+  }
+}
+
+const buildProcessingInputFailure = (file, index, error) => ({
+  id: file?.id,
+  index,
+  file_name: file?.name || "未知图片",
+  success: false,
+  error_code: error?.code || "INPUT_READ_FAILED",
+  error: error?.userMessage || PROCESSING_INPUT_ERROR_MESSAGES.INPUT_READ_FAILED,
+});
+
 const resolveOriginalFilePath = (file) => {
   const latestPath = file?.history?.[file.history.length - 1]?.type === "path"
     ? file.history[file.history.length - 1].data
@@ -234,6 +263,7 @@ export const useFileManagerStore = defineStore("fileManager", {
     currentFileId: null,
     selectedFileIds: [],
     lastProcessingInputWarnings: [],
+    pendingProcessingInputCleanupDirectories: [],
     processingConfig: {
       ...DEFAULT_PROCESSING_CONFIG,
     },
@@ -736,6 +766,12 @@ export const useFileManagerStore = defineStore("fileManager", {
       return warnings;
     },
 
+    consumeProcessingInputCleanupDirectories() {
+      const directories = [...new Set(this.pendingProcessingInputCleanupDirectories.filter(Boolean))];
+      this.pendingProcessingInputCleanupDirectories = [];
+      return directories;
+    },
+
     getImageWarningSizeBytes(config) {
       const warningMb = Math.max(
         1,
@@ -837,6 +873,7 @@ export const useFileManagerStore = defineStore("fileManager", {
         transport,
         imageTempPath,
         chainInputPath,
+        materializedInputCount: 0,
         warnings: [],
       };
     },
@@ -844,6 +881,17 @@ export const useFileManagerStore = defineStore("fileManager", {
     getOriginalImageSource(file) {
       const originalImage = Array.isArray(file?.history) ? file.history[0] : file?.image;
       return originalImage || file?.image || null;
+    },
+
+    getLatestImageInputSource(file) {
+      const history = Array.isArray(file?.history) && file.history.length > 0
+        ? file.history
+        : [file?.image].filter(Boolean);
+      const historyIndex = Math.max(0, history.length - 1);
+      return {
+        historyIndex,
+        imageSource: history[historyIndex] || null,
+      };
     },
 
     async materializeBase64ImageToTempPath(file, historyItem, historyIndex, context) {
@@ -861,42 +909,34 @@ export const useFileManagerStore = defineStore("fileManager", {
       const targetPath = window.electron.ipcRenderer
         .joinPath(context.chainInputPath, targetName)
         .replace(/\\/g, "/");
+      if (!this.pendingProcessingInputCleanupDirectories.includes(context.chainInputPath)) {
+        this.pendingProcessingInputCleanupDirectories.push(context.chainInputPath);
+      }
       const savedPath = await window.electron.ipcRenderer.invoke("save-file", {
         filePath: targetPath,
         blob: convertBase64ToArrayBuffer(historyItem.data),
       });
 
+      context.materializedInputCount += 1;
+
       return typeof savedPath === "string" ? savedPath : targetPath;
     },
 
     async resolveLatestImageInput(file, targetTransport, context) {
-      const history = Array.isArray(file?.history) && file.history.length > 0
-        ? file.history
-        : [file?.image].filter(Boolean);
-      let historyIndex = Math.max(0, history.length - 1);
-      let imageSource = history[historyIndex];
-
-      if (imageSource?.type === "path" && imageSource.data) {
-        const exists = await this.fileExists(imageSource.data);
-        if (!exists && historyIndex > 0) {
-          context.warnings.push(`${file?.name || imageSource.data}：最新结果文件不存在，已改用原图。`);
-          imageSource = this.getOriginalImageSource(file);
-          historyIndex = 0;
-        }
-      }
+      const { historyIndex, imageSource } = this.getLatestImageInputSource(file);
 
       if (!imageSource) {
-        throw new Error(`无法读取图片数据: ${file?.name || "unknown"}`);
+        throw new ProcessingInputError("INPUT_PATH_INVALID", file?.name);
       }
 
       if (targetTransport === "path") {
         if (imageSource.type === "path") {
           const imagePath = imageSource.data || resolveOriginalFilePath(file);
           if (!imagePath) {
-            throw new Error(`无法读取图片路径: ${file?.name || "unknown"}`);
+            throw new ProcessingInputError("INPUT_PATH_INVALID", file?.name);
           }
           if (!(await this.fileExists(imagePath))) {
-            throw new Error(buildMissingFileMessage(file?.name));
+            throw new ProcessingInputError("INPUT_PATH_MISSING", file?.name);
           }
           return imagePath;
         }
@@ -918,17 +958,26 @@ export const useFileManagerStore = defineStore("fileManager", {
 
         const imagePath = imageSource.data || resolveOriginalFilePath(file);
         if (!imagePath) {
-          throw new Error(`无法读取图片路径: ${file?.name || "unknown"}`);
+          throw new ProcessingInputError("INPUT_PATH_INVALID", file?.name);
         }
         if (!(await this.fileExists(imagePath))) {
-          throw new Error(buildMissingFileMessage(file?.name));
+          throw new ProcessingInputError("INPUT_PATH_MISSING", file?.name);
         }
         await this.assertCanConvertPathToBase64(file, imagePath, context.config);
-        const fileBase64 = await this.fileToBase64({
-          name: file.name,
-          type: file.type,
-          path: imagePath,
-        });
+        let fileBase64;
+        try {
+          fileBase64 = await this.fileToBase64({
+            name: file.name,
+            type: file.type,
+            path: imagePath,
+          });
+        } catch (error) {
+          throw new ProcessingInputError(
+            "INPUT_READ_FAILED",
+            file?.name,
+            error?.message || ""
+          );
+        }
         return fileBase64.split(",")[1];
       }
 
@@ -950,11 +999,22 @@ export const useFileManagerStore = defineStore("fileManager", {
       };
 
       const batchItems = [];
-      for (const file of filesToProcess) {
-        const imageData = await this.resolveLatestImageInput(file, imageType, context);
+      const clientFailures = [];
+      const sourceIndexes = [];
+      for (let index = 0; index < filesToProcess.length; index += 1) {
+        const file = filesToProcess[index];
 
         if (!file.mask?.data) {
           throw new Error(`缺少蒙版数据: ${file.name}`);
+        }
+
+        let imageData;
+        try {
+          imageData = await this.resolveLatestImageInput(file, imageType, context);
+        } catch (error) {
+          if (!(error instanceof ProcessingInputError)) throw error;
+          clientFailures.push(buildProcessingInputFailure(file, index, error));
+          continue;
         }
 
         batchItems.push({
@@ -962,6 +1022,7 @@ export const useFileManagerStore = defineStore("fileManager", {
           image: imageData,
           mask: file.mask.data,
         });
+        sourceIndexes.push(index);
       }
       this.lastProcessingInputWarnings = [...new Set(context.warnings)];
 
@@ -972,10 +1033,15 @@ export const useFileManagerStore = defineStore("fileManager", {
         response_type: responseType,
         temp_path: responseType === "path" ? context.imageTempPath : "",
         ...buildImageOutputRequestOptions(configStore.config),
+        _clientFailures: clientFailures,
+        _sourceIndexes: sourceIndexes,
+        _requestedCount: filesToProcess.length,
+        _cleanupDirectory:
+          context.materializedInputCount > 0 ? context.chainInputPath : "",
       };
     },
 
-    async prepareMoonshineImageProcessData(filesToProcess) {
+    async prepareMoonshineImageProcessData(filesToProcess, { includeMasks = false } = {}) {
       const configStore = useConfigStore();
       const imageType = this.resolveProcessingTransport(filesToProcess);
       const responseType = imageType;
@@ -990,21 +1056,42 @@ export const useFileManagerStore = defineStore("fileManager", {
       };
 
       const batchItems = [];
-      for (const file of filesToProcess) {
-        const imageData = await this.resolveLatestImageInput(file, imageType, context);
-        batchItems.push({
+      const clientFailures = [];
+      const sourceIndexes = [];
+      for (let index = 0; index < filesToProcess.length; index += 1) {
+        const file = filesToProcess[index];
+        let imageData;
+        try {
+          imageData = await this.resolveLatestImageInput(file, imageType, context);
+        } catch (error) {
+          if (!(error instanceof ProcessingInputError)) throw error;
+          clientFailures.push(buildProcessingInputFailure(file, index, error));
+          continue;
+        }
+        const item = {
           id: file.id,
           image: imageData,
-        });
+        };
+        if (includeMasks && file.mask?.data) {
+          item.mask = file.mask.data;
+        }
+        batchItems.push(item);
+        sourceIndexes.push(index);
       }
       this.lastProcessingInputWarnings = [...new Set(context.warnings)];
 
       return {
         data: batchItems,
         image_type: imageType,
+        ...(includeMasks ? { mask_type: "base64" } : {}),
         response_type: responseType,
         temp_path: responseType === "path" ? context.imageTempPath : "",
         ...buildImageOutputRequestOptions(configStore.config),
+        _clientFailures: clientFailures,
+        _sourceIndexes: sourceIndexes,
+        _requestedCount: filesToProcess.length,
+        _cleanupDirectory:
+          context.materializedInputCount > 0 ? context.chainInputPath : "",
       };
     },
 

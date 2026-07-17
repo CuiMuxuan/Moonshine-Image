@@ -778,11 +778,10 @@
                 class="timeline-action"
                 :class="{
                   'timeline-action-range': action.data?.kind === 'mask-range',
-                  'timeline-action-processing-range': action.data?.kind === 'processing-range',
                   'timeline-action-keyframe': action.data?.kind === 'mask-keyframe',
                 }"
               >
-                <span v-if="['mask-range', 'processing-range'].includes(action.data?.kind)">
+                <span v-if="action.data?.kind === 'mask-range'">
                   {{ action.data?.label || action.id }}
                 </span>
                 <span v-else class="keyframe-dot"></span>
@@ -862,6 +861,11 @@ import {
   MASK_KEYFRAME_TYPES,
   sortMaskKeyframes,
 } from "src/utils/videoMaskUtils";
+import {
+  buildVideoSlbrTrackPlan,
+  resolveVideoSlbrFrameScope,
+  VIDEO_SLBR_FRAME_SCOPES,
+} from "src/utils/videoSlbrScope";
 import {
   buildProcessingConfigSnapshot,
   createEmptyVideoProcessingRegistry,
@@ -956,7 +960,6 @@ const videoEditorSections = ref({
   brush: true,
   range: false,
   keyframes: true,
-  processingRange: true,
 });
 const samVideoSessionModelId = ref("");
 const samVideoTextPrompt = ref("");
@@ -1069,7 +1072,6 @@ const videoMountLoadingState = {
 const timelineEffects = {
   "effect-mask-range": { id: "effect-mask-range", name: "Mask Range" },
   "effect-mask-keyframe": { id: "effect-mask-keyframe", name: "Keyframe" },
-  "effect-processing-range": { id: "effect-processing-range", name: "Processing Range" },
 };
 
 const fpsOptions = computed(() => [
@@ -1344,7 +1346,7 @@ const isFullscreenLamaViewportMode = computed(
   () =>
     Boolean(
       isPreviewFullscreen.value &&
-        currentModelRequiresMask.value &&
+        maskTrackEditingEnabled.value &&
         videoStore.hasVideoFile &&
         selectedMaskIsEditableStandard.value &&
         !samVideoState.running &&
@@ -1394,7 +1396,7 @@ const fullscreenControlsDisabled = computed(
   () => !videoStore.hasVideoFile || isProcessing.value || samVideoState.running
 );
 const fullscreenToolbarToggleTooltip = computed(() => {
-  if (!currentModelRequiresMask.value) {
+  if (!maskTrackEditingEnabled.value) {
     return "当前模型无需绘制蒙版";
   }
   if (selectedMaskIsSamVideo.value) {
@@ -1412,7 +1414,7 @@ const fullscreenToolbarToggleTooltipText = computed(() => fullscreenToolbarToggl
 const fullscreenDrawingToolbarToggleDisabled = computed(
   () =>
     fullscreenControlsDisabled.value ||
-    !currentModelRequiresMask.value ||
+    !maskTrackEditingEnabled.value ||
     !(selectedMaskIsEditableStandard.value || selectedMaskIsSamVideo.value)
 );
 
@@ -1598,6 +1600,18 @@ const currentModelMetadata = computed(() => {
 });
 const currentModelRequiresMask = computed(() => currentModelMetadata.value.requiresMask !== false);
 const isSlbrModel = computed(() => currentModel.value === "slbr");
+const maskTrackEditingEnabled = computed(
+  () => currentModelRequiresMask.value || isSlbrModel.value
+);
+watch(
+  isSlbrModel,
+  (enabled) => {
+    if (enabled) {
+      videoStore.migrateProcessingRangesToMaskTracks();
+    }
+  },
+  { immediate: true }
+);
 const videoModelOptions = computed(() => {
   const options = modelRegistryStore.imageModels
     .filter((model) => VIDEO_PROCESSING_MODEL_IDS.includes(model.id))
@@ -1789,7 +1803,7 @@ const isVideoDrawingShortcutReady = computed(
   () =>
     Boolean(
         videoStore.hasVideoFile &&
-        currentModelRequiresMask.value &&
+        maskTrackEditingEnabled.value &&
         selectedMaskIsEditableStandard.value &&
         !isProcessing.value &&
         videoOverlayRef.value?.isReady?.()
@@ -2929,6 +2943,151 @@ const encodeMaskImageAsJpegBlob = async (imageSource, width, height) => {
   };
 };
 
+const PNG_SIGNATURE_BYTES = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+const PNG_CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < table.length; index += 1) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = (value >>> 1) ^ (value & 1 ? 0xedb88320 : 0);
+    }
+    table[index] = value >>> 0;
+  }
+  return table;
+})();
+
+const calculatePngCrc32 = (bytes) => {
+  let value = 0xffffffff;
+  for (let index = 0; index < bytes.length; index += 1) {
+    value = PNG_CRC_TABLE[(value ^ bytes[index]) & 0xff] ^ (value >>> 8);
+  }
+  return (value ^ 0xffffffff) >>> 0;
+};
+
+const createPngChunk = (type, data = new Uint8Array()) => {
+  const typeBytes = new Uint8Array([...type].map((character) => character.charCodeAt(0)));
+  const payload = data instanceof Uint8Array ? data : new Uint8Array(data);
+  const chunk = new Uint8Array(12 + payload.length);
+  const view = new DataView(chunk.buffer);
+  view.setUint32(0, payload.length);
+  chunk.set(typeBytes, 4);
+  chunk.set(payload, 8);
+  view.setUint32(8 + payload.length, calculatePngCrc32(chunk.subarray(4, 8 + payload.length)));
+  return chunk;
+};
+
+const calculateAdler32 = (bytes) => {
+  let a = 1;
+  let b = 0;
+  for (let index = 0; index < bytes.length; index += 1) {
+    a = (a + bytes[index]) % 65521;
+    b = (b + a) % 65521;
+  }
+  return ((b << 16) | a) >>> 0;
+};
+
+const createUncompressedZlibStream = (bytes) => {
+  const chunks = [new Uint8Array([0x78, 0x01])];
+  for (let offset = 0; offset < bytes.length; offset += 65535) {
+    const block = bytes.subarray(offset, Math.min(bytes.length, offset + 65535));
+    const header = new Uint8Array(5);
+    const view = new DataView(header.buffer);
+    header[0] = offset + block.length >= bytes.length ? 1 : 0;
+    view.setUint16(1, block.length, true);
+    view.setUint16(3, (~block.length) & 0xffff, true);
+    chunks.push(header, block);
+  }
+  const checksum = new Uint8Array(4);
+  new DataView(checksum.buffer).setUint32(0, calculateAdler32(bytes));
+  chunks.push(checksum);
+
+  const totalLength = chunks.reduce((total, chunk) => total + chunk.length, 0);
+  const result = new Uint8Array(totalLength);
+  let cursor = 0;
+  chunks.forEach((chunk) => {
+    result.set(chunk, cursor);
+    cursor += chunk.length;
+  });
+  return result;
+};
+
+const deflatePngScanlines = async (scanlines) => {
+  if (typeof globalThis.CompressionStream !== "function") {
+    return createUncompressedZlibStream(scanlines);
+  }
+
+  const compressor = new globalThis.CompressionStream("deflate");
+  const resultPromise = new globalThis.Response(compressor.readable).arrayBuffer();
+  const writer = compressor.writable.getWriter();
+  await writer.write(scanlines);
+  await writer.close();
+  return new Uint8Array(await resultPromise);
+};
+
+const encodeMaskImageAsSingleChannelPngBlob = async (imageSource, width, height) => {
+  const canvas =
+    typeof OffscreenCanvas !== "undefined"
+      ? new OffscreenCanvas(width, height)
+      : document.createElement("canvas");
+  canvas.width = Math.max(1, Math.floor(width || imageSource?.width || 1));
+  canvas.height = Math.max(1, Math.floor(height || imageSource?.height || 1));
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(imageSource, 0, 0, canvas.width, canvas.height);
+
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imageData.data;
+  const scanlines = new Uint8Array((canvas.width + 1) * canvas.height);
+  let signatureHash = MASK_SIGNATURE_FNV_OFFSET_BASIS;
+  let nonZeroPixelCount = 0;
+  signatureHash = updateMaskSignatureWithDimension(signatureHash, canvas.width);
+  signatureHash = updateMaskSignatureWithDimension(signatureHash, canvas.height);
+
+  for (let y = 0; y < canvas.height; y += 1) {
+    const rowOffset = y * (canvas.width + 1);
+    scanlines[rowOffset] = 0;
+    for (let x = 0; x < canvas.width; x += 1) {
+      const pixelOffset = (y * canvas.width + x) * 4;
+      const maskValue = data[pixelOffset + 3] > 0 ? 255 : 0;
+      if (maskValue > 0) {
+        nonZeroPixelCount += 1;
+      }
+      signatureHash = updateMaskSignatureHash(signatureHash, maskValue);
+      scanlines[rowOffset + x + 1] = maskValue;
+    }
+  }
+
+  const header = new Uint8Array(13);
+  const headerView = new DataView(header.buffer);
+  headerView.setUint32(0, canvas.width);
+  headerView.setUint32(4, canvas.height);
+  header[8] = 8;
+  header[9] = 0;
+  const compressedScanlines = await deflatePngScanlines(scanlines);
+  const chunks = [
+    PNG_SIGNATURE_BYTES,
+    createPngChunk("IHDR", header),
+    createPngChunk("IDAT", compressedScanlines),
+    createPngChunk("IEND"),
+  ];
+  const byteLength = chunks.reduce((total, chunk) => total + chunk.length, 0);
+  const pngBytes = new Uint8Array(byteLength);
+  let offset = 0;
+  chunks.forEach((chunk) => {
+    pngBytes.set(chunk, offset);
+    offset += chunk.length;
+  });
+
+  return {
+    blob: new Blob([pngBytes], { type: "image/png" }),
+    hasMask: nonZeroPixelCount > 0,
+    nonZeroPixelCount,
+    signature: `${canvas.width}x${canvas.height}_${signatureHash
+      .toString(16)
+      .padStart(8, "0")}`,
+  };
+};
+
 const createBinaryAlphaMaskBitmap = async (
   image,
   width,
@@ -3127,8 +3286,6 @@ const normalizeVideoEditorSections = (value = {}) => ({
   brush: value.brush !== undefined ? Boolean(value.brush) : true,
   range: value.range !== undefined ? Boolean(value.range) : false,
   keyframes: value.keyframes !== undefined ? Boolean(value.keyframes) : true,
-  processingRange:
-    value.processingRange !== undefined ? Boolean(value.processingRange) : true,
 });
 
 const captureVideoUiState = () => ({
@@ -3396,34 +3553,6 @@ const finishVideoMountLoading = (token, { forceHide = false } = {}) => {
 };
 
 const buildTimelineRows = () => {
-  if (isSlbrModel.value) {
-    return videoStore.processingRanges.map((range) => ({
-      id: `processing-range-row-${range.id}`,
-      rowHeight: 44,
-      classNames: ["timeline-row-range", "timeline-row-processing-range"],
-      selected: range.id === videoStore.selectedProcessingRangeId,
-      actions: [
-        {
-          id: `processing-range-${range.id}`,
-          start: range.startTime,
-          end: range.endTime,
-          effectId: "effect-processing-range",
-          movable: true,
-          flexible: true,
-          minStart: 0,
-          maxEnd: Math.max(videoStore.videoDuration || 0, 0),
-          selected: range.id === videoStore.selectedProcessingRangeId,
-          data: {
-            kind: "processing-range",
-            rangeId: range.id,
-            label: range.name,
-            color: "#2fb344",
-          },
-        },
-      ],
-    }));
-  }
-
   const markerDuration = keyframeMarkerDuration.value;
   return videoStore.masks.flatMap((mask) => {
     const isSamVideoTrack = mask.type === "samVideo";
@@ -3505,10 +3634,8 @@ watch(
   () => [
     currentModel.value,
     videoStore.masks,
-    videoStore.processingRanges,
     videoStore.videoDuration,
     videoStore.selectedMaskId,
-    videoStore.selectedProcessingRangeId,
     videoStore.selectedKeyframeId,
   ],
   () => syncTimelineRowsFromStore(),
@@ -4193,7 +4320,7 @@ const handleDocumentFullscreenChange = async () => {
   } else {
     resetFullscreenViewport();
     fullscreenMaskPreviewVisible.value = true;
-    if (currentModelRequiresMask.value || selectedMaskIsSamVideo.value) {
+    if (maskTrackEditingEnabled.value || selectedMaskIsSamVideo.value) {
       showFullscreenDrawingToolbar.value = selectedMaskIsSamVideo.value
         ? true
         : Boolean(videoStore.maskTool.drawingEnabled);
@@ -4238,11 +4365,6 @@ const handleTimelineActionClick = (_event, params) => {
 
   if (action.data.kind === "mask-range") {
     videoStore.selectMask(action.data.maskId, null);
-    return;
-  }
-
-  if (action.data.kind === "processing-range") {
-    videoStore.selectProcessingRange(action.data.rangeId);
     return;
   }
 
@@ -4338,25 +4460,6 @@ const handleTimelineActionMoveEnd = (params) => {
   }
 
   const action = params?.action;
-  if (action?.data?.kind === "processing-range") {
-    const range = videoStore.getProcessingRangeById(action.data.rangeId);
-    if (!range) {
-      syncTimelineRowsFromStore();
-      return;
-    }
-    const delta = Number(action.start || 0) - Number(range.startTime || 0);
-    const result = videoStore.moveProcessingRange(range.id, delta);
-    if (!result.ok) {
-      $q.notify({
-        type: "warning",
-        message: result.error || "处理范围移动失败。",
-        timeout: 2500,
-      });
-    }
-    syncTimelineRowsFromStore();
-    return;
-  }
-
   if (action?.data?.kind !== "mask-range") {
     syncTimelineRowsFromStore();
     return;
@@ -4387,22 +4490,6 @@ const handleTimelineActionResizeEnd = async (params) => {
   }
 
   const action = params?.action;
-  if (action?.data?.kind === "processing-range") {
-    const result = videoStore.resizeProcessingRange(action.data.rangeId, {
-      startTime: action.start,
-      endTime: action.end,
-    });
-    if (!result.ok) {
-      $q.notify({
-        type: "warning",
-        message: result.error || "处理范围调整失败。",
-        timeout: 2500,
-      });
-    }
-    syncTimelineRowsFromStore();
-    return;
-  }
-
   if (action?.data?.kind !== "mask-range") {
     syncTimelineRowsFromStore();
     return;
@@ -5524,7 +5611,7 @@ const createSkippedVideoBatchResponse = (batch) => ({
     skip_reason:
       Number(batch.skippedEmptyMaskCount || 0) >= batch.batchFrameCount
         ? "empty-mask"
-        : "outside-processing-range",
+        : "inactive-local-mask",
   })),
 });
 
@@ -6794,23 +6881,6 @@ const buildBatchDescriptor = ({
   };
 };
 
-const getEnabledProcessingRanges = () =>
-  videoStore.processingRanges
-    .filter((range) => range?.enabled !== false)
-    .map((range) => ({
-      startTime: Math.max(0, Number(range.startTime || 0)),
-      endTime: Math.min(videoStore.videoDuration, Math.max(0, Number(range.endTime || 0))),
-    }))
-    .filter((range) => range.endTime > range.startTime);
-
-const shouldProcessFrameWithSlbr = ({ frameIndex, fps, ranges }) => {
-  if (!Array.isArray(ranges) || ranges.length === 0) return true;
-  const timestamp = frameIndex / Math.max(1, Number(fps || 1));
-  return ranges.some(
-    (range) => timestamp >= range.startTime && timestamp < range.endTime
-  );
-};
-
 const prepareBatchArtifacts = async ({
   descriptor,
   paths,
@@ -6821,7 +6891,7 @@ const prepareBatchArtifacts = async ({
   extractor,
   maskRenderer,
   modelId = "lama",
-  processingRanges = [],
+  slbrTrackPlan = null,
   totalBatches,
   batchDurations,
   reportProgress = true,
@@ -6843,7 +6913,7 @@ const prepareBatchArtifacts = async ({
   const maskPathBySignature = new Map();
   const temporalEnhancementEnabled = Boolean(getEnabledVideoTemporalEnhancementConfig());
   let skippedEmptyMaskCount = 0;
-  let skippedOutsideRangeCount = 0;
+  let skippedInactiveSlbrMaskCount = 0;
 
   if (typeof extractor?.prepareRange === "function") {
     if (reportProgress) {
@@ -6880,7 +6950,8 @@ const prepareBatchArtifacts = async ({
 
     const ts = Math.min(videoStore.videoDuration, frameIndex / fps);
     const frameName = `frame_${String(frameIndex).padStart(6, "0")}.${frameFormat}`;
-    const maskName = `mask_${String(frameIndex).padStart(6, "0")}.jpg`;
+    const maskFormat = modelId === "slbr" ? "png" : "jpg";
+    const maskName = `mask_${String(frameIndex).padStart(6, "0")}.${maskFormat}`;
     const resultName = `result_${String(frameIndex).padStart(6, "0")}.${resultFrameFormat}`;
 
     const framePath = window.electron.ipcRenderer.joinPath(paths.framesDir, frameName);
@@ -6888,24 +6959,49 @@ const prepareBatchArtifacts = async ({
     const outputPath = window.electron.ipcRenderer.joinPath(paths.resultsDir, resultName);
 
     const frameRequiresMask = isMaskInpaintModel(modelId);
-    const shouldProcessFrame =
-      modelId !== "slbr" ||
-      shouldProcessFrameWithSlbr({
-        frameIndex,
-        fps,
-        ranges: processingRanges,
-      });
+    const shouldRenderSlbrLocalMask =
+      modelId === "slbr" && (slbrTrackPlan?.localTrackIds?.length || 0) > 0;
+    const shouldRenderMask = frameRequiresMask || shouldRenderSlbrLocalMask;
     const [frameCaptureResult, maskRenderResult] = await Promise.all([
       extractor.capture(ts),
-      frameRequiresMask ? maskRenderer.render(ts) : Promise.resolve(null),
+      shouldRenderMask && maskRenderer ? maskRenderer.render(ts) : Promise.resolve(null),
     ]);
     const frameBlob = frameCaptureResult?.blob || frameCaptureResult;
-    const maskArtifact = frameRequiresMask
-      ? normalizeMaskRenderResult(maskRenderResult)
-      : null;
+    const maskArtifact = shouldRenderMask ? normalizeMaskRenderResult(maskRenderResult) : null;
+    const slbrApplyScope =
+      modelId === "slbr"
+        ? resolveVideoSlbrFrameScope({
+            trackPlan: slbrTrackPlan,
+            time: ts,
+            localMaskHasPixels: Boolean(maskArtifact?.hasMask),
+          })
+        : null;
     let frameMaskPath = "";
     let skipBackendReason = "";
     let temporalObjects = [];
+
+    const persistMaskArtifact = async () => {
+      if (!maskArtifact?.hasMask || !maskArtifact.blob) return "";
+
+      const signature = String(maskArtifact.signature || "").trim();
+      const reusableMaskPath = signature ? maskPathBySignature.get(signature) : "";
+      if (reusableMaskPath) return reusableMaskPath;
+
+      const sharedMaskName = signature
+        ? `mask_batch_${String(batchNumber).padStart(
+            4,
+            "0"
+          )}_shared_${sanitizeMaskSignatureForFileName(signature)}.${maskFormat}`
+        : maskName;
+      const nextMaskPath = signature
+        ? window.electron.ipcRenderer.joinPath(paths.masksDir, sharedMaskName)
+        : maskPath;
+      await saveBlobToPath(maskArtifact.blob, nextMaskPath);
+      if (signature) {
+        maskPathBySignature.set(signature, nextMaskPath);
+      }
+      return nextMaskPath;
+    };
 
     await saveBlobToPath(frameBlob, framePath);
     if (frameRequiresMask) {
@@ -6917,25 +7013,7 @@ const prepareBatchArtifacts = async ({
           outputPath
         );
       } else {
-        const signature = String(maskArtifact.signature || "").trim();
-        const reusableMaskPath = signature ? maskPathBySignature.get(signature) : "";
-        if (reusableMaskPath) {
-          frameMaskPath = reusableMaskPath;
-        } else {
-          const sharedMaskName = signature
-            ? `mask_batch_${String(batchNumber).padStart(
-                4,
-                "0"
-              )}_shared_${sanitizeMaskSignatureForFileName(signature)}.jpg`
-            : maskName;
-          frameMaskPath = signature
-            ? window.electron.ipcRenderer.joinPath(paths.masksDir, sharedMaskName)
-            : maskPath;
-          await saveBlobToPath(maskArtifact.blob, frameMaskPath);
-          if (signature) {
-            maskPathBySignature.set(signature, frameMaskPath);
-          }
-        }
+        frameMaskPath = await persistMaskArtifact();
         if (
           temporalEnhancementEnabled &&
           typeof maskRenderer?.renderTemporalObjects === "function"
@@ -6971,15 +7049,17 @@ const prepareBatchArtifacts = async ({
           temporalObjects = buildTemporalObjectRefsForTime(ts);
         }
       }
-    }
-
-    if (modelId === "slbr" && !shouldProcessFrame) {
-      skippedOutsideRangeCount += 1;
-      skipBackendReason = "outside-processing-range";
-      await saveBlobToPath(
-        await cloneBlobForOutput(frameBlob, resultFrameFormat, undefined, undefined, imageQuality),
-        outputPath
-      );
+    } else if (modelId === "slbr") {
+      if (slbrApplyScope === VIDEO_SLBR_FRAME_SCOPES.SKIP) {
+        skippedInactiveSlbrMaskCount += 1;
+        skipBackendReason = "inactive-local-mask";
+        await saveBlobToPath(
+          await cloneBlobForOutput(frameBlob, resultFrameFormat, undefined, undefined, imageQuality),
+          outputPath
+        );
+      } else if (slbrApplyScope === VIDEO_SLBR_FRAME_SCOPES.MASK) {
+        frameMaskPath = await persistMaskArtifact();
+      }
     }
 
     if (frameCaptureResult?.degraded) {
@@ -6994,11 +7074,15 @@ const prepareBatchArtifacts = async ({
       });
     }
 
-    if ((modelId !== "slbr" || shouldProcessFrame) && !skipBackendReason) {
+    if (!skipBackendReason) {
       batchItems.push({
         frame_index: frameIndex,
         image_path: framePath,
         ...(frameRequiresMask ? { mask_path: frameMaskPath } : {}),
+        ...(modelId === "slbr" ? { apply_scope: slbrApplyScope } : {}),
+        ...(modelId === "slbr" && slbrApplyScope === VIDEO_SLBR_FRAME_SCOPES.MASK
+          ? { mask_path: frameMaskPath }
+          : {}),
         output_path: outputPath,
         ...(temporalObjects.length > 0 ? { temporal_objects: temporalObjects } : {}),
       });
@@ -7006,7 +7090,7 @@ const prepareBatchArtifacts = async ({
     batchArtifactPaths.push(
       ...[
         framePath,
-        frameRequiresMask ? frameMaskPath : "",
+        frameMaskPath,
         ...temporalObjects.map((item) => item?.mask_path || ""),
         outputPath,
       ].filter(Boolean)
@@ -7022,7 +7106,7 @@ const prepareBatchArtifacts = async ({
     batchResultPaths,
     frameDecodeFallbacks,
     skippedEmptyMaskCount,
-    skippedOutsideRangeCount,
+    skippedInactiveSlbrMaskCount,
   };
 };
 
@@ -7040,7 +7124,7 @@ const createPreparedBatchTask = ({
   extractor,
   maskRenderer,
   modelId,
-  processingRanges,
+  slbrTrackPlan,
   batchDurations,
   reportProgress,
 }) => {
@@ -7064,7 +7148,7 @@ const createPreparedBatchTask = ({
     extractor,
     maskRenderer,
     modelId,
-    processingRanges,
+    slbrTrackPlan,
     totalBatches,
     batchDurations,
     reportProgress,
@@ -7088,8 +7172,6 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
   const isPreviewTrial = normalizedPreviewTrialSeconds !== null;
   let requestedModelId = currentModel.value || "lama";
   let requestedModelOptions = getCurrentModelOptionsPayload();
-  let requestedProcessingRanges =
-    requestedModelId === "slbr" ? getEnabledProcessingRanges() : [];
 
   if (backendEngineValue.value.runDisabled) {
     if (backendEngineValue.value.hasFailed) {
@@ -7102,8 +7184,9 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
   if (!backendModelReady) return;
   requestedModelId = currentModel.value || "lama";
   requestedModelOptions = getCurrentModelOptionsPayload();
-  requestedProcessingRanges =
-    requestedModelId === "slbr" ? getEnabledProcessingRanges() : [];
+  if (requestedModelId === "slbr") {
+    videoStore.migrateProcessingRangesToMaskTracks();
+  }
   const requestedModelLabel =
     videoModelOptions.value.find((option) => option.value === requestedModelId)?.label ||
     requestedModelId.toUpperCase();
@@ -7166,20 +7249,24 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
     const requestedResultFrameFormat = requestedIntermediateFramePolicy.resultFrameFormat;
     const retryCount = Math.max(1, Number(configStore.config.video?.batchRetryCount || 3));
     const currentRequestedFps = Math.max(1, Number(exportFps.value || sourceFps.value || 30));
-    const currentRequestedSnapshot = buildCurrentProcessingConfigSnapshot({
-      fps: currentRequestedFps,
-      batchSize: requestedBatchSize,
-      frameFormat: requestedFrameFormat,
-      resultFrameFormat: requestedResultFrameFormat,
-      intermediateFrameStrategy: requestedIntermediateFramePolicy.strategy,
-      encodingQualityPreset: requestedEncodingQualityPolicy.preset,
-      segmentCrf: requestedEncodingQualityPolicy.crf,
-      inpaintColorStabilization: requestedInpaintColorStabilization,
-    });
-    if (isPreviewTrial) {
-      currentRequestedSnapshot.previewTrial = true;
-      currentRequestedSnapshot.previewTrialSeconds = normalizedPreviewTrialSeconds;
-    }
+    const buildRequestedSnapshot = () => {
+      const snapshot = buildCurrentProcessingConfigSnapshot({
+        fps: currentRequestedFps,
+        batchSize: requestedBatchSize,
+        frameFormat: requestedFrameFormat,
+        resultFrameFormat: requestedResultFrameFormat,
+        intermediateFrameStrategy: requestedIntermediateFramePolicy.strategy,
+        encodingQualityPreset: requestedEncodingQualityPolicy.preset,
+        segmentCrf: requestedEncodingQualityPolicy.crf,
+        inpaintColorStabilization: requestedInpaintColorStabilization,
+      });
+      if (isPreviewTrial) {
+        snapshot.previewTrial = true;
+        snapshot.previewTrialSeconds = normalizedPreviewTrialSeconds;
+      }
+      return snapshot;
+    };
+    let currentRequestedSnapshot = buildRequestedSnapshot();
     const sourceInfo = await resolveVideoSourcePath(videoStore.videoFile);
     const sourcePath = sourceInfo.sourcePath;
     tempSourcePath = sourceInfo.temporarySourcePath || "";
@@ -7205,6 +7292,23 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
         ...resumeTaskMeta,
         completedSegments: validatedSegments,
       });
+
+      const legacyRanges = resumeTaskMeta.configSnapshot?.processingRanges;
+      if (
+        requestedModelId === "slbr" &&
+        videoStore.masks.length === 0 &&
+        Array.isArray(legacyRanges) &&
+        legacyRanges.length > 0
+      ) {
+        const migration = videoStore.migrateProcessingRangesToMaskTracks({
+          ranges: legacyRanges,
+          clearSourceRanges: false,
+          sourcePrefix: "resumable-processing-range",
+        });
+        if (migration.migratedMasks.length > 0) {
+          currentRequestedSnapshot = buildRequestedSnapshot();
+        }
+      }
 
       const resumeDecision = await promptResumeVideoTaskDecision({
         taskMeta: resumeTaskMeta,
@@ -7312,7 +7416,9 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
       objectMasksDir: paths.objectMasksDir,
       resultsDir: paths.resultsDir,
       segmentsDir: paths.segmentsDir,
-      hasMask: isMaskInpaintModel(requestedModelId),
+      hasMask:
+        isMaskInpaintModel(requestedModelId) ||
+        (requestedModelId === "slbr" && videoStore.masks.some((mask) => mask?.enabled !== false)),
       hasSamAssets: videoStore.masks.some((mask) => mask?.type === "samVideo"),
       frameCount: Math.max(1, totalFrames - resumeStartFrame),
       batchFrameCount: batchSize,
@@ -7370,13 +7476,24 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
       extractor?.getColorMetadata?.() || extractor?.colorMetadata || null;
 
     try {
-      const maskRenderer =
-        currentModelRequiresMask.value && resumeStartFrame < totalFrames
-          ? await createCombinedMaskRenderer({
+      const shouldCreateMaskRenderer =
+        resumeStartFrame < totalFrames &&
+        (currentModelRequiresMask.value ||
+          (requestedModelId === "slbr" && videoStore.masks.length > 0));
+      const maskRenderer = shouldCreateMaskRenderer
+        ? await createCombinedMaskRenderer({
+            masks: videoStore.masks,
+            width: videoStore.videoWidth,
+            height: videoStore.videoHeight,
+            modelId: requestedModelId,
+            maskFormat: requestedModelId === "slbr" ? "png" : "jpg",
+          })
+        : null;
+      const slbrTrackPlan =
+        requestedModelId === "slbr"
+          ? buildVideoSlbrTrackPlan({
               masks: videoStore.masks,
-              width: videoStore.videoWidth,
-              height: videoStore.videoHeight,
-              modelId: requestedModelId,
+              paintedTrackIds: maskRenderer?.paintedTrackIds,
             })
           : null;
 
@@ -7407,7 +7524,7 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
         extractor,
         maskRenderer,
         modelId: requestedModelId,
-        processingRanges: requestedProcessingRanges,
+        slbrTrackPlan,
         batchDurations,
         reportProgress: true,
       });
@@ -7459,7 +7576,7 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
           extractor,
           maskRenderer,
           modelId: requestedModelId,
-          processingRanges: requestedProcessingRanges,
+          slbrTrackPlan,
           batchDurations,
           reportProgress: false,
         });
@@ -8248,7 +8365,13 @@ const createFrameExtractor = async (file, format, fps, options = {}) => {
   };
 };
 
-const createCombinedMaskRenderer = async ({ masks, width, height, modelId = currentModel.value }) => {
+const createCombinedMaskRenderer = async ({
+  masks,
+  width,
+  height,
+  modelId = currentModel.value,
+  maskFormat = "jpg",
+}) => {
   const canvas =
     typeof OffscreenCanvas !== "undefined"
       ? new OffscreenCanvas(width, height)
@@ -8407,6 +8530,32 @@ const createCombinedMaskRenderer = async ({ masks, width, height, modelId = curr
       };
     })
   );
+  const inspectionCanvas =
+    typeof OffscreenCanvas !== "undefined"
+      ? new OffscreenCanvas(1, 1)
+      : document.createElement("canvas");
+  const inspectionContext = inspectionCanvas.getContext("2d", { willReadFrequently: true });
+  const paintedTrackIds = assets
+    .filter((asset) => asset.mask.type !== "samVideo" && asset.image)
+    .filter((asset) => {
+      const imageWidth = Math.max(1, Number(asset.image.naturalWidth || asset.image.width || width));
+      const imageHeight = Math.max(1, Number(asset.image.naturalHeight || asset.image.height || height));
+      inspectionCanvas.width = imageWidth;
+      inspectionCanvas.height = imageHeight;
+      inspectionContext.clearRect(0, 0, imageWidth, imageHeight);
+      inspectionContext.drawImage(asset.image, 0, 0, imageWidth, imageHeight);
+      const alpha = inspectionContext.getImageData(0, 0, imageWidth, imageHeight).data;
+      for (let index = 3; index < alpha.length; index += 4) {
+        if (alpha[index] > 0) return true;
+      }
+      return false;
+    })
+    .map((asset) => String(asset.mask.id || "").trim())
+    .filter(Boolean);
+  const encodeRenderedMask = (imageSource) =>
+    maskFormat === "png"
+      ? encodeMaskImageAsSingleChannelPngBlob(imageSource, width, height)
+      : encodeMaskImageAsJpegBlob(imageSource, width, height);
 
   const renderTemporalObjectMask = async (time, target = {}) => {
     const targetKey = String(target.object_key || target.objectKey || "").trim();
@@ -8484,6 +8633,7 @@ const createCombinedMaskRenderer = async ({ masks, width, height, modelId = curr
   };
 
   return {
+    paintedTrackIds,
     renderTemporalObjects: async (time, temporalObjects = []) => {
       const results = [];
       for (const item of temporalObjects) {
@@ -8535,6 +8685,7 @@ const createCombinedMaskRenderer = async ({ masks, width, height, modelId = curr
           continue;
         }
         if (!asset.image) continue;
+        if (maskFormat === "png" && asset.mask.enabled === false) continue;
 
         const state = getInterpolatedMaskTransform(asset.mask, time);
         if (!state) continue;
@@ -8555,7 +8706,7 @@ const createCombinedMaskRenderer = async ({ masks, width, height, modelId = curr
       ctx.fillRect(0, 0, width, height);
       ctx.restore();
 
-      return encodeMaskImageAsJpegBlob(canvas, width, height);
+      return encodeRenderedMask(canvas);
     },
   };
 };
@@ -8823,6 +8974,10 @@ const createVideoE2ESnapshot = () => {
     videoHeight: videoStore.videoHeight,
     videoDuration: videoStore.videoDuration,
     maskCount: videoStore.masks.length,
+    processingRangeCount: videoStore.processingRanges.length,
+    legacyProcessingRangeIds: videoStore.masks
+      .map((mask) => String(mask?.legacyProcessingRangeId || ""))
+      .filter(Boolean),
     selectedMaskId: videoStore.selectedMaskId,
     selectedMaskName: selectedMask?.name || "",
     selectedMaskType: selectedMask?.type || "",
@@ -8895,6 +9050,34 @@ const registerVideoE2ETestBridge = () => {
         snapshot: createVideoE2ESnapshot(),
       };
     },
+    createLegacyProcessingRange: (options = {}) => {
+      const range = videoStore.createProcessingRange({
+        name: options.name || "E2E 旧处理范围",
+        startTime: options.startTime ?? 0,
+        endTime: options.endTime ?? videoStore.videoDuration,
+      });
+      return {
+        rangeId: range?.id || "",
+        snapshot: createVideoE2ESnapshot(),
+      };
+    },
+    migrateLegacyProcessingRanges: () => {
+      const result = videoStore.migrateProcessingRangesToMaskTracks();
+      syncTimelineRowsFromStore();
+      return {
+        migratedMaskIds: result.migratedMasks.map((mask) => mask.id),
+        snapshot: createVideoE2ESnapshot(),
+      };
+    },
+    resolveSlbrTrackScope: ({ time = videoStore.currentTime, paintedTrackIds = [], localMaskHasPixels = false } = {}) =>
+      resolveVideoSlbrFrameScope({
+        trackPlan: buildVideoSlbrTrackPlan({
+          masks: videoStore.masks,
+          paintedTrackIds,
+        }),
+        time,
+        localMaskHasPixels,
+      }),
     createEmptySamVideoTrack: (options = {}) => {
       const mask = videoStore.createEmptySamVideoMaskTrack({
         name: options.name || "E2E SAM 智能选区",
@@ -9577,21 +9760,6 @@ onUnmounted(() => {
   width: 100%;
   font-size: 12px;
   text-shadow: 0 1px 2px rgba(15, 23, 42, 0.45);
-}
-
-.timeline-action-processing-range {
-  width: 100%;
-  font-size: 12px;
-  text-shadow: 0 1px 2px rgba(15, 23, 42, 0.45);
-}
-
-.timeline-editor-host :deep(.timeline-action.effect-effect-processing-range) {
-  background: rgba(47, 179, 68, 0.86) !important;
-  border-color: rgba(30, 130, 49, 0.88) !important;
-}
-
-.timeline-editor-host :deep(.timeline-action.effect-effect-processing-range.selected) {
-  box-shadow: 0 0 0 2px rgba(47, 179, 68, 0.28) !important;
 }
 
 .timeline-action-keyframe {

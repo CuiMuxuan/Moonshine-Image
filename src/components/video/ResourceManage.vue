@@ -179,19 +179,19 @@
           </div>
 
           <div class="row q-col-gutter-sm q-mb-sm">
-            <div :class="isSlbrModel ? 'col-12' : 'col-6'">
+            <div class="col-6">
               <q-btn
                 outline
                 no-caps
                 color="primary"
                 icon="add"
-                :label="isSlbrModel ? '增加范围' : '新建蒙版'"
+                label="新建蒙版"
                 class="full-width sidebar-action-button"
                 :disable="isProcessing"
                 @click="handleCreatePrimaryItem"
               />
             </div>
-            <div v-if="!isSlbrModel" class="col-6">
+            <div class="col-6">
               <q-btn
                 outline
                 no-caps
@@ -208,7 +208,7 @@
             </div>
           </div>
 
-          <q-list v-if="!isSlbrModel" bordered separator class="mask-list">
+          <q-list bordered separator class="mask-list">
             <q-item
               v-for="mask in videoStore.masks"
               :key="mask.id"
@@ -244,43 +244,11 @@
 
             <q-item v-if="videoStore.masks.length === 0">
               <q-item-section class="text-grey-6">
-                还没有蒙版，先创建一个蒙版开始编辑。
-              </q-item-section>
-            </q-item>
-          </q-list>
-
-          <q-list v-else bordered separator class="mask-list">
-            <q-item
-              v-for="range in videoStore.processingRanges"
-              :key="range.id"
-              clickable
-              :active="range.id === videoStore.selectedProcessingRangeId"
-              active-class="mask-item-active"
-              @click="videoStore.selectProcessingRange(range.id)"
-            >
-              <q-item-section>
-                <q-item-label>{{ range.name }}</q-item-label>
-                <q-item-label caption>
-                  {{ formatSeconds(range.startTime) }} - {{ formatSeconds(range.endTime) }}
-                </q-item-label>
-              </q-item-section>
-
-              <q-item-section side>
-                <q-btn
-                  flat
-                  round
-                  dense
-                  icon="delete"
-                  color="negative"
-                  :disable="isProcessing"
-                  @click.stop="videoStore.removeProcessingRange(range.id)"
-                />
-              </q-item-section>
-            </q-item>
-
-            <q-item v-if="videoStore.processingRanges.length === 0">
-              <q-item-section class="text-grey-6">
-                未增加范围时会处理完整视频；也可以增加范围来减少处理时间。
+                {{
+                  isSlbrModel
+                    ? "当前没有轨道，SLBR 将整段全帧处理。"
+                    : "还没有蒙版，先创建一个蒙版开始编辑。"
+                }}
               </q-item-section>
             </q-item>
           </q-list>
@@ -833,20 +801,7 @@ const createMask = () => {
   });
 };
 
-const createProcessingRange = () => {
-  videoStore.createProcessingRange({
-    name: `范围 ${videoStore.processingRanges.length + 1}`,
-    startTime: videoStore.currentTime,
-  });
-};
-
-const handleCreatePrimaryItem = () => {
-  if (isSlbrModel.value) {
-    createProcessingRange();
-    return;
-  }
-  createMask();
-};
+const handleCreatePrimaryItem = () => createMask();
 
 const handleRunWrapperClick = () => {
   if (props.engineFailed) {

@@ -478,6 +478,48 @@
                         <template #description>{{ getImageProcessingHint() }}</template>
                       </SettingsPanel>
 
+                      <SettingsPanel v-bind="settingsHelp.slbrLocalInference" @request-help="openSettingsHelp">
+                        <q-select
+                          v-model="localConfig.advanced.slbrLocalInferenceStrategy"
+                          label="SLBR 局部推理策略"
+                          :options="slbrLocalInferenceStrategyOptions"
+                          emit-value
+                          map-options
+                          outlined
+                          dense
+                          data-testid="global-settings-slbr-local-strategy"
+                        />
+                        <template #description>{{ getSlbrLocalInferenceHint() }}</template>
+                      </SettingsPanel>
+
+                      <SettingsPanel v-bind="settingsHelp.slbrLocalBBox" @request-help="openSettingsHelp">
+                        <q-input
+                          v-model.number="localConfig.advanced.slbrLocalBBoxEmptyRatioThreshold"
+                          label="SLBR 局部外接矩形空白率阈值（%）"
+                          type="number"
+                          :min="1"
+                          :max="99"
+                          :step="1"
+                          outlined
+                          dense
+                          data-testid="global-settings-slbr-local-empty-ratio"
+                        />
+                      </SettingsPanel>
+
+                      <SettingsPanel v-bind="settingsHelp.slbrLocalEdgeFeather" @request-help="openSettingsHelp">
+                        <q-input
+                          v-model.number="localConfig.advanced.slbrLocalEdgeFeatherPx"
+                          label="SLBR 局部边缘融合（px）"
+                          type="number"
+                          :min="0"
+                          :max="16"
+                          :step="1"
+                          outlined
+                          dense
+                          data-testid="global-settings-slbr-local-edge-feather"
+                        />
+                      </SettingsPanel>
+
                       <SettingsPanel v-bind="settingsHelp.imageSmartSelectionModel" @request-help="openSettingsHelp">
                         <q-select
                           v-model="localConfig.masking.imageSmartSelectionDefaultModel"
@@ -953,7 +995,7 @@ import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
 import { useQuasar } from "quasar";
 import ModelManagementPanel from "src/components/global/ModelManagementPanel.vue";
 import SettingsPanel from "src/components/global/SettingsPanel.vue";
-import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_MASKING_CONFIG, DEFAULT_TEMP_CLEANUP, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT, UI_BUTTON_SIZE_OPTIONS, VIDEO_ENCODING_QUALITY_PRESET_OPTIONS, VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS, VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS, VIDEO_PROCESSING_ENGINE_OPTIONS, VIDEO_TEMPORAL_ENHANCEMENT_MODES } from "src/config/ConfigManager";
+import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_MASKING_CONFIG, DEFAULT_TEMP_CLEANUP, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT, SLBR_LOCAL_INFERENCE_STRATEGY_OPTIONS, UI_BUTTON_SIZE_OPTIONS, VIDEO_ENCODING_QUALITY_PRESET_OPTIONS, VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS, VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS, VIDEO_PROCESSING_ENGINE_OPTIONS, VIDEO_TEMPORAL_ENHANCEMENT_MODES } from "src/config/ConfigManager";
 import { createDefaultShortcuts, formatShortcutKeys, getShortcutDefinition, getShortcutTokenFromKeyboardEvent, getShortcutsByGroup, normalizeShortcutKeys, SHORTCUT_GROUP_META, SHORTCUT_GROUPS, validateShortcutConfig } from "src/utils/shortcutConfig";
 import { useAppStateStore } from "src/stores/appState";
 import { useConfigStore } from "src/stores/config";
@@ -991,6 +1033,19 @@ const imageProcessingOptions = [
     description: "小批量时可减少临时文件，但大量图片时更占内存。",
   },
 ];
+const slbrLocalInferenceStrategyOptions = SLBR_LOCAL_INFERENCE_STRATEGY_OPTIONS.map((value) => ({
+  value,
+  label: {
+    auto: "自动（推荐）",
+    full: "整图推理后局部写回",
+    smart_tiles: "智能局部 Tile",
+  }[value] || value,
+  description: {
+    auto: "先排除外接矩形内空白过多的选区，再要求预计至少节省 15% Tile。",
+    full: "按整图运行 SLBR，但只把结果写回蒙版内。",
+    smart_tiles: "只运行覆盖局部外接矩形的规范 Tile，速度更快但结果可能与整图略有差异。",
+  }[value] || "",
+}));
 const imageOutputFormatOptions = [
   { label: "自动（尽量保持原格式）", value: "auto", description: "根据原图格式与透明通道选择合适输出格式。" },
   { label: "保持原格式", value: "original", description: "尽量沿用原图扩展名与编码类型。" },
@@ -1180,6 +1235,21 @@ const settingsHelp = Object.freeze({
     "图片处理方式",
     "自动模式会按图片数量、单图体积和总量选择路径或 Base64；路径模式更节省内存，Base64 更适合少量小图。"
   ),
+  slbrLocalInference: createSettingsHelp(
+    "slbr-local-inference",
+    "SLBR 局部推理",
+    "局部结果始终保存为 PNG，避免 JPEG 再编码影响选区外像素。自动模式会先比较外接矩形空白率，再要求预计至少节省 15% Tile。"
+  ),
+  slbrLocalBBox: createSettingsHelp(
+    "slbr-local-bbox-empty-ratio",
+    "SLBR 局部空白率阈值",
+    "以所有选区合并后的最小外接矩形计算。空白率达到此阈值时，自动模式改用整图推理后局部写回。"
+  ),
+  slbrLocalEdgeFeather: createSettingsHelp(
+    "slbr-local-edge-feather",
+    "SLBR 局部边缘融合",
+    "仅在蒙版内部向内融合；不会修改蒙版外像素或不连续选区之间的空白区域。"
+  ),
   imageSmartSelectionModel: createSettingsHelp(
     "image-smart-selection-model",
     "智能选区默认模型",
@@ -1352,6 +1422,7 @@ const validatePort = (port) => {
   }
 };
 const getImageProcessingHint = () => imageProcessingOptions.find((item) => item.value === (localConfig.value.advanced?.imageProcessingMethod || "auto"))?.description || "";
+const getSlbrLocalInferenceHint = () => slbrLocalInferenceStrategyOptions.find((item) => item.value === (localConfig.value.advanced?.slbrLocalInferenceStrategy || "auto"))?.description || "";
 const getImageOutputFormatHint = () => imageOutputFormatOptions.find((item) => item.value === (localConfig.value.advanced?.imageOutputFormat || "auto"))?.description || "";
 const getVideoProcessingEngineHint = () => videoProcessingEngineOptions.find((item) => item.value === (localConfig.value.advanced?.videoProcessingEngine || "auto"))?.description || "";
 const getVideoIntermediateFrameStrategyHint = () =>

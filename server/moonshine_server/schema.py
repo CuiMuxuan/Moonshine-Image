@@ -294,17 +294,24 @@ class BatchInpaintByFolderRequest(BaseModel):
 class MoonshineImageModelOptions(BaseModel):
     tile_size: int = Field(384, ge=1)
     tile_batch: int = Field(4, ge=1, le=32)
+    local_inference_strategy: Literal["auto", "full", "smart_tiles"] = Field("auto")
+    local_bbox_empty_ratio_threshold: int = Field(50, ge=1, le=99)
+    local_edge_feather_px: int = Field(2, ge=0, le=16)
 
 
 class MoonshineImageProcessItem(BaseModel):
     id: str = Field(..., description="Unique identifier for this item")
     image: str = Field(..., description="Image data")
+    mask: Optional[str] = Field(None, description="Optional local-application mask")
+    apply_scope: Optional[Literal["full", "mask"]] = Field(None)
 
 
 class MoonshineImageProcessRequest(BaseModel):
     model_id: str = Field(..., description="Moonshine image model id")
     data: List[MoonshineImageProcessItem] = Field(default_factory=list)
     image_type: Literal["base64", "path"] = Field("base64")
+    mask_type: Literal["base64", "path"] = Field("base64")
+    apply_scope: Literal["full", "mask"] = Field("full")
     temp_path: Optional[str] = Field(None)
     response_type: Literal["base64", "path"] = Field("base64")
     output_format: ImageOutputFormat = Field("auto")
@@ -322,6 +329,10 @@ class MoonshineImageProcessRequest(BaseModel):
         item_ids = [item.id for item in values.data]
         if len(item_ids) != len(set(item_ids)):
             raise ValueError("All item IDs must be unique")
+        for item in values.data:
+            effective_scope = item.apply_scope or values.apply_scope
+            if effective_scope == "mask" and not item.mask:
+                raise ValueError(f"Local SLBR item {item.id} requires a mask")
         if values.output_format == "jpeg":
             values.output_format = "jpg"
         return values
@@ -332,6 +343,10 @@ class MoonshineImageFolderProcessRequest(BaseModel):
     device: str = Field("cpu", description="Torch device string")
     image_folder: str
     output_folder: str
+    apply_scope: Literal["full", "mask"] = Field("full")
+    mask_folder: Optional[str] = Field(None)
+    template_mask_path: Optional[str] = Field(None)
+    missing_mask_behavior: Literal["current_mask", "full", "skip"] = Field("full")
     output_format: ImageOutputFormat = Field("auto")
     output_quality: int = Field(95, ge=1, le=100)
     options: MoonshineImageModelOptions = Field(default_factory=MoonshineImageModelOptions)
@@ -345,6 +360,14 @@ class MoonshineImageFolderProcessRequest(BaseModel):
         if values.output_format == "jpeg":
             values.output_format = "jpg"
         return values
+
+
+class MoonshineImageFolderInspectRequest(BaseModel):
+    image_folder: str
+    output_folder: Optional[str] = Field(None)
+    mask_folder: Optional[str] = Field(None)
+    template_mask_path: Optional[str] = Field(None)
+    missing_mask_behavior: Literal["current_mask", "full", "skip"] = Field("full")
 
 
 class SamPromptPoint(BaseModel):
@@ -463,6 +486,7 @@ class VideoBatchFrameItem(BaseModel):
     frame_index: int = Field(..., ge=0)
     image_path: str
     mask_path: Optional[str] = None
+    apply_scope: Literal["full", "mask"] = Field("full")
     output_path: str
     temporal_objects: List[VideoTemporalObjectRef] = Field(default_factory=list)
 
@@ -526,6 +550,14 @@ class VideoBatchInpaintRequest(BaseModel):
             ]
             if missing_mask_indexes:
                 raise ValueError("mask_path is required when model_id is lama or mat")
+        if values.model_id == "slbr":
+            missing_local_mask_indexes = [
+                item.frame_index
+                for item in values.frames
+                if item.apply_scope == "mask" and not item.mask_path
+            ]
+            if missing_local_mask_indexes:
+                raise ValueError("mask_path is required for local SLBR video frames")
         if values.model_id not in {"lama", "mat", "slbr"}:
             raise ValueError(f"Unsupported video model_id: {values.model_id}")
         return values

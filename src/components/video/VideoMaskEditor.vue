@@ -1,88 +1,5 @@
 <template>
-  <div v-if="isSlbrModel" class="mask-editor">
-    <q-banner
-      dense
-      rounded
-      class="slbr-range-hint"
-      :class="$q.dark.isActive ? 'text-secondary' : 'text-grey-9'"
-    >
-      当前模型无需蒙版，但可以通过改变时间轴轨道范围的方式来设定视频处理的范围，以减少视频处理的时间。
-    </q-banner>
-
-    <q-expansion-item
-      v-if="videoStore.selectedProcessingRange"
-      v-model="sections.processingRange"
-      dense
-      dense-toggle
-      expand-separator
-      label="处理范围编辑"
-      icon="schedule"
-      class="editor-section"
-    >
-      <div class="section-body">
-        <q-input
-          :model-value="videoStore.selectedProcessingRange.name"
-          label="范围名称"
-          :disable="disabled"
-          @update:model-value="updateProcessingRangeName"
-        />
-
-        <div class="row q-col-gutter-sm q-mt-sm">
-          <div class="col-12">
-            <q-input
-              :model-value="videoStore.selectedProcessingRange.startTime"
-              type="number"
-              label="开始时间"
-              :disable="disabled"
-              :step="0.01"
-              @update:model-value="updateProcessingRangeField('startTime', $event)"
-            />
-          </div>
-          <div class="col-12">
-            <q-btn
-              outline
-              color="primary"
-              icon="first_page"
-              label="以当前时间开始"
-              class="full-width"
-              :disable="disabled"
-              @click="setProcessingRangeStartFromCurrentTime"
-            />
-          </div>
-        </div>
-
-        <div class="row q-col-gutter-sm q-mt-sm">
-          <div class="col-12">
-            <q-input
-              :model-value="videoStore.selectedProcessingRange.endTime"
-              type="number"
-              label="结束时间"
-              :disable="disabled"
-              :step="0.01"
-              @update:model-value="updateProcessingRangeField('endTime', $event)"
-            />
-          </div>
-          <div class="col-12">
-            <q-btn
-              outline
-              color="primary"
-              icon="last_page"
-              label="以当前时间结束"
-              class="full-width"
-              :disable="disabled"
-              @click="setProcessingRangeEndFromCurrentTime"
-            />
-          </div>
-        </div>
-      </div>
-    </q-expansion-item>
-
-    <div v-else class="empty-state empty-state--slbr">
-      未增加范围时会处理完整视频。点击左侧“增加范围”后，可在这里精确编辑开始和结束时间。
-    </div>
-  </div>
-
-  <div v-else-if="videoStore.selectedMask?.type === 'samVideo'" class="mask-editor">
+  <div v-if="videoStore.selectedMask?.type === 'samVideo'" class="mask-editor">
     <q-input
       :model-value="videoStore.selectedMask.name"
       dense
@@ -768,7 +685,6 @@ const videoStore = useVideoManagerStore();
 const controlButtonSize = computed(() =>
   normalizeButtonSize(configStore.config.ui?.buttonSize)
 );
-const isSlbrModel = computed(() => props.currentModel === "slbr");
 const isLamaModel = computed(() => ["lama", "mat"].includes(String(props.currentModel || "").toLowerCase()));
 const samVideoSelectToolTooltip = computed(() => {
   if (props.samVideoSupportsPoint && props.samVideoSupportsBox) {
@@ -782,17 +698,12 @@ const DEFAULT_SECTION_STATE = Object.freeze({
   brush: true,
   range: false,
   keyframes: true,
-  processingRange: true,
 });
 const normalizeSectionState = (value = {}) => ({
   brush: value.brush !== undefined ? Boolean(value.brush) : DEFAULT_SECTION_STATE.brush,
   range: value.range !== undefined ? Boolean(value.range) : DEFAULT_SECTION_STATE.range,
   keyframes:
     value.keyframes !== undefined ? Boolean(value.keyframes) : DEFAULT_SECTION_STATE.keyframes,
-  processingRange:
-    value.processingRange !== undefined
-      ? Boolean(value.processingRange)
-      : DEFAULT_SECTION_STATE.processingRange,
 });
 
 const sections = reactive(normalizeSectionState(props.sectionState));
@@ -806,7 +717,6 @@ watch(
     sections.brush = normalized.brush;
     sections.range = normalized.range;
     sections.keyframes = normalized.keyframes;
-    sections.processingRange = normalized.processingRange;
     syncingSectionsFromProps = false;
   },
   { deep: true, immediate: true }
@@ -1162,49 +1072,6 @@ const setEndFromCurrentTime = async () => {
   });
 };
 
-const updateProcessingRangeName = (value) => {
-  if (!videoStore.selectedProcessingRangeId) return;
-  videoStore.renameProcessingRange(videoStore.selectedProcessingRangeId, value);
-};
-
-const commitProcessingRangeUpdate = (nextRange) => {
-  if (!videoStore.selectedProcessingRangeId) return;
-  const result = videoStore.resizeProcessingRange(videoStore.selectedProcessingRangeId, nextRange);
-  if (!result.ok) {
-    showWarning(result.error || "处理范围更新失败。");
-  }
-};
-
-const updateProcessingRangeField = (field, value) => {
-  const range = videoStore.selectedProcessingRange;
-  if (!range) return;
-
-  const nextValue = parseNumeric(value, range[field]);
-  commitProcessingRangeUpdate({
-    startTime: field === "startTime" ? nextValue : range.startTime,
-    endTime: field === "endTime" ? nextValue : range.endTime,
-  });
-};
-
-const setProcessingRangeStartFromCurrentTime = () => {
-  const range = videoStore.selectedProcessingRange;
-  if (!range) return;
-
-  commitProcessingRangeUpdate({
-    startTime: videoStore.currentTime,
-    endTime: range.endTime,
-  });
-};
-
-const setProcessingRangeEndFromCurrentTime = () => {
-  const range = videoStore.selectedProcessingRange;
-  if (!range) return;
-
-  commitProcessingRangeUpdate({
-    startTime: range.startTime,
-    endTime: videoStore.currentTime,
-  });
-};
 </script>
 
 <style scoped>
@@ -1233,14 +1100,6 @@ const setProcessingRangeEndFromCurrentTime = () => {
   display: flex;
   flex-direction: column;
   gap: 12px;
-}
-
-.slbr-range-hint {
-  background: rgba(25, 118, 210, 0.08);
-}
-
-:global(body.body--dark) .slbr-range-hint {
-  background: rgba(144, 202, 249, 0.12);
 }
 
 .sam-track-hint {
@@ -1401,12 +1260,7 @@ const setProcessingRangeEndFromCurrentTime = () => {
   line-height: 1.5;
 }
 
-.empty-state--slbr {
-  color: var(--q-info);
-}
-
-:global(body.body--dark) .empty-state,
-:global(body.body--dark) .empty-state--slbr {
+:global(body.body--dark) .empty-state {
   color: rgba(157, 220, 255, 0.96);
 }
 </style>

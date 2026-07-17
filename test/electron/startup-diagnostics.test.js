@@ -145,6 +145,40 @@ test("startup logger rotates two backups and redacts log data", async () => {
   }
 });
 
+test("startup logger preserves multiline bundled runtime relocation stderr", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "moonshine-relocation-log-"));
+  const logPath = path.join(directory, "startup.log");
+  const logger = createStartupLogger({ logPath });
+  const stderr =
+    "Traceback (most recent call last):\nPermissionError: [Errno 13] Permission denied: torch/_C.pyd";
+
+  try {
+    await logger.warning(stderr, {
+      code: "BUNDLED_RUNTIME_RELOCATION_STDERR",
+      stage: "bundled-runtime-relocation",
+      stream: "stderr",
+      source: "conda-unpack",
+    });
+    await logger.flush();
+
+    const [entry] = (await fs.readFile(logPath, "utf8"))
+      .trim()
+      .split(/\r?\n/u)
+      .map((line) => JSON.parse(line));
+
+    assert.equal(entry.level, "warning");
+    assert.equal(entry.stage, "bundled-runtime-relocation");
+    assert.equal(entry.stream, "stderr");
+    assert.equal(entry.source, "conda-unpack");
+    assert.match(entry.message, /Traceback/u);
+    assert.match(entry.message, /\n/u);
+    assert.match(entry.message, /PermissionError/u);
+    assert.match(entry.message, /torch\/_C\.pyd/u);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("startup logger falls back to the console without rejecting", async () => {
   const messages = [];
   const failure = Object.assign(new Error("disk is read-only"), { code: "EACCES" });

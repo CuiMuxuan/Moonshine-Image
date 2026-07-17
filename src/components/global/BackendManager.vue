@@ -37,8 +37,8 @@
                   :name="1"
                   title="环境检测"
                   icon="search"
-                  :done="environmentStatus.python && environmentStatus.project"
-                  :error="environmentStatus.error"
+                  :done="environmentCheckCompleted && environmentStatus.python && environmentStatus.project"
+                  :error="environmentCheckCompleted && environmentStatus.error"
                   header-class="text-primary"
                   v-show="serviceStatus !== 'running'"
                 >
@@ -46,13 +46,11 @@
                   <q-list separator>
                     <q-item class="q-pa-sm">
                       <q-item-section avatar>
+                        <q-spinner v-if="isEnvironmentItemChecking(primaryRuntimeItemKey)" color="primary" size="sm" />
                         <q-icon
-                          :name="
-                            environmentStatus.python ? 'check_circle' : 'error'
-                          "
-                          :color="
-                            environmentStatus.python ? 'positive' : 'negative'
-                          "
+                          v-else
+                          :name="getEnvironmentItemIcon(primaryRuntimeItemKey)"
+                          :color="getEnvironmentItemColor(primaryRuntimeItemKey)"
                           size="sm"
                         />
                       </q-item-section>
@@ -60,21 +58,23 @@
                         <q-item-label class="text-weight-medium"
                           >{{ pythonSectionLabel }}</q-item-label
                         >
-                        <q-item-label caption class="text-grey-6">{{
-                          pythonVersion || "未检测到"
+                        <q-item-label data-testid="backend-environment-python-status" caption class="text-grey-6">{{
+                          getEnvironmentItemLabel(
+                            primaryRuntimeItemKey,
+                            primaryRuntimeSuccessLabel,
+                            primaryRuntimeFailureLabel
+                          )
                         }}</q-item-label>
                       </q-item-section>
                     </q-item>
 
                     <q-item class="q-pa-sm">
                       <q-item-section avatar>
+                        <q-spinner v-if="isEnvironmentItemChecking('project')" color="primary" size="sm" />
                         <q-icon
-                          :name="
-                            environmentStatus.project ? 'check_circle' : 'error'
-                          "
-                          :color="
-                            environmentStatus.project ? 'positive' : 'negative'
-                          "
+                          v-else
+                          :name="getEnvironmentItemIcon('project')"
+                          :color="getEnvironmentItemColor('project')"
                           size="sm"
                         />
                       </q-item-section>
@@ -82,30 +82,34 @@
                         <q-item-label class="text-weight-medium"
                           >后端项目</q-item-label
                         >
-                        <q-item-label caption class="text-grey-6">{{
-                          projectPath || "未找到"
+                        <q-item-label data-testid="backend-environment-project-status" caption class="text-grey-6">{{
+                          getEnvironmentItemLabel(
+                            'project',
+                            projectPath || '已检测到后端项目',
+                            '未找到'
+                          )
                         }}</q-item-label>
                       </q-item-section>
                     </q-item>
 
-                    <q-item class="q-pa-sm">
+                    <q-item v-if="!isBundledBackendMode" class="q-pa-sm">
                       <q-item-section avatar>
+                        <q-spinner v-if="isEnvironmentItemChecking('venv')" color="primary" size="sm" />
                         <q-icon
-                          :name="
-                            environmentStatus.venv ? 'check_circle' : 'error'
-                          "
-                          :color="
-                            environmentStatus.venv ? 'positive' : 'negative'
-                          "
+                          v-else
+                          :name="getEnvironmentItemIcon('venv')"
+                          :color="getEnvironmentItemColor('venv')"
                           size="sm"
                         />
                       </q-item-section>
                       <q-item-section>
-                        <q-item-label class="text-weight-medium"
-                          >{{ venvSectionLabel }}</q-item-label
-                        >
-                        <q-item-label caption class="text-grey-6">{{
-                          environmentStatus.venv ? "已创建" : "未创建"
+                        <q-item-label class="text-weight-medium">虚拟环境</q-item-label>
+                        <q-item-label data-testid="backend-environment-venv-status" caption class="text-grey-6">{{
+                          getEnvironmentItemLabel(
+                            'venv',
+                            venvStatus || '已创建',
+                            '未创建'
+                          )
                         }}</q-item-label>
                       </q-item-section>
                     </q-item>
@@ -127,7 +131,11 @@
                   </q-btn>
                   <div class="q-gutter-sm">
                     <q-btn
-                      v-if="!isBundledBackendMode && !environmentStatus.python"
+                      v-if="
+                        !isEnvironmentChecking &&
+                        !isBundledBackendMode &&
+                        environmentItemStates.python === 'failure'
+                      "
                       @click="installPython"
                       color="secondary"
                       label="安装 Python"
@@ -136,9 +144,7 @@
                       size="sm"
                     />
                     <q-btn
-                      v-if="
-                        environmentStatus.python && !environmentStatus.project
-                      "
+                      v-if="!isEnvironmentChecking && environmentItemStates.project === 'failure'"
                       @click="selectProjectPath"
                       color="secondary"
                       label="选择项目路径"
@@ -154,8 +160,8 @@
                   :name="2"
                   title="环境配置"
                   icon="build"
-                  :done="environmentStatus.configured"
-                  :disable="!environmentStatus.python || !environmentStatus.project"
+                  :done="environmentCheckCompleted && environmentStatus.configured"
+                  :disable="isEnvironmentChecking || !environmentStatus.python || !environmentStatus.project"
                   header-class="text-primary"
                   v-show="serviceStatus !== 'running'"
                 >
@@ -163,13 +169,11 @@
                   <q-list separator>
                     <q-item class="q-pa-sm">
                       <q-item-section avatar>
+                        <q-spinner v-if="isEnvironmentItemChecking('venv')" color="primary" size="sm" />
                         <q-icon
-                          :name="
-                            environmentStatus.venv ? 'check_circle' : 'pending'
-                          "
-                          :color="
-                            environmentStatus.venv ? 'positive' : 'orange'
-                          "
+                          v-else
+                          :name="getEnvironmentItemIcon('venv')"
+                          :color="getEnvironmentItemColor('venv')"
                           size="sm"
                         />
                       </q-item-section>
@@ -177,25 +181,19 @@
                         <q-item-label class="text-weight-medium"
                           >{{ venvSetupLabel }}</q-item-label
                         >
-                        <q-item-label caption class="text-grey-6">{{
-                          venvStatus
+                        <q-item-label data-testid="backend-environment-venv-setup-status" caption class="text-grey-6">{{
+                          getEnvironmentItemLabel('venv', venvStatus || '已创建', '未创建')
                         }}</q-item-label>
                       </q-item-section>
                     </q-item>
 
                     <q-item class="q-pa-sm">
                       <q-item-section avatar>
+                        <q-spinner v-if="isEnvironmentItemChecking('dependencies')" color="primary" size="sm" />
                         <q-icon
-                          :name="
-                            environmentStatus.dependencies
-                              ? 'check_circle'
-                              : 'pending'
-                          "
-                          :color="
-                            environmentStatus.dependencies
-                              ? 'positive'
-                              : 'orange'
-                          "
+                          v-else
+                          :name="getEnvironmentItemIcon('dependencies')"
+                          :color="getEnvironmentItemColor('dependencies')"
                           size="sm"
                         />
                       </q-item-section>
@@ -203,8 +201,12 @@
                         <q-item-label class="text-weight-medium"
                           >{{ dependenciesLabel }}</q-item-label
                         >
-                        <q-item-label caption class="text-grey-6">{{
-                          dependenciesStatus
+                        <q-item-label data-testid="backend-environment-dependencies-status" caption class="text-grey-6">{{
+                          getEnvironmentItemLabel(
+                            'dependencies',
+                            dependenciesStatus || '已就绪',
+                            dependenciesStatus || '未安装'
+                          )
                         }}</q-item-label>
                       </q-item-section>
                     </q-item>
@@ -227,7 +229,7 @@
                     :label="setupEnvironmentLabel"
                     :loading="installing.dependencies"
                     :disable="
-                      !environmentStatus.python || !environmentStatus.project
+                      isEnvironmentChecking || !environmentStatus.python || !environmentStatus.project
                     "
                     unelevated
                   >
@@ -568,6 +570,12 @@ import {
   buildBackendPathSelectionBlockedMessage,
   validateBackendPaths,
 } from "src/utils/backendPathValidation";
+import {
+  BACKEND_ENVIRONMENT_ITEM_KEYS,
+  finalizeEnvironmentItemStates,
+  mapEnvironmentFailureToItems,
+  resolveEnvironmentItemGroupState,
+} from "src/utils/backendEnvironmentStatus";
 
 // Props
 const props = defineProps({
@@ -601,8 +609,16 @@ const backendManagerTitle = computed(() =>
 const pythonSectionLabel = computed(() =>
   isBundledBackendMode.value ? "离线运行时" : "Python 环境"
 );
-const venvSectionLabel = computed(() =>
-  isBundledBackendMode.value ? "离线运行时" : "虚拟环境"
+const primaryRuntimeItemKey = computed(() =>
+  isBundledBackendMode.value ? "runtime" : "python"
+);
+const primaryRuntimeSuccessLabel = computed(() =>
+  isBundledBackendMode.value
+    ? pythonVersion.value || "已就绪"
+    : pythonVersion.value || "已检测到 Python"
+);
+const primaryRuntimeFailureLabel = computed(() =>
+  isBundledBackendMode.value ? "未就绪" : "未检测到"
 );
 const venvSetupLabel = computed(() =>
   isBundledBackendMode.value ? "离线运行时准备" : "虚拟环境创建"
@@ -624,14 +640,16 @@ const controlPanelClass = computed(() =>
 const backendModelLocation = computed(() =>
   backendConfig.modelDir || (isBundledBackendMode.value ? "resources/models" : "")
 );
-const showDialog = ref(false);
+const showDialog = ref(props.modelValue);
 const currentStep = ref(1);
 const checking = ref(false);
+const environmentCheckCompleted = ref(false);
 const commandExecuting = ref(false);
 const serviceLoading = ref(false);
 let serviceProcessPollTimerId = 0;
 let removeBackendOutputListener = null;
 let removePythonInstallPathListener = null;
+let environmentCheckPromise = null;
 
 // 环境状态
 const environmentStatus = reactive({
@@ -642,6 +660,82 @@ const environmentStatus = reactive({
   configured: false,
   error: false,
 });
+const ENVIRONMENT_ITEM_KEYS = BACKEND_ENVIRONMENT_ITEM_KEYS;
+const environmentItemStates = reactive({
+  python: "idle",
+  project: "idle",
+  venv: "idle",
+  dependencies: "idle",
+});
+const setEnvironmentItemState = (items, state) => {
+  const keys = Array.isArray(items) ? items : [items];
+  keys.forEach((item) => {
+    if (ENVIRONMENT_ITEM_KEYS.includes(item)) {
+      environmentItemStates[item] = state;
+    }
+  });
+};
+const setAllEnvironmentItemStates = (state) =>
+  setEnvironmentItemState(ENVIRONMENT_ITEM_KEYS, state);
+const getEnvironmentItemState = (item) =>
+  item === "runtime"
+    ? resolveEnvironmentItemGroupState(environmentItemStates, ["python", "venv"])
+    : environmentItemStates[item] || "idle";
+const isEnvironmentItemChecking = (item) => getEnvironmentItemState(item) === "checking";
+const getEnvironmentItemIcon = (item) => {
+  const state = getEnvironmentItemState(item);
+  if (state === "success") return "check_circle";
+  if (state === "failure") return "error";
+  if (state === "blocked") return "warning";
+  return "pending";
+};
+const getEnvironmentItemColor = (item) => {
+  const state = getEnvironmentItemState(item);
+  if (state === "success") return "positive";
+  if (state === "failure") return "negative";
+  if (state === "blocked") return "warning";
+  return "grey-6";
+};
+const getEnvironmentItemLabel = (item, successLabel, failureLabel) => {
+  const state = getEnvironmentItemState(item);
+  if (state === "checking") return "正在检测";
+  if (state === "success") return successLabel;
+  if (state === "failure") return failureLabel;
+  if (state === "blocked") return "前置检测未通过";
+  return "尚未检测";
+};
+const resetEnvironmentStatusForCheck = () => {
+  environmentStatus.python = false;
+  environmentStatus.project = false;
+  environmentStatus.venv = false;
+  environmentStatus.dependencies = false;
+  environmentStatus.configured = false;
+};
+const finishUncheckedEnvironmentItems = () => {
+  Object.assign(
+    environmentItemStates,
+    finalizeEnvironmentItemStates(environmentItemStates)
+  );
+};
+const applyEnvironmentFailureState = (failure, stage) => {
+  const completedItems = ENVIRONMENT_ITEM_KEYS.filter(
+    (item) => environmentItemStates[item] === "success"
+  );
+  const mapped = mapEnvironmentFailureToItems(
+    failure && typeof failure === "object"
+      ? failure
+      : { error: String(failure || "未知错误") },
+    {
+      completedItems,
+      lifecycleStage: stage,
+    }
+  );
+  Object.assign(environmentItemStates, mapped.states);
+  return mapped;
+};
+const isEnvironmentChecking = computed(
+  () => checking.value || !environmentCheckCompleted.value
+);
 
 // 安装状态
 const installing = reactive({
@@ -1330,6 +1424,7 @@ const markEnvironmentReadyForRunningProcess = () => {
   environmentStatus.venv = true;
   environmentStatus.dependencies = true;
   environmentStatus.configured = true;
+  setAllEnvironmentItemStates("success");
   pythonVersion.value =
     pythonVersion.value ||
     (isBundledBackendMode.value ? "Bundled offline runtime ready" : "Python detected");
@@ -1337,6 +1432,21 @@ const markEnvironmentReadyForRunningProcess = () => {
   dependenciesStatus.value = isBundledBackendMode.value
     ? "Bundled dependencies ready"
     : "Installed";
+  environmentStatus.error = false;
+  environmentCheckCompleted.value = true;
+};
+
+const completeEnvironmentCheckForRunningService = () => {
+  const runningConfirmed = observedBackendRunning.value;
+  const startingProcessConfirmed =
+    serviceStatus.value === "starting" && backendEngineStore.processRunning === true;
+  if (!runningConfirmed && !startingProcessConfirmed) {
+    return false;
+  }
+  markEnvironmentReadyForRunningProcess();
+  currentStep.value = 3;
+  addTerminalLog("检测到后端服务正在运行，跳过其余环境检测", "info");
+  return true;
 };
 
 const setServiceStartingFromProcess = () => {
@@ -1397,28 +1507,25 @@ watch(
 // 监听对话框显示状态
 watch(
   () => props.modelValue,
-  (newVal) => {
+  async (newVal) => {
     showDialog.value = newVal;
     if (!newVal) {
       stopServiceProcessPolling();
       return;
     }
-    if (newVal) {
-      // 检查服务状态，如果服务正在运行则跳过环境检测
-      syncCurrentBackendMode().finally(() => {
-        checkServiceStatus().then(() => {
-          if (!["starting", "running"].includes(serviceStatus.value)) {
-            checkEnvironment();
-          } else {
-            // 服务正在运行，直接跳转到服务管理步骤
-            currentStep.value = 3;
-            addTerminalLog("检测到后端服务正在运行，跳过环境检测", "info");
-          }
-        });
-      });
-      if (isBackendPreparing.value && !observedBackendRunning.value) {
-        startServiceProcessPolling();
-      }
+
+    try {
+      await checkEnvironment({ syncServiceStatus: true });
+    } catch (error) {
+      environmentStatus.error = true;
+      environmentCheckCompleted.value = true;
+      checking.value = false;
+      finishUncheckedEnvironmentItems();
+      addTerminalLog(`环境检测初始化失败：${error?.message || "未知错误"}`, "error");
+    }
+
+    if (isBackendPreparing.value && !observedBackendRunning.value) {
+      startServiceProcessPolling();
     }
   }
 );
@@ -1839,6 +1946,7 @@ const applyPreparedEnvironment = (prepareResult = {}) => {
   environmentStatus.project = true;
   environmentStatus.python = true;
   environmentStatus.venv = true;
+  setEnvironmentItemState(["project", "python", "venv"], "success");
 
   if (prepareResult.path) {
     projectPath.value = prepareResult.path;
@@ -1865,6 +1973,7 @@ const applyPreparedEnvironment = (prepareResult = {}) => {
 const applyDependenciesStatus = (ready) => {
   environmentStatus.dependencies = !!ready;
   environmentStatus.configured = !!ready;
+  setEnvironmentItemState("dependencies", ready ? "success" : "failure");
   dependenciesStatus.value = ready
     ? isBundledBackendMode.value
       ? "Bundled dependencies ready"
@@ -1904,30 +2013,57 @@ const appendProjectPathGuidance = (result) => {
 };
 
 // 检查环境
-const checkEnvironment = async () => {
-  const pathsValid = await ensureBackendPathsValid({});
-  if (!pathsValid) {
-    environmentStatus.error = true;
-    currentStep.value = 1;
-    return;
-  }
-
+const runEnvironmentCheck = async ({ syncServiceStatus = false } = {}) => {
   checking.value = true;
+  environmentCheckCompleted.value = false;
+  currentStep.value = 1;
   environmentStatus.error = false;
+  resetEnvironmentStatusForCheck();
+  setAllEnvironmentItemStates("checking");
   addTerminalLog("开始检测后端环境...", "info");
+  let currentEnvironmentStage = "initialization";
 
   try {
+    if (syncServiceStatus) {
+      currentEnvironmentStage = "sync-backend-mode";
+      await syncCurrentBackendMode();
+      currentEnvironmentStage = "check-service-status";
+      await checkServiceStatus();
+      if (completeEnvironmentCheckForRunningService()) {
+        return;
+      }
+    }
+
+    currentEnvironmentStage = "path-validation";
+    const pathsValid = await ensureBackendPathsValid({});
+    if (completeEnvironmentCheckForRunningService()) {
+      return;
+    }
+    if (!pathsValid) {
+      applyEnvironmentFailureState(
+        { code: "BACKEND_PATH_VALIDATION_FAILED" },
+        currentEnvironmentStage
+      );
+      pythonVersion.value = "";
+      venvStatus.value = "未创建";
+      dependenciesStatus.value = "未安装";
+      environmentStatus.error = true;
+      currentStep.value = 1;
+      return;
+    }
+
+    currentEnvironmentStage = "check-project";
     const projectResult = await window.electron.ipcRenderer.invoke(
       "check-project",
       backendConfig.projectPath
     );
+    if (completeEnvironmentCheckForRunningService()) {
+      return;
+    }
 
     if (!projectResult.success) {
-      environmentStatus.python = false;
-      environmentStatus.project = false;
-      environmentStatus.venv = false;
-      environmentStatus.dependencies = false;
-      environmentStatus.configured = false;
+      applyEnvironmentFailureState(projectResult, currentEnvironmentStage);
+      environmentStatus.error = true;
       pythonVersion.value = "";
       venvStatus.value = "未创建";
       dependenciesStatus.value = "未安装";
@@ -1939,12 +2075,16 @@ const checkEnvironment = async () => {
 
     syncBackendMode(projectResult.backendMode);
     environmentStatus.project = true;
+    setEnvironmentItemState("project", "success");
     projectPath.value = projectResult.path;
     backendConfig.projectPath = projectResult.path;
     if (configStore.config.general.backendProjectPath !== projectResult.path) {
       const newConfig = { ...configStore.config };
       newConfig.general.backendProjectPath = projectResult.path;
       await persistConfig(newConfig);
+      if (completeEnvironmentCheckForRunningService()) {
+        return;
+      }
     }
     addTerminalLog(`后端项目检测成功：${projectResult.path}`, "success");
 
@@ -1955,16 +2095,18 @@ const checkEnvironment = async () => {
       "info"
     );
 
+    currentEnvironmentStage = "prepare-project-python";
     const prepareResult = await window.electron.ipcRenderer.invoke(
       "prepare-project-python",
       projectResult.path
     );
+    if (completeEnvironmentCheckForRunningService()) {
+      return;
+    }
 
     if (!prepareResult.success) {
-      environmentStatus.python = false;
-      environmentStatus.venv = false;
-      environmentStatus.dependencies = false;
-      environmentStatus.configured = false;
+      applyEnvironmentFailureState(prepareResult, currentEnvironmentStage);
+      environmentStatus.error = true;
       pythonVersion.value = "";
       venvStatus.value = "未创建";
       dependenciesStatus.value = "未安装";
@@ -1992,6 +2134,7 @@ const checkEnvironment = async () => {
 
     environmentStatus.python = true;
     environmentStatus.venv = true;
+    setEnvironmentItemState(["python", "venv"], "success");
     pythonVersion.value = prepareResult.pythonVersion
       ? `Python ${prepareResult.pythonVersion}`
       : "已检测到 Python";
@@ -2009,7 +2152,18 @@ const checkEnvironment = async () => {
       "success"
     );
 
+    if (prepareResult.dependenciesVerified === true) {
+      applyDependenciesStatus(true);
+      addTerminalLog("Bundled backend dependencies are ready.", "success");
+      currentStep.value = 3;
+      return;
+    }
+
+    currentEnvironmentStage = "check-dependencies";
     const depsResult = await window.electron.ipcRenderer.invoke("check-dependencies");
+    if (completeEnvironmentCheckForRunningService()) {
+      return;
+    }
     if (depsResult.success) {
       applyDependenciesStatus(true);
       addTerminalLog(
@@ -2032,11 +2186,32 @@ const checkEnvironment = async () => {
       currentStep.value = 2;
     }
   } catch (error) {
+    if (completeEnvironmentCheckForRunningService()) {
+      return;
+    }
     environmentStatus.error = true;
+    environmentStatus.configured = false;
+    applyEnvironmentFailureState(error, currentEnvironmentStage);
     addTerminalLog(`环境检测失败：${error.message}`, "error");
   } finally {
+    finishUncheckedEnvironmentItems();
     checking.value = false;
+    environmentCheckCompleted.value = true;
   }
+};
+
+const checkEnvironment = (options = {}) => {
+  if (environmentCheckPromise) {
+    return environmentCheckPromise;
+  }
+
+  const activePromise = runEnvironmentCheck({
+    syncServiceStatus: options?.syncServiceStatus === true,
+  });
+  environmentCheckPromise = activePromise.finally(() => {
+    environmentCheckPromise = null;
+  });
+  return environmentCheckPromise;
 };
 
 // 安装 Python
@@ -2176,6 +2351,8 @@ const setupEnvironment = async () => {
     );
 
     if (!prepareResult.success) {
+      setEnvironmentItemState(["python", "venv"], "failure");
+      setEnvironmentItemState("dependencies", "idle");
       appendProjectPathGuidance(prepareResult);
       if (prepareResult.manualGuide?.downloadUrl) {
         addTerminalLog(
@@ -2195,6 +2372,7 @@ const setupEnvironment = async () => {
     environmentStatus.project = true;
     environmentStatus.python = true;
     environmentStatus.venv = true;
+    setEnvironmentItemState(["project", "python", "venv"], "success");
     if (prepareResult.path) {
       projectPath.value = prepareResult.path;
     }
@@ -2236,6 +2414,7 @@ const setupEnvironment = async () => {
       installProgress.value = 100;
       currentStep.value = 3;
     } else {
+      applyDependenciesStatus(false);
       throw new Error(depsResult.error);
     }
   } catch (error) {
@@ -2421,7 +2600,7 @@ const executeCommand = async () => {
 // 组件挂载时检查环境
 onMounted(() => {
   if (showDialog.value) {
-    checkEnvironment();
+    checkEnvironment({ syncServiceStatus: true });
   }
   if (window.electron && window.electron.ipcRenderer) {
     removeBackendOutputListener =
@@ -2453,6 +2632,30 @@ onMounted(() => {
         max: TERMINAL_PROGRESS_SYNC_MAX_MS,
       }),
       getProgressHeartbeatMs: () => TERMINAL_PROGRESS_HEARTBEAT_MS,
+      getEnvironmentCheckSnapshot: () => ({
+        checking: checking.value,
+        completed: environmentCheckCompleted.value,
+        inFlight: Boolean(environmentCheckPromise),
+        error: environmentStatus.error,
+        itemStates: { ...environmentItemStates },
+      }),
+      startEnvironmentCheck: (options = {}) => {
+        void checkEnvironment(options);
+        return {
+          checking: checking.value,
+          completed: environmentCheckCompleted.value,
+          inFlight: Boolean(environmentCheckPromise),
+          itemStates: { ...environmentItemStates },
+        };
+      },
+      getEnvironmentItemStates: () => ({ ...environmentItemStates }),
+      setEnvironmentItemStates: async (states = {}) => {
+        Object.entries(states).forEach(([item, state]) => {
+          setEnvironmentItemState(item, state);
+        });
+        await nextTick();
+        return { ...environmentItemStates };
+      },
       clearTerminal,
     };
   }
