@@ -284,13 +284,43 @@ export function auditPackagedRuntimeDirectory({
 }
 
 function extractZip(zipPath, destinationDir) {
+  if (fs.existsSync(destinationDir)) {
+    fail(`Archive extraction destination must not exist: ${destinationDir}`);
+  }
   const command = [
     '$ErrorActionPreference = "Stop"',
+    "Add-Type -AssemblyName System.IO.Compression.FileSystem",
     `$zip = ${JSON.stringify(zipPath)}`,
     `$destination = ${JSON.stringify(destinationDir)}`,
-    "Expand-Archive -LiteralPath $zip -DestinationPath $destination -Force",
+    "[System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $destination)",
   ].join("; ");
   runCapture("powershell.exe", ["-NoProfile", "-Command", command]);
+}
+
+function createArchiveAuditTempDirectory() {
+  const configuredTempDir = String(process.env.MOONSHINE_RUNTIME_AUDIT_TEMP_DIR || "").trim();
+  const defaultTempDirs =
+    process.platform === "win32"
+      ? [path.parse(os.tmpdir()).root, path.dirname(repoRoot)]
+      : [os.tmpdir()];
+  const candidates = [
+    ...new Set([configuredTempDir, ...defaultTempDirs].filter(Boolean).map((candidate) => path.resolve(candidate))),
+  ];
+  let lastError;
+
+  for (const candidate of candidates) {
+    try {
+      return fs.mkdtempSync(path.join(candidate, "mra-"));
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  fail(
+    `Unable to create a short release audit temporary directory: ${String(
+      lastError?.message || lastError || "unknown error"
+    )}. Set MOONSHINE_RUNTIME_AUDIT_TEMP_DIR to a short writable directory.`
+  );
 }
 
 function relocateExtractedRuntime(appRoot) {
@@ -316,7 +346,8 @@ export function auditPackagedRuntimeZip({
   if (!fs.existsSync(zipPath)) {
     fail(`Release ZIP does not exist: ${zipPath}`);
   }
-  const extractionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moonshine-runtime-audit-"));
+  const extractionParent = createArchiveAuditTempDirectory();
+  const extractionRoot = path.join(extractionParent, "x");
   try {
     extractZip(zipPath, extractionRoot);
     const appRoot = resolveAppRoot(extractionRoot);
@@ -330,6 +361,6 @@ export function auditPackagedRuntimeZip({
       runFunctionalSmoke,
     });
   } finally {
-    fs.rmSync(extractionRoot, { recursive: true, force: true });
+    fs.rmSync(extractionParent, { recursive: true, force: true });
   }
 }

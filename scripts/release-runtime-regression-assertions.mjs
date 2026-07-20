@@ -27,6 +27,8 @@ const checks = [
   ["scripts/build-runtime-win.mjs", "samRuntime"],
   ["scripts/audit-release-runtime.mjs", "PYTHONNOUSERSITE"],
   ["scripts/audit-release-runtime.mjs", "auditPackagedRuntimeZip"],
+  ["scripts/audit-release-runtime.mjs", "System.IO.Compression.ZipFile"],
+  ["scripts/audit-release-runtime.mjs", "MOONSHINE_RUNTIME_AUDIT_TEMP_DIR"],
   ["scripts/audit-release-runtime.mjs", "verify_sam3_image_smoke.py"],
   ["scripts/audit-release-runtime.mjs", "trailingJsonOffset"],
   ["scripts/verify-packaged-runtime.py", "editable SAM3 metadata"],
@@ -41,6 +43,11 @@ const checks = [
 for (const [relativePath, expected] of checks) {
   requireText(relativePath, expected);
 }
+
+assert.ok(
+  !read("scripts/audit-release-runtime.mjs").includes("Expand-Archive"),
+  "release runtime ZIP audit must avoid Windows PowerShell's brittle Expand-Archive cleanup path"
+);
 
 const packageJson = JSON.parse(read("package.json"));
 assert.equal(
