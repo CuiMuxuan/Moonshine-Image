@@ -214,6 +214,26 @@ npm run package:win:matrix
 - “运行时自包含”不代表“模型权重内置”。`external-models` 不携带 SAM 权重，`bundled-models` 默认也只携带 LaMa 和 SLBR；SAM 权重仍需通过模型管理下载或手动放入 `models/sam/`、`models/sam2/`、`models/sam3/`。
 - 每个矩阵工件都会写入 `release-matrix.json` 的 SAM 运行时能力、模型权重策略和目录/ZIP 审计结果；CUDA 工件还会在干净临时位置验证包内 Python 的 SAM3 导入与图片、视频 smoke。
 
+#### SAM3 开发与构建输入
+
+- Moonshine 仓库维护的是 SAM3 的集成、模型注册、API、诊断和发布审计；上游 `sam3` 源码不是 `server/` 的一部分。CUDA 发布构建会从受控源码构建 wheel，并以非 editable 方式安装进包内 Python 运行时。
+- 开发或构建 CUDA 包时，准备一个带有效 `pyproject.toml` 的官方 SAM3 源码目录，并通过 `MOONSHINE_SAM3_SOURCE_DIR` 指定。未设置时，构建脚本默认查找项目同级的 `C:\code\sam3`。
+
+```powershell
+$env:MOONSHINE_SAM3_SOURCE_DIR = 'C:\code\sam3'
+npm run build -- -m electron
+```
+
+- 上述 Electron 命令构建当前默认 Electron 工件；需要生成 CPU、CUDA 12.6、CUDA 13.0 与两种模型包的全部发布组合时，运行发布矩阵。CUDA 12.6 如未使用默认 wheel 路径，可额外设置 `MOONSHINE_TORCH_WHEEL`。
+
+```powershell
+$env:MOONSHINE_SAM3_SOURCE_DIR = 'C:\code\sam3'
+$env:MOONSHINE_TORCH_WHEEL = 'C:\code\torch\torch-2.11.0+cu126-cp312-cp312-win_amd64.whl'
+npm run package:win:matrix
+```
+
+- 需要修改上游 SAM3 本身时，应在受控源码仓库中修改并固定其版本，再重新构建运行时；不要把上游源码直接复制到 `server/`。项目内的环境适配应继续放在 Moonshine 的集成层中。
+
 发布矩阵会生成 `cu130`、`cu126`、`cpu` 与 `bundled-models`、`external-models` 的 6 个 Windows x64 包，并在发布目录写入 `SHA256SUMS.txt` 和 `release-matrix.json`。`cpu` 包会把 SAM3/SAM3.1 文本智能选区显示为不可用；`external-models` 包首次启动时允许进入模型管理下载或手动安装模型；`bundled-models` 默认只打包 LaMa 和 SLBR，不默认打包 SAM3 权重。
 
 
