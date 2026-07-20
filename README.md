@@ -207,6 +207,13 @@ Windows 发布矩阵：
 npm run package:win:matrix
 ```
 
+#### SAM 运行时与模型权重
+
+- `cu126` 与 `cu130` 包内置 SAM3/SAM3.1 的 Python 运行时代码和所需依赖；解压后不依赖用户电脑已有的 Python、Conda 或构建机上的 SAM3 源码目录。
+- `cpu` 包保留内置的 SAM1/SAM2/SAM2.1 后端代码，但 SAM3/SAM3.1 属于 CUDA 专属能力，会在模型管理和诊断中明确显示为不可用。
+- “运行时自包含”不代表“模型权重内置”。`external-models` 不携带 SAM 权重，`bundled-models` 默认也只携带 LaMa 和 SLBR；SAM 权重仍需通过模型管理下载或手动放入 `models/sam/`、`models/sam2/`、`models/sam3/`。
+- 每个矩阵工件都会写入 `release-matrix.json` 的 SAM 运行时能力、模型权重策略和目录/ZIP 审计结果；CUDA 工件还会在干净临时位置验证包内 Python 的 SAM3 导入与图片、视频 smoke。
+
 发布矩阵会生成 `cu130`、`cu126`、`cpu` 与 `bundled-models`、`external-models` 的 6 个 Windows x64 包，并在发布目录写入 `SHA256SUMS.txt` 和 `release-matrix.json`。`cpu` 包会把 SAM3/SAM3.1 文本智能选区显示为不可用；`external-models` 包首次启动时允许进入模型管理下载或手动安装模型；`bundled-models` 默认只打包 LaMa 和 SLBR，不默认打包 SAM3 权重。
 
 
@@ -247,6 +254,7 @@ npm run lint
 npm run build
 npm run test:regression:p0
 npm run test:regression:p0:assertions
+npm run test:regression:release-runtime
 npm run test:regression:p1:image
 npm run test:regression:p1:video
 npm run test:regression:e2e:smoke

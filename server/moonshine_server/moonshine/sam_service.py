@@ -289,17 +289,60 @@ class SamService:
     def _release_runtime_profile() -> dict:
         runtime_flavor = str(os.getenv("MOONSHINE_RUNTIME_FLAVOR") or "external").strip().lower()
         model_bundle = str(os.getenv("MOONSHINE_MODEL_BUNDLE") or "external-models").strip().lower()
+        sam3_cuda_runtime = runtime_flavor in {"cu126", "cu130"}
+        sam3_supported_by_package = runtime_flavor != "cpu"
+        cpu_package_reason = (
+            "SAM3/SAM3.1 smart selection is CUDA-only and is not included in the CPU release "
+            "package. SAM1 and SAM2 point/box features remain available when their model weights "
+            "are installed."
+        )
         return {
             "runtimeFlavor": runtime_flavor,
             "modelBundle": model_bundle,
             "packagedRuntime": os.getenv("MOONSHINE_PACKAGED_RUNTIME") in {"1", "true", "yes"},
             "pythonTarget": "3.12",
-            "sam3TextSupportedByPackage": runtime_flavor in {"external", "cpu", "cu126", "cu130"},
-            "sam3TextPackageReason": "",
+            "sam3RuntimeExpectedByPackage": sam3_cuda_runtime,
+            "sam3RuntimeBundledByPackage": sam3_cuda_runtime,
+            "sam3RuntimeSupportedByPackage": sam3_supported_by_package,
+            "sam3TextSupportedByPackage": sam3_supported_by_package,
+            "sam3TextPackageReason": "" if sam3_supported_by_package else cpu_package_reason,
         }
+
+    def _sam3_release_unavailable_reason(
+        self, operation: str, runtime_status: Optional[dict] = None
+    ) -> Optional[str]:
+        release_runtime = self._release_runtime_profile()
+        if not release_runtime["sam3RuntimeSupportedByPackage"]:
+            return release_runtime["sam3TextPackageReason"]
+        if release_runtime["sam3RuntimeExpectedByPackage"] and runtime_status is not None:
+            if not runtime_status.get("runtimeReady"):
+                detail = runtime_status.get("reason") or "SAM3 runtime verification failed"
+                return (
+                    f"{operation} is unavailable because this CUDA release package is incomplete "
+                    f"or corrupted: bundled SAM3 runtime components are missing or invalid ({detail}). "
+                    "Reinstall a complete CUDA release package. End users do not need to install "
+                    "Python packages manually."
+                )
+        return None
+
+    def _sam3_import_failure_reason(self, operation: str, error: ImportError) -> str:
+        release_runtime = self._release_runtime_profile()
+        if not release_runtime["sam3RuntimeSupportedByPackage"]:
+            return release_runtime["sam3TextPackageReason"]
+        if release_runtime["sam3RuntimeExpectedByPackage"]:
+            return (
+                f"{operation} is unavailable because this CUDA release package is incomplete or "
+                f"corrupted: bundled SAM3 runtime components cannot be imported ({error}). Reinstall "
+                "a complete CUDA release package. End users do not need to install Python packages manually."
+            )
+        return (
+            "SAM3 package is not installed in the current Python runtime. Install the official "
+            "SAM3 package into the Moonshine development runtime before using SAM3 smart selection."
+        )
 
     def capabilities(self) -> dict:
         models = [item for item in self._build_status() if item.get("type") == "mask"]
+        release_runtime = self._release_runtime_profile()
         def has_enabled_capability(model: dict, *capabilities: str) -> bool:
             enabled_capabilities = model.get("enabledCapabilities") or {}
             return any(bool(enabled_capabilities.get(capability)) for capability in capabilities)
@@ -317,6 +360,8 @@ class SamService:
             and has_enabled_capability(item, "videoPropagate")
             and has_enabled_capability(item, "videoPoint", "videoBox", "videoText")
         ]
+        if not release_runtime["sam3RuntimeSupportedByPackage"]:
+            video_models = [item for item in video_models if item.get("family") != "sam3"]
         video_prompt_types = []
         if any(has_enabled_capability(item, "videoPoint") for item in video_models):
             video_prompt_types.append("point")
@@ -338,7 +383,13 @@ class SamService:
             video_models[0].get("id") if video_models else None,
         )
         sam3_runtime_status = self._sam3_runtime_status()
-        release_runtime = self._release_runtime_profile()
+        release_runtime = {
+            **release_runtime,
+            "sam3TextPackageReason": self._sam3_release_unavailable_reason(
+                "SAM3 text smart selection", sam3_runtime_status
+            )
+            or release_runtime["sam3TextPackageReason"],
+        }
         installed_text_models = [item for item in text_models if item.get("installed")]
         runnable_text_models = [
             item
@@ -517,11 +568,19 @@ class SamService:
         if predictor is not None:
             return predictor
 
+        release_reason = self._sam3_release_unavailable_reason("SAM3 image smart selection")
+        if release_reason:
+            raise SamServiceError(release_reason)
         model = self._get_model_status(model_id)
         if model.get("family") != "sam3":
             raise SamServiceError(f"SAM3 image adapter cannot load model: {model_id}")
         checkpoint_path = self._get_checkpoint_path(model)
         runtime_status = self._sam3_runtime_status()
+        release_reason = self._sam3_release_unavailable_reason(
+            "SAM3 image smart selection", runtime_status
+        )
+        if release_reason:
+            raise SamServiceError(release_reason)
         if not runtime_status["runtimeReady"]:
             reason = runtime_status["reason"] or "SAM3 runtime is not ready"
             raise SamServiceError(f"SAM3 image smart selection is not ready: {reason}")
@@ -530,9 +589,7 @@ class SamService:
             from sam3.model_builder import build_sam3_image_model
         except ImportError as error:
             raise SamServiceError(
-                "SAM3 package is not installed in the current Python runtime. "
-                "Install the official SAM3 package into the Moonshine runtime before "
-                "using SAM3 image smart selection."
+                self._sam3_import_failure_reason("SAM3 image smart selection", error)
             ) from error
 
         sam3_model = build_sam3_image_model(
@@ -600,6 +657,9 @@ class SamService:
         if predictor is not None:
             return predictor
 
+        release_reason = self._sam3_release_unavailable_reason("SAM3 video smart selection")
+        if release_reason:
+            raise SamServiceError(release_reason)
         model = self._get_video_model_status(model_id)
         if model.get("family") != "sam3":
             raise SamServiceError(f"SAM3 video adapter cannot load model: {model_id}")
@@ -607,6 +667,11 @@ class SamService:
             raise SamServiceError(f"Unsupported SAM3 video model id: {model_id}")
 
         runtime_status = self._sam3_runtime_status()
+        release_reason = self._sam3_release_unavailable_reason(
+            "SAM3 video smart selection", runtime_status
+        )
+        if release_reason:
+            raise SamServiceError(release_reason)
         if not runtime_status["runtimeReady"]:
             reason = runtime_status["reason"] or "SAM3 runtime is not ready"
             raise SamServiceError(f"SAM3 video smart selection is not ready: {reason}")
@@ -621,9 +686,7 @@ class SamService:
             from sam3.model_builder import build_sam3_predictor
         except ImportError as error:
             raise SamServiceError(
-                "SAM3 package is not installed in the current Python runtime. "
-                "Install the official SAM3 package into the Moonshine runtime before "
-                "using SAM3 video smart selection."
+                self._sam3_import_failure_reason("SAM3 video smart selection", error)
             ) from error
 
         self._configure_sam3_attention_compatibility()
@@ -657,6 +720,9 @@ class SamService:
         return predictor
 
     def _get_text_model_status(self, model_id: str) -> dict:
+        release_reason = self._sam3_release_unavailable_reason("SAM3 text smart selection")
+        if release_reason:
+            raise SamServiceError(release_reason)
         model = next((item for item in self._build_status() if item.get("id") == model_id), None)
         if model is None:
             raise SamServiceError(f"Unknown SAM3 model: {model_id}")
@@ -670,6 +736,11 @@ class SamService:
             raise SamServiceError(f"SAM3 text model is not installed: {model_id}. Missing: {missing}")
 
         runtime_status = self._sam3_runtime_status()
+        release_reason = self._sam3_release_unavailable_reason(
+            "SAM3 text smart selection", runtime_status
+        )
+        if release_reason:
+            raise SamServiceError(release_reason)
         if not runtime_status["runtimeReady"]:
             reason = runtime_status["reason"] or "SAM3 runtime is not ready"
             raise SamServiceError(f"SAM3 text smart selection is not ready: {reason}")
@@ -688,9 +759,7 @@ class SamService:
             from sam3.model_builder import build_sam3_image_model
         except ImportError as error:
             raise SamServiceError(
-                "SAM3 package is not installed in the current Python runtime. "
-                "Install the official SAM3 package into the Moonshine runtime before "
-                "using text smart selection."
+                self._sam3_import_failure_reason("SAM3 text smart selection", error)
             ) from error
 
         sam3_model = build_sam3_image_model(

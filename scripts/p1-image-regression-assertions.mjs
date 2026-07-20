@@ -647,8 +647,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "server/moonshine_server/moonshine/sam_service.py",
-    description: "SAM capability diagnostics allow SAM3 text on CPU while keeping device readiness as diagnostics",
-    pattern: /def _sam3_runtime_status[\s\S]*"runtimeReady": runtime_ready[\s\S]*"deviceReady": device_ready[\s\S]*"reason": None[\s\S]*if runtime_ready[\s\S]*def _release_runtime_profile[\s\S]*\{"external", "cpu", "cu126", "cu130"\}[\s\S]*runnable_text_models = \[[\s\S]*sam3_runtime_status\["runtimeReady"\][\s\S]*release_runtime\["sam3TextSupportedByPackage"\][\s\S]*"deviceReady": sam3_runtime_status\["deviceReady"\][\s\S]*"releaseRuntime": release_runtime/,
+    description: "SAM capability diagnostics mark CPU SAM3 as CUDA-only while retaining runtime and device diagnostics",
+    pattern: /def _sam3_runtime_status[\s\S]*"runtimeReady": runtime_ready[\s\S]*"deviceReady": device_ready[\s\S]*"reason": None[\s\S]*if runtime_ready[\s\S]*def _release_runtime_profile[\s\S]*sam3_supported_by_package = runtime_flavor != "cpu"[\s\S]*cpu_package_reason[\s\S]*"sam3RuntimeExpectedByPackage"[\s\S]*"sam3RuntimeSupportedByPackage"[\s\S]*runnable_text_models = \[[\s\S]*sam3_runtime_status\["runtimeReady"\][\s\S]*release_runtime\["sam3TextSupportedByPackage"\][\s\S]*"deviceReady": sam3_runtime_status\["deviceReady"\][\s\S]*"releaseRuntime": release_runtime/,
   });
   assertAbsentPattern({
     file: "server/moonshine_server/moonshine/sam_service.py",

@@ -4,6 +4,11 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import {
+  auditPackagedRuntimeDirectory,
+  auditPackagedRuntimeZip,
+} from "./audit-release-runtime.mjs";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..");
@@ -17,7 +22,7 @@ const packagedCandidates = [
   path.join(repoRoot, "dist", "electron", "packaged", "Moonshine-Image-win32-x64"),
 ];
 const defaultCu126TorchWheelPath =
-  "C:\\Users\\cjh02\\Downloads\\torch-2.11.0+cu126-cp312-cp312-win_amd64.whl";
+  "C:\\code\\torch\\torch-2.11.0+cu126-cp312-cp312-win_amd64.whl";
 const runtimeFlavors = ["cpu", "cu126", "cu130"];
 const modelBundles = ["external-models", "bundled-models"];
 const electronBuildRetryCount = Math.max(
@@ -181,12 +186,22 @@ async function buildOne(runtimeFlavor, modelBundle) {
 
   if (skipExistingArtifacts && fs.existsSync(zipPath)) {
     console.log(`\n=== Skipping existing ${artifactName} ===`);
+    const archiveAudit = auditPackagedRuntimeZip({
+      zipPath,
+      runtimeFlavor,
+      modelBundle,
+      runFunctionalSmoke: true,
+    });
     return {
       artifactName,
       zipPath,
       runtimeFlavor,
       modelBundle,
       sha256: await sha256File(zipPath),
+      audit: {
+        directory: { status: "not-run", reason: "Existing ZIP was audited without an unpackaged build directory." },
+        archive: archiveAudit,
+      },
     };
   }
 
@@ -198,7 +213,20 @@ async function buildOne(runtimeFlavor, modelBundle) {
 
   console.log(`\n=== Building ${artifactName} ===`);
   runElectronBuildWithRetry(env);
-  compressPackagedApp(resolvePackagedDir(), zipPath);
+  const packagedDir = resolvePackagedDir();
+  const directoryAudit = auditPackagedRuntimeDirectory({
+    appDir: packagedDir,
+    runtimeFlavor,
+    modelBundle,
+    runFunctionalSmoke: false,
+  });
+  compressPackagedApp(packagedDir, zipPath);
+  const archiveAudit = auditPackagedRuntimeZip({
+    zipPath,
+    runtimeFlavor,
+    modelBundle,
+    runFunctionalSmoke: true,
+  });
 
   return {
     artifactName,
@@ -206,6 +234,10 @@ async function buildOne(runtimeFlavor, modelBundle) {
     runtimeFlavor,
     modelBundle,
     sha256: await sha256File(zipPath),
+    audit: {
+      directory: directoryAudit,
+      archive: archiveAudit,
+    },
   };
 }
 
@@ -216,24 +248,34 @@ function writeSha256Sums(artifacts) {
 
 function writeReleaseMatrixManifest(artifacts) {
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt: new Date().toISOString(),
     version,
     runtimeFlavors,
     modelBundles,
     pythonTarget: "3.12",
-    sam3Policy: {
-      cpu: "SAM3/SAM3.1 text smart selection is shown as unavailable in CPU packages.",
-      cu126: "SAM3/SAM3.1 text smart selection is available only when CUDA, dependencies, and models are ready.",
-      cu130: "SAM3/SAM3.1 text smart selection is available only when CUDA, dependencies, and models are ready.",
-      bundledModels: "SAM3 weights are not bundled by default; users install/download them from the project model source.",
-      externalModels: "The first launch must support model management download or manual model installation.",
+    samRuntimePolicy: {
+      sam1: "SAM1 code is bundled in the backend for every package; model weights remain external.",
+      sam2: "SAM2/SAM2.1 code is bundled in the backend for every package; model weights remain external.",
+      cpu: "SAM3/SAM3.1 is CUDA-only and deliberately not bundled in CPU packages.",
+      cu126: "SAM3/SAM3.1 runtime code and required Python dependencies are bundled as a non-editable wheel installation.",
+      cu130: "SAM3/SAM3.1 runtime code and required Python dependencies are bundled as a non-editable wheel installation.",
+      modelWeights: "No SAM model weights are bundled by this runtime policy. Models are supplied through model management or manual installation.",
     },
     artifacts: artifacts.map((artifact) => ({
       artifactName: artifact.artifactName,
       runtimeFlavor: artifact.runtimeFlavor,
       modelBundle: artifact.modelBundle,
       sha256: artifact.sha256,
+      samRuntime: {
+        sam1: { code: "bundled-backend-plugin", modelWeightsBundled: false },
+        sam2: { code: "bundled-backend-plugin", modelWeightsBundled: false },
+        sam3:
+          artifact.runtimeFlavor === "cpu"
+            ? { availability: "cuda-only-unavailable", runtimeBundled: false, modelWeightsBundled: false }
+            : { availability: "bundled-cuda-runtime", runtimeBundled: true, modelWeightsBundled: false },
+      },
+      verification: artifact.audit,
     })),
   };
   fs.writeFileSync(

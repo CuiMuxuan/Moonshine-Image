@@ -32,10 +32,15 @@ const runtimePythonScriptDir = path.join(runtimeTmpDir, "python-scripts");
 const missingRequirementsPath = path.join(runtimeTmpDir, "missing-requirements.txt");
 const pinnedRuntimePackagesPath = path.join(runtimeTmpDir, "pinned-runtime-packages.txt");
 const runtimeRequirementsPath = path.join(runtimeTmpDir, "runtime-requirements-no-torch.txt");
+const sam3RuntimeRequirementsPath = path.join(runtimeTmpDir, "sam3-runtime-requirements.txt");
+const sam3WheelDir = path.join(runtimeTmpDir, "sam3-wheel");
 const requirementsPath = path.join(repoRoot, "server", "requirements.txt");
 const smokeImagePath = path.join(smokeInputDir, "image.png");
 const smokeMaskPath = path.join(smokeMaskDir, "image.png");
 const sourceModelPath = path.join(repoRoot, "models", PACKAGED_DEFAULT_MODEL_FILE);
+const configuredSam3SourceDir = String(process.env.MOONSHINE_SAM3_SOURCE_DIR || "").trim();
+const defaultSam3SourceDir = path.resolve(repoRoot, "..", "sam3");
+const sam3SourceDir = path.resolve(configuredSam3SourceDir || defaultSam3SourceDir);
 const hasExplicitRuntimeFlavor = Boolean(process.env.MOONSHINE_RUNTIME_FLAVOR);
 const runtimeFlavor = normalizeRuntimeFlavor(process.env.MOONSHINE_RUNTIME_FLAVOR);
 const modelBundle = normalizeModelBundle(process.env.MOONSHINE_MODEL_BUNDLE);
@@ -46,7 +51,7 @@ const targetPythonVersion = "3.12.11";
 const torchVersion = "2.11.0";
 const torchvisionVersion = "0.26.0";
 const defaultCu126TorchWheelPath =
-  "C:\\Users\\cjh02\\Downloads\\torch-2.11.0+cu126-cp312-cp312-win_amd64.whl";
+  "C:\\code\\torch\\torch-2.11.0+cu126-cp312-cp312-win_amd64.whl";
 const condaPackPythonWarnings = [
   process.env.PYTHONWARNINGS,
   "ignore:pkg_resources is deprecated as an API:UserWarning",
@@ -77,6 +82,32 @@ const obsoleteRuntimePackages = [
   "accelerate",
   "controlnet-aux",
 ];
+const sam3RuntimeRequiredModules = [
+  "sam3",
+  "iopath",
+  "hydra",
+  "omegaconf",
+  "einops",
+  "ftfy",
+  "pycocotools",
+  "psutil",
+  "triton",
+];
+const sam3SupportRequirements = [
+  "timm>=1.0.17",
+  "tqdm",
+  "ftfy==6.1.1",
+  "regex",
+  "iopath>=0.1.10",
+  "typing_extensions",
+  "huggingface_hub",
+  "hydra-core",
+  "omegaconf",
+  "einops",
+  "pycocotools",
+  "psutil",
+];
+// The matched CUDA Torch wheel provides triton; it remains a required import but is not a standalone Windows pip dependency.
 
 function normalizeRuntimeFlavor(value) {
   const normalized = String(value || "cu130").trim().toLowerCase();
@@ -199,6 +230,15 @@ function runRuntimePythonScriptCapture(scriptName, script, args = [], options = 
   );
 }
 
+function getPackagedRuntimePythonPath() {
+  return path.join(runtimeEnvPath, process.platform === "win32" ? "python.exe" : "bin/python");
+}
+
+function runPackagedRuntimePythonScriptCapture(scriptName, script, args = [], options = {}) {
+  const scriptPath = writeRuntimePythonScript(scriptName, script);
+  return runCommandCapture(getPackagedRuntimePythonPath(), [scriptPath, ...args], options);
+}
+
 function ensureSourceModelExists() {
   if (!fs.existsSync(sourceModelPath)) {
     throw new Error(
@@ -290,6 +330,299 @@ function removeObsoleteRuntimePackages() {
     "-y",
     ...installedObsoletePackages,
   ]);
+}
+
+function bundlesSam3Runtime() {
+  return runtimeFlavor === "cu126" || runtimeFlavor === "cu130";
+}
+
+function ensureSam3Source() {
+  if (!bundlesSam3Runtime()) {
+    return null;
+  }
+
+  const pyprojectPath = path.join(sam3SourceDir, "pyproject.toml");
+  if (!fs.existsSync(pyprojectPath)) {
+    throw new Error(
+      `CUDA runtime builds require a controlled SAM3 source tree. Set MOONSHINE_SAM3_SOURCE_DIR to a directory containing pyproject.toml. Checked: ${pyprojectPath}`
+    );
+  }
+
+  const pyproject = fs.readFileSync(pyprojectPath, "utf8");
+  if (!/^\s*name\s*=\s*["']sam3["']\s*$/m.test(pyproject)) {
+    throw new Error(`SAM3 source metadata is invalid: ${pyprojectPath} does not declare project name sam3.`);
+  }
+
+  return { sourceDir: sam3SourceDir, pyprojectPath };
+}
+
+function clearSam3RuntimeInstallation() {
+  runCommand("conda", [
+    "run",
+    "-n",
+    runtimeEnvName,
+    "python",
+    "-m",
+    "pip",
+    "uninstall",
+    "-y",
+    "sam3",
+  ]);
+
+  const script = String.raw`
+import shutil
+import site
+import sysconfig
+from pathlib import Path
+
+roots = set()
+for value in site.getsitepackages():
+    if value:
+        roots.add(Path(value).resolve())
+for key in ("purelib", "platlib"):
+    value = sysconfig.get_paths().get(key)
+    if value:
+        roots.add(Path(value).resolve())
+
+for root in roots:
+    if not root.is_dir():
+        continue
+    for pattern in ("sam3", "sam3-*.dist-info", "sam3*.egg-info", "__editable__.sam3*", "sam3.egg-link"):
+        for candidate in root.glob(pattern):
+            if candidate.is_dir():
+                shutil.rmtree(candidate, ignore_errors=True)
+            else:
+                candidate.unlink(missing_ok=True)
+`;
+  runRuntimePythonScript("clear-sam3-runtime.py", script);
+}
+
+function buildSam3Wheel(sam3Source) {
+  fs.rmSync(sam3WheelDir, { recursive: true, force: true });
+  ensureDir(sam3WheelDir);
+  runCommand("conda", [
+    "run",
+    "-n",
+    runtimeEnvName,
+    "python",
+    "-m",
+    "pip",
+    "wheel",
+    "--no-deps",
+    "--no-build-isolation",
+    "--wheel-dir",
+    sam3WheelDir,
+    sam3Source.sourceDir,
+  ]);
+
+  const wheels = fs
+    .readdirSync(sam3WheelDir)
+    .filter((fileName) => /^sam3-.+\.whl$/i.test(fileName))
+    .map((fileName) => path.join(sam3WheelDir, fileName));
+  if (wheels.length !== 1) {
+    throw new Error(`Expected exactly one SAM3 wheel in ${sam3WheelDir}, found: ${wheels.join(", ") || "none"}`);
+  }
+  return wheels[0];
+}
+
+function installSam3SupportDependencies() {
+  ensureDir(runtimeTmpDir);
+  fs.writeFileSync(sam3RuntimeRequirementsPath, `${sam3SupportRequirements.join("\n")}\n`);
+
+  const pinnedPackages = getInstalledPackageConstraints(["torch", "torchvision", "numpy"]);
+  const installArgs = [
+    "run",
+    "-n",
+    runtimeEnvName,
+    "python",
+    "-m",
+    "pip",
+    "install",
+    "--upgrade-strategy",
+    "only-if-needed",
+    "-r",
+    sam3RuntimeRequirementsPath,
+  ];
+  if (pinnedPackages.length > 0) {
+    fs.writeFileSync(pinnedRuntimePackagesPath, `${pinnedPackages.join("\n")}\n`);
+    installArgs.push("-c", pinnedRuntimePackagesPath);
+  }
+  runCommand("conda", installArgs);
+}
+
+function verifySam3Runtime({ phase, usePackagedPython = false }) {
+  const expectedState = bundlesSam3Runtime() ? "present" : "absent";
+  const script = String.raw`
+import importlib
+import importlib.metadata as metadata
+import importlib.util
+import json
+import site
+import sys
+import sysconfig
+from pathlib import Path
+
+source_dir = Path(sys.argv[1]).resolve()
+expected_state = sys.argv[2]
+required_modules = ${JSON.stringify(sam3RuntimeRequiredModules)}
+
+def normalize(value):
+    return str(Path(value).resolve()).replace("\\", "/").casefold()
+
+site_roots = set()
+for value in site.getsitepackages():
+    if value:
+        site_roots.add(Path(value).resolve())
+for key in ("purelib", "platlib"):
+    value = sysconfig.get_paths().get(key)
+    if value:
+        site_roots.add(Path(value).resolve())
+
+def relative_to_site(path_value):
+    resolved = Path(path_value).resolve()
+    for root in site_roots:
+        try:
+            return str(resolved.relative_to(root)).replace("\\", "/")
+        except ValueError:
+            continue
+    return None
+
+source_normalized = normalize(source_dir)
+editable_artifacts = []
+source_path_leak = any(
+    normalize(entry) == source_normalized
+    or normalize(entry).startswith(source_normalized + "/")
+    for entry in sys.path
+    if entry
+)
+for root in site_roots:
+    if not root.is_dir():
+        continue
+    editable_artifacts.extend(item.name for item in root.glob("__editable__.sam3*"))
+    editable_artifacts.extend(item.name for item in root.glob("sam3.egg-link"))
+    for pth in root.glob("*.pth"):
+        content = pth.read_text(encoding="utf-8", errors="ignore").replace("\\", "/").casefold()
+        if source_normalized in content:
+            source_path_leak = True
+            editable_artifacts.append(pth.name)
+
+result = {
+    "phase": ${JSON.stringify("runtime")},
+    "expectedState": expected_state,
+    "requiredModules": {},
+    "editableArtifacts": sorted(set(editable_artifacts)),
+    "sourcePathLeak": source_path_leak,
+    "valid": False,
+}
+
+if expected_state == "absent":
+    sam3_spec = importlib.util.find_spec("sam3")
+    try:
+        metadata.version("sam3")
+        sam3_distribution_present = True
+    except metadata.PackageNotFoundError:
+        sam3_distribution_present = False
+    result.update({
+        "sam3Importable": sam3_spec is not None,
+        "sam3DistributionPresent": sam3_distribution_present,
+    })
+    result["valid"] = (
+        not sam3_spec
+        and not sam3_distribution_present
+        and not result["editableArtifacts"]
+        and not result["sourcePathLeak"]
+    )
+else:
+    try:
+        sam3 = importlib.import_module("sam3")
+        sam3_file = Path(sam3.__file__).resolve()
+        sam3_normalized = normalize(sam3_file)
+        if sam3_normalized == source_normalized or sam3_normalized.startswith(source_normalized + "/"):
+            source_path_leak = True
+        result["sourcePathLeak"] = source_path_leak
+        missing = []
+        for module_name in required_modules:
+            try:
+                importlib.import_module(module_name)
+                result["requiredModules"][module_name] = True
+            except Exception:
+                result["requiredModules"][module_name] = False
+                missing.append(module_name)
+        sam3_location = relative_to_site(sam3_file)
+        numpy_version = metadata.version("numpy")
+        numpy_major = int(numpy_version.split(".", 1)[0])
+        result.update({
+            "sam3Version": metadata.version("sam3"),
+            "sam3Location": sam3_location,
+            "missingModules": missing,
+            "numpyVersion": numpy_version,
+            "numpyRuntimeCompatible": numpy_major >= 1,
+        })
+        result["valid"] = bool(
+            sam3_location
+            and not missing
+            and not result["editableArtifacts"]
+            and not result["sourcePathLeak"]
+            and result["numpyRuntimeCompatible"]
+        )
+    except Exception as error:
+        result["error"] = str(error)
+
+print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+`;
+  const scriptName = `verify-sam3-runtime-${phase}.py`;
+  const output = usePackagedPython
+    ? runPackagedRuntimePythonScriptCapture(scriptName, script, [sam3SourceDir, expectedState])
+    : runRuntimePythonScriptCapture(scriptName, script, [sam3SourceDir, expectedState]);
+  let verification;
+  try {
+    verification = JSON.parse(output);
+  } catch (error) {
+    throw new Error(`SAM3 ${phase} verification did not return JSON: ${output}`);
+  }
+  verification.phase = phase;
+  if (!verification.valid) {
+    throw new Error(`SAM3 ${phase} verification failed: ${JSON.stringify(verification)}`);
+  }
+  return verification;
+}
+
+function installSam3Runtime(sam3Source) {
+  clearSam3RuntimeInstallation();
+  if (!bundlesSam3Runtime()) {
+    return {
+      bundled: false,
+      availability: "cuda-only-unavailable",
+      prePackVerification: verifySam3Runtime({ phase: "pre-pack" }),
+    };
+  }
+
+  const wheelPath = buildSam3Wheel(sam3Source);
+  // Install support packages before SAM3 metadata enters the resolver; keep NumPy/Torch pinned.
+  installSam3SupportDependencies();
+  runCommand("conda", [
+    "run",
+    "-n",
+    runtimeEnvName,
+    "python",
+    "-m",
+    "pip",
+    "install",
+    "--no-deps",
+    "--force-reinstall",
+    wheelPath,
+  ]);
+  const prePackVerification = verifySam3Runtime({ phase: "pre-pack" });
+  return {
+    bundled: true,
+    availability: "bundled-cuda-runtime",
+    wheelFileName: path.basename(wheelPath),
+    wheelSha256: sha256File(wheelPath),
+    packageVersion: prePackVerification.sam3Version || "",
+    installMode: "wheel-non-editable-no-deps",
+    numpyPolicy: "preserve-runtime-numpy-2.x-and-verify-imports",
+    prePackVerification,
+  };
 }
 
 function getMissingRequirements(requirementsFilePath = requirementsPath) {
@@ -662,10 +995,7 @@ function materializeRuntimeDirectory() {
     },
   });
 
-  const expectedPythonPath = path.join(
-    runtimeEnvPath,
-    process.platform === "win32" ? "python.exe" : "bin/python"
-  );
+  const expectedPythonPath = getPackagedRuntimePythonPath();
   if (!fs.existsSync(expectedPythonPath)) {
     const sourceEnvPath = getRuntimeEnvPrefix();
     console.warn(
@@ -675,7 +1005,7 @@ function materializeRuntimeDirectory() {
   }
 }
 
-function writeRuntimeManifest(torchInfo = {}) {
+function writeRuntimeManifest(torchInfo = {}, sam3Runtime = {}) {
   const pythonExecutable =
     process.platform === "win32" ? `${PACKAGED_RUNTIME_ENV_DIR}/python.exe` : `${PACKAGED_RUNTIME_ENV_DIR}/bin/python`;
   const condaUnpackExecutable =
@@ -683,7 +1013,7 @@ function writeRuntimeManifest(torchInfo = {}) {
       ? `${PACKAGED_RUNTIME_ENV_DIR}/Scripts/conda-unpack.exe`
       : `${PACKAGED_RUNTIME_ENV_DIR}/bin/conda-unpack`;
   const manifest = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     envName: runtimeEnvName,
     runtimeFlavor,
     modelBundle,
@@ -699,6 +1029,31 @@ function writeRuntimeManifest(torchInfo = {}) {
     torchCudaAvailable: Boolean(torchInfo.torchCudaAvailable),
     torchvisionVersion: torchInfo.torchvisionVersion || "",
     torchInstallSource: torchInfo.torchInstallSource || "",
+    samRuntime: {
+      sam1: {
+        code: "bundled-backend-plugin",
+        modelWeightsBundled: false,
+      },
+      sam2: {
+        code: "bundled-backend-plugin",
+        modelWeightsBundled: false,
+      },
+      sam3: {
+        bundled: Boolean(sam3Runtime.bundled),
+        availability: sam3Runtime.availability || "unknown",
+        packageVersion: sam3Runtime.packageVersion || "",
+        wheelFileName: sam3Runtime.wheelFileName || "",
+        wheelSha256: sam3Runtime.wheelSha256 || "",
+        installMode: sam3Runtime.installMode || "",
+        numpyPolicy: sam3Runtime.numpyPolicy || "",
+        requiredModules: sam3Runtime.bundled ? sam3RuntimeRequiredModules : [],
+        importVerification: {
+          prePack: sam3Runtime.prePackVerification || null,
+          postPack: sam3Runtime.postPackVerification || null,
+        },
+        modelWeightsBundled: false,
+      },
+    },
     modelFile: PACKAGED_DEFAULT_MODEL_FILE,
     smokeTest: {
       image: path.relative(repoRoot, smokeImagePath).replace(/\\/g, "/"),
@@ -722,7 +1077,20 @@ function hasReusableRuntimeArtifact() {
 
   try {
     const manifest = JSON.parse(fs.readFileSync(runtimeManifestPath, "utf8"));
-    return !manifest.runtimeFlavor || manifest.runtimeFlavor === runtimeFlavor;
+    if (manifest.schemaVersion < 3 || (manifest.runtimeFlavor && manifest.runtimeFlavor !== runtimeFlavor)) {
+      return false;
+    }
+    const sam3Runtime = manifest.samRuntime?.sam3;
+    if (bundlesSam3Runtime()) {
+      return Boolean(
+        sam3Runtime?.bundled &&
+          sam3Runtime?.importVerification?.postPack?.valid &&
+          !sam3Runtime.importVerification.postPack.sourcePathLeak &&
+          (!sam3Runtime.importVerification.postPack.editableArtifacts ||
+            sam3Runtime.importVerification.postPack.editableArtifacts.length === 0)
+      );
+    }
+    return Boolean(sam3Runtime && !sam3Runtime.bundled && sam3Runtime.availability === "cuda-only-unavailable");
   } catch {
     return false;
   }
@@ -730,15 +1098,22 @@ function hasReusableRuntimeArtifact() {
 
 export function buildPackagedWindowsRuntime(options = {}) {
   const { allowFallback = true } = options;
+  // Do not hide a missing or invalid controlled SAM3 source behind an old CUDA artifact.
+  const sam3Source = ensureSam3Source();
 
   try {
     ensureSourceModelExists();
     ensureRuntimeEnv();
     removeObsoleteRuntimePackages();
     const torchInfo = installRuntimeDependencies();
+    const sam3Runtime = installSam3Runtime(sam3Source);
     runRuntimeSmokeTest();
     materializeRuntimeDirectory();
-    const manifest = writeRuntimeManifest(torchInfo);
+    sam3Runtime.postPackVerification = verifySam3Runtime({
+      phase: "post-pack",
+      usePackagedPython: true,
+    });
+    const manifest = writeRuntimeManifest(torchInfo, sam3Runtime);
 
     return {
       success: true,
