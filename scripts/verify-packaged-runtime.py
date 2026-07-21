@@ -22,8 +22,9 @@ SAM3_REQUIRED_MODULES = (
     "ftfy",
     "pycocotools",
     "psutil",
-    "triton",
 )
+
+SAM3_OPTIONAL_MODULES = ("triton",)
 
 
 def normalize_path(value: str | Path) -> str:
@@ -92,6 +93,7 @@ def verify_cuda_runtime(roots: tuple[Path, ...], runtime_root: Path, source_dir:
         "editableArtifacts": editable_artifacts,
         "sourcePathLeak": source_path_leak,
         "requiredModules": {},
+        "optionalModules": {},
     }
     errors: list[str] = []
     try:
@@ -118,6 +120,25 @@ def verify_cuda_runtime(roots: tuple[Path, ...], runtime_root: Path, source_dir:
         except Exception:
             result["requiredModules"][module_name] = False
             errors.append(f"required SAM3 module is unavailable: {module_name}")
+
+    for module_name in SAM3_OPTIONAL_MODULES:
+        try:
+            importlib.import_module(module_name)
+            result["optionalModules"][module_name] = True
+        except Exception:
+            result["optionalModules"][module_name] = False
+
+    try:
+        compatibility = importlib.import_module("sam3._moonshine_compat")
+        acceleration = compatibility.runtime_capabilities()
+        result["acceleration"] = acceleration
+        if acceleration.get("triton", {}).get("backend") not in {
+            "triton",
+            "compatibility-fallback",
+        }:
+            errors.append("SAM3 compatibility backend is invalid")
+    except Exception as error:
+        errors.append(f"cannot inspect SAM3 compatibility backend: {error}")
 
     try:
         numpy_version = metadata.version("numpy")
@@ -154,12 +175,42 @@ def verify_cpu_runtime(roots: tuple[Path, ...], source_dir: Path) -> dict:
         errors.append("CPU package contains editable SAM3 metadata")
     if source_path_leak:
         errors.append("CPU package exposes the SAM3 build source path")
+    capability_diagnostics: dict = {}
+    try:
+        from moonshine_server.moonshine.sam_service import SamService
+
+        text_capabilities = SamService(Path.cwd(), "cpu").capabilities().get("text") or {}
+        required_modules = text_capabilities.get("requiredModules") or {}
+        optional_modules = text_capabilities.get("optionalModules") or {}
+        acceleration = text_capabilities.get("acceleration") or {}
+        capability_diagnostics = {
+            "runtimeReady": text_capabilities.get("runtimeReady"),
+            "reason": text_capabilities.get("reason"),
+            "requiredModules": required_modules,
+            "optionalModules": optional_modules,
+            "acceleration": acceleration,
+        }
+        if text_capabilities.get("runtimeReady"):
+            errors.append("CPU package unexpectedly reports SAM3 runtime ready")
+        if required_modules.get("missing"):
+            errors.append("CPU package reports SAM3 modules as missing instead of CUDA-only unavailable")
+        if "sam3" not in (required_modules.get("notApplicable") or []):
+            errors.append("CPU package does not mark SAM3 modules as not applicable")
+        if optional_modules.get("missing"):
+            errors.append("CPU package reports optional SAM3 accelerators as missing")
+        if acceleration.get("backend") != "cuda-only-unavailable":
+            errors.append("CPU package does not report the CUDA-only SAM3 backend state")
+        if "CUDA-only" not in str(text_capabilities.get("reason") or ""):
+            errors.append("CPU package does not report SAM3 as CUDA-only unavailable")
+    except Exception as error:
+        errors.append(f"cannot inspect CPU SAM3 capability diagnostics: {error}")
     return {
         "expected": "cuda-only-unavailable",
         "sam3Importable": sam3_spec is not None,
         "sam3DistributionPresent": sam3_distribution_present,
         "editableArtifacts": editable_artifacts,
         "sourcePathLeak": source_path_leak,
+        "capabilityDiagnostics": capability_diagnostics,
         "errors": errors,
         "valid": not errors,
     }

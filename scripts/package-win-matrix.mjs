@@ -248,7 +248,7 @@ function writeSha256Sums(artifacts) {
 
 function writeReleaseMatrixManifest(artifacts) {
   const manifest = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     generatedAt: new Date().toISOString(),
     version,
     runtimeFlavors,
@@ -258,25 +258,36 @@ function writeReleaseMatrixManifest(artifacts) {
       sam1: "SAM1 code is bundled in the backend for every package; model weights remain external.",
       sam2: "SAM2/SAM2.1 code is bundled in the backend for every package; model weights remain external.",
       cpu: "SAM3/SAM3.1 is CUDA-only and deliberately not bundled in CPU packages.",
-      cu126: "SAM3/SAM3.1 runtime code and required Python dependencies are bundled as a non-editable wheel installation.",
-      cu130: "SAM3/SAM3.1 runtime code and required Python dependencies are bundled as a non-editable wheel installation.",
+      cu126:
+        "SAM3/SAM3.1 runtime code and required Python dependencies are bundled as a non-editable wheel installation with a Windows compatibility fallback when Triton is unavailable.",
+      cu130:
+        "SAM3/SAM3.1 runtime code and required Python dependencies are bundled as a non-editable wheel installation with a Windows compatibility fallback when Triton is unavailable.",
       modelWeights: "No SAM model weights are bundled by this runtime policy. Models are supplied through model management or manual installation.",
     },
-    artifacts: artifacts.map((artifact) => ({
-      artifactName: artifact.artifactName,
-      runtimeFlavor: artifact.runtimeFlavor,
-      modelBundle: artifact.modelBundle,
-      sha256: artifact.sha256,
-      samRuntime: {
-        sam1: { code: "bundled-backend-plugin", modelWeightsBundled: false },
-        sam2: { code: "bundled-backend-plugin", modelWeightsBundled: false },
-        sam3:
-          artifact.runtimeFlavor === "cpu"
-            ? { availability: "cuda-only-unavailable", runtimeBundled: false, modelWeightsBundled: false }
-            : { availability: "bundled-cuda-runtime", runtimeBundled: true, modelWeightsBundled: false },
-      },
-      verification: artifact.audit,
-    })),
+    artifacts: artifacts.map((artifact) => {
+      const verifiedSam3 = artifact.audit?.archive?.manifest?.samRuntime?.sam3 || null;
+      return {
+        artifactName: artifact.artifactName,
+        runtimeFlavor: artifact.runtimeFlavor,
+        modelBundle: artifact.modelBundle,
+        sha256: artifact.sha256,
+        samRuntime: {
+          sam1: { code: "bundled-backend-plugin", modelWeightsBundled: false },
+          sam2: { code: "bundled-backend-plugin", modelWeightsBundled: false },
+          sam3:
+            artifact.runtimeFlavor === "cpu"
+              ? { availability: "cuda-only-unavailable", runtimeBundled: false, modelWeightsBundled: false }
+              : {
+                  availability: "bundled-cuda-runtime",
+                  runtimeBundled: true,
+                  modelWeightsBundled: false,
+                  acceleration: verifiedSam3?.acceleration || null,
+                  compatibilitySmoke: verifiedSam3?.compatibilitySmoke || null,
+                },
+        },
+        verification: artifact.audit,
+      };
+    }),
   };
   fs.writeFileSync(
     path.join(releaseRoot, "release-matrix.json"),

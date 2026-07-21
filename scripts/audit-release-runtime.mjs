@@ -19,7 +19,8 @@ const repoRoot = path.resolve(__dirname, "..");
 const runtimeAuditScriptPath = path.join(__dirname, "verify-packaged-runtime.py");
 const sam3ImageSmokeScriptPath = path.join(__dirname, "verify_sam3_image_smoke.py");
 const sam3VideoSmokeScriptPath = path.join(__dirname, "verify_sam3_video_smoke.py");
-const defaultSam3SourceDir = path.resolve(repoRoot, "..", "sam3");
+const sam3CompatibilitySmokeScriptPath = path.join(__dirname, "verify_sam3_compatibility.py");
+const defaultSam3SourceDir = path.join(repoRoot, "third_party", "sam3");
 
 function fail(message) {
   throw new Error(message);
@@ -126,7 +127,7 @@ function validateRuntimeManifest(manifestPath, runtimeFlavor, modelBundle) {
     fail(`Packaged runtime manifest is missing: ${manifestPath}`);
   }
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-  if (manifest.schemaVersion < 3) {
+  if (manifest.schemaVersion < 4) {
     fail(`Runtime manifest schema is too old for self-contained SAM validation: ${manifest.schemaVersion}`);
   }
   if (manifest.runtimeFlavor !== runtimeFlavor || manifest.modelBundle !== modelBundle) {
@@ -146,9 +147,12 @@ function validateRuntimeManifest(manifestPath, runtimeFlavor, modelBundle) {
     !sam3.bundled ||
     sam3.installMode !== "wheel-non-editable-no-deps" ||
     !sam3.wheelSha256 ||
-    !sam3.importVerification?.postPack?.valid
+    !sam3.importVerification?.postPack?.valid ||
+    !["triton", "compatibility-fallback"].includes(sam3.acceleration?.triton?.backend) ||
+    sam3.compatibilitySmoke?.prePack?.status !== "pass" ||
+    sam3.compatibilitySmoke?.postPack?.status !== "pass"
   ) {
-    fail("CUDA runtime manifest does not prove a non-editable SAM3 wheel installation.");
+    fail("CUDA runtime manifest does not prove a self-contained SAM3 wheel and compatibility fallback.");
   }
   return {
     schemaVersion: manifest.schemaVersion,
@@ -216,7 +220,11 @@ function runCudaFunctionalSmoke({ paths, runtimeFlavor, modelBundle, modelsDir }
     );
   }
 
-  const env = releaseEnvironment({ backendRoot: paths.backendRoot, runtimeFlavor, modelBundle });
+  const env = {
+    ...releaseEnvironment({ backendRoot: paths.backendRoot, runtimeFlavor, modelBundle }),
+    // Functional image and video smoke must exercise the Windows-safe path even on builders with Triton.
+    MOONSHINE_SAM3_DISABLE_TRITON: "1",
+  };
   const image = parseJsonOutput(
     runCapture(
       paths.pythonExecutable,
@@ -244,13 +252,35 @@ function runCudaFunctionalSmoke({ paths, runtimeFlavor, modelBundle, modelsDir }
   if (image.status !== "pass" || video.status !== "pass") {
     fail(`SAM3 functional audit failed: ${JSON.stringify({ image, video })}`);
   }
-  return { status: "passed", image, video };
+  return { status: "passed", backend: "compatibility-fallback", image, video };
+}
+
+function runSam3CompatibilitySmoke({ paths, runtimeFlavor, modelBundle }) {
+  if (runtimeFlavor === "cpu") {
+    return { status: "not-required", reason: "SAM3 is CUDA-only in CPU releases." };
+  }
+  const output = runCapture(
+    paths.pythonExecutable,
+    [sam3CompatibilitySmokeScriptPath, "--expect-backend", "compatibility-fallback"],
+    {
+      env: {
+        ...releaseEnvironment({ backendRoot: paths.backendRoot, runtimeFlavor, modelBundle }),
+        MOONSHINE_SAM3_DISABLE_TRITON: "1",
+      },
+    }
+  );
+  const result = parseJsonOutput(output, "SAM3 compatibility smoke");
+  if (result.status !== "pass") {
+    fail(`SAM3 compatibility smoke failed: ${JSON.stringify(result)}`);
+  }
+  return result;
 }
 
 function auditResolvedPackage({ appRoot, runtimeFlavor, modelBundle, scope, runFunctionalSmoke, modelsDir }) {
   const paths = resolvePackagedPaths(appRoot);
   const manifest = validateRuntimeManifest(paths.manifestPath, runtimeFlavor, modelBundle);
   const importAudit = runImportAudit({ paths, runtimeFlavor, modelBundle });
+  const compatibilitySmoke = runSam3CompatibilitySmoke({ paths, runtimeFlavor, modelBundle });
   const functionalSmoke = runFunctionalSmoke
     ? runCudaFunctionalSmoke({ paths, runtimeFlavor, modelBundle, modelsDir })
     : { status: "not-run" };
@@ -262,6 +292,7 @@ function auditResolvedPackage({ appRoot, runtimeFlavor, modelBundle, scope, runF
     auditedAt: new Date().toISOString(),
     manifest,
     importAudit,
+    compatibilitySmoke,
     functionalSmoke,
   };
 }

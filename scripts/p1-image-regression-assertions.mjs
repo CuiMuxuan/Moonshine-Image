@@ -436,7 +436,7 @@ function runAssertions() {
   assertPattern({
     file: "server/moonshine_server/moonshine/sam_service.py",
     description: "SAM capability API reports point/box readiness and gates real SAM3 text capability",
-    pattern: /SAM3_REQUIRED_MODULES = \{[\s\S]*"sam3": "sam3"[\s\S]*"pycocotools": "pycocotools"[\s\S]*"psutil": "psutil"[\s\S]*"triton": "triton"[\s\S]*SAM3_TEXT_MODEL_IDS = \{"sam3", "sam3_1_multiplex"\}[\s\S]*SAM3_TEXT_DEFAULT_MODEL_ID = "sam3_1_multiplex"[\s\S]*SAM3_1_MISSING_KEYS_WARNING[\s\S]*def _sam3_runtime_status[\s\S]*"runtimeReady"[\s\S]*"deviceReady"[\s\S]*def capabilities\(self\)[\s\S]*point_box_models[\s\S]*"pointBox"[\s\S]*"enabled": bool\(point_box_models\)[\s\S]*"video"[\s\S]*"inputTypes": \["jpegFrameDirectory", "videoPath"\][\s\S]*"supportsMultipleObjects": True[\s\S]*"text"[\s\S]*"enabled": bool\(runnable_text_models\)[\s\S]*if item\.get\("id"\) == SAM3_TEXT_DEFAULT_MODEL_ID[\s\S]*"implementedModelIds": sorted\(SAM3_TEXT_MODEL_IDS\)[\s\S]*"pendingModels": pending_text_models[\s\S]*"warnings": text_warnings/,
+    pattern: /SAM3_REQUIRED_MODULES = \{[\s\S]*"sam3": "sam3"[\s\S]*"pycocotools": "pycocotools"[\s\S]*"psutil": "psutil"[\s\S]*SAM3_OPTIONAL_MODULES = \{[\s\S]*"triton": "triton"[\s\S]*SAM3_TEXT_MODEL_IDS = \{"sam3", "sam3_1_multiplex"\}[\s\S]*SAM3_TEXT_DEFAULT_MODEL_ID = "sam3_1_multiplex"[\s\S]*SAM3_1_MISSING_KEYS_WARNING[\s\S]*def _sam3_runtime_status[\s\S]*"runtimeReady"[\s\S]*"deviceReady"[\s\S]*def _sam3_acceleration_status[\s\S]*"compatibility-fallback"[\s\S]*def capabilities\(self\)[\s\S]*point_box_models[\s\S]*"pointBox"[\s\S]*"enabled": bool\(point_box_models\)[\s\S]*"video"[\s\S]*"inputTypes": \["jpegFrameDirectory", "videoPath"\][\s\S]*"supportsMultipleObjects": True[\s\S]*"text"[\s\S]*"enabled": bool\(runnable_text_models\)[\s\S]*if item\.get\("id"\) == SAM3_TEXT_DEFAULT_MODEL_ID[\s\S]*"implementedModelIds": sorted\(SAM3_TEXT_MODEL_IDS\)[\s\S]*"pendingModels": pending_text_models[\s\S]*"warnings": text_warnings/,
   });
   assertPattern({
     file: "server/moonshine_server/moonshine/sam_service.py",
@@ -667,8 +667,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "scripts/package-win-matrix.mjs",
-    description: "Windows release matrix writes all runtime/model-bundle combinations and SAM3 package policy",
-    pattern: /const runtimeFlavors = \["cpu", "cu126", "cu130"\][\s\S]*const modelBundles = \["external-models", "bundled-models"\][\s\S]*writeReleaseMatrixManifest[\s\S]*sam3Policy[\s\S]*release-matrix\.json/,
+    description: "Windows release matrix writes all runtime/model-bundle combinations and audited SAM3 acceleration metadata",
+    pattern: /const runtimeFlavors = \["cpu", "cu126", "cu130"\][\s\S]*const modelBundles = \["external-models", "bundled-models"\][\s\S]*writeReleaseMatrixManifest[\s\S]*samRuntime:[\s\S]*sam3:[\s\S]*cuda-only-unavailable[\s\S]*bundled-cuda-runtime[\s\S]*acceleration: verifiedSam3\?\.acceleration \|\| null[\s\S]*compatibilitySmoke: verifiedSam3\?\.compatibilitySmoke \|\| null[\s\S]*release-matrix\.json/,
   });
   assertPattern({
     file: "scripts/prepare-electron-resources.mjs",

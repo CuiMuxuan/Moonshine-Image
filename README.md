@@ -288,6 +288,13 @@ python -m compileall server
 $env:MOONSHINE_E2E_SKIP_BUILD='1'; npm run test:regression:e2e:workflow
 ```
 
+## Windows SAM3 运行时
+
+- CUDA 发布构建默认从仓库内的 `third_party/sam3` 构建受控 SAM3 wheel，并以非 editable 方式安装进发布包的 Conda 运行时；终端用户不需要 Python、Conda、`C:\code\sam3` 或单独的 SAM3 安装。
+- `MOONSHINE_SAM3_SOURCE_DIR` 仅保留给开发者测试其他受控源码树。正式发布默认使用仓库内 vendored 源码及其 `UPSTREAM.md` 中记录的上游版本和 `SAM License`。
+- Triton 是可选加速器：可用时继续使用官方 CUDA 内核；Windows 环境不可用时，SAM3 自动使用 SciPy/PyTorch 的兼容后端完成 EDT、NMS 和连通域处理。兼容后端会降低部分后处理性能，但不会把 SAM3 图片、文本或视频能力标记为缺失。
+- `external-models` 仍然只表示模型权重外置。CUDA 发布包包含 SAM3 运行时代码和依赖，但首次使用前仍需通过模型管理安装或手动提供 SAM3 权重。
+
 ## 许可证与来源
 
 本项目采用 [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.html) 许可证开源。

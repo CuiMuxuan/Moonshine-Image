@@ -16,6 +16,7 @@
     "test:regression:p0": "node scripts/p0-regression-gate.mjs",
     "test:regression:p0:assertions": "node scripts/p0-regression-assertions.mjs",
     "test:regression:release-runtime": "node scripts/release-runtime-regression-assertions.mjs",
+    "test:regression:sam3-compat": "node scripts/run-sam3-compatibility-regression.mjs",
     "test:regression:p1:image": "node scripts/p1-image-regression-assertions.mjs",
     "test:regression:slbr-local": "node scripts/run-slbr-local-tests.mjs",
     "test:regression:p1:video": "node scripts/p1-video-regression-assertions.mjs",

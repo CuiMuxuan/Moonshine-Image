@@ -62,10 +62,10 @@ SAM3_REQUIRED_MODULES = {
     "ftfy": "ftfy",
     "pycocotools": "pycocotools",
     "psutil": "psutil",
-    "triton": "triton",
 }
 
 SAM3_OPTIONAL_MODULES = {
+    "triton": "triton",
     "ninja": "ninja",
     "flash_attn": "flash_attn",
     "cc_torch": "cc_torch",
@@ -252,13 +252,48 @@ class SamService:
         }
 
     def _sam3_runtime_status(self) -> dict:
+        release_runtime = self._release_runtime_profile()
+        if not release_runtime["sam3RuntimeSupportedByPackage"]:
+            reason = release_runtime["sam3TextPackageReason"]
+            return {
+                "runtimeReady": False,
+                "deviceReady": False,
+                "requiredModules": {
+                    "installed": {},
+                    "missing": [],
+                    "notApplicable": list(SAM3_REQUIRED_MODULES),
+                },
+                "optionalModules": {
+                    "installed": {},
+                    "missing": [],
+                    "notApplicable": list(SAM3_OPTIONAL_MODULES),
+                },
+                "versionRequirements": {"numpy": {"notApplicable": True}},
+                "acceleration": {
+                    "ready": False,
+                    "backend": "cuda-only-unavailable",
+                    "triton": {
+                        "importable": False,
+                        "enabled": False,
+                        "backend": "cuda-only-unavailable",
+                        "reason": reason,
+                    },
+                    "fallbacks": {},
+                    "warning": None,
+                    "reason": reason,
+                },
+                "reason": reason,
+            }
+
         required_modules = self._module_status(SAM3_REQUIRED_MODULES)
         optional_modules = self._module_status(SAM3_OPTIONAL_MODULES)
         numpy_status = self._sam3_numpy_status()
+        acceleration = self._sam3_acceleration_status()
         device_ready = self.device == "cuda" and torch.cuda.is_available()
         runtime_ready = (
             len(required_modules["missing"]) == 0
             and bool(numpy_status["runtimeCompatible"])
+            and bool(acceleration["ready"])
         )
         return {
             "runtimeReady": runtime_ready,
@@ -268,13 +303,45 @@ class SamService:
             "versionRequirements": {
                 "numpy": numpy_status,
             },
+            "acceleration": acceleration,
             "reason": None
             if runtime_ready
-            else self._sam3_runtime_reason(required_modules, numpy_status),
+            else self._sam3_runtime_reason(required_modules, numpy_status, acceleration),
         }
 
     @staticmethod
-    def _sam3_runtime_reason(required_modules: dict, numpy_status: dict) -> str:
+    def _sam3_acceleration_status() -> dict:
+        try:
+            from sam3 import _moonshine_compat
+
+            capabilities = _moonshine_compat.runtime_capabilities()
+            triton_status = capabilities.get("triton") or {}
+            backend = triton_status.get("backend")
+            fallback_active = backend == "compatibility-fallback"
+            return {
+                "ready": backend in {"triton", "compatibility-fallback"},
+                "backend": backend,
+                "triton": triton_status,
+                "fallbacks": capabilities.get("fallbacks") or {},
+                "warning": (
+                    "SAM3 is using the portable Windows compatibility backend; "
+                    "some mask post-processing may be slower."
+                    if fallback_active
+                    else None
+                ),
+            }
+        except Exception as error:
+            return {
+                "ready": False,
+                "backend": None,
+                "triton": {},
+                "fallbacks": {},
+                "warning": None,
+                "reason": str(error),
+            }
+
+    @staticmethod
+    def _sam3_runtime_reason(required_modules: dict, numpy_status: dict, acceleration: dict) -> str:
         issues = []
         if required_modules["missing"]:
             issues.append("missing modules: " + ", ".join(required_modules["missing"]))
@@ -282,6 +349,11 @@ class SamService:
             issues.append(
                 f"numpy {numpy_status['version']} does not satisfy "
                 f"{numpy_status['requirement']}"
+            )
+        if not acceleration.get("ready"):
+            issues.append(
+                "SAM3 compatibility backend is unavailable: "
+                + str(acceleration.get("reason") or acceleration.get("backend") or "unknown error")
             )
         return "; ".join(issues)
 
@@ -475,6 +547,7 @@ class SamService:
                 "requiredModules": sam3_runtime_status["requiredModules"],
                 "optionalModules": sam3_runtime_status["optionalModules"],
                 "versionRequirements": sam3_runtime_status["versionRequirements"],
+                "acceleration": sam3_runtime_status["acceleration"],
                 "releaseRuntime": release_runtime,
                 "warnings": text_warnings,
                 "reason": (

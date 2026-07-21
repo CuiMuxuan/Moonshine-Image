@@ -37,9 +37,10 @@ const sam3WheelDir = path.join(runtimeTmpDir, "sam3-wheel");
 const requirementsPath = path.join(repoRoot, "server", "requirements.txt");
 const smokeImagePath = path.join(smokeInputDir, "image.png");
 const smokeMaskPath = path.join(smokeMaskDir, "image.png");
+const sam3CompatibilitySmokeScriptPath = path.join(__dirname, "verify_sam3_compatibility.py");
 const sourceModelPath = path.join(repoRoot, "models", PACKAGED_DEFAULT_MODEL_FILE);
 const configuredSam3SourceDir = String(process.env.MOONSHINE_SAM3_SOURCE_DIR || "").trim();
-const defaultSam3SourceDir = path.resolve(repoRoot, "..", "sam3");
+const defaultSam3SourceDir = path.join(repoRoot, "third_party", "sam3");
 const sam3SourceDir = path.resolve(configuredSam3SourceDir || defaultSam3SourceDir);
 const hasExplicitRuntimeFlavor = Boolean(process.env.MOONSHINE_RUNTIME_FLAVOR);
 const runtimeFlavor = normalizeRuntimeFlavor(process.env.MOONSHINE_RUNTIME_FLAVOR);
@@ -91,6 +92,9 @@ const sam3RuntimeRequiredModules = [
   "ftfy",
   "pycocotools",
   "psutil",
+  "sam3._moonshine_compat",
+];
+const sam3RuntimeOptionalModules = [
   "triton",
 ];
 const sam3SupportRequirements = [
@@ -106,8 +110,10 @@ const sam3SupportRequirements = [
   "einops",
   "pycocotools",
   "psutil",
+  "scipy>=1.11,<2",
+  "scikit-image",
 ];
-// The matched CUDA Torch wheel provides triton; it remains a required import but is not a standalone Windows pip dependency.
+// Triton is an optional accelerator. The vendored SAM3 compatibility layer keeps Windows releases functional without it.
 
 function normalizeRuntimeFlavor(value) {
   const normalized = String(value || "cu130").trim().toLowerCase();
@@ -465,6 +471,7 @@ from pathlib import Path
 source_dir = Path(sys.argv[1]).resolve()
 expected_state = sys.argv[2]
 required_modules = ${JSON.stringify(sam3RuntimeRequiredModules)}
+optional_modules = ${JSON.stringify(sam3RuntimeOptionalModules)}
 
 def normalize(value):
     return str(Path(value).resolve()).replace("\\", "/").casefold()
@@ -510,6 +517,7 @@ result = {
     "phase": ${JSON.stringify("runtime")},
     "expectedState": expected_state,
     "requiredModules": {},
+    "optionalModules": {},
     "editableArtifacts": sorted(set(editable_artifacts)),
     "sourcePathLeak": source_path_leak,
     "valid": False,
@@ -548,6 +556,19 @@ else:
             except Exception:
                 result["requiredModules"][module_name] = False
                 missing.append(module_name)
+        for module_name in optional_modules:
+            try:
+                importlib.import_module(module_name)
+                result["optionalModules"][module_name] = True
+            except Exception:
+                result["optionalModules"][module_name] = False
+        compatibility = importlib.import_module("sam3._moonshine_compat")
+        acceleration = compatibility.runtime_capabilities()
+        result["acceleration"] = acceleration
+        compatibility_ready = acceleration.get("triton", {}).get("backend") in {
+            "triton",
+            "compatibility-fallback",
+        }
         sam3_location = relative_to_site(sam3_file)
         numpy_version = metadata.version("numpy")
         numpy_major = int(numpy_version.split(".", 1)[0])
@@ -557,6 +578,7 @@ else:
             "missingModules": missing,
             "numpyVersion": numpy_version,
             "numpyRuntimeCompatible": numpy_major >= 1,
+            "compatibilityReady": compatibility_ready,
         })
         result["valid"] = bool(
             sam3_location
@@ -564,6 +586,7 @@ else:
             and not result["editableArtifacts"]
             and not result["sourcePathLeak"]
             and result["numpyRuntimeCompatible"]
+            and result["compatibilityReady"]
         )
     except Exception as error:
         result["error"] = str(error)
@@ -585,6 +608,47 @@ print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     throw new Error(`SAM3 ${phase} verification failed: ${JSON.stringify(verification)}`);
   }
   return verification;
+}
+
+function runSam3CompatibilitySmoke({ phase, usePackagedPython = false }) {
+  if (!bundlesSam3Runtime()) {
+    return { status: "not-required", reason: "SAM3 is CUDA-only in CPU releases." };
+  }
+
+  const environment = {
+    MOONSHINE_SAM3_DISABLE_TRITON: "1",
+    PYTHONNOUSERSITE: "1",
+    PYTHONSAFEPATH: "1",
+  };
+  const output = usePackagedPython
+    ? runCommandCapture(
+        getPackagedRuntimePythonPath(),
+        [sam3CompatibilitySmokeScriptPath, "--expect-backend", "compatibility-fallback"],
+        { env: environment }
+      )
+    : runCommandCapture(
+        "conda",
+        [
+          "run",
+          "-n",
+          runtimeEnvName,
+          "python",
+          sam3CompatibilitySmokeScriptPath,
+          "--expect-backend",
+          "compatibility-fallback",
+        ],
+        { env: environment }
+      );
+  let result;
+  try {
+    result = JSON.parse(output);
+  } catch {
+    throw new Error(`SAM3 ${phase} compatibility smoke did not return JSON: ${output}`);
+  }
+  if (result.status !== "pass") {
+    throw new Error(`SAM3 ${phase} compatibility smoke failed: ${JSON.stringify(result)}`);
+  }
+  return result;
 }
 
 function installSam3Runtime(sam3Source) {
@@ -613,6 +677,7 @@ function installSam3Runtime(sam3Source) {
     wheelPath,
   ]);
   const prePackVerification = verifySam3Runtime({ phase: "pre-pack" });
+  const prePackCompatibilitySmoke = runSam3CompatibilitySmoke({ phase: "pre-pack" });
   return {
     bundled: true,
     availability: "bundled-cuda-runtime",
@@ -622,6 +687,7 @@ function installSam3Runtime(sam3Source) {
     installMode: "wheel-non-editable-no-deps",
     numpyPolicy: "preserve-runtime-numpy-2.x-and-verify-imports",
     prePackVerification,
+    prePackCompatibilitySmoke,
   };
 }
 
@@ -1013,7 +1079,7 @@ function writeRuntimeManifest(torchInfo = {}, sam3Runtime = {}) {
       ? `${PACKAGED_RUNTIME_ENV_DIR}/Scripts/conda-unpack.exe`
       : `${PACKAGED_RUNTIME_ENV_DIR}/bin/conda-unpack`;
   const manifest = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     envName: runtimeEnvName,
     runtimeFlavor,
     modelBundle,
@@ -1047,6 +1113,15 @@ function writeRuntimeManifest(torchInfo = {}, sam3Runtime = {}) {
         installMode: sam3Runtime.installMode || "",
         numpyPolicy: sam3Runtime.numpyPolicy || "",
         requiredModules: sam3Runtime.bundled ? sam3RuntimeRequiredModules : [],
+        optionalModules: sam3Runtime.bundled ? sam3RuntimeOptionalModules : [],
+        acceleration:
+          sam3Runtime.postPackVerification?.acceleration ||
+          sam3Runtime.prePackVerification?.acceleration ||
+          null,
+        compatibilitySmoke: {
+          prePack: sam3Runtime.prePackCompatibilitySmoke || null,
+          postPack: sam3Runtime.postPackCompatibilitySmoke || null,
+        },
         importVerification: {
           prePack: sam3Runtime.prePackVerification || null,
           postPack: sam3Runtime.postPackVerification || null,
@@ -1077,7 +1152,7 @@ function hasReusableRuntimeArtifact() {
 
   try {
     const manifest = JSON.parse(fs.readFileSync(runtimeManifestPath, "utf8"));
-    if (manifest.schemaVersion < 3 || (manifest.runtimeFlavor && manifest.runtimeFlavor !== runtimeFlavor)) {
+    if (manifest.schemaVersion < 4 || (manifest.runtimeFlavor && manifest.runtimeFlavor !== runtimeFlavor)) {
       return false;
     }
     const sam3Runtime = manifest.samRuntime?.sam3;
@@ -1085,6 +1160,10 @@ function hasReusableRuntimeArtifact() {
       return Boolean(
         sam3Runtime?.bundled &&
           sam3Runtime?.importVerification?.postPack?.valid &&
+          ["triton", "compatibility-fallback"].includes(
+            sam3Runtime?.acceleration?.triton?.backend
+          ) &&
+          sam3Runtime?.compatibilitySmoke?.postPack?.status === "pass" &&
           !sam3Runtime.importVerification.postPack.sourcePathLeak &&
           (!sam3Runtime.importVerification.postPack.editableArtifacts ||
             sam3Runtime.importVerification.postPack.editableArtifacts.length === 0)
@@ -1110,6 +1189,10 @@ export function buildPackagedWindowsRuntime(options = {}) {
     runRuntimeSmokeTest();
     materializeRuntimeDirectory();
     sam3Runtime.postPackVerification = verifySam3Runtime({
+      phase: "post-pack",
+      usePackagedPython: true,
+    });
+    sam3Runtime.postPackCompatibilitySmoke = runSam3CompatibilitySmoke({
       phase: "post-pack",
       usePackagedPython: true,
     });
