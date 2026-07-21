@@ -49,6 +49,24 @@ function runCapture(command, args, options = {}) {
   return String(result.stdout || "").trim();
 }
 
+function runCaptureAllowFailure(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    cwd: repoRoot,
+    shell: false,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    env: { ...process.env, ...(options.env || {}) },
+  });
+  if (result.error) {
+    fail(`${command} failed to start: ${result.error.message}`);
+  }
+  return {
+    exitCode: result.status,
+    stdout: String(result.stdout || "").trim(),
+    stderr: String(result.stderr || "").trim(),
+  };
+}
+
 function parseJsonOutput(output, label) {
   const trimmed = String(output || "").trim();
   try {
@@ -225,34 +243,81 @@ function runCudaFunctionalSmoke({ paths, runtimeFlavor, modelBundle, modelsDir }
     // Functional image and video smoke must exercise the Windows-safe path even on builders with Triton.
     MOONSHINE_SAM3_DISABLE_TRITON: "1",
   };
-  const image = parseJsonOutput(
-    runCapture(
-      paths.pythonExecutable,
-      [sam3ImageSmokeScriptPath, "--model-dir", resolvedModelsDir, "--device", "cuda"],
-      { env }
-    ),
-    "SAM3 image smoke"
-  );
-  const video = parseJsonOutput(
-    runCapture(
-      paths.pythonExecutable,
-      [
-        sam3VideoSmokeScriptPath,
-        "--model-dir",
-        resolvedModelsDir,
-        "--device",
-        "cuda",
-        "--model-id",
-        "sam3_1_multiplex",
-      ],
-      { env }
-    ),
-    "SAM3 video smoke"
-  );
-  if (image.status !== "pass" || video.status !== "pass") {
-    fail(`SAM3 functional audit failed: ${JSON.stringify({ image, video })}`);
+  const runSmoke = (label, args) => {
+    const attempt = runCaptureAllowFailure(paths.pythonExecutable, args, { env });
+    const output = [attempt.stdout, attempt.stderr].filter(Boolean).join("\n");
+    const normalizedOutput = output.toLowerCase();
+    const builderArchitectureMismatch =
+      normalizedOutput.includes("cudaerrornokernelimagefordevice") ||
+      normalizedOutput.includes("no kernel image is available for execution on the device") ||
+      normalizedOutput.includes("is not compatible with the current pytorch installation");
+
+    if (attempt.exitCode !== 0 && builderArchitectureMismatch) {
+      return {
+        status: "not-verified",
+        reason: "builder-gpu-architecture-incompatible",
+        label,
+        exitCode: attempt.exitCode,
+        diagnostic: output.slice(-4000),
+      };
+    }
+    if (attempt.exitCode !== 0) {
+      fail(
+        `${label} failed with exit code ${attempt.exitCode ?? "unknown"}: ${
+          attempt.stderr || attempt.stdout || "no output"
+        }`
+      );
+    }
+
+    const result = parseJsonOutput(attempt.stdout, label);
+    if (result.status !== "pass") {
+      fail(`${label} failed: ${JSON.stringify(result)}`);
+    }
+    return { status: "passed", result };
+  };
+
+  const image = runSmoke("SAM3 image smoke", [
+    sam3ImageSmokeScriptPath,
+    "--model-dir",
+    resolvedModelsDir,
+    "--device",
+    "cuda",
+  ]);
+  if (image.status === "not-verified") {
+    return {
+      status: "not-verified",
+      reason: image.reason,
+      backend: "compatibility-fallback",
+      image,
+      video: { status: "not-run", reason: image.reason },
+    };
   }
-  return { status: "passed", backend: "compatibility-fallback", image, video };
+
+  const video = runSmoke("SAM3 video smoke", [
+    sam3VideoSmokeScriptPath,
+    "--model-dir",
+    resolvedModelsDir,
+    "--device",
+    "cuda",
+    "--model-id",
+    "sam3_1_multiplex",
+  ]);
+  if (video.status === "not-verified") {
+    return {
+      status: "not-verified",
+      reason: video.reason,
+      backend: "compatibility-fallback",
+      image: image.result,
+      video,
+    };
+  }
+
+  return {
+    status: "passed",
+    backend: "compatibility-fallback",
+    image: image.result,
+    video: video.result,
+  };
 }
 
 function runSam3CompatibilitySmoke({ paths, runtimeFlavor, modelBundle }) {

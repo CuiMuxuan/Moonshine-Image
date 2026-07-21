@@ -23,7 +23,7 @@ const packagedCandidates = [
 ];
 const defaultCu126TorchWheelPath =
   "C:\\code\\torch\\torch-2.11.0+cu126-cp312-cp312-win_amd64.whl";
-const runtimeFlavors = ["cpu", "cu126", "cu130"];
+const runtimeFlavors = ["cpu", "cu130"];
 const modelBundles = ["external-models", "bundled-models"];
 const electronBuildRetryCount = Math.max(
   1,

@@ -236,6 +236,8 @@ npm run package:win:matrix
 
 发布矩阵会生成 `cu130`、`cu126`、`cpu` 与 `bundled-models`、`external-models` 的 6 个 Windows x64 包，并在发布目录写入 `SHA256SUMS.txt` 和 `release-matrix.json`。`cpu` 包会把 SAM3/SAM3.1 文本智能选区显示为不可用；`external-models` 包首次启动时允许进入模型管理下载或手动安装模型；`bundled-models` 默认只打包 LaMa 和 SLBR，不默认打包 SAM3 权重。
 
+> **更新（当前发布策略）**：`npm run package:win:matrix` 默认只生成 CPU 与 `cu130` 的四个 Windows x64 工件。当前 `torch 2.11.0+cu130` wheel 分别携带 `sm_75`、`sm_80`、`sm_86`、`sm_90`、`sm_100`、`sm_120` 内核，因此可覆盖这些架构，但这不是 `sm_120` 对 `sm_90` SASS 的向下兼容。低于 `sm_75` 的 GPU 或无法使用 CUDA 13.0 的 NVIDIA 驱动应使用 CPU 包；`cu126` 仅保留为开发者显式构建选项，不再作为正式矩阵发布工件。
+
 
 ### 手动启动后端
 
