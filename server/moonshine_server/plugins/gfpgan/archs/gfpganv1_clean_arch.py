@@ -1,6 +1,7 @@
 import math
 import random
 import torch
+from moonshine_server.path_io import load_torch_checkpoint
 from torch import nn
 from torch.nn import functional as F
 
@@ -248,7 +249,11 @@ class GFPGANv1Clean(nn.Module):
         # load pre-trained stylegan2 model if necessary
         if decoder_load_path:
             self.stylegan_decoder.load_state_dict(
-                torch.load(decoder_load_path, map_location=lambda storage, loc: storage)['params_ema'])
+                load_torch_checkpoint(
+                    decoder_load_path,
+                    map_location=lambda storage, loc: storage,
+                )["params_ema"]
+            )
         # fix decoder without updating params
         if fix_decoder:
             for _, param in self.stylegan_decoder.named_parameters():

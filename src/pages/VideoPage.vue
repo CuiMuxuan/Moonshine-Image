@@ -888,6 +888,7 @@ import {
 } from "src/utils/videoPreviewTrial";
 import {
   buildBackendPathBlockedMessage,
+  buildBackendPathWarningMessage,
   validateBackendPathsForConfig,
 } from "src/utils/backendPathValidation";
 import {
@@ -7202,6 +7203,14 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
       timeout: 6500,
     });
     return;
+  }
+  if (backendPathValidation.warning) {
+    $q.notify({
+      type: "warning",
+      message: buildBackendPathWarningMessage(backendPathValidation),
+      position: "top",
+      timeout: 8000,
+    });
   }
 
   if (!canRun.value || isProcessing.value) return;

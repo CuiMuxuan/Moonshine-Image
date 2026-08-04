@@ -135,7 +135,9 @@ import { useBackendEngineStore } from "src/stores/backendEngine";
 import { useConfigStore } from "src/stores/config";
 import { useRuntimeDiagnosticsStore } from "src/stores/runtimeDiagnostics";
 import {
-  BACKEND_PATH_CJK_BLOCK_MESSAGE,
+  BACKEND_PATH_CJK_WARNING_MESSAGE,
+  buildBackendPathBlockedMessage,
+  buildBackendPathWarningMessage,
   validateBackendPathsForConfig,
 } from "src/utils/backendPathValidation";
 import { resolvePublicAssetPath } from "src/utils/publicAsset";
@@ -159,7 +161,7 @@ const showStartupOverlay = ref(false);
 const runtimeE2EFlag =
   typeof window !== "undefined" && window.__MOONSHINE_E2E__ === true;
 const isE2EMode = import.meta.env.VITE_MOONSHINE_E2E === "1" || runtimeE2EFlag;
-const pendingBackendPathDialog = ref(null);
+const pendingBackendPathNotice = ref(null);
 const cudaDiagnosticNotificationKey = ref("");
 const backendSessionStartedAt = ref(0);
 let removeBackendServiceStateListener = null;
@@ -639,19 +641,21 @@ const checkBackendStatus = async ({ notifyOnFailure = true } = {}) => {
   }
 };
 
-const showBackendPathBlockedDialog = (validationResult = null) => {
-  const invalidPathLines = Array.isArray(validationResult?.invalidPaths)
-    ? validationResult.invalidPaths
-        .map((item) => `${item?.label || item?.field || "路径"}：${item?.path || ""}`)
-        .filter(Boolean)
-    : [];
-  const message = invalidPathLines.length > 0
-    ? `${BACKEND_PATH_CJK_BLOCK_MESSAGE}\n${invalidPathLines.join("\n")}`
-    : BACKEND_PATH_CJK_BLOCK_MESSAGE;
+const showBackendPathNotice = (validationResult = null) => {
+  if (validationResult?.warning) {
+    $q.notify({
+      type: "warning",
+      message: buildBackendPathWarningMessage(validationResult),
+      position: "top",
+      timeout: 10000,
+      multiLine: true,
+    });
+    return;
+  }
 
   $q.dialog({
     title: "路径配置异常",
-    message,
+    message: buildBackendPathBlockedMessage(validationResult),
     ok: {
       label: "知道了",
       color: "primary",
@@ -661,23 +665,23 @@ const showBackendPathBlockedDialog = (validationResult = null) => {
   });
 };
 
-const flushPendingBackendPathDialog = () => {
-  if (!pendingBackendPathDialog.value) {
+const flushPendingBackendPathNotice = () => {
+  if (!pendingBackendPathNotice.value) {
     return;
   }
 
-  const payload = pendingBackendPathDialog.value;
-  pendingBackendPathDialog.value = null;
-  showBackendPathBlockedDialog(payload);
+  const payload = pendingBackendPathNotice.value;
+  pendingBackendPathNotice.value = null;
+  showBackendPathNotice(payload);
 };
 
-const queueBackendPathBlockedDialog = (validationResult = null) => {
+const queueBackendPathNotice = (validationResult = null) => {
   if (showStartupOverlay.value) {
-    pendingBackendPathDialog.value = validationResult || {};
+    pendingBackendPathNotice.value = validationResult || {};
     return;
   }
 
-  showBackendPathBlockedDialog(validationResult);
+  showBackendPathNotice(validationResult);
 };
 
 const getElectronInvoke = () => window.electron?.ipcRenderer?.invoke;
@@ -841,10 +845,13 @@ const prepareBackendEngine = async () => {
     );
     if (!backendPathValidation.valid) {
       backendEngineStore.setFailed(
-        backendPathValidation.message || BACKEND_PATH_CJK_BLOCK_MESSAGE
+        backendPathValidation.message || BACKEND_PATH_CJK_WARNING_MESSAGE
       );
-      queueBackendPathBlockedDialog(backendPathValidation);
+      queueBackendPathNotice(backendPathValidation);
       return;
+    }
+    if (backendPathValidation.warning) {
+      queueBackendPathNotice(backendPathValidation);
     }
 
     const processStatus = await invoke("check-backend-status");
@@ -916,7 +923,7 @@ const prepareBackendEngine = async () => {
 };
 
 const handleStartupOverlayFinished = () => {
-  flushPendingBackendPathDialog();
+  flushPendingBackendPathNotice();
 };
 
 const handleRouteChange = (value) => {
@@ -996,7 +1003,7 @@ watch(showBackendManager, (newVal) => {
 
 watch(showStartupOverlay, (visible) => {
   if (!visible) {
-    flushPendingBackendPathDialog();
+    flushPendingBackendPathNotice();
   }
 });
 

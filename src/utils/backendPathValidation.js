@@ -1,9 +1,14 @@
-export const BACKEND_PATH_CJK_BLOCK_MESSAGE =
-  "项目路径中存在中文，可能导致项目运行失败，本次静默启动停止，请在全局配置后端配置中记录当前的项目路径和模型路径，然后将其移动到不含中文的路径下，并选择该路径。";
+export const BACKEND_PATH_CJK_WARNING_MESSAGE =
+  "项目路径中包含中文。兼容性测试已覆盖图片、视频和模型读取，Moonshine 将继续运行；若第三方扩展仍出现路径兼容问题，请临时改用不含中文的路径。";
+export const BACKEND_PATH_CJK_BLOCK_MESSAGE = BACKEND_PATH_CJK_WARNING_MESSAGE;
 
 const normalizeValidationResult = (result = {}) => ({
   success: result?.success !== false,
   valid: result?.valid !== false,
+  warning:
+    result?.warning === true ||
+    (result?.code === "BACKEND_PATH_CONTAINS_CJK" && result?.valid === true),
+  severity: String(result?.severity || ""),
   code: String(result?.code || ""),
   message: String(result?.message || ""),
   invalidPaths: Array.isArray(result?.invalidPaths) ? result.invalidPaths : [],
@@ -34,6 +39,9 @@ export const buildBackendPathBlockedMessage = (
   const detail = formatBackendInvalidPathList(normalized);
   return detail ? `${baseMessage}\n${detail}` : baseMessage;
 };
+
+export const buildBackendPathWarningMessage = (validationResult = {}) =>
+  buildBackendPathBlockedMessage(validationResult, { includePathList: true });
 
 const normalizePathText = (value, fallback = "（未设置）") => {
   const text = String(value || "").trim();

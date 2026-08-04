@@ -60,6 +60,7 @@ from moonshine_server.image_output import (
     resolve_image_output_spec,
 )
 from moonshine_server.mask_image import decode_binary_mask
+from moonshine_server.path_io import read_image_file, to_path
 from moonshine_server.inpaint_color_stabilization import (
     apply_inpaint_color_stabilization,
     try_flat_background_fill,
@@ -1640,10 +1641,11 @@ class Api:
 
     @staticmethod
     def _load_image_from_path(image_path: str):
-        if not os.path.exists(image_path):
+        image_file = to_path(image_path)
+        if not image_file.is_file():
             raise FileNotFoundError(f"Image file not found: {image_path}")
 
-        image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+        image = read_image_file(image_file, cv2.IMREAD_UNCHANGED)
         if image is None:
             raise ValueError(f"Failed to decode image: {image_path}")
 
@@ -1661,10 +1663,11 @@ class Api:
 
     @staticmethod
     def _load_mask_from_path(mask_path: str, keep_grayscale: bool):
-        if not os.path.exists(mask_path):
+        mask_file = to_path(mask_path)
+        if not mask_file.is_file():
             raise FileNotFoundError(f"Mask file not found: {mask_path}")
 
-        mask_image = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)
+        mask_image = read_image_file(mask_file, cv2.IMREAD_UNCHANGED)
         if mask_image is None:
             raise ValueError(f"Failed to decode mask: {mask_path}")
 

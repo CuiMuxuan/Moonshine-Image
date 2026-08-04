@@ -5,6 +5,8 @@ import os
 import torch
 from torchvision.utils import make_grid
 
+from moonshine_server.path_io import write_image_file
+
 
 def img2tensor(imgs, bgr2rgb=True, float32=True):
     """Numpy array to tensor.
@@ -148,7 +150,7 @@ def imwrite(img, file_path, params=None, auto_mkdir=True):
     if auto_mkdir:
         dir_name = os.path.abspath(os.path.dirname(file_path))
         os.makedirs(dir_name, exist_ok=True)
-    ok = cv2.imwrite(file_path, img, params)
+    ok = write_image_file(file_path, img, params)
     if not ok:
         raise IOError('Failed in writing images.')
 

@@ -13,6 +13,7 @@
     "test": "npm run test:startup && npm run test:settings",
     "test:startup": "node scripts/run-startup-tests.mjs",
     "test:settings": "node --test test/settings-*.test.mjs",
+    "test:path-compat": "python -m unittest discover -s server/tests -p test_unicode_path_io.py -v",
     "test:regression:p0": "node scripts/p0-regression-gate.mjs",
     "test:regression:p0:assertions": "node scripts/p0-regression-assertions.mjs",
     "test:regression:release-runtime": "node scripts/release-runtime-regression-assertions.mjs",

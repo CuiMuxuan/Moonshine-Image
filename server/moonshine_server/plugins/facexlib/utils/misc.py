@@ -5,6 +5,8 @@ import torch
 from torch.hub import download_url_to_file, get_dir
 from urllib.parse import urlparse
 
+from moonshine_server.path_io import write_image_file
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -24,7 +26,7 @@ def imwrite(img, file_path, params=None, auto_mkdir=True):
     if auto_mkdir:
         dir_name = os.path.abspath(os.path.dirname(file_path))
         os.makedirs(dir_name, exist_ok=True)
-    return cv2.imwrite(file_path, img, params)
+    return write_image_file(file_path, img, params)
 
 
 def img2tensor(imgs, bgr2rgb=True, float32=True):

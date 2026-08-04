@@ -355,13 +355,13 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/layouts/MainLayout.vue",
-    description: "Main layout defers backend-path blocked dialog when startup overlay is active",
-    pattern: /const queueBackendPathBlockedDialog = \(validationResult = null\) => \{[\s\S]*if \(showStartupOverlay\.value\) \{[\s\S]*pendingBackendPathDialog\.value = validationResult \|\| \{\};/,
+    description: "Main layout defers backend-path notice when startup overlay is active",
+    pattern: /const queueBackendPathNotice = \(validationResult = null\) => \{[\s\S]*if \(showStartupOverlay\.value\) \{[\s\S]*pendingBackendPathNotice\.value = validationResult \|\| \{\};/,
   });
   assertPattern({
     file: "src/layouts/MainLayout.vue",
-    description: "Main layout flushes deferred backend-path dialog after startup overlay",
-    pattern: /const handleStartupOverlayFinished = \(\) => \{\s*flushPendingBackendPathDialog\(\);\s*\};/,
+    description: "Main layout flushes deferred backend-path notice after startup overlay",
+    pattern: /const handleStartupOverlayFinished = \(\) => \{\s*flushPendingBackendPathNotice\(\);\s*\};/,
   });
 
   logSection("Config & Shared State Contracts");
@@ -460,14 +460,14 @@ function runAssertions() {
     pattern: /currentBackendProjectPath[\s\S]*selectedBackendProjectPath[\s\S]*selectedModelDir/,
   });
   assertPattern({
-    file: "src-electron/electron-main.js",
-    description: "Electron main keeps CJK path detection pattern",
+    file: "src-electron/backend-path-validation.js",
+    description: "Backend path validation keeps CJK detection pattern",
     pattern: /const CJK_PATH_PATTERN = \/\[\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff\]\/u;/,
   });
   assertPattern({
-    file: "src-electron/electron-main.js",
-    description: "Electron main validates backend project/model paths for CJK",
-    pattern: /if \(normalized\.backendProjectPath && containsCjkCharacter\(normalized\.backendProjectPath\)\)[\s\S]*if \(normalized\.modelDir && containsCjkCharacter\(normalized\.modelDir\)\)/,
+    file: "src-electron/backend-path-validation.js",
+    description: "Backend path validation reports CJK paths as non-blocking warnings",
+    pattern: /valid: true,[\s\S]*warning: true,[\s\S]*code: "BACKEND_PATH_CONTAINS_CJK"[\s\S]*warningPaths/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",

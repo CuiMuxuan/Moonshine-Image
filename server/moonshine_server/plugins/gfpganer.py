@@ -2,6 +2,7 @@ import os
 
 import cv2
 import torch
+from moonshine_server.path_io import load_torch_checkpoint
 from torchvision.transforms.functional import normalize
 from torch.hub import get_dir
 
@@ -78,7 +79,7 @@ class MyGFPGANer:
             model_rootpath=model_dir,
         )
 
-        loadnet = torch.load(model_path)
+        loadnet = load_torch_checkpoint(model_path)
         if "params_ema" in loadnet:
             keyname = "params_ema"
         else:

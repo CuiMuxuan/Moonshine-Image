@@ -1003,6 +1003,7 @@ import { useFileManagerStore } from "src/stores/fileManager";
 import { useModelRegistryStore } from "src/stores/modelRegistry";
 import {
   buildBackendPathBlockedMessage,
+  buildBackendPathWarningMessage,
   buildBackendPathSelectionBlockedMessage,
   validateBackendPaths,
 } from "src/utils/backendPathValidation";
@@ -1531,6 +1532,14 @@ const selectModelPath = async () => {
       });
       return;
     }
+    if (validation.warning) {
+      $q.notify({
+        type: "warning",
+        message: buildBackendPathWarningMessage(validation),
+        position: "top",
+        timeout: 8000,
+      });
+    }
     localConfig.value.general.modelDir = value;
   } catch (error) {
     $q.notify({ type: "negative", message: `选择模型目录失败：${error.message}` });
@@ -1557,6 +1566,14 @@ const selectBackendProjectPath = async () => {
         timeout: 6000,
       });
       return;
+    }
+    if (validation.warning) {
+      $q.notify({
+        type: "warning",
+        message: buildBackendPathWarningMessage(validation),
+        position: "top",
+        timeout: 8000,
+      });
     }
     const checkResult = await window.electron.ipcRenderer.invoke("check-project", value);
     if (checkResult.success) {
@@ -1628,6 +1645,14 @@ const doSaveSettings = async () => {
         timeout: 7000,
       });
       return;
+    }
+    if (backendPathValidation.warning) {
+      $q.notify({
+        type: "warning",
+        message: buildBackendPathWarningMessage(backendPathValidation),
+        position: "top",
+        timeout: 8000,
+      });
     }
 
     const previousPort = configStore.config.general.backendPort;

@@ -4,6 +4,7 @@ import math
 import numpy as np
 
 import torch
+from moonshine_server.path_io import load_torch_checkpoint
 import torch.nn as nn
 from functools import partial
 import torch.nn.functional as F
@@ -1817,7 +1818,7 @@ def build_backbone(bb_name, pretrained=True, params_settings=""):
 
 
 def load_weights(model, model_name):
-    save_model = torch.load(config.weights[model_name], map_location="cpu")
+    save_model = load_torch_checkpoint(config.weights[model_name], map_location="cpu")
     model_dict = model.state_dict()
     state_dict = {
         k: v if v.size() == model_dict[k].size() else model_dict[k]

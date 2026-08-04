@@ -23,6 +23,7 @@ from moonshine_server.image_output import (
     resolve_image_output_spec,
 )
 from moonshine_server.mask_image import read_binary_mask_path, resize_binary_mask
+from moonshine_server.path_io import load_torch_checkpoint, read_image_file, write_image_file
 
 VALID_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 DEFAULT_TILE_SIZE = 384
@@ -366,19 +367,15 @@ def compose_local_result(
 
 
 def read_image_bgr(path: Path) -> np.ndarray:
-    data = np.fromfile(str(path), dtype=np.uint8)
-    image = cv2.imdecode(data, cv2.IMREAD_COLOR)
+    image = read_image_file(path, cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError(f"Failed to read image: {path}")
     return image
 
 
 def write_image(path: Path, image: np.ndarray):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    ok, encoded = cv2.imencode(path.suffix or ".png", image)
-    if not ok:
+    if not write_image_file(path, image, create_parent=True):
         raise ValueError(f"Failed to encode image: {path}")
-    encoded.tofile(str(path))
 
 
 def gather_images(source: Path, output_dir: Path | None = None) -> list[Path]:
@@ -797,7 +794,7 @@ class SlbrRunner:
 
                 args = _build_model_args(self.checkpoint_path, self.device)
                 model = SLBR(args=args, shared_depth=1, blocks=3, long_skip=True)
-                checkpoint = torch.load(
+                checkpoint = load_torch_checkpoint(
                     self.checkpoint_path,
                     map_location=self.device,
                     weights_only=False,

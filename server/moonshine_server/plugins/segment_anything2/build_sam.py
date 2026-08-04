@@ -7,6 +7,7 @@
 import logging
 
 import torch
+from moonshine_server.path_io import load_torch_checkpoint
 from pathlib import Path
 
 from .modeling.backbones.hieradet import Hiera
@@ -430,7 +431,7 @@ def build_sam2_video_predictor(
 
 def _load_checkpoint(model, ckpt_path):
     if ckpt_path is not None:
-        sd = torch.load(ckpt_path, map_location="cpu")["model"]
+        sd = load_torch_checkpoint(ckpt_path, map_location="cpu")["model"]
         missing_keys, unexpected_keys = model.load_state_dict(sd)
         if missing_keys:
             logging.error(missing_keys)

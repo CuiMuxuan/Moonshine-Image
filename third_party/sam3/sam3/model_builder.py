@@ -1201,7 +1201,8 @@ def build_sam3_multiplex_video_predictor(
     if checkpoint_path is None:
         checkpoint_path = download_ckpt_from_hf(version="sam3.1")
     if checkpoint_path is not None:
-        ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        with open(checkpoint_path, "rb") as checkpoint_file:
+            ckpt = torch.load(checkpoint_file, map_location="cpu", weights_only=True)
         if "model" in ckpt and isinstance(ckpt["model"], dict):
             ckpt = ckpt["model"]
         # Remap checkpoint keys if needed (internal naming -> OSS naming)

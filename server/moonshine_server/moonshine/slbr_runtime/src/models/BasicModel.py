@@ -201,7 +201,12 @@ class BasicModel(object):
             raise Exception("=> no checkpoint found at '{}'".format(resume_path))
 
         print("=> loading checkpoint '{}'".format(resume_path))
-        current_checkpoint = torch.load(resume_path, map_location=self.device, weights_only=False)
+        with open(resume_path, "rb") as checkpoint_file:
+            current_checkpoint = torch.load(
+                checkpoint_file,
+                map_location=self.device,
+                weights_only=False,
+            )
         if isinstance(current_checkpoint['state_dict'], torch.nn.DataParallel):
             current_checkpoint['state_dict'] = current_checkpoint['state_dict'].module
 

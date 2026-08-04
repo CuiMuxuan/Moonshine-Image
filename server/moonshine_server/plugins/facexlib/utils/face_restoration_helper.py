@@ -7,6 +7,7 @@ from torchvision.transforms.functional import normalize
 from ..detection import init_detection_model
 from ..parsing import init_parsing_model
 from ..utils.misc import img2tensor, imwrite
+from moonshine_server.path_io import read_image_file
 
 
 def get_largest_face(det_faces, h, w):
@@ -127,8 +128,11 @@ class FaceRestoreHelper(object):
     def read_image(self, img):
         """img can be image path or cv2 loaded image."""
         # self.input_img is Numpy array, (h, w, c), BGR, uint8, [0, 255]
-        if isinstance(img, str):
-            img = cv2.imread(img)
+        if isinstance(img, (str, os.PathLike)):
+            image_path = img
+            img = read_image_file(image_path, cv2.IMREAD_COLOR)
+            if img is None:
+                raise ValueError(f"Failed to read image: {image_path}")
 
         if np.max(img) > 256:  # 16-bit image
             img = img / 65535 * 255

@@ -72,6 +72,7 @@ import {
   createFatalStartupHandler,
 } from "./app-bootstrap.js";
 import { BackendProcessSupervisor } from "./backend-process-supervisor.js";
+import { buildBackendPathCompatibilityResult } from "./backend-path-validation.js";
 import {
   createDiagnostic,
   createStartupLogger,
@@ -440,9 +441,6 @@ const BUNDLED_RUNTIME_LOCK_WAIT_MS = 300000;
 const BUNDLED_RUNTIME_LOCK_STALE_MS = 120000;
 const VIDEO_PROCESSING_REGISTRY_FILE = "moonshine_video_resume_index.json";
 const QUICK_FINGERPRINT_SAMPLE_SIZE = 64 * 1024;
-const BACKEND_PATH_CJK_BLOCK_MESSAGE =
-  "项目路径中存在中文，可能导致项目运行失败，本次静默启动停止，请在全局配置后端配置中记录当前的项目路径和模型路径，然后将其移动到不含中文的路径下，并选择该路径。";
-const CJK_PATH_PATTERN = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u;
 const BACKEND_PORT_HOST = "127.0.0.1";
 const BACKEND_PORT_RETRY_LIMIT = 20;
 const DEFAULT_DISK_SPACE_SAFETY_BYTES = 64 * 1024 * 1024;
@@ -1105,10 +1103,6 @@ function isBundledBackendMode(projectPath) {
   return normalizedPath === path.normalize(getPackagedBackendRuntimeProjectPath());
 }
 
-function containsCjkCharacter(value) {
-  return CJK_PATH_PATTERN.test(String(value || ""));
-}
-
 function normalizeBackendPathValidationInput(input = {}) {
   const backendProjectPathInput =
     input.backendProjectPath !== undefined
@@ -1134,51 +1128,7 @@ function normalizeBackendPathValidationInput(input = {}) {
 
 function buildBackendPathValidationResult(input = {}) {
   const normalized = normalizeBackendPathValidationInput(input);
-  const invalidPaths = [];
-
-  if (normalized.backendProjectPath && containsCjkCharacter(normalized.backendProjectPath)) {
-    invalidPaths.push({
-      field: "backendProjectPath",
-      label: "后端项目路径",
-      path: normalized.backendProjectPath,
-    });
-  }
-
-  if (normalized.modelDir && containsCjkCharacter(normalized.modelDir)) {
-    invalidPaths.push({
-      field: "modelDir",
-      label: "模型目录路径",
-      path: normalized.modelDir,
-    });
-  }
-
-  if (normalized.bundledMode && containsCjkCharacter(normalized.effectiveModelDir)) {
-    invalidPaths.push({
-      field: "effectiveModelDir",
-      label: "内置模型目录路径",
-      path: normalized.effectiveModelDir,
-    });
-  }
-
-  if (invalidPaths.length > 0) {
-    return {
-      success: true,
-      valid: false,
-      code: "BACKEND_PATH_CONTAINS_CJK",
-      message: BACKEND_PATH_CJK_BLOCK_MESSAGE,
-      invalidPaths,
-      paths: normalized,
-    };
-  }
-
-  return {
-    success: true,
-    valid: true,
-    code: "",
-    message: "",
-    invalidPaths: [],
-    paths: normalized,
-  };
+  return buildBackendPathCompatibilityResult(normalized);
 }
 
 function getIntegrityArtifactPaths() {

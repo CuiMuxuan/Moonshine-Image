@@ -1,4 +1,5 @@
 import torch
+from moonshine_server.path_io import load_torch_checkpoint
 from copy import deepcopy
 
 from ..utils import load_file_from_url
@@ -19,7 +20,10 @@ def init_detection_model(model_name, half=False, device='cuda', model_rootpath=N
         url=model_url, model_dir='facexlib/weights', progress=True, file_name=None, save_dir=model_rootpath)
 
     # TODO: clean pretrained model
-    load_net = torch.load(model_path, map_location=lambda storage, loc: storage)
+    load_net = load_torch_checkpoint(
+        model_path,
+        map_location=lambda storage, loc: storage,
+    )
     # remove unnecessary 'module.'
     for k, v in deepcopy(load_net).items():
         if k.startswith('module.'):

@@ -6,6 +6,8 @@ from typing import Any, Dict, Optional, Tuple
 import cv2
 import numpy as np
 
+from moonshine_server.path_io import read_image_file, to_path, write_image_file
+
 
 STATE_VERSION = 1
 DEFAULT_OBJECT_KEY = "default"
@@ -264,10 +266,9 @@ def _read_json(path: str) -> Dict[str, Any]:
 
 
 def _write_image(path: str, image: np.ndarray) -> None:
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    if not cv2.imwrite(path, image):
+    image_path = to_path(path)
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    if not write_image_file(image_path, image):
         raise OSError(f"Failed to write image: {path}")
 
 
@@ -286,7 +287,7 @@ def _json_center(center: Any) -> Optional[list]:
 def _read_binary_mask_from_path(mask_path: str, expected_shape: Tuple[int, int]) -> Optional[np.ndarray]:
     if not mask_path:
         return None
-    mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+    mask = read_image_file(to_path(mask_path), cv2.IMREAD_GRAYSCALE)
     if mask is None:
         return None
     expected_height, expected_width = expected_shape
@@ -818,8 +819,8 @@ class VideoTemporalEnhancer:
             if not result_path or not mask_path or not thumbnail_path:
                 return
 
-            result_bgr = cv2.imread(result_path, cv2.IMREAD_COLOR)
-            mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+            result_bgr = read_image_file(result_path, cv2.IMREAD_COLOR)
+            mask = read_image_file(mask_path, cv2.IMREAD_GRAYSCALE)
             thumbnail_payload = _read_json(thumbnail_path)
             thumbnail = np.asarray(
                 thumbnail_payload.get("thumbnail"), dtype=np.float32
@@ -980,11 +981,11 @@ class VideoTemporalEnhancer:
                 patch_path = self._resolve_object_cache_file(
                     object_dir, _string(meta.get("patchPath"))
                 )
-                patch = cv2.imread(patch_path, cv2.IMREAD_COLOR)
+                patch = read_image_file(patch_path, cv2.IMREAD_COLOR)
                 mask_path = self._resolve_object_cache_file(
                     object_dir, _string(meta.get("maskPath"))
                 )
-                mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                mask = read_image_file(mask_path, cv2.IMREAD_GRAYSCALE)
                 expected_shape = (y1 - y0, x1 - x0)
                 if (
                     patch is None

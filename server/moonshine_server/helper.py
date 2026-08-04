@@ -12,6 +12,8 @@ import numpy as np
 import torch
 from moonshine_server.const import MPS_UNSUPPORT_MODELS
 from loguru import logger
+
+from moonshine_server.path_io import load_torch_checkpoint, load_torchscript
 from torch.hub import download_url_to_file, get_dir
 import hashlib
 
@@ -106,7 +108,7 @@ def load_jit_model(url_or_path, device, model_md5: str):
 
     logger.info(f"Loading model from: {model_path}")
     try:
-        model = torch.jit.load(model_path, map_location="cpu").to(device)
+        model = load_torchscript(model_path, map_location="cpu").to(device)
     except Exception as e:
         handle_error(model_path, model_md5, e)
     model.eval()
@@ -121,7 +123,7 @@ def load_model(model: torch.nn.Module, url_or_path, device, model_md5):
 
     try:
         logger.info(f"Loading model from: {model_path}")
-        state_dict = torch.load(model_path, map_location="cpu")
+        state_dict = load_torch_checkpoint(model_path, map_location="cpu")
         model.load_state_dict(state_dict, strict=True)
         model.to(device)
     except Exception as e:

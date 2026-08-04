@@ -9,6 +9,7 @@ from functools import partial
 from typing import List, Tuple, Union
 
 import torch
+from moonshine_server.path_io import load_torch_checkpoint
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -265,7 +266,7 @@ class Hiera(nn.Module):
         )
 
         if weights_path is not None:
-            chkpt = torch.load(weights_path, map_location="cpu")
+            chkpt = load_torch_checkpoint(weights_path, map_location="cpu")
             logging.info("loading Hiera", self.load_state_dict(chkpt, strict=False))
 
     def _get_pos_embed(self, hw: Tuple[int, int]) -> torch.Tensor:

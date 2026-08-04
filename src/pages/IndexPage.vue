@@ -149,6 +149,7 @@ import {
 } from "src/utils/processingTaskGuard";
 import {
   buildBackendPathBlockedMessage,
+  buildBackendPathWarningMessage,
   validateBackendPathsForConfig,
 } from "src/utils/backendPathValidation";
 import {
@@ -2163,6 +2164,14 @@ const runCurrentModel = async () => {
       timeout: 6500,
     });
     return;
+  }
+  if (backendPathValidation.warning) {
+    $q.notify({
+      type: "warning",
+      message: buildBackendPathWarningMessage(backendPathValidation),
+      position: "top",
+      timeout: 8000,
+    });
   }
 
   switch (currentModel.value) {

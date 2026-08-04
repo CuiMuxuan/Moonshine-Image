@@ -162,7 +162,8 @@ class Sam3MultiplexTrackerPredictor(nn.Module):
         model = instantiate(cfg.trainer.model, _recursive_=True)
         del model.backbone  # Remove backbone since it is shared with the sam3 model
         if checkpoint_file is not None:
-            ckpt = torch.load(checkpoint_file, map_location="cpu")
+            with open(checkpoint_file, "rb") as checkpoint_handle:
+                ckpt = torch.load(checkpoint_handle, map_location="cpu")
             model.load_state_dict(ckpt["model"], strict=False)
         self.model = model
         self.per_obj_inference = per_obj_inference
@@ -264,7 +265,8 @@ class Sam3MultiplexBase(Sam3VideoBase):
         assert isinstance(detector, Sam3MultiplexDetector)
         self.detector = detector
         if sam3_ckpt_path:
-            ckpt = torch.load(sam3_ckpt_path, map_location="cpu", weights_only=True)
+            with open(sam3_ckpt_path, "rb") as checkpoint_file:
+                ckpt = torch.load(checkpoint_file, map_location="cpu", weights_only=True)
             self.detector.load_state_dict(ckpt["model"], strict=False)
         elif ckpt_path:
             self._load_checkpoint(ckpt_path, strict=False)

@@ -1,6 +1,7 @@
 # copy from: https://huggingface.co/spaces/briaai/BRIA-RMBG-1.4/blob/main/briarmbg.py
 import cv2
 import torch
+from moonshine_server.path_io import load_torch_checkpoint
 import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
@@ -475,7 +476,7 @@ def create_briarmbg_session():
 
     net = BriaRMBG()
     model_path = hf_hub_download("briaai/RMBG-1.4", "model.pth")
-    net.load_state_dict(torch.load(model_path, map_location="cpu"))
+    net.load_state_dict(load_torch_checkpoint(model_path, map_location="cpu"))
     net.eval()
     return net
 

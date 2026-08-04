@@ -567,6 +567,7 @@ import { useBackendEngineStore } from "src/stores/backendEngine";
 import { api } from "src/boot/axios";
 import {
   buildBackendPathBlockedMessage,
+  buildBackendPathWarningMessage,
   buildBackendPathSelectionBlockedMessage,
   validateBackendPaths,
 } from "src/utils/backendPathValidation";
@@ -1920,25 +1921,39 @@ const ensureBackendPathsValid = async ({
     backendProjectPath,
     modelDir,
   });
-  if (validation.valid) {
-    return true;
+  if (!validation.valid) {
+    const blockedMessage =
+      (typeof blockedMessageBuilder === "function" && blockedMessageBuilder(validation)) ||
+      buildBackendPathBlockedMessage(validation);
+    if (log) {
+      addTerminalLog(blockedMessage, "warning");
+    }
+    if (notify) {
+      $q.notify({
+        type: "negative",
+        message: blockedMessage,
+        position: "top",
+        timeout: 6500,
+      });
+    }
+    return false;
   }
 
-  const blockedMessage =
-    (typeof blockedMessageBuilder === "function" && blockedMessageBuilder(validation)) ||
-    buildBackendPathBlockedMessage(validation);
-  if (log) {
-    addTerminalLog(blockedMessage, "warning");
+  if (validation.warning) {
+    const warningMessage = buildBackendPathWarningMessage(validation);
+    if (log) {
+      addTerminalLog(warningMessage, "warning");
+    }
+    if (notify) {
+      $q.notify({
+        type: "warning",
+        message: warningMessage,
+        position: "top",
+        timeout: 8000,
+      });
+    }
   }
-  if (notify) {
-    $q.notify({
-      type: "negative",
-      message: blockedMessage,
-      position: "top",
-      timeout: 6500,
-    });
-  }
-  return false;
+  return true;
 };
 
 const applyPreparedEnvironment = (prepareResult = {}) => {

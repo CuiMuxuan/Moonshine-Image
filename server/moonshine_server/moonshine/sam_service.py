@@ -25,6 +25,7 @@ from PIL import Image
 from moonshine_server.helper import decode_base64_to_image, numpy_to_bytes
 from moonshine_server.disk_space import DEFAULT_DISK_SPACE_SAFETY_BYTES, ensure_disk_space
 from moonshine_server.model.utils import torch_gc
+from moonshine_server.path_io import open_video_capture, stage_ascii_path, write_image_file
 from moonshine_server.moonshine.model_registry import build_model_status
 from moonshine_server.plugins.segment_anything import SamPredictor, sam_model_registry
 from moonshine_server.plugins.segment_anything2.build_sam import (
@@ -1088,44 +1089,47 @@ class SamService:
             raise SamServiceError(f"SAM2.1 video file not found: {video_path}")
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        capture = cv2.VideoCapture(str(video_path))
-        if not capture.isOpened():
-            raise SamServiceError(f"Failed to open video for SAM2.1 propagation: {video_path}")
-
         frame_count = 0
-        fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
-        expected_frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
         try:
-            SamService._emit_progress(
-                progress_callback,
-                status="frame_loading",
-                phase="staging_frames",
-                message="正在抽取视频帧",
-                current=0,
-                total=expected_frame_count,
-                progress=0,
-            )
-            while True:
-                ok, frame = capture.read()
-                if not ok:
-                    break
-                frame_path = output_dir / f"{frame_count:06d}.jpg"
-                if not cv2.imwrite(str(frame_path), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95]):
-                    raise SamServiceError(f"Failed to stage SAM2.1 video frame: {frame_path}")
-                frame_count += 1
-                if frame_count == 1 or frame_count % 10 == 0:
-                    SamService._emit_progress(
-                        progress_callback,
-                        status="frame_loading",
-                        phase="staging_frames",
-                        message=f"正在抽取视频帧 {frame_count}/{expected_frame_count or '?'}",
-                        current=frame_count,
-                        total=expected_frame_count,
-                    )
-        finally:
-            capture.release()
+            with open_video_capture(video_path) as capture:
+                fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+                expected_frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+                height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+                SamService._emit_progress(
+                    progress_callback,
+                    status="frame_loading",
+                    phase="staging_frames",
+                    message="正在抽取视频帧",
+                    current=0,
+                    total=expected_frame_count,
+                    progress=0,
+                )
+                while True:
+                    ok, frame = capture.read()
+                    if not ok:
+                        break
+                    frame_path = output_dir / f"{frame_count:06d}.jpg"
+                    if not write_image_file(
+                        frame_path,
+                        frame,
+                        [int(cv2.IMWRITE_JPEG_QUALITY), 95],
+                    ):
+                        raise SamServiceError(f"Failed to stage SAM2.1 video frame: {frame_path}")
+                    frame_count += 1
+                    if frame_count == 1 or frame_count % 10 == 0:
+                        SamService._emit_progress(
+                            progress_callback,
+                            status="frame_loading",
+                            phase="staging_frames",
+                            message=f"正在抽取视频帧 {frame_count}/{expected_frame_count or '?'}",
+                            current=frame_count,
+                            total=expected_frame_count,
+                        )
+        except OSError as error:
+            raise SamServiceError(
+                f"Failed to open video for SAM2.1 propagation: {video_path}"
+            ) from error
 
         if frame_count <= 0:
             raise SamServiceError(f"SAM2.1 video file has no readable frames: {video_path}")
@@ -1139,18 +1143,18 @@ class SamService:
 
     @staticmethod
     def _read_video_metadata(video_path: Path) -> dict:
-        capture = cv2.VideoCapture(str(video_path))
-        if not capture.isOpened():
-            raise SamServiceError(f"Failed to open video for SAM propagation: {video_path}")
         try:
-            return {
-                "frameCount": int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0),
-                "fps": round(float(capture.get(cv2.CAP_PROP_FPS) or 0.0), 3) or None,
-                "width": int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0),
-                "height": int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0),
-            }
-        finally:
-            capture.release()
+            with open_video_capture(video_path) as capture:
+                return {
+                    "frameCount": int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0),
+                    "fps": round(float(capture.get(cv2.CAP_PROP_FPS) or 0.0), 3) or None,
+                    "width": int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0),
+                    "height": int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0),
+                }
+        except OSError as error:
+            raise SamServiceError(
+                f"Failed to open video for SAM propagation: {video_path}"
+            ) from error
 
     @staticmethod
     def _sam3_video_output_ids(outputs: dict, mask_count: int) -> list[int]:
@@ -1360,6 +1364,18 @@ class SamService:
         used_prompt = prompt_candidates[0] if prompt_candidates else None
         early_stop_reason = None
         seen_frame_indices = set()
+        resource_path_stack = contextlib.ExitStack()
+        try:
+            predictor_resource_path = resource_path_stack.enter_context(
+                stage_ascii_path(resource_path)
+                if normalized_input_type == "videoPath"
+                else contextlib.nullcontext(resource_path)
+            )
+        except OSError as error:
+            resource_path_stack.close()
+            raise SamServiceError(
+                f"无法为 SAM3 视频创建兼容的临时路径: {error}"
+            ) from error
 
         try:
             with self._lock:
@@ -1383,7 +1399,7 @@ class SamService:
                 session_response = predictor.handle_request(
                     {
                         "type": "start_session",
-                        "resource_path": str(resource_path),
+                        "resource_path": str(predictor_resource_path),
                         "offload_video_to_cpu": offload_video_to_cpu,
                         "offload_state_to_cpu": offload_state_to_cpu,
                     }
@@ -1699,17 +1715,23 @@ class SamService:
         except RuntimeError as error:
             raise SamServiceError(self._format_runtime_error(error, model_id=model_id)) from error
         finally:
-            if predictor is not None and session_id:
-                try:
-                    predictor.handle_request(
-                        {
-                            "type": "close_session",
-                            "session_id": session_id,
-                            "run_gc_collect": False,
-                        }
-                    )
-                except Exception:
-                    logger.debug(f"Failed to close SAM3 video session: {session_id}", exc_info=True)
+            try:
+                if predictor is not None and session_id:
+                    try:
+                        predictor.handle_request(
+                            {
+                                "type": "close_session",
+                                "session_id": session_id,
+                                "run_gc_collect": False,
+                            }
+                        )
+                    except Exception:
+                        logger.debug(
+                            f"Failed to close SAM3 video session: {session_id}",
+                            exc_info=True,
+                        )
+            finally:
+                resource_path_stack.close()
 
         total_ms = (time.perf_counter() - total_started_at) * 1000
         return {
