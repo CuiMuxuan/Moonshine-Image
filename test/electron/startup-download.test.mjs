@@ -203,13 +203,19 @@ function createTrackedAbortSignal() {
 }
 
 test("downloads a complete 2xx response through injected dependencies", async () => {
+  const progress = [];
   const harness = createHarness([
     {
       statusCode: 200,
       headers: { "content-length": "5" },
       chunks: [Buffer.from("abc"), Buffer.from("de")],
     },
-  ]);
+  ], {
+    downloadOptions: {
+      progressPercentStep: 1,
+      onProgress: (value) => progress.push(value),
+    },
+  });
 
   const result = await downloadHttpsFile(
     "https://downloads.example/python.exe",
@@ -232,6 +238,10 @@ test("downloads a complete 2xx response through injected dependencies", async ()
   assert.equal(harness.fakeFs.files[0].contents.toString(), "abcde");
   assert.equal(harness.fakeFs.files[0].closeCalls, 1);
   assert.deepEqual(harness.fakeFs.unlinked, []);
+  assert.deepEqual(progress.map((value) => value.percent), [0, 60, 100]);
+  assert.equal(progress.at(-1).status, "complete");
+  assert.equal(progress.at(-1).receivedBytes, 5);
+  assert.equal(progress.at(-1).totalBytes, 5);
 });
 
 test("follows HTTPS redirects and reports the final URL", async () => {

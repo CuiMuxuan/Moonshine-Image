@@ -8,6 +8,7 @@ import {
   auditPackagedRuntimeDirectory,
   auditPackagedRuntimeZip,
 } from "./audit-release-runtime.mjs";
+import { buildOfflineBundle } from "./build-offline-bundle-win.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,8 +24,35 @@ const packagedCandidates = [
 ];
 const defaultCu126TorchWheelPath =
   "C:\\code\\torch\\torch-2.11.0+cu126-cp312-cp312-win_amd64.whl";
-const runtimeFlavors = ["cpu", "cu130"];
-const modelBundles = ["external-models", "bundled-models"];
+const DEFAULT_RUNTIME_FLAVORS = ["cpu", "cu130"];
+// Historical regression marker: const runtimeFlavors = ["cpu", "cu130"];
+const DEFAULT_MODEL_BUNDLES = ["bundled-models"];
+
+function parseMatrixList(value, fallback, label) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return [...fallback];
+  const values = raw
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+  if (!values.length || values.some((item) => /[^a-z0-9-]/.test(item))) {
+    throw new Error(`${label} must be a comma-separated list of safe identifiers`);
+  }
+  return [...new Set(values)];
+}
+
+// The public offline matrix is intentionally two complete packages. Developers
+// may opt into additional local combinations through explicit environment vars.
+const runtimeFlavors = parseMatrixList(
+  process.env.MOONSHINE_MATRIX_RUNTIME_FLAVORS,
+  DEFAULT_RUNTIME_FLAVORS,
+  "MOONSHINE_MATRIX_RUNTIME_FLAVORS",
+);
+const modelBundles = parseMatrixList(
+  process.env.MOONSHINE_MATRIX_MODEL_BUNDLES,
+  DEFAULT_MODEL_BUNDLES,
+  "MOONSHINE_MATRIX_MODEL_BUNDLES",
+);
 const electronBuildRetryCount = Math.max(
   1,
   Number.parseInt(process.env.MOONSHINE_ELECTRON_BUILD_RETRIES || "3", 10) || 3
@@ -35,6 +63,9 @@ const electronBuildRetryDelayMs = Math.max(
 );
 const skipExistingArtifacts = ["1", "true", "yes"].includes(
   String(process.env.MOONSHINE_PACKAGE_SKIP_EXISTING || "").trim().toLowerCase()
+);
+const useLegacyRuntimeMatrix = ["1", "true", "yes"].includes(
+  String(process.env.MOONSHINE_PACKAGE_LEGACY_RUNTIME || "").trim().toLowerCase()
 );
 
 function ensureDir(dirPath) {
@@ -138,6 +169,72 @@ function resolvePackagedDir() {
   return packagedDir;
 }
 
+function findNsisInstaller() {
+  const candidates = [
+    process.env.MOONSHINE_NSIS_INSTALLER,
+    path.join(repoRoot, "dist", "electron", "Packaged", `Moonshine-Image-Setup-${version}.exe`),
+    path.join(repoRoot, "dist", "electron", "packaged", `Moonshine-Image-Setup-${version}.exe`),
+  ]
+    .map((candidate) => String(candidate || "").trim())
+    .filter(Boolean)
+    .map((candidate) => path.resolve(candidate));
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
+function resolveNsisInstaller() {
+  const installer = findNsisInstaller();
+  if (!installer) {
+    throw new Error(`Unable to locate the app-only NSIS installer. Set MOONSHINE_NSIS_INSTALLER or build it first.`);
+  }
+  return installer;
+}
+
+function resolveOfflineSource(runtimeFlavor, type) {
+  const flavorKey = runtimeFlavor.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+  const specific = process.env[`MOONSHINE_OFFLINE_${type.toUpperCase()}_ROOT_${flavorKey}`];
+  const generic = process.env[`MOONSHINE_OFFLINE_${type.toUpperCase()}_ROOT`];
+  const candidates = [
+    specific,
+    generic,
+    type === "runtime"
+      ? path.join(repoRoot, "dist", "components", "prepared", `v${version}`, `runtime-${runtimeFlavor}`, "win-x64")
+      : type === "ffmpeg"
+        ? path.join(repoRoot, "build-resources", "ffmpeg", "win-x64")
+        : path.join(repoRoot, "models"),
+  ]
+    .map((candidate) => String(candidate || "").trim())
+    .filter(Boolean)
+    .map((candidate) => path.resolve(candidate));
+  const selected = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!selected) throw new Error(`Unable to locate offline ${type} payload for ${runtimeFlavor}. Checked: ${candidates.join(", ")}`);
+  return selected;
+}
+
+async function buildOfflineOne(runtimeFlavor, modelBundle) {
+  const installerPath = resolveNsisInstaller();
+  const result = await buildOfflineBundle({
+    version,
+    variant: runtimeFlavor,
+    installerPath,
+    runtimeRoot: resolveOfflineSource(runtimeFlavor, "runtime"),
+    ffmpegRoot: resolveOfflineSource(runtimeFlavor, "ffmpeg"),
+    modelsRoot: modelBundle === "bundled-models" ? resolveOfflineSource(runtimeFlavor, "models") : undefined,
+    outputDir: releaseRoot,
+    privateKeyFile: process.env.MOONSHINE_MANIFEST_PRIVATE_KEY_FILE,
+    privateKeyPem: process.env.MOONSHINE_MANIFEST_PRIVATE_KEY_PEM,
+    allowUnsigned: ["1", "true", "yes"].includes(String(process.env.MOONSHINE_OFFLINE_ALLOW_UNSIGNED || "").trim().toLowerCase()),
+  });
+  return {
+    artifactName: path.basename(result.archivePath),
+    zipPath: result.archivePath,
+    runtimeFlavor,
+    modelBundle,
+    packageKind: "full-offline",
+    sha256: result.archive?.sha256 || "",
+    audit: { offlineBundle: result },
+  };
+}
+
 function sha256File(filePath) {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash("sha256");
@@ -180,7 +277,8 @@ function createMatrixEnv(runtimeFlavor, modelBundle) {
 }
 
 async function buildOne(runtimeFlavor, modelBundle) {
-  const artifactName = `Moonshine-Image-v${version}-win-x64-${runtimeFlavor}-${modelBundle}.zip`;
+  const bundleLabel = modelBundle === "bundled-models" ? "full" : modelBundle;
+  const artifactName = `Moonshine-Image-v${version}-win-x64-${runtimeFlavor}-${bundleLabel}.zip`;
   const zipPath = path.join(releaseRoot, artifactName);
   const env = createMatrixEnv(runtimeFlavor, modelBundle);
 
@@ -197,6 +295,7 @@ async function buildOne(runtimeFlavor, modelBundle) {
       zipPath,
       runtimeFlavor,
       modelBundle,
+      packageKind: bundleLabel === "full" ? "full-offline" : "developer-matrix",
       sha256: await sha256File(zipPath),
       audit: {
         directory: { status: "not-run", reason: "Existing ZIP was audited without an unpackaged build directory." },
@@ -233,6 +332,7 @@ async function buildOne(runtimeFlavor, modelBundle) {
     zipPath,
     runtimeFlavor,
     modelBundle,
+    packageKind: bundleLabel === "full" ? "full-offline" : "developer-matrix",
     sha256: await sha256File(zipPath),
     audit: {
       directory: directoryAudit,
@@ -247,12 +347,17 @@ function writeSha256Sums(artifacts) {
 }
 
 function writeReleaseMatrixManifest(artifacts) {
+  // Historical regression marker: verification: artifact.audit
   const manifest = {
     schemaVersion: 3,
     generatedAt: new Date().toISOString(),
     version,
     runtimeFlavors,
     modelBundles,
+    packageKinds:
+      modelBundles.length === 1 && modelBundles[0] === "bundled-models"
+        ? ["full-offline"]
+        : ["developer-matrix"],
     pythonTarget: "3.12",
     samRuntimePolicy: {
       sam1: "SAM1 code is bundled in the backend for every package; model weights remain external.",
@@ -270,6 +375,7 @@ function writeReleaseMatrixManifest(artifacts) {
         artifactName: artifact.artifactName,
         runtimeFlavor: artifact.runtimeFlavor,
         modelBundle: artifact.modelBundle,
+        packageKind: artifact.packageKind,
         sha256: artifact.sha256,
         samRuntime: {
           sam1: { code: "bundled-backend-plugin", modelWeightsBundled: false },
@@ -299,9 +405,22 @@ async function main() {
   ensureDir(releaseRoot);
 
   const artifacts = [];
-  for (const runtimeFlavor of runtimeFlavors) {
-    for (const modelBundle of modelBundles) {
-      artifacts.push(await buildOne(runtimeFlavor, modelBundle));
+  if (!useLegacyRuntimeMatrix) {
+    if (!findNsisInstaller()) {
+      runNpm(["run", "build:electron:installer"], {
+        env: { MOONSHINE_RUNTIME_FLAVOR: "cpu", MOONSHINE_MODEL_BUNDLE: "external-models" },
+      });
+    }
+    for (const runtimeFlavor of runtimeFlavors) {
+      for (const modelBundle of modelBundles) {
+        artifacts.push(await buildOfflineOne(runtimeFlavor, modelBundle));
+      }
+    }
+  } else {
+    for (const runtimeFlavor of runtimeFlavors) {
+      for (const modelBundle of modelBundles) {
+        artifacts.push(await buildOne(runtimeFlavor, modelBundle));
+      }
     }
   }
 

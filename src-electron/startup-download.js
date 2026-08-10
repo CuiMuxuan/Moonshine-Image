@@ -95,6 +95,9 @@ export async function downloadHttpsFile(downloadUrl, filePath, options = {}) {
   const setTimeoutImpl = options.setTimeoutImpl || options.setTimeout || globalThis.setTimeout;
   const clearTimeoutImpl = options.clearTimeoutImpl || options.clearTimeout || globalThis.clearTimeout;
   const signal = options.signal;
+  const onProgress = typeof options.onProgress === "function" ? options.onProgress : null;
+  const progressPercentStep = Math.max(1, Number(options.progressPercentStep || 5));
+  const progressByteStep = Math.max(64 * 1024, Number(options.progressByteStep || 1024 * 1024));
 
   return await new Promise((resolve, reject) => {
     let settled = false;
@@ -104,8 +107,40 @@ export async function downloadHttpsFile(downloadUrl, filePath, options = {}) {
     let currentResponse = null;
     let currentFile = null;
     let abortListenerAttached = false;
+    let lastProgressPercent = -1;
+    let lastProgressBytes = 0;
     const resources = new Set();
     const listenerDisposers = new Set();
+
+    const reportProgress = (receivedBytes, totalBytes, currentUrl, force = false) => {
+      if (!onProgress || settled) return;
+      const hasTotal = Number.isFinite(totalBytes) && totalBytes > 0;
+      const percent = hasTotal
+        ? Math.min(100, Math.floor((receivedBytes / totalBytes) * 100))
+        : null;
+      const unchanged = receivedBytes === lastProgressBytes && percent === lastProgressPercent;
+      const shouldReport =
+        (force && !unchanged) ||
+        receivedBytes === 0 ||
+        (percent !== null
+          ? lastProgressPercent < 0 || percent - lastProgressPercent >= progressPercentStep
+          : receivedBytes - lastProgressBytes >= progressByteStep);
+      if (!shouldReport) return;
+      lastProgressPercent = percent ?? lastProgressPercent;
+      lastProgressBytes = receivedBytes;
+      try {
+        onProgress({
+          phase: "python-download",
+          status: receivedBytes > 0 && (!hasTotal || receivedBytes >= totalBytes) ? "complete" : "downloading",
+          receivedBytes,
+          totalBytes: hasTotal ? totalBytes : null,
+          percent,
+          url: String(currentUrl),
+        });
+      } catch {
+        // Progress observers must not affect the download.
+      }
+    };
 
     const clearTimerSafely = (timer) => {
       if (timer === null || timer === undefined) return;
@@ -338,6 +373,7 @@ export async function downloadHttpsFile(downloadUrl, filePath, options = {}) {
           }
 
           let receivedBytes = 0;
+          reportProgress(0, contentLength, parsedUrl.toString(), true);
           const file = fsImpl.createWriteStream(filePath);
           currentFile = file;
           resources.add(file);
@@ -347,6 +383,7 @@ export async function downloadHttpsFile(downloadUrl, filePath, options = {}) {
             try {
               const byteLength = getByteLength(chunk);
               receivedBytes += byteLength;
+              reportProgress(receivedBytes, contentLength, parsedUrl.toString());
               if (!(contentLength > 0)) {
                 ensureDiskSpace(filePath, {
                   requiredBytes: byteLength,
@@ -378,6 +415,7 @@ export async function downloadHttpsFile(downloadUrl, filePath, options = {}) {
                   fail(error);
                   return;
                 }
+                reportProgress(receivedBytes, contentLength, parsedUrl.toString(), true);
                 succeed({ bytes: receivedBytes, url: parsedUrl.toString() });
               };
               try {

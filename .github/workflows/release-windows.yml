@@ -1,0 +1,293 @@
+name: Release Windows App
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact package/latest.yml version to release (without a leading v)
+        required: true
+        type: string
+      publish_stable:
+        description: Request the separately approved stable/latest.yml publication job
+        required: true
+        default: false
+        type: boolean
+      publish_channel:
+        description: Request publication of the selected test/beta channel pointer after immutable verification
+        required: true
+        default: false
+        type: boolean
+      offline_payload_root:
+        description: Optional workspace directory containing cpu/ and cu130/ offline payload roots
+        required: false
+        default: ""
+        type: string
+      resource_channel:
+        description: App update channel to prepare
+        required: true
+        default: test
+        type: choice
+        options:
+          - test
+          - beta
+          - stable
+
+permissions:
+  contents: read
+
+concurrency:
+  group: moonshine-windows-app-release
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22"
+  RELEASE_VERSION: ${{ inputs.version }}
+  RESOURCE_CHANNEL: ${{ inputs.resource_channel }}
+  OFFLINE_PAYLOAD_ROOT: ${{ inputs.offline_payload_root }}
+  MOONSHINE_UPDATE_URL: https://download.moonshine.email/app/win-x64/${{ inputs.resource_channel }}/
+  R2_BUCKET: moonshine-image-app-release-prod
+  R2_REGION: auto
+  R2_PUBLIC_BASE_URL: https://download.moonshine.email
+  R2_RELEASE_PREFIX: app/win-x64
+  MOONSHINE_FFMPEG_ROOT: ${{ vars.MOONSHINE_FFMPEG_ROOT }}
+
+jobs:
+  build-and-upload-immutable:
+    name: Build and upload immutable assets
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate FFmpeg build input
+        shell: pwsh
+        run: |
+          $ffmpegRoot = if ($env:MOONSHINE_FFMPEG_ROOT) {
+            [System.IO.Path]::GetFullPath($env:MOONSHINE_FFMPEG_ROOT)
+          } else {
+            Join-Path $env:GITHUB_WORKSPACE "build-resources/ffmpeg"
+          }
+          $binRoot = Join-Path $ffmpegRoot "win-x64"
+          if (!(Test-Path (Join-Path $binRoot "ffmpeg.exe")) -or !(Test-Path (Join-Path $binRoot "ffprobe.exe"))) {
+            throw "FFmpeg build input is missing. Provision build-resources/ffmpeg/win-x64 (or set MOONSHINE_FFMPEG_ROOT) before running the release workflow."
+          }
+          "FFmpeg input: $binRoot"
+
+      - name: Validate requested version
+        shell: pwsh
+        run: |
+          node -e "const p=require('./package.json'); if (p.version !== process.argv[1]) { console.error('package.json version '+p.version+' does not match '+process.argv[1]); process.exit(1) }" "$env:RELEASE_VERSION"
+
+      - name: Test release tooling
+        run: npm run test:release
+
+      - name: Validate and inject release manifest public key
+        shell: pwsh
+        env:
+          MOONSHINE_MANIFEST_PUBLIC_KEY_PEM: ${{ secrets.MOONSHINE_MANIFEST_PUBLIC_KEY_PEM }}
+          MOONSHINE_MANIFEST_KEY_ID: moonshine-app-manifest-v1
+        run: |
+          npm run release:manifest:key:assert
+          npm run release:manifest:key:inject
+
+      - name: Build unsigned NSIS installer
+        run: npm run build:electron:installer
+
+      - name: Audit app-only package boundary and integrity
+        run: npm run release:app:audit -- --artifact-dir dist/electron/Packaged --version "${{ inputs.version }}"
+
+      - name: Generate signed app manifest
+        shell: pwsh
+        env:
+          MOONSHINE_MANIFEST_PRIVATE_KEY_PEM: ${{ secrets.MOONSHINE_MANIFEST_PRIVATE_KEY_PEM }}
+          MOONSHINE_MANIFEST_KEY_ID: moonshine-app-manifest-v1
+        run: |
+          npm run release:manifest:app:sign -- --artifact-dir dist/electron/Packaged --version "$env:RELEASE_VERSION" --channel "$env:RESOURCE_CHANNEL" --sequence "${{ github.run_number }}" --output dist/electron/Packaged/app-manifest.json
+
+      - name: Build optional CPU offline bundle
+        if: ${{ inputs.offline_payload_root != '' }}
+        shell: pwsh
+        env:
+          MOONSHINE_MANIFEST_PRIVATE_KEY_PEM: ${{ secrets.MOONSHINE_MANIFEST_PRIVATE_KEY_PEM }}
+        run: |
+          npm run build:offline:bundle:win -- --version "$env:RELEASE_VERSION" --variant cpu --installer "dist/electron/Packaged/Moonshine-Image-Setup-$env:RELEASE_VERSION.exe" --payload-root "$env:OFFLINE_PAYLOAD_ROOT/cpu" --output-dir "dist/releases/v$env:RELEASE_VERSION"
+
+      - name: Build optional cu130 offline bundle
+        if: ${{ inputs.offline_payload_root != '' }}
+        shell: pwsh
+        env:
+          MOONSHINE_MANIFEST_PRIVATE_KEY_PEM: ${{ secrets.MOONSHINE_MANIFEST_PRIVATE_KEY_PEM }}
+        run: |
+          npm run build:offline:bundle:win -- --version "$env:RELEASE_VERSION" --variant cu130 --installer "dist/electron/Packaged/Moonshine-Image-Setup-$env:RELEASE_VERSION.exe" --payload-root "$env:OFFLINE_PAYLOAD_ROOT/cu130" --output-dir "dist/releases/v$env:RELEASE_VERSION"
+
+      - name: Validate immutable upload plan
+        shell: pwsh
+        run: |
+          npm run release:app:upload -- --artifact-dir dist/electron/Packaged --version "$env:RELEASE_VERSION" --channel "$env:RESOURCE_CHANNEL" --app-manifest dist/electron/Packaged/app-manifest.json --dry-run --report dist/release-upload-plan.json
+
+      - name: Upload and verify immutable R2 objects
+        shell: pwsh
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          npm run release:app:upload -- --artifact-dir dist/electron/Packaged --version "$env:RELEASE_VERSION" --channel "$env:RESOURCE_CHANNEL" --app-manifest dist/electron/Packaged/app-manifest.json --report dist/release-upload-report.json
+
+      - name: Independently verify immutable feed objects
+        shell: pwsh
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          npm run release:app:verify -- --scope immutable --channel "$env:RESOURCE_CHANNEL" --artifact-dir dist/electron/Packaged --version "$env:RELEASE_VERSION" --app-manifest dist/electron/Packaged/app-manifest.json --report dist/release-verify-report.json
+
+      - name: Preserve exact release inputs for the approval job
+        uses: actions/upload-artifact@v4
+        with:
+          name: moonshine-windows-app-${{ inputs.version }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/electron/Packaged/latest.yml
+            dist/electron/Packaged/Moonshine-Image-Setup-${{ inputs.version }}.exe
+            dist/electron/Packaged/Moonshine-Image-Setup-${{ inputs.version }}.exe.blockmap
+            dist/electron/Packaged/app-manifest.json
+            dist/release-upload-plan.json
+            dist/release-upload-report.json
+            dist/release-verify-report.json
+            dist/releases/v${{ inputs.version }}/*.zip
+            dist/releases/v${{ inputs.version }}/*.json
+
+  publish-stable:
+    name: Publish stable update pointer
+    needs: build-and-upload-immutable
+    if: ${{ inputs.publish_stable && inputs.resource_channel == 'stable' }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    # Configure required reviewers for this Environment in repository settings.
+    environment:
+      name: app-release-stable
+    steps:
+      - name: Check out the exact source revision
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install release-tool dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Download approved release inputs
+        uses: actions/download-artifact@v4
+        with:
+          name: moonshine-windows-app-${{ inputs.version }}
+          path: release-artifacts
+
+      - name: Publish stable/latest.yml after approval
+        shell: pwsh
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+           npm run release:app:publish-stable -- --artifact-dir release-artifacts/electron/Packaged --version "$env:RELEASE_VERSION" --app-manifest release-artifacts/electron/Packaged/app-manifest.json --confirm-stable "$env:RELEASE_VERSION" --report release-artifacts/release-stable-report.json
+
+      - name: Verify the stable feed
+        shell: pwsh
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          npm run release:app:verify -- --scope stable --artifact-dir release-artifacts/electron/Packaged --version "$env:RELEASE_VERSION" --app-manifest release-artifacts/electron/Packaged/app-manifest.json --report release-artifacts/release-stable-verify-report.json
+
+      - name: Preserve stable publication reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: moonshine-windows-stable-reports-${{ inputs.version }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            release-artifacts/release-stable-report.json
+            release-artifacts/release-stable-verify-report.json
+
+  publish-channel:
+    name: Publish selected test or beta update pointer
+    needs: build-and-upload-immutable
+    if: ${{ inputs.publish_channel && inputs.resource_channel != 'stable' }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    # Configure app-release-test/app-release-beta environments with required reviewers as needed.
+    environment:
+      name: app-release-${{ inputs.resource_channel }}
+    steps:
+      - name: Check out the exact source revision
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install release-tool dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Download immutable release inputs
+        uses: actions/download-artifact@v4
+        with:
+          name: moonshine-windows-app-${{ inputs.version }}
+          path: release-artifacts
+
+      - name: Publish selected channel after approval
+        shell: pwsh
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          npm run release:app:publish-channel -- --channel "$env:RESOURCE_CHANNEL" --artifact-dir release-artifacts/electron/Packaged --version "$env:RELEASE_VERSION" --app-manifest release-artifacts/electron/Packaged/app-manifest.json --confirm-channel "$($env:RESOURCE_CHANNEL):$env:RELEASE_VERSION" --report release-artifacts/release-channel-report.json
+
+      - name: Verify selected channel feed
+        shell: pwsh
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          npm run release:app:verify -- --scope channel --channel "$env:RESOURCE_CHANNEL" --artifact-dir release-artifacts/electron/Packaged --version "$env:RELEASE_VERSION" --app-manifest release-artifacts/electron/Packaged/app-manifest.json --report release-artifacts/release-channel-verify-report.json
+
+      - name: Preserve channel publication reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: moonshine-windows-${{ inputs.resource_channel }}-reports-${{ inputs.version }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            release-artifacts/release-channel-report.json
+            release-artifacts/release-channel-verify-report.json

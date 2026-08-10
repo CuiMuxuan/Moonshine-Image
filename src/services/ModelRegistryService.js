@@ -102,7 +102,16 @@ const normalizeModel = (model = {}) => ({
 
 const buildModelDirectoryPayload = (options = {}) => {
   const modelDir = String(options.modelDir || "").trim();
-  return modelDir ? { model_dir: modelDir, modelDir } : {};
+  const acceptance = options.licenseAcceptance;
+  return {
+    ...(modelDir ? { model_dir: modelDir, modelDir } : {}),
+    ...(acceptance?.accepted
+      ? {
+          license_accepted: true,
+          license_acceptance_id: String(acceptance.acceptanceId || "").trim(),
+        }
+      : {}),
+  };
 };
 
 const getModels = async (options = {}) => {
@@ -121,6 +130,7 @@ const getModels = async (options = {}) => {
       modelDir: response?.modelDir || "",
       cuda: response?.cuda || {},
       runtime: response?.runtime || {},
+      modelManifest: response?.modelManifest || {},
       models: models.length > 0 ? models : [...FALLBACK_IMAGE_MODELS],
       usingFallback: models.length === 0,
     };
@@ -131,6 +141,7 @@ const getModels = async (options = {}) => {
       modelDir: "",
       cuda: {},
       runtime: {},
+      modelManifest: {},
       models: [...FALLBACK_IMAGE_MODELS],
       usingFallback: true,
       error,
@@ -157,6 +168,7 @@ const refreshModels = async (options = {}) => {
     modelDir: response?.modelDir || "",
     cuda: response?.cuda || {},
     runtime: response?.runtime || {},
+    modelManifest: response?.modelManifest || {},
     models,
   };
 };

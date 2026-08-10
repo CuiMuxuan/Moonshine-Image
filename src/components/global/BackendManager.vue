@@ -30,6 +30,7 @@
                 vertical
                 color="primary"
                 animated
+                header-nav
                 class="bg-transparent"
               >
                 <!-- 环境检测步骤 -->
@@ -43,6 +44,272 @@
                   v-show="serviceStatus !== 'running'"
                 >
                 <div class="q-mb-md">
+                  <div
+                    class="q-pb-md"
+                    data-testid="backend-python-environment-source-panel"
+                  >
+                    <div class="text-subtitle2 text-weight-medium q-mb-sm">Python 环境来源</div>
+                    <q-btn-toggle
+                      :model-value="pythonEnvironmentSource"
+                      :options="pythonEnvironmentSourceOptions"
+                      spread
+                      no-caps
+                      unelevated
+                      toggle-color="primary"
+                      color="grey-3"
+                      text-color="grey-8"
+                      data-testid="backend-python-environment-source-toggle"
+                      @update:model-value="handlePythonEnvironmentSourceChange"
+                    />
+
+                    <div
+                      v-if="pythonEnvironmentSource === 'external'"
+                      class="q-mt-md"
+                      data-testid="backend-external-environment-panel"
+                    >
+                      <q-input
+                        :model-value="externalEnvironmentPath"
+                        outlined
+                        dense
+                        readonly
+                        label="完整 Python 环境目录"
+                        placeholder="尚未选择目录"
+                        :hint="externalEnvironmentLayoutLabel"
+                        data-testid="backend-external-environment-path"
+                      >
+                        <template #append>
+                          <q-btn
+                            flat
+                            round
+                            dense
+                            icon="folder_open"
+                            aria-label="选择已有 Python 环境目录"
+                            :loading="updateManager.pendingExternalAction === 'select'"
+                            :disable="updateManager.isExternalEnvironmentActionPending"
+                            data-testid="backend-external-environment-select"
+                            @click="handleSelectExternalEnvironment"
+                          >
+                            <q-tooltip>选择目录</q-tooltip>
+                          </q-btn>
+                        </template>
+                      </q-input>
+
+                      <div class="row items-center q-mt-md">
+                        <q-btn
+                          flat
+                          round
+                          dense
+                          icon="help_outline"
+                          :color="externalEnvironmentHelpColor"
+                          aria-label="查看已有 Python 环境目录说明"
+                          data-testid="backend-external-environment-help"
+                          @click="externalEnvironmentHelpVisible = true"
+                        >
+                          <q-tooltip>查看目录选择说明</q-tooltip>
+                        </q-btn>
+                        <span class="text-caption text-grey-7">环境状态</span>
+                        <q-space />
+                        <q-badge
+                          :color="externalEnvironmentStatusMeta.color"
+                          data-testid="backend-external-environment-status"
+                        >
+                          {{ externalEnvironmentStatusMeta.label }}
+                        </q-badge>
+                      </div>
+
+                      <q-banner
+                        v-if="externalEnvironmentError"
+                        rounded
+                        class="bg-red-1 text-negative q-mt-sm"
+                        data-testid="backend-external-environment-error"
+                      >
+                        {{ externalEnvironmentError }}
+                      </q-banner>
+
+                      <q-list
+                        v-if="externalEnvironment.diagnostics"
+                        dense
+                        separator
+                        class="q-mt-sm"
+                        data-testid="backend-external-environment-diagnostics"
+                      >
+                        <q-item v-for="row in externalEnvironmentDiagnosticRows" :key="row.key">
+                          <q-item-section avatar>
+                            <q-icon
+                              :name="getExternalDiagnosticIcon(row.state)"
+                              :color="getExternalDiagnosticColor(row.state)"
+                              size="sm"
+                            />
+                          </q-item-section>
+                          <q-item-section>
+                            <q-item-label>{{ row.label }}</q-item-label>
+                            <q-item-label caption>{{ row.detail }}</q-item-label>
+                          </q-item-section>
+                        </q-item>
+                      </q-list>
+
+                      <div class="row justify-end q-gutter-sm q-mt-md">
+                        <q-btn
+                          v-if="externalEnvironmentPath"
+                          flat
+                          no-caps
+                          color="primary"
+                          icon="refresh"
+                          label="重新校验"
+                          :loading="updateManager.pendingExternalAction === 'probe'"
+                          :disable="!externalEnvironmentCanProbe"
+                          data-testid="backend-external-environment-probe"
+                          @click="handleProbeExternalEnvironment"
+                        />
+                        <q-btn
+                          v-if="externalEnvironmentPath && externalEnvironmentStatus !== 'active'"
+                          flat
+                          no-caps
+                          color="grey-8"
+                          icon="delete_outline"
+                          label="忘记此目录"
+                          :disable="updateManager.isExternalEnvironmentActionPending"
+                          data-testid="backend-external-environment-forget"
+                          @click="handleForgetExternalEnvironment"
+                        />
+                      </div>
+                      <div v-if="externalEnvironmentStatus !== 'active'" class="row justify-center q-mt-sm">
+                        <q-btn
+                          color="primary"
+                          no-caps
+                          icon="check_circle"
+                          label="使用此环境"
+                          :loading="updateManager.pendingExternalAction === 'activate'"
+                          :disable="!externalEnvironmentCanActivate"
+                          data-testid="backend-external-environment-activate"
+                          @click="handleActivateExternalEnvironment"
+                        />
+                      </div>
+                      <div v-else class="row justify-end q-mt-sm">
+                        <q-btn
+                          outline
+                          no-caps
+                          color="warning"
+                          icon="undo"
+                          label="停止使用"
+                          :loading="updateManager.pendingExternalAction === 'forget'"
+                          :disable="updateManager.isExternalEnvironmentActionPending"
+                          data-testid="backend-external-environment-return-managed"
+                          @click="handleReturnToManagedEnvironment"
+                        />
+                      </div>
+                    </div>
+
+                    <q-dialog v-model="externalEnvironmentHelpVisible">
+                      <q-card style="max-width: 560px">
+                        <q-card-section class="row items-center q-pb-none">
+                          <div class="text-subtitle1 text-weight-medium">已有 Python 环境目录说明</div>
+                          <q-space />
+                          <q-btn flat round dense icon="close" aria-label="关闭说明" v-close-popup />
+                        </q-card-section>
+                        <q-card-section class="text-body2 text-grey-8">
+                          请选择完整的 Python 环境目录，不要选择 python.exe 或其他 EXE 文件。完整包请选择包含
+                          runtime-manifest.json 的目录；Conda 环境请选择根目录（其中包含 python.exe）；venv
+                          环境请选择包含 pyvenv.cfg 和 Scripts/python.exe 的目录。应用只会原地引用并校验该目录，不会复制或修改它。
+                        </q-card-section>
+                      </q-card>
+                    </q-dialog>
+
+                    <div
+                      v-if="pythonEnvironmentSource === 'managed'"
+                      class="q-mt-md"
+                      data-testid="backend-managed-environment-panel"
+                    >
+                      <div class="row items-center">
+                        <div>
+                          <div class="text-subtitle2 text-weight-medium">自动管理环境</div>
+                          <div class="text-caption text-grey-7">应用会在本机创建并校验所需环境</div>
+                        </div>
+                        <q-space />
+                        <q-badge :color="managedEnvironmentStatusMeta.color" data-testid="backend-managed-environment-status">
+                          {{ managedEnvironmentStatusMeta.label }}
+                        </q-badge>
+                      </div>
+                      <q-select
+                        v-model="managedAccelerator"
+                        class="q-mt-md"
+                        outlined
+                        dense
+                        emit-value
+                        map-options
+                        label="加速器"
+                        :options="managedAcceleratorOptions"
+                        :disable="managedEnvironmentBusy"
+                        data-testid="backend-managed-environment-accelerator"
+                        @update:model-value="handleManagedAcceleratorChange"
+                      />
+                      <q-linear-progress
+                        v-if="managedEnvironmentProgress"
+                        :indeterminate="managedEnvironmentProgressIndeterminate"
+                        :value="Number(managedEnvironmentProgress.percent || 0) / 100"
+                        color="primary"
+                        rounded
+                        class="q-mt-md"
+                        data-testid="backend-managed-environment-progress"
+                      />
+                      <div v-if="managedEnvironmentProgress?.message" class="text-caption text-grey-7 q-mt-sm">
+                        {{ managedEnvironmentProgress.message }}
+                      </div>
+                      <q-banner
+                        v-if="managedEnvironmentError"
+                        rounded
+                        class="bg-red-1 text-negative q-mt-sm"
+                        data-testid="backend-managed-environment-error"
+                      >
+                        <div>{{ managedEnvironmentError }}</div>
+                        <div class="q-mt-xs">请重试，或手动创建可用环境；也可以从夸克网盘下载可用运行时，再在“已有环境”中选择。</div>
+                      </q-banner>
+                      <q-banner
+                        v-if="updateManager.runtimeState.restartRequired"
+                        rounded
+                        inline-actions
+                        class="bg-blue-1 text-grey-9 q-mt-sm"
+                        data-testid="backend-managed-environment-restart-required"
+                      >
+                        运行环境已更新，重启应用后将使用新环境。
+                        <template #action>
+                          <q-btn
+                            flat
+                            no-caps
+                            color="primary"
+                            icon="restart_alt"
+                            label="重启应用"
+                            :disable="!updateManager.runtimeCanRestart"
+                            @click="handleManagedEnvironmentRestart"
+                          />
+                        </template>
+                      </q-banner>
+                      <div class="row justify-center q-gutter-sm q-mt-md">
+                        <q-btn
+                          outline
+                          no-caps
+                          color="primary"
+                          icon="refresh"
+                          label="检查环境"
+                          :loading="managedEnvironmentBusy"
+                          :disable="managedEnvironmentBusy"
+                          data-testid="backend-managed-environment-check"
+                          @click="checkEnvironment"
+                        />
+                        <q-btn
+                          color="primary"
+                          no-caps
+                          icon="build"
+                          label="创建或修复环境"
+                          :loading="managedEnvironmentBusy"
+                          :disable="managedEnvironmentBusy"
+                          data-testid="backend-managed-environment-ensure"
+                          @click="setupEnvironment"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
                   <q-list separator>
                     <q-item class="q-pa-sm">
                       <q-item-section avatar>
@@ -389,7 +656,7 @@
                           rounded
                           class="bg-blue-1 text-primary"
                         >
-                          当前使用内置离线后端，模型将直接从安装包内的内置模型目录读取。
+                          当前使用应用内置后端，模型将直接从安装包内的模型目录读取。
                         </q-banner>
                         <q-input
                           v-else
@@ -564,6 +831,7 @@ import { computed, inject, ref, reactive, onMounted, onUnmounted, nextTick, watc
 import { copyToClipboard, useQuasar } from "quasar";
 import { useConfigStore } from "src/stores/config";
 import { useBackendEngineStore } from "src/stores/backendEngine";
+import { useUpdateManagerStore } from "src/stores/updateManager";
 import { api } from "src/boot/axios";
 import {
   buildBackendPathBlockedMessage,
@@ -589,6 +857,7 @@ const splitterModel = ref(35);
 
 const configStore = useConfigStore();
 const backendEngineStore = useBackendEngineStore();
+const updateManager = useUpdateManagerStore();
 const $q = useQuasar();
 // Emits
 const emit = defineEmits(["update:modelValue"]);
@@ -605,10 +874,10 @@ const isBackendPreparing = computed(() => backendEngineStore.isPreparing);
 const backendMode = ref("external");
 const isBundledBackendMode = computed(() => backendMode.value === "bundled");
 const backendManagerTitle = computed(() =>
-  isBundledBackendMode.value ? "离线后端管理" : "Python 后端管理"
+  isBundledBackendMode.value ? "后端管理" : "Python 后端管理"
 );
 const pythonSectionLabel = computed(() =>
-  isBundledBackendMode.value ? "离线运行时" : "Python 环境"
+  isBundledBackendMode.value ? "本地运行环境" : "Python 环境"
 );
 const primaryRuntimeItemKey = computed(() =>
   isBundledBackendMode.value ? "runtime" : "python"
@@ -622,13 +891,319 @@ const primaryRuntimeFailureLabel = computed(() =>
   isBundledBackendMode.value ? "未就绪" : "未检测到"
 );
 const venvSetupLabel = computed(() =>
-  isBundledBackendMode.value ? "离线运行时准备" : "虚拟环境创建"
+  isBundledBackendMode.value ? "运行环境准备" : "虚拟环境创建"
 );
 const dependenciesLabel = computed(() =>
   isBundledBackendMode.value ? "内置依赖" : "依赖安装"
 );
 const setupEnvironmentLabel = computed(() =>
-  isBundledBackendMode.value ? "准备离线运行时" : "配置环境"
+  isBundledBackendMode.value ? "准备运行环境" : "配置环境"
+);
+const pythonEnvironmentSource = ref("managed");
+const pythonEnvironmentSourceOptions = [
+  { label: "自动管理", value: "managed" },
+  { label: "已有环境", value: "external" },
+];
+const normalizeRuntimeAccelerator = (value) => {
+  const accelerator = String(value || "").trim().toLowerCase();
+  return ["auto", "cpu", "cu130"].includes(accelerator) ? accelerator : "auto";
+};
+const externalEnvironmentHelpVisible = ref(false);
+const externalEnvironment = computed(() =>
+  updateManager.runtimeState.external || {}
+);
+const externalEnvironmentPath = computed(() =>
+  externalEnvironment.value.selectedPath ||
+  externalEnvironment.value.path ||
+  externalEnvironment.value.directory ||
+  ""
+);
+const normalizeExternalEnvironmentStatus = (value) => ({
+  idle: "unselected",
+  selected: "stale",
+  "needs-probe": "stale",
+  "needs-reprobe": "stale",
+  checking: "probing",
+  ready: updateManager.runtimeState.source === "external" ? "active" : "valid",
+  failed: "invalid",
+}[value] || value || "unselected");
+const externalEnvironmentStatus = computed(() => {
+  if (
+    updateManager.runtimeState.source === "external" &&
+    !["probing", "invalid", "stale"].includes(externalEnvironment.value.status)
+  ) {
+    return "active";
+  }
+  if (!externalEnvironmentPath.value && !externalEnvironment.value.candidateId) {
+    return "unselected";
+  }
+  return normalizeExternalEnvironmentStatus(externalEnvironment.value.status);
+});
+const externalEnvironmentStatusMeta = computed(() => ({
+  unselected: { label: "未选择", color: "grey-7" },
+  probing: { label: "校验中", color: "primary" },
+  valid: { label: "可使用", color: "positive" },
+  active: { label: "使用中", color: "positive" },
+  stale: { label: "需要重新校验", color: "warning" },
+  invalid: { label: "不可用", color: "negative" },
+}[externalEnvironmentStatus.value] || { label: "未选择", color: "grey-7" }));
+const externalEnvironmentHelpColor = computed(() =>
+  externalEnvironmentStatus.value === "invalid" ? "negative" : "info"
+);
+const externalEnvironmentLayoutLabel = computed(() => ({
+  "runtime-manifest": "完整包 runtime",
+  conda: "Conda 环境",
+  venv: "venv 环境",
+}[externalEnvironment.value.layout] || externalEnvironment.value.layout || ""));
+const externalEnvironmentError = computed(() => {
+  const error = externalEnvironment.value.error;
+  if (!error) return "";
+  return String(error.message || error.reason || error);
+});
+const readDiagnosticState = (value) => {
+  if (value === true) return "success";
+  if (value === false) return "failure";
+  const status = String(value?.status || "").toLowerCase();
+  if (["pass", "passed", "success", "ready", "ok", "valid"].includes(status)) return "success";
+  if (["fail", "failed", "error", "invalid", "unavailable"].includes(status)) return "failure";
+  if (value?.success === true || value?.ok === true || value?.passed === true) return "success";
+  if (value?.success === false || value?.ok === false || value?.passed === false) return "failure";
+  return "idle";
+};
+const readDiagnosticDetail = (value, fallback = "等待校验") => {
+  if (value === true) return "通过";
+  if (value === false) return "未通过";
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  const parts = [
+    value?.version,
+    value?.bits ? `${value.bits} 位` : null,
+    value?.architecture || value?.arch,
+    value?.build,
+    value?.type || value?.accelerator,
+    value?.module,
+    value?.deviceName || value?.device,
+    value?.message || value?.reason,
+  ].filter(Boolean);
+  return parts.length ? [...new Set(parts.map(String))].join(" · ") : fallback;
+};
+const externalEnvironmentDiagnosticRows = computed(() => {
+  const diagnostics = externalEnvironment.value.diagnostics || {};
+  const accelerator =
+    externalEnvironment.value.accelerator ||
+    diagnostics.accelerator?.type ||
+    diagnostics.accelerator ||
+    null;
+  const cudaDiagnostic = diagnostics.cuda
+    ? {
+      ...diagnostics.cuda,
+      message:
+        diagnostics.cuda.message ||
+        (diagnostics.cuda.available === false && accelerator === "cpu"
+          ? "CPU 环境，无需 CUDA"
+          : null),
+    }
+    : null;
+  const definitions = [
+    ["python", "Python", diagnostics.python],
+    ["torch", "PyTorch", diagnostics.torch || diagnostics.pytorch],
+    ["accelerator", "加速类型", accelerator ? { ok: true, type: accelerator } : null],
+    ["cuda", "CUDA", cudaDiagnostic],
+    ["backend", "后端模块", diagnostics.backend],
+    ["ffmpeg", "应用内置 FFmpeg", diagnostics.ffmpeg || diagnostics.bundledFfmpeg],
+  ];
+  return definitions.map(([key, label, value]) => ({
+    key,
+    label,
+    state: readDiagnosticState(value),
+    detail: readDiagnosticDetail(value),
+  }));
+});
+const getExternalDiagnosticIcon = (state) => ({
+  success: "check_circle",
+  failure: "error",
+  idle: "radio_button_unchecked",
+}[state] || "radio_button_unchecked");
+const getExternalDiagnosticColor = (state) => ({
+  success: "positive",
+  failure: "negative",
+  idle: "grey-6",
+}[state] || "grey-6");
+const externalEnvironmentCanProbe = computed(() =>
+  Boolean(externalEnvironment.value.candidateId) &&
+  !updateManager.isExternalEnvironmentActionPending
+);
+const externalEnvironmentCanActivate = computed(() =>
+  externalEnvironmentStatus.value === "valid" &&
+  externalEnvironment.value.canActivate === true &&
+  !updateManager.isExternalEnvironmentActionPending
+);
+const managedAccelerator = ref(
+  normalizeRuntimeAccelerator(
+    updateManager.runtimeState.selectedAccelerator || updateManager.runtimeState.accelerator
+  )
+);
+const managedAcceleratorOptions = [
+  { label: "自动（推荐）", value: "auto" },
+  { label: "CPU", value: "cpu" },
+  { label: "NVIDIA cu130", value: "cu130" },
+];
+const managedEnvironmentProgress = computed(() => updateManager.runtimeState.progress || null);
+const managedEnvironmentProgressIndeterminate = computed(() => {
+  const progress = managedEnvironmentProgress.value;
+  if (!progress || progress.status === "complete" || progress.status === "failed") return false;
+  return progress.phase !== "python-download";
+});
+const managedEnvironmentBusy = computed(() =>
+  checking.value ||
+  installing.dependencies ||
+  updateManager.isRuntimeActionPending ||
+  ["preparing", "creating", "repairing", "downloading", "verifying"].includes(updateManager.runtimeState.status)
+);
+const managedEnvironmentError = computed(() => {
+  const error = updateManager.runtimeState.error;
+  return error ? String(error.message || error.reason || error) : "";
+});
+const managedEnvironmentStatusMeta = computed(() => {
+  const state = updateManager.runtimeState;
+  const phase = String(state.progress?.phase || "");
+  if (["preparing", "creating", "repairing", "downloading", "verifying"].includes(state.status)) {
+    if (phase === "python-download") return { label: "正在下载 Python", color: "primary" };
+    if (["python-install", "python-verify", "python-discovery", "python-ready"].includes(phase)) {
+      return { label: "正在自动安装", color: "primary" };
+    }
+    return { label: "正在准备环境", color: "primary" };
+  }
+  if (["needs-create", "needs-download", "idle"].includes(state.status)) {
+    return { label: "未检测到运行时", color: "grey-7" };
+  }
+  if (["failed", "needs-repair"].includes(state.status)) return { label: "需要修复", color: "negative" };
+  if (state.status === "ready") return { label: "环境就绪", color: "positive" };
+  return { label: updateManager.runtimeStatusLabel || "尚未检测", color: "grey-7" };
+});
+const handleManagedAcceleratorChange = async (value) => {
+  const result = await updateManager.setRuntimeChannel(value);
+  if (result?.success === false) {
+    managedAccelerator.value = normalizeRuntimeAccelerator(
+      updateManager.runtimeState.selectedAccelerator || updateManager.runtimeState.accelerator
+    );
+    notifyExternalEnvironmentFailure(result, "保存加速器选择失败。");
+    return;
+  }
+  addTerminalLog(`已选择${managedAcceleratorOptions.find((item) => item.value === value)?.label || "自动"}，下次创建环境时生效。`, "info");
+};
+const handleManagedEnvironmentRestart = () => {
+  $q.dialog({
+    title: "运行环境已准备完成",
+    message: "重启 Moonshine-Image 后将使用新环境。请先保存尚未导出的内容。",
+    cancel: { flat: true, label: "稍后重启" },
+    ok: { color: "primary", label: "立即重启" },
+    persistent: true,
+  }).onOk(async () => {
+    const result = await updateManager.restartApplication();
+    if (result?.success === false) notifyExternalEnvironmentFailure(result, "重启应用失败。");
+  });
+};
+const notifyExternalEnvironmentFailure = (result, fallbackMessage) => {
+  if (result?.success !== false) return false;
+  const message =
+    result?.error?.message ||
+    result?.message ||
+    result?.reason ||
+    result?.error ||
+    fallbackMessage;
+  $q.notify({ type: "negative", message, position: "top", timeout: 5000 });
+  return true;
+};
+const handleProbeExternalEnvironment = async () => {
+  const result = await updateManager.probeExternalEnvironment({
+    candidateId: externalEnvironment.value.candidateId,
+  });
+  if (notifyExternalEnvironmentFailure(result, "已有 Python 环境校验失败。")) return result;
+  if (result?.valid === false || externalEnvironmentStatus.value === "invalid") {
+    $q.notify({ type: "warning", message: "该目录未通过完整环境校验。", position: "top" });
+    return result;
+  }
+  $q.notify({ type: "positive", message: "环境校验通过，可以使用。", position: "top" });
+  return result;
+};
+const handleSelectExternalEnvironment = async () => {
+  pythonEnvironmentSource.value = "external";
+  const result = await updateManager.selectExternalEnvironmentDirectory();
+  if (result?.cancelled || result?.canceled) return;
+  if (notifyExternalEnvironmentFailure(result, "选择 Python 环境目录失败。")) return;
+  if (!externalEnvironment.value.candidateId) {
+    $q.notify({
+      type: "negative",
+      message: "主进程未返回可校验的环境目录，请重新选择。",
+      position: "top",
+    });
+    return;
+  }
+  await handleProbeExternalEnvironment();
+};
+const handleActivateExternalEnvironment = async () => {
+  const result = await updateManager.activateExternalEnvironment({
+    candidateId: externalEnvironment.value.candidateId,
+  });
+  if (notifyExternalEnvironmentFailure(result, "启用已有 Python 环境失败。")) return;
+  pythonEnvironmentSource.value = "external";
+  addTerminalLog("已切换到用户选择的 Python 环境。", "success");
+  $q.notify({ type: "positive", message: "已开始使用此 Python 环境。", position: "top" });
+};
+const performForgetExternalEnvironment = async ({ returnToManaged = false } = {}) => {
+  const result = returnToManaged
+    ? await updateManager.returnToManagedEnvironment()
+    : await updateManager.forgetExternalEnvironment();
+  if (notifyExternalEnvironmentFailure(result, "恢复自动管理失败。")) return;
+  pythonEnvironmentSource.value = "managed";
+  addTerminalLog("已恢复自动管理的 Python 环境；外部目录未被修改。", "info");
+  $q.notify({ type: "positive", message: "已恢复自动管理，外部目录未被修改。", position: "top" });
+};
+const handleForgetExternalEnvironment = () => {
+  void performForgetExternalEnvironment();
+};
+const handleReturnToManagedEnvironment = () => {
+  $q.dialog({
+    title: "停止使用已有环境",
+    message: "应用将恢复自动管理的运行环境。所选目录及其文件不会被删除或修改。",
+    cancel: { flat: true, label: "取消" },
+    ok: { color: "primary", label: "恢复自动管理" },
+  }).onOk(() => {
+    void performForgetExternalEnvironment({ returnToManaged: true });
+  });
+};
+const handlePythonEnvironmentSourceChange = (source) => {
+  if (source === "external") {
+    pythonEnvironmentSource.value = "external";
+    return;
+  }
+  if (updateManager.runtimeState.source === "external") {
+    handleReturnToManagedEnvironment();
+    return;
+  }
+  pythonEnvironmentSource.value = "managed";
+};
+watch(
+  () => [
+    updateManager.runtimeState.source,
+    updateManager.runtimeState.external?.status,
+    updateManager.runtimeState.external?.candidateId,
+  ],
+  ([source, status]) => {
+    if (source === "external" || status === "active") {
+      pythonEnvironmentSource.value = "external";
+      return;
+    }
+    // Keep the user's explicit "已有环境" choice visible even when probing
+    // failed and the opaque candidate token is temporarily unavailable.
+  },
+  { immediate: true }
+);
+watch(
+  () => updateManager.runtimeState.selectedAccelerator || updateManager.runtimeState.accelerator,
+  (value) => {
+    if (value) managedAccelerator.value = normalizeRuntimeAccelerator(value);
+  }
 );
 
 // 响应式数据
@@ -682,7 +1257,9 @@ const getEnvironmentItemState = (item) =>
   item === "runtime"
     ? resolveEnvironmentItemGroupState(environmentItemStates, ["python", "venv"])
     : environmentItemStates[item] || "idle";
-const isEnvironmentItemChecking = (item) => getEnvironmentItemState(item) === "checking";
+const isEnvironmentItemChecking = (item) =>
+  (item === "runtime" && pythonEnvironmentSource.value === "managed" && managedEnvironmentBusy.value) ||
+  getEnvironmentItemState(item) === "checking";
 const getEnvironmentItemIcon = (item) => {
   const state = getEnvironmentItemState(item);
   if (state === "success") return "check_circle";
@@ -698,6 +1275,9 @@ const getEnvironmentItemColor = (item) => {
   return "grey-6";
 };
 const getEnvironmentItemLabel = (item, successLabel, failureLabel) => {
+  if (item === "runtime" && isBundledBackendMode.value && pythonEnvironmentSource.value === "managed") {
+    return managedEnvironmentStatusMeta.value.label;
+  }
   const state = getEnvironmentItemState(item);
   if (state === "checking") return "正在检测";
   if (state === "success") return successLabel;
@@ -1416,7 +1996,7 @@ const handleBackendOutput = (event, data) => {
 };
 
 const handlePythonInstallPath = (event, path) => {
-  addTerminalLog(`安装包已下载至: ${path}`, "info");
+  addTerminalLog(`Python 安装包下载完成，正在安装（临时文件：${path}）。`, "info");
 };
 
 const markEnvironmentReadyForRunningProcess = () => {
@@ -1428,10 +2008,10 @@ const markEnvironmentReadyForRunningProcess = () => {
   setAllEnvironmentItemStates("success");
   pythonVersion.value =
     pythonVersion.value ||
-    (isBundledBackendMode.value ? "Bundled offline runtime ready" : "Python detected");
-  venvStatus.value = isBundledBackendMode.value ? "Ready (bundled-runtime)" : "Ready";
+    (isBundledBackendMode.value ? "本地运行环境已就绪" : "Python detected");
+  venvStatus.value = isBundledBackendMode.value ? "运行环境已就绪" : "Ready";
   dependenciesStatus.value = isBundledBackendMode.value
-    ? "Bundled dependencies ready"
+    ? "内置依赖已就绪"
     : "Installed";
   environmentStatus.error = false;
   environmentCheckCompleted.value = true;
@@ -1839,6 +2419,16 @@ const syncBackendMode = (mode = "external") => {
   backendMode.value = mode === "bundled" ? "bundled" : "external";
 };
 
+const resolveCheckedProjectPath = (projectResult = {}) =>
+  [
+    projectResult.path,
+    backendConfig.projectPath,
+    projectPath.value,
+    configStore.config.general?.backendProjectPath,
+  ]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .find(Boolean) || "";
+
 const syncCurrentBackendMode = async () => {
   try {
     const result = await window.electron.ipcRenderer.invoke(
@@ -1975,11 +2565,11 @@ const applyPreparedEnvironment = (prepareResult = {}) => {
   pythonVersion.value = prepareResult.pythonVersion
     ? `Python ${prepareResult.pythonVersion}`
     : isBundledBackendMode.value
-      ? "Bundled offline runtime ready"
+      ? "本地运行环境已就绪"
       : "Python detected";
 
   const runtimeName =
-    prepareResult.venvName || (isBundledBackendMode.value ? "bundled-runtime" : ".venv");
+    prepareResult.venvName || (isBundledBackendMode.value ? "managed-runtime" : ".venv");
   venvStatus.value = isBundledBackendMode.value
     ? `Ready (${runtimeName})`
     : `Created (${runtimeName})`;
@@ -1991,10 +2581,10 @@ const applyDependenciesStatus = (ready) => {
   setEnvironmentItemState("dependencies", ready ? "success" : "failure");
   dependenciesStatus.value = ready
     ? isBundledBackendMode.value
-      ? "Bundled dependencies ready"
+      ? "内置依赖已就绪"
       : "Installed"
     : isBundledBackendMode.value
-      ? "Bundled dependencies not ready"
+      ? "内置依赖未就绪"
       : "Not installed";
 };
 
@@ -2023,6 +2613,40 @@ const appendProjectPathGuidance = (result) => {
 
   addTerminalLog(
     "或退出后端管理页面 → 打开全局设置 → 后端设置 → 后端项目路径→ 点击图标选择路径",
+    "warning"
+  );
+};
+
+const appendEnvironmentRecoveryGuidance = (result) => {
+  const health =
+    result?.health ||
+    result?.details?.health ||
+    result?.diagnostic?.health ||
+    result?.details?.diagnostic?.health ||
+    null;
+  if (health && typeof health === "object") {
+    [
+      ["python", "Python"],
+      ["torch", "PyTorch"],
+      ["cuda", "CUDA"],
+      ["backend", "后端模块"],
+      ["ffmpeg", "FFmpeg"],
+    ].forEach(([key, label]) => {
+      const value = health[key];
+      if (!value || (value.success !== false && value.ok !== false)) return;
+      const detail = value.message || value.error || value.reason || value.stderr || "未通过";
+      addTerminalLog(`健康探针失败：${label}（${detail}）`, "error");
+    });
+    if (Array.isArray(health.errors)) {
+      health.errors.forEach((error) => {
+        if (!error) return;
+        const detail = typeof error === "string" ? error : error.message || JSON.stringify(error);
+        addTerminalLog(`健康探针详情：${detail}`, "error");
+      });
+    }
+  }
+  addTerminalLog(
+    "请重试，或手动创建可用环境，也可以从夸克网盘下载可用运行时并在“已有环境”中选择。",
     "warning"
   );
 };
@@ -2088,24 +2712,37 @@ const runEnvironmentCheck = async ({ syncServiceStatus = false } = {}) => {
       return;
     }
 
+    const checkedProjectPath = resolveCheckedProjectPath(projectResult);
+    if (!checkedProjectPath) {
+      const pathError = {
+        code: "PROJECT_PATH_MISSING",
+        error: "后端项目检测未返回有效路径。",
+      };
+      applyEnvironmentFailureState(pathError, currentEnvironmentStage);
+      environmentStatus.error = true;
+      currentStep.value = 1;
+      addTerminalLog(`后端项目检测失败：${pathError.error}`, "error");
+      return;
+    }
+
     syncBackendMode(projectResult.backendMode);
     environmentStatus.project = true;
     setEnvironmentItemState("project", "success");
-    projectPath.value = projectResult.path;
-    backendConfig.projectPath = projectResult.path;
-    if (configStore.config.general.backendProjectPath !== projectResult.path) {
+    projectPath.value = checkedProjectPath;
+    backendConfig.projectPath = checkedProjectPath;
+    if (configStore.config.general.backendProjectPath !== checkedProjectPath) {
       const newConfig = { ...configStore.config };
-      newConfig.general.backendProjectPath = projectResult.path;
+      newConfig.general.backendProjectPath = checkedProjectPath;
       await persistConfig(newConfig);
       if (completeEnvironmentCheckForRunningService()) {
         return;
       }
     }
-    addTerminalLog(`后端项目检测成功：${projectResult.path}`, "success");
+    addTerminalLog(`后端项目检测成功：${checkedProjectPath || "路径已确认"}`, "success");
 
     addTerminalLog(
       projectResult.backendMode === "bundled"
-        ? "Detected bundled offline backend mode."
+        ? "已检测到应用内置后端模式。"
         : "Detected external backend mode.",
       "info"
     );
@@ -2113,7 +2750,7 @@ const runEnvironmentCheck = async ({ syncServiceStatus = false } = {}) => {
     currentEnvironmentStage = "prepare-project-python";
     const prepareResult = await window.electron.ipcRenderer.invoke(
       "prepare-project-python",
-      projectResult.path
+      checkedProjectPath
     );
     if (completeEnvironmentCheckForRunningService()) {
       return;
@@ -2131,6 +2768,7 @@ const runEnvironmentCheck = async ({ syncServiceStatus = false } = {}) => {
         "error"
       );
       appendProjectPathGuidance(prepareResult);
+      appendEnvironmentRecoveryGuidance(prepareResult);
 
       if (prepareResult.manualGuide?.downloadUrl) {
         addTerminalLog(
@@ -2162,14 +2800,14 @@ const runEnvironmentCheck = async ({ syncServiceStatus = false } = {}) => {
     applyPreparedEnvironment(prepareResult);
     addTerminalLog(
       isBundledBackendMode.value
-        ? "Bundled offline runtime is ready."
+        ? "本地运行环境已就绪。"
         : `Python environment is ready (${prepareResult.pythonSource || "project virtual environment"}).`,
       "success"
     );
 
     if (prepareResult.dependenciesVerified === true) {
       applyDependenciesStatus(true);
-      addTerminalLog("Bundled backend dependencies are ready.", "success");
+      addTerminalLog("内置后端依赖已就绪。", "success");
       currentStep.value = 3;
       return;
     }
@@ -2183,7 +2821,7 @@ const runEnvironmentCheck = async ({ syncServiceStatus = false } = {}) => {
       applyDependenciesStatus(true);
       addTerminalLog(
         isBundledBackendMode.value
-          ? "Bundled backend dependencies are ready."
+          ? "内置后端依赖已就绪。"
           : "依赖已安装。",
         "success"
       );
@@ -2353,7 +2991,7 @@ const setupEnvironment = async () => {
   installProgress.value = 0;
   addTerminalLog(
     isBundledBackendMode.value
-      ? "Preparing bundled offline backend..."
+      ? "正在准备本地后端环境..."
       : "Preparing backend environment...",
     "info"
   );
@@ -2369,6 +3007,7 @@ const setupEnvironment = async () => {
       setEnvironmentItemState(["python", "venv"], "failure");
       setEnvironmentItemState("dependencies", "idle");
       appendProjectPathGuidance(prepareResult);
+      appendEnvironmentRecoveryGuidance(prepareResult);
       if (prepareResult.manualGuide?.downloadUrl) {
         addTerminalLog(
           `手动下载链接：${prepareResult.manualGuide.downloadUrl}`,
@@ -2402,13 +3041,13 @@ const setupEnvironment = async () => {
     applyPreparedEnvironment(prepareResult);
     addTerminalLog(
       isBundledBackendMode.value
-        ? "Bundled offline runtime is ready."
+        ? "本地运行环境已就绪。"
         : "Virtual environment is ready.",
       "success"
     );
     addTerminalLog(
       isBundledBackendMode.value
-        ? "Verifying bundled backend dependencies..."
+        ? "正在校验内置后端依赖..."
         : "Installing dependencies...",
       "info"
     );
@@ -2422,7 +3061,7 @@ const setupEnvironment = async () => {
       applyDependenciesStatus(true);
       addTerminalLog(
         isBundledBackendMode.value
-          ? "Bundled backend dependencies are ready."
+          ? "内置后端依赖已就绪。"
           : "依赖安装成功。",
         "success"
       );

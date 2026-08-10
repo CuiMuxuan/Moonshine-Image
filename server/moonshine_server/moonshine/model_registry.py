@@ -1,14 +1,22 @@
 import hashlib
+import json
 import os
+import re
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from loguru import logger
+try:
+    from loguru import logger
+except ImportError:  # Lightweight release/export tools do not need the full backend environment.
+    import logging
+
+    logger = logging.getLogger(__name__)
 
 from moonshine_server.disk_space import DEFAULT_DISK_SPACE_SAFETY_BYTES, ensure_disk_space
 
@@ -154,6 +162,8 @@ SAM3_LICENSE = {
     "name": "SAM License",
     "url": "https://github.com/facebookresearch/sam3/blob/main/LICENSE",
     "note": "SAM3/SAM3.1 属于 Meta SAM License；本项目只从项目自有模型库提供已记录来源、hash 和许可证说明的文件。",
+    "requiresAcceptance": True,
+    "acceptanceId": "meta-sam-license-v1",
 }
 UNKNOWN_LICENSE = {
     "name": "Manual review required",
@@ -854,6 +864,183 @@ MODEL_MANIFEST = (
     },
 )
 
+SIGNED_MODEL_MANIFEST_PATH_ENV = "MOONSHINE_MODEL_MANIFEST_PATH"
+SIGNED_MODEL_MANIFEST_REQUIRED_ENV = "MOONSHINE_REQUIRE_SIGNED_MODEL_MANIFEST"
+SIGNED_MODEL_MANIFEST_CHANNEL_ENV = "MOONSHINE_MODEL_MANIFEST_CHANNEL"
+SIGNED_MODEL_MANIFEST_KEY_ID = "moonshine-app-manifest-v1"
+MODEL_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{1,63}$")
+SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+_model_manifest_cache = {
+    "key": None,
+    "models": MODEL_MANIFEST,
+    "metadata": None,
+}
+_model_manifest_lock = threading.Lock()
+
+
+def _env_enabled(name: str) -> bool:
+    return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _downloads_disabled_fallback() -> tuple[dict, ...]:
+    return tuple(
+        {
+            **model,
+            "downloadable": False,
+            "sourceLinks": [],
+        }
+        for model in MODEL_MANIFEST
+    )
+
+
+def _validate_https_url(value: str, label: str):
+    parsed = urlparse(str(value or "").strip())
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+    ):
+        raise ValueError(f"{label} must be a credential-free HTTPS URL")
+
+
+def _validate_external_model(model: dict, index: int) -> dict:
+    if not isinstance(model, dict):
+        raise ValueError(f"models[{index}] must be an object")
+    model_id = str(model.get("id") or "").strip().lower()
+    if not MODEL_ID_PATTERN.fullmatch(model_id):
+        raise ValueError(f"models[{index}].id is invalid")
+    files = model.get("files")
+    if not isinstance(files, list) or not files:
+        raise ValueError(f"models[{index}].files must be a non-empty array")
+    file_paths = set()
+    for file_index, file_spec in enumerate(files):
+        if not isinstance(file_spec, dict):
+            raise ValueError(f"models[{index}].files[{file_index}] must be an object")
+        relative_path = str(_safe_relative_path(file_spec.get("path", ""))).replace("\\", "/")
+        if not relative_path or relative_path in file_paths:
+            raise ValueError(f"models[{index}] contains a duplicate or empty file path")
+        file_paths.add(relative_path)
+        size = file_spec.get("size")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 1:
+            raise ValueError(f"models[{index}].files[{file_index}].size is invalid")
+        sha256 = str(file_spec.get("sha256") or "").strip().lower()
+        if not SHA256_PATTERN.fullmatch(sha256):
+            raise ValueError(f"models[{index}].files[{file_index}].sha256 is invalid")
+        for legacy_path in file_spec.get("legacyPaths") or []:
+            _safe_relative_path(legacy_path)
+
+    source_links = model.get("sourceLinks") or []
+    if not isinstance(source_links, list):
+        raise ValueError(f"models[{index}].sourceLinks must be an array")
+    if bool(model.get("downloadable")) and not source_links:
+        raise ValueError(f"models[{index}] is downloadable but has no sourceLinks")
+    for source_index, source in enumerate(source_links):
+        if not isinstance(source, dict):
+            raise ValueError(f"models[{index}].sourceLinks[{source_index}] must be an object")
+        _validate_https_url(source.get("url"), f"models[{index}].sourceLinks[{source_index}].url")
+    for source_index, source in enumerate(model.get("manualSources") or []):
+        if not isinstance(source, dict):
+            raise ValueError(f"models[{index}].manualSources[{source_index}] must be an object")
+        _validate_https_url(source.get("url"), f"models[{index}].manualSources[{source_index}].url")
+
+    license_metadata = model.get("license") or _model_license_metadata(model)
+    family = str(model.get("family") or "").strip().lower()
+    if family == "sam3" or model_id.startswith("sam3"):
+        if not license_metadata.get("requiresAcceptance") or not license_metadata.get("acceptanceId"):
+            raise ValueError(f"models[{index}] requires an explicit SAM license acceptance gate")
+    return model
+
+
+def _parse_signed_model_manifest(document: dict, expected_channel: str) -> tuple[tuple[dict, ...], dict]:
+    if not isinstance(document, dict):
+        raise ValueError("Signed model manifest must be an object")
+    payload = document.get("payload")
+    signature = document.get("signature")
+    if not isinstance(payload, dict) or not isinstance(signature, dict):
+        raise ValueError("Signed model manifest must contain payload and signature")
+    if signature.get("algorithm") != "Ed25519" or signature.get("keyId") != SIGNED_MODEL_MANIFEST_KEY_ID:
+        raise ValueError("Signed model manifest signature metadata is invalid")
+    if not str(signature.get("value") or "").strip():
+        raise ValueError("Signed model manifest signature value is missing")
+    channel = str(payload.get("channel") or "").strip().lower()
+    if expected_channel and channel != expected_channel:
+        raise ValueError("Signed model manifest channel does not match the selected channel")
+    sequence = payload.get("sequence")
+    if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1:
+        raise ValueError("Signed model manifest sequence is invalid")
+    raw_models = payload.get("models")
+    if not isinstance(raw_models, list) or not raw_models:
+        raise ValueError("Signed model manifest contains no models")
+    ids = set()
+    models = []
+    for index, raw_model in enumerate(raw_models):
+        model = _validate_external_model(raw_model, index)
+        model_id = str(model.get("id") or "").strip().lower()
+        if model_id in ids:
+            raise ValueError(f"Duplicate model id: {model_id}")
+        ids.add(model_id)
+        models.append(model)
+    return tuple(models), {
+        "source": "signed",
+        "required": _env_enabled(SIGNED_MODEL_MANIFEST_REQUIRED_ENV),
+        "channel": channel,
+        "sequence": sequence,
+        "modelCount": len(models),
+        "path": str(Path(os.getenv(SIGNED_MODEL_MANIFEST_PATH_ENV) or "").expanduser()),
+        "error": "",
+    }
+
+
+def _active_model_manifest() -> tuple[tuple[dict, ...], dict]:
+    required = _env_enabled(SIGNED_MODEL_MANIFEST_REQUIRED_ENV)
+    configured_path = str(os.getenv(SIGNED_MODEL_MANIFEST_PATH_ENV) or "").strip()
+    expected_channel = str(os.getenv(SIGNED_MODEL_MANIFEST_CHANNEL_ENV) or "").strip().lower()
+    if not configured_path:
+        models = _downloads_disabled_fallback() if required else MODEL_MANIFEST
+        return models, {
+            "source": "safe-fallback" if required else "bundled",
+            "required": required,
+            "channel": expected_channel,
+            "sequence": None,
+            "modelCount": len(models),
+            "path": "",
+            "error": "Signed model manifest is unavailable" if required else "",
+        }
+
+    manifest_path = Path(configured_path).expanduser().resolve()
+    try:
+        stat = manifest_path.stat()
+        if not manifest_path.is_file():
+            raise ValueError("Signed model manifest path is not a file")
+        cache_key = (str(manifest_path), stat.st_mtime_ns, stat.st_size, expected_channel, required)
+        with _model_manifest_lock:
+            if _model_manifest_cache["key"] == cache_key:
+                return _model_manifest_cache["models"], dict(_model_manifest_cache["metadata"])
+            with manifest_path.open("r", encoding="utf-8") as manifest_file:
+                document = json.load(manifest_file)
+            models, metadata = _parse_signed_model_manifest(document, expected_channel)
+            metadata["path"] = str(manifest_path)
+            _model_manifest_cache.update({"key": cache_key, "models": models, "metadata": metadata})
+            return models, dict(metadata)
+    except Exception as error:
+        logger.warning(f"Signed model manifest rejected: {error}")
+        models = _downloads_disabled_fallback() if required else MODEL_MANIFEST
+        return models, {
+            "source": "safe-fallback" if required else "bundled",
+            "required": required,
+            "channel": expected_channel,
+            "sequence": None,
+            "modelCount": len(models),
+            "path": str(manifest_path),
+            "error": str(error),
+        }
+
+
+def get_model_manifest_metadata() -> dict:
+    _, metadata = _active_model_manifest()
+    return metadata
+
 
 def _now() -> float:
     return time.time()
@@ -918,8 +1105,9 @@ def _sam_model_capability_metadata(model: dict) -> dict:
 
 
 def _safe_relative_path(value: str) -> Path:
-    path = Path(str(value or "").replace("\\", "/"))
-    if path.is_absolute() or ".." in path.parts:
+    raw = str(value or "").strip().replace("\\", "/")
+    path = Path(raw)
+    if not raw or raw in {".", ".."} or path.is_absolute() or ".." in path.parts:
         raise ValueError(f"Invalid model file path: {value}")
     return path
 
@@ -1070,7 +1258,8 @@ def _recommended_vram_warning(model: dict, cuda_info: Optional[dict]) -> Optiona
 def build_model_status(model_dir: Path, cuda_info: Optional[dict] = None) -> list[dict]:
     model_dir = Path(model_dir).expanduser().resolve()
     models = []
-    for manifest_item in MODEL_MANIFEST:
+    active_manifest, _ = _active_model_manifest()
+    for manifest_item in active_manifest:
         file_statuses = [
             _file_status(model_dir, file_spec)
             for file_spec in manifest_item.get("files", [])
@@ -1108,8 +1297,9 @@ def build_model_status(model_dir: Path, cuda_info: Optional[dict] = None) -> lis
 
 def get_model_manifest(model_id: str) -> Optional[dict]:
     normalized_id = str(model_id or "").strip()
+    active_manifest, _ = _active_model_manifest()
     return next(
-        (item for item in MODEL_MANIFEST if item.get("id") == normalized_id),
+        (item for item in active_manifest if item.get("id") == normalized_id),
         None,
     )
 
@@ -1127,6 +1317,7 @@ class ModelDownloadTask:
     created_at: float = field(default_factory=_now)
     updated_at: float = field(default_factory=_now)
     completed_at: Optional[float] = None
+    manifest_item: Optional[dict] = field(default=None, repr=False)
     thread: Optional[threading.Thread] = field(default=None, repr=False)
 
     def to_dict(self) -> dict:
@@ -1151,7 +1342,12 @@ class ModelDownloadTaskManager:
         self._tasks: Dict[str, ModelDownloadTask] = {}
         self._lock = threading.Lock()
 
-    def create_download_task(self, model_id: str, model_dir: Path) -> ModelDownloadTask:
+    def create_download_task(
+        self,
+        model_id: str,
+        model_dir: Path,
+        license_acceptance: Optional[dict] = None,
+    ) -> ModelDownloadTask:
         manifest_item = get_model_manifest(model_id)
         if manifest_item is None:
             raise ValueError(f"Unknown model: {model_id}")
@@ -1160,7 +1356,18 @@ class ModelDownloadTaskManager:
         if not manifest_item.get("sourceLinks"):
             raise ValueError("暂无下载源。")
 
-        task = ModelDownloadTask(id=uuid.uuid4().hex, model_id=model_id)
+        license_metadata = manifest_item.get("license") or _model_license_metadata(manifest_item)
+        if license_metadata.get("requiresAcceptance"):
+            acceptance = license_acceptance or {}
+            expected_id = str(license_metadata.get("acceptanceId") or "").strip()
+            if not acceptance.get("accepted") or str(acceptance.get("acceptanceId") or "").strip() != expected_id:
+                raise ValueError("下载该模型前必须确认并接受对应许可证。")
+
+        task = ModelDownloadTask(
+            id=uuid.uuid4().hex,
+            model_id=model_id,
+            manifest_item=manifest_item,
+        )
         thread = threading.Thread(
             target=self._run_download_task,
             args=(task.id, Path(model_dir).expanduser().resolve()),
@@ -1192,7 +1399,7 @@ class ModelDownloadTaskManager:
         if task is None:
             return
 
-        manifest_item = get_model_manifest(task.model_id)
+        manifest_item = task.manifest_item or get_model_manifest(task.model_id)
         try:
             self._patch_task(task_id, status="running", message="正在下载模型...")
             self._download_model_files(task_id, manifest_item, model_dir)

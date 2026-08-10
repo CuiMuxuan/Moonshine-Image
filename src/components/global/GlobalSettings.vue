@@ -55,6 +55,11 @@
             label="高级配置"
             data-testid="global-settings-tab-advanced"
           />
+          <q-tab
+            name="updates"
+            label="应用更新"
+            data-testid="global-settings-tab-updates"
+          />
         </q-tabs>
         <q-separator class="q-mt-sm" />
       </q-card-section>
@@ -919,6 +924,199 @@
                 </q-tab-panels>
               </div>
             </q-tab-panel>
+
+            <q-tab-panel name="updates" class="q-px-none" data-testid="global-settings-updates-panel">
+              <div class="section q-gutter-md">
+                <div class="row items-center settings-section-heading">
+                  <div>
+                    <div class="text-subtitle1 text-weight-medium">应用更新</div>
+                    <div class="text-caption text-grey-7">
+                      {{ updateChannelLabel }}通道 · 当前版本 {{ updateManager.state.currentVersion || "未知" }}
+                    </div>
+                  </div>
+                  <q-space />
+                  <q-badge :color="updateStatusColor" data-testid="global-settings-update-status">
+                    {{ updateManager.statusLabel }}
+                  </q-badge>
+                </div>
+
+                <q-banner
+                  v-if="updateManager.state.error"
+                  rounded
+                  class="settings-warning-banner"
+                  data-testid="global-settings-update-error"
+                >
+                  {{ updateManager.state.error.message }}
+                </q-banner>
+
+                <div class="block update-panel-block">
+                  <q-select
+                    v-model="updateChannel"
+                    label="更新通道"
+                    emit-value
+                    map-options
+                    outlined
+                    dense
+                    class="q-mb-md"
+                    :options="updateChannelOptions"
+                    :disable="updateManager.isActionPending"
+                    data-testid="global-settings-update-channel"
+                    @update:model-value="handleUpdateChannel"
+                  />
+                  <div class="row items-center q-gutter-sm">
+                    <div class="text-body2">{{ updateStatusSummary }}</div>
+                    <q-space />
+                    <q-btn
+                      v-if="showCheckUpdateAction"
+                      outline
+                      no-caps
+                      color="primary"
+                      icon="refresh"
+                      :label="updateManager.retryAction === 'check' ? '重新检查' : '检查更新'"
+                      :loading="updateManager.isChecking"
+                      :disable="!updateManager.canCheck"
+                      data-testid="global-settings-update-check"
+                      @click="handleCheckForUpdates"
+                    />
+                  </div>
+
+                  <div
+                    v-if="updateManager.state.checkedAt || updateManager.state.releaseDate"
+                    class="row q-col-gutter-md q-mt-sm text-caption text-grey-7"
+                  >
+                    <div v-if="updateManager.state.checkedAt">
+                      上次检查：{{ formatUpdateDateTime(updateManager.state.checkedAt) }}
+                    </div>
+                    <div v-if="updateManager.state.releaseDate">
+                      发布日期：{{ formatUpdateDateTime(updateManager.state.releaseDate) }}
+                    </div>
+                  </div>
+
+                  <div v-if="updateManager.isDownloading" class="q-mt-md">
+                    <q-linear-progress
+                      :value="Number(updateManager.state.progress || 0) / 100"
+                      color="primary"
+                      rounded
+                    />
+                    <div class="row items-center justify-between q-gutter-sm text-caption text-grey-7 q-mt-xs">
+                      <span>已下载 {{ Math.round(Number(updateManager.state.progress || 0)) }}%</span>
+                      <span v-if="updateTransferSummary">{{ updateTransferSummary }}</span>
+                    </div>
+                  </div>
+
+                  <div v-if="showDownloadUpdateAction" class="row justify-end q-mt-md">
+                    <q-btn
+                      outline
+                      no-caps
+                      color="primary"
+                      icon="download"
+                      :label="updateManager.retryAction === 'download' ? '重新下载' : '下载更新'"
+                      :loading="updateManager.isDownloading"
+                      :disable="!updateManager.canDownload"
+                      data-testid="global-settings-update-download"
+                      @click="handleDownloadUpdate"
+                    />
+                  </div>
+
+                  <div v-if="showInstallUpdateAction" class="row justify-end q-mt-md">
+                    <q-btn
+                      color="primary"
+                      no-caps
+                      icon="system_update_alt"
+                      :label="updateManager.retryAction === 'install' ? '重试安装' : '重启并安装'"
+                      :loading="updateManager.isInstalling"
+                      :disable="!updateManager.canInstall"
+                      data-testid="global-settings-update-install"
+                      @click="handleInstallUpdate"
+                    />
+                  </div>
+
+                  <div v-if="updateManager.state.installBlockedReason" class="text-caption text-warning q-mt-sm">
+                    {{ updateManager.state.installBlockedReason }}
+                  </div>
+                </div>
+
+                <div class="block update-panel-block" data-testid="global-settings-runtime-panel">
+                  <div class="row items-center settings-section-heading">
+                    <div>
+                      <div class="text-subtitle2 text-weight-medium">运行环境</div>
+                      <div class="text-caption text-grey-7">
+                        {{ runtimeStatusSummary }}
+                      </div>
+                    </div>
+                    <q-space />
+                    <q-badge :color="runtimeStatusColor" data-testid="global-settings-runtime-status">
+                      {{ updateManager.runtimeStatusLabel }}
+                    </q-badge>
+                  </div>
+
+                  <q-banner
+                    v-if="updateManager.runtimeState.error"
+                    rounded
+                    class="settings-warning-banner q-mb-md"
+                    data-testid="global-settings-runtime-error"
+                  >
+                    {{ updateManager.runtimeState.error.message }}
+                  </q-banner>
+
+                  <q-banner
+                    v-if="updateManager.runtimeState.restartRequired"
+                    rounded
+                    inline-actions
+                    class="settings-warning-banner q-mb-md"
+                    data-testid="global-settings-runtime-restart-required"
+                  >
+                    运行环境已更新。重启应用后将使用新环境。
+                    <template #action>
+                      <q-btn
+                        flat
+                        no-caps
+                        color="primary"
+                        icon="restart_alt"
+                        label="重启应用"
+                        :disable="!updateManager.runtimeCanRestart"
+                        data-testid="global-settings-runtime-restart"
+                        @click="handleRestartApplication"
+                      />
+                    </template>
+                  </q-banner>
+
+                  <div class="row items-center q-gutter-sm q-mt-md">
+                    <q-icon name="info" color="info" size="18px" />
+                    <span class="text-caption text-grey-7">环境检测、创建/修复和已有环境选择请在后端管理中完成。</span>
+                    <q-space />
+                    <q-btn
+                      outline
+                      no-caps
+                      color="primary"
+                      icon="dns"
+                      label="打开后端管理"
+                      data-testid="global-settings-open-backend-manager"
+                      @click="$emit('open-backend-manager')"
+                    />
+                  </div>
+
+                  <div
+                    v-if="runtimeDiagnosticsSummary.length"
+                    class="row q-col-gutter-sm text-caption text-grey-7 q-mt-md"
+                    data-testid="global-settings-runtime-diagnostics"
+                  >
+                    <span v-for="item in runtimeDiagnosticsSummary" :key="item.label" class="col-12 col-sm-auto">
+                      {{ item.label }}：{{ item.value }}
+                    </span>
+                  </div>
+
+                  <div class="row justify-end q-mt-md">
+                    <span class="text-caption text-grey-6">当前状态仅作摘要显示</span>
+                  </div>
+                </div>
+
+                <div v-if="updateManager.state.releaseNotes" class="block update-panel-block">
+                  <div class="text-subtitle2 text-weight-medium q-mb-sm">版本说明</div>
+                  <div class="text-body2 update-release-notes">{{ updateManager.state.releaseNotes }}</div>
+                </div>
+              </div>
+            </q-tab-panel>
           </q-tab-panels>
         </q-scroll-area>
       </q-card-section>
@@ -1001,6 +1199,7 @@ import { useAppStateStore } from "src/stores/appState";
 import { useConfigStore } from "src/stores/config";
 import { useFileManagerStore } from "src/stores/fileManager";
 import { useModelRegistryStore } from "src/stores/modelRegistry";
+import { useUpdateManagerStore } from "src/stores/updateManager";
 import {
   buildBackendPathBlockedMessage,
   buildBackendPathWarningMessage,
@@ -1013,7 +1212,19 @@ const configStore = useConfigStore();
 const appStateStore = useAppStateStore();
 const fileManagerStore = useFileManagerStore();
 const modelRegistryStore = useModelRegistryStore();
+const updateManager = useUpdateManagerStore();
 const globalLoadingState = inject("globalLoadingState", ref({ showing: false }));
+const updateChannel = ref("stable");
+const updateChannelOptions = [
+  { label: "稳定", value: "stable" },
+  { label: "测试候选", value: "beta" },
+  { label: "测试", value: "test" },
+];
+const updateChannelLabel = computed(() => ({
+  stable: "稳定",
+  beta: "测试候选",
+  test: "测试",
+}[updateManager.state.channel] || updateManager.state.channel || "稳定"));
 
 const launchModeOptions = [{ label: "CUDA 加速", value: "cuda" }, { label: "CPU 模式", value: "cpu" }];
 const MAT_CUDA_FALLBACK_MESSAGE = "MAT 需要 CUDA，当前已自动切换为 LaMa。";
@@ -1405,6 +1616,211 @@ const hasErrors = computed(() => validationErrors.value.length > 0);
 const isTempCleanupDisabled = computed(
   () => saving.value || cleaningTempFiles.value || Boolean(globalLoadingState.value?.showing)
 );
+const formatUpdateBytes = (value) => {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const unitIndex = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1
+  );
+  const scaled = bytes / (1024 ** unitIndex);
+  const precision = unitIndex === 0 || scaled >= 100 ? 0 : 1;
+  return `${scaled.toFixed(precision)} ${units[unitIndex]}`;
+};
+const formatUpdateDateTime = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || "未知");
+  return date.toLocaleString("zh-CN", { hour12: false });
+};
+const updateTransferSummary = computed(() => {
+  const updateState = updateManager.state;
+  const transferred = formatUpdateBytes(updateState.transferred);
+  const total = Number(updateState.total) > 0
+    ? ` / ${formatUpdateBytes(updateState.total)}`
+    : "";
+  const speed = Number(updateState.bytesPerSecond) > 0
+    ? ` · ${formatUpdateBytes(updateState.bytesPerSecond)}/s`
+    : "";
+  return `${transferred}${total}${speed}`;
+});
+const updateStatusColor = computed(() => {
+  const colors = {
+    available: "info",
+    downloading: "primary",
+    downloaded: "positive",
+    installing: "positive",
+    "up-to-date": "positive",
+    error: "negative",
+    disabled: "grey-7",
+  };
+  return colors[updateManager.state.status] || "grey-7";
+});
+const updateStatusSummary = computed(() => {
+  const updateState = updateManager.state;
+  if (!updateState.enabled || updateState.status === "disabled") {
+    return "当前构建未启用应用更新。";
+  }
+  if (updateState.status === "checking") return `正在获取${updateChannelLabel.value}通道信息...`;
+  if (updateState.status === "up-to-date") return `已确认当前版本为${updateChannelLabel.value}通道最新版本。`;
+  if (updateState.status === "downloading") {
+    const version = updateState.availableVersion || updateState.latestVersion;
+    return version ? `正在下载版本 ${version}。` : "正在下载更新。";
+  }
+  if (["downloaded", "installing"].includes(updateState.status)) {
+    const version = updateState.availableVersion || updateState.latestVersion;
+    return version ? `版本 ${version} 已准备好安装。` : "更新已准备好安装。";
+  }
+  if (updateState.status === "error") return "上次更新操作未完成，可重试当前步骤。";
+  if (updateState.availableVersion) return `可用版本 ${updateState.availableVersion}`;
+  return "尚未获取版本信息。";
+});
+const showCheckUpdateAction = computed(
+  () =>
+    ["disabled", "idle", "checking", "up-to-date"].includes(updateManager.state.status) ||
+    (updateManager.state.status === "error" && updateManager.retryAction === "check")
+);
+const showDownloadUpdateAction = computed(
+  () =>
+    updateManager.state.status === "available" ||
+    (updateManager.state.status === "error" && updateManager.retryAction === "download")
+);
+const showInstallUpdateAction = computed(
+  () =>
+    ["downloaded", "installing"].includes(updateManager.state.status) ||
+    (updateManager.state.status === "error" && updateManager.retryAction === "install")
+);
+const normalizeRuntimeAccelerator = (value) => {
+  const accelerator = String(value || "").trim().toLowerCase();
+  return ["auto", "cpu", "cu130"].includes(accelerator) ? accelerator : "auto";
+};
+const runtimeAcceleratorLabel = (value) => ({
+  auto: "自动",
+  cpu: "CPU",
+  cu130: "NVIDIA cu130",
+}[normalizeRuntimeAccelerator(value)] || "自动");
+const runtimeStatusColor = computed(() => ({
+  ready: "positive",
+  "needs-create": "warning",
+  "needs-repair": "warning",
+  "needs-download": "warning",
+  preparing: "primary",
+  creating: "primary",
+  repairing: "primary",
+  downloading: "primary",
+  verifying: "primary",
+  checking: "info",
+  failed: "negative",
+  "rolling-back": "warning",
+  disabled: "grey-7",
+}[updateManager.runtimeState.status] || "grey-7"));
+const runtimeStatusSummary = computed(() => {
+  const state = updateManager.runtimeState;
+  if (!state.enabled || state.status === "disabled") return "当前构建未启用本地环境管理。";
+  if (["needs-create", "needs-download", "idle"].includes(state.status)) return "尚未创建本地运行环境。";
+  if (state.status === "needs-repair") return "当前环境需要修复。";
+  if (state.status === "checking") return "正在检查本机 Python、PyTorch、CUDA 和 FFmpeg。";
+  if (["preparing", "creating", "repairing", "downloading"].includes(state.status)) {
+    return "正在创建或修复本地运行环境。";
+  }
+  if (state.status === "verifying") return "正在验证本地环境并等待切换。";
+  if (state.status === "ready") {
+    return `当前加速器：${runtimeAcceleratorLabel(state.selectedAccelerator)}。`;
+  }
+  if (state.status === "failed") return "本地运行环境操作未完成，可重试。";
+  return "尚未检查本地运行环境。";
+});
+const runtimeDiagnosticsSummary = computed(() => {
+  const state = updateManager.runtimeState;
+  const diagnostics = [];
+  if ((state.selectedAccelerator || state.accelerator) && (state.enabled || state.status !== "disabled")) {
+    diagnostics.push({ label: "加速器", value: runtimeAcceleratorLabel(state.selectedAccelerator || state.accelerator) });
+  }
+  if (state.specHash) diagnostics.push({ label: "specHash", value: state.specHash });
+  if (state.pythonVersion) diagnostics.push({ label: "Python", value: state.pythonVersion });
+  if (state.torchVersion) diagnostics.push({ label: "PyTorch", value: state.torchVersion });
+  if (state.cudaVersion) diagnostics.push({ label: "CUDA", value: state.cudaVersion });
+  if (state.ffmpegVersion) diagnostics.push({ label: "FFmpeg", value: state.ffmpegVersion });
+  return diagnostics;
+});
+
+const notifyUpdateFailure = (result, fallbackMessage) => {
+  if (result?.success !== false) return false;
+  const message =
+    result?.reason ||
+    result?.error?.message ||
+    result?.error ||
+    result?.state?.error?.message ||
+    fallbackMessage;
+  $q.notify({
+    type: ["APP_UPDATE_INSTALL_BLOCKED", "APP_RESTART_BLOCKED"].includes(result?.code) ? "warning" : "negative",
+    message,
+    position: "top",
+    timeout: 4500,
+  });
+  return true;
+};
+
+const handleUpdateChannel = async (channel) => {
+  const previous = updateManager.state.channel || "stable";
+  const result = await updateManager.setAppUpdateChannel(channel);
+  if (notifyUpdateFailure(result, "切换更新通道失败。")) {
+    updateChannel.value = previous;
+  }
+};
+
+const handleCheckForUpdates = async () => {
+  const result = await updateManager.checkForUpdates();
+  if (notifyUpdateFailure(result, "检查更新失败。")) return;
+  if (result?.state?.status === "up-to-date") {
+    $q.notify({ type: "positive", message: `当前已是${updateChannelLabel.value}通道最新版本。`, position: "top" });
+  }
+};
+
+watch(
+  () => updateManager.state.channel,
+  (channel) => {
+    updateChannel.value = ["stable", "beta", "test"].includes(channel) ? channel : "stable";
+  },
+  { immediate: true },
+);
+
+const handleDownloadUpdate = async () => {
+  const result = await updateManager.downloadUpdate();
+  notifyUpdateFailure(result, "下载应用更新失败。");
+};
+
+const performInstallUpdate = async () => {
+  const result = await updateManager.installUpdate();
+  notifyUpdateFailure(result, "安装应用更新失败。");
+};
+
+const handleInstallUpdate = () => {
+  if (!updateManager.canInstall) return;
+  const version = updateManager.state.availableVersion || updateManager.state.latestVersion;
+  $q.dialog({
+    title: "重启并安装更新",
+    message: version
+      ? `Moonshine-Image 将关闭并安装版本 ${version}。请先保存尚未导出的内容。`
+      : "Moonshine-Image 将关闭并安装已下载的更新。请先保存尚未导出的内容。",
+    cancel: {
+      flat: true,
+      label: "暂不安装",
+    },
+    ok: {
+      color: "primary",
+      label: "重启并安装",
+    },
+    persistent: true,
+  }).onOk(() => {
+    void performInstallUpdate();
+  });
+};
+
+const handleRestartApplication = async () => {
+  const result = await updateManager.restartApplication();
+  notifyUpdateFailure(result, "重启应用失败。");
+};
 
 const openSettingsHelp = (topic) => {
   const help = settingsHelpByTopic[topic];
@@ -1813,6 +2229,7 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .settings-action-button :deep(.q-icon.on-left) { margin-right: 0; }
+.update-release-notes { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
 .settings-section-heading { gap: 8px; }
 .settings-help-button {
   width: 44px;

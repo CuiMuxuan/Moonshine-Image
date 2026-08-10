@@ -361,7 +361,7 @@ function runAssertions() {
   assertPattern({
     file: "src/layouts/MainLayout.vue",
     description: "Main layout flushes deferred backend-path notice after startup overlay",
-    pattern: /const handleStartupOverlayFinished = \(\) => \{\s*flushPendingBackendPathNotice\(\);\s*\};/,
+    pattern: /const handleStartupOverlayFinished = \(\) => \{\s*startupExperienceFinished\.value = true;\s*flushPendingBackendPathNotice\(\);\s*\};/,
   });
 
   logSection("Config & Shared State Contracts");
@@ -808,8 +808,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "quasar.config.js",
-    description: "Electron packaging includes FFmpeg extra resources",
-    pattern: /extraResource:\s*\[[\s\S]*build-resources\/ffmpeg[\s\S]*extraResources:\s*\[[\s\S]*from:\s*"build-resources\/ffmpeg"[\s\S]*to:\s*"ffmpeg"/,
+    description: "Normal Packager and Builder builds stay app-only unless legacy components are explicit",
+    pattern: /includeBundledComponents:\s*includeLegacyPackagedComponents[\s\S]*extraResource:\s*\[[\s\S]*"build-resources\/ffmpeg"[\s\S]*includeLegacyPackagedComponents[\s\S]*App-only NSIS resources[\s\S]*extraResources:\s*\[[\s\S]*from:\s*"build-resources\/backend"[\s\S]*from:\s*"build-resources\/integrity"/,
   });
   assertPattern({
     file: "src/components/common/ModelCapabilityRadar.vue",

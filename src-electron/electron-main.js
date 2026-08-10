@@ -72,6 +72,24 @@ import {
   createFatalStartupHandler,
 } from "./app-bootstrap.js";
 import { BackendProcessSupervisor } from "./backend-process-supervisor.js";
+import {
+  AppUpdaterService,
+  createDefaultUpdateState,
+} from "./updater/app-updater.js";
+import { scheduleApplicationRestart } from "./app-restart.js";
+import { RuntimeManager } from "./runtime/runtime-manager.js";
+import { EnvironmentManager } from "./runtime/environment-manager.js";
+import { ModelManifestManager } from "./runtime/model-manifest-manager.js";
+import { getRuntimeManifestPublicKeys } from "./runtime/public-key.js";
+import {
+  evaluateAppUpdateInstallReadiness,
+  prepareAppUpdateInstall,
+} from "./updater/install-readiness.js";
+import { AppManifestGuard } from "./updater/app-manifest-guard.js";
+import {
+  buildAppUpdateFeedUrl,
+  normalizeAppUpdateChannel,
+} from "./updater/update-channel.js";
 import { buildBackendPathCompatibilityResult } from "./backend-path-validation.js";
 import {
   createDiagnostic,
@@ -202,6 +220,16 @@ let backendStopPromise = null;
 let applicationQuitRequested = false;
 let applicationBootstrapPromise = null;
 let applicationBootstrapComplete = false;
+let appUpdaterService = new AppUpdaterService({
+  updater: null,
+  isPackaged: false,
+  currentVersion: app.getVersion(),
+});
+let appUpdaterInitPromise = null;
+let runtimeManager = null;
+let environmentManager = null;
+let modelManifestManager = null;
+let appManifestGuard = null;
 const ACTIVE_STARTUP_SETTLEMENT_TIMEOUT_MS = 10000;
 const startupOperationRegistry = new StartupOperationRegistry({
   getInitialAbortReason: () =>
@@ -418,6 +446,780 @@ async function stopBackendServiceAndPendingLaunch(reason) {
 global.projectPath = "";
 const activeFfmpegTasks = new Map();
 const activeProcessingTasks = new Map();
+const EXTERNAL_ENVIRONMENT_SELECTION_TTL_MS = 10 * 60 * 1000;
+const externalEnvironmentDirectorySelections = new Map();
+const EXTERNAL_ENVIRONMENT_RENDERER_MESSAGES = Object.freeze({
+  ENVIRONMENT_DISABLED: "当前版本未启用运行环境管理。",
+  ENVIRONMENT_BUSY: "当前有任务或后端进程正在运行，暂时不能切换运行环境。",
+  EXTERNAL_ENV_REQUEST_FAILED: "已有 Python 环境操作失败，请重新选择目录后重试。",
+  EXTERNAL_ENV_UNAVAILABLE: "当前版本无法使用已有 Python 环境，请重启应用后重试。",
+  EXTERNAL_ENV_DIRECTORY_SELECTION_FAILED: "无法打开目录选择器，请稍后重试。",
+  EXTERNAL_ENV_SELECTION_INVALID: "目录选择已失效，请重新选择环境目录。",
+  EXTERNAL_ENV_CANDIDATE_INVALID: "环境校验结果已失效，请重新校验。",
+  EXTERNAL_ENV_PROBE_FAILED: "环境校验失败，请检查目录后重试。",
+  EXTERNAL_ENV_ACTIVATION_FAILED: "无法启用所选环境，请重新校验后重试。",
+  EXTERNAL_ENV_FORGET_FAILED: "无法恢复应用管理的运行环境，请稍后重试。",
+  EXTERNAL_ENV_REPROBE_FAILED: "已有环境发生变化，请重新选择并校验。",
+  EXTERNAL_ENV_READ_ONLY: "已有 Python 环境由应用只读使用，不能执行此操作。",
+  EXTERNAL_ENV_FAILED: "已有 Python 环境操作失败，请重新选择目录后重试。",
+  EXTERNAL_ENV_DIRECTORY_INVALID: "所选目录不可用，请重新选择完整环境目录。",
+  EXTERNAL_ENV_LAYOUT_UNSUPPORTED: "所选目录不是支持的完整包 runtime、Conda 或 venv 环境。",
+  EXTERNAL_ENV_MANIFEST_INVALID: "runtime-manifest.json 无效，无法使用此环境。",
+  EXTERNAL_ENV_CONFIG_INVALID: "已有环境配置已损坏，请重新选择目录。",
+  EXTERNAL_ENV_PATH_INVALID: "环境目录包含不安全的路径配置。",
+  EXTERNAL_ENV_PATH_ESCAPE: "环境中的 Python 路径超出了所选目录。",
+  EXTERNAL_ENV_BACKEND_PATH_INVALID: "应用后端路径无效，无法校验此环境。",
+  EXTERNAL_ENV_PYTHON_MISSING: "所选目录中没有找到受支持的 Python。",
+  EXTERNAL_ENV_PYTHON_UNAVAILABLE: "所选环境中的 Python 无法启动。",
+  EXTERNAL_ENV_PYTHON_VERSION_UNSUPPORTED: "仅支持 64 位 CPython 3.12.x 环境。",
+  EXTERNAL_ENV_ARCH_UNSUPPORTED: "仅支持 64 位 Python 环境。",
+  EXTERNAL_ENV_TORCH_UNAVAILABLE: "所选环境中的 PyTorch 不可用。",
+  EXTERNAL_ENV_CUDA_UNAVAILABLE: "所选 CUDA 环境当前无法使用 NVIDIA 加速。",
+  EXTERNAL_ENV_ACCELERATOR_MISMATCH: "所选环境的加速类型与 PyTorch 配置不一致。",
+  EXTERNAL_ENV_DEPENDENCIES_BROKEN: "所选环境的 Python 依赖不完整。",
+  EXTERNAL_ENV_BACKEND_IMPORT_FAILED: "所选环境无法加载当前版本的 Moonshine 后端。",
+  EXTERNAL_ENV_FFMPEG_UNAVAILABLE: "应用内置 FFmpeg 校验失败。",
+  EXTERNAL_ENV_CHANGED_AFTER_PROBE: "环境在校验后发生变化，请重新校验。",
+});
+
+function normalizeExternalEnvironmentCandidateId(value) {
+  const candidateId = String(value ?? "").trim();
+  return /^[a-z0-9_-]{8,128}$/i.test(candidateId) ? candidateId : "";
+}
+
+function pruneExternalEnvironmentDirectorySelections(now = Date.now()) {
+  for (const [candidateId, selection] of externalEnvironmentDirectorySelections) {
+    if (!selection || selection.expiresAt <= now) {
+      externalEnvironmentDirectorySelections.delete(candidateId);
+    }
+  }
+}
+
+function createExternalEnvironmentDirectorySelection(directoryPath) {
+  pruneExternalEnvironmentDirectorySelections();
+  const candidateId = crypto.randomUUID();
+  rememberExternalEnvironmentDirectorySelection(candidateId, directoryPath);
+  return candidateId;
+}
+
+function rememberExternalEnvironmentDirectorySelection(candidateId, directoryPath) {
+  const normalizedId = normalizeExternalEnvironmentCandidateId(candidateId);
+  if (!normalizedId) return "";
+  externalEnvironmentDirectorySelections.set(normalizedId, {
+    selectedPath: directoryPath,
+    expiresAt: Date.now() + EXTERNAL_ENVIRONMENT_SELECTION_TTL_MS,
+  });
+  return normalizedId;
+}
+
+function getExternalEnvironmentDirectorySelection(candidateId) {
+  pruneExternalEnvironmentDirectorySelections();
+  const normalizedId = normalizeExternalEnvironmentCandidateId(candidateId);
+  if (!normalizedId) return null;
+  return externalEnvironmentDirectorySelections.get(normalizedId) || null;
+}
+
+function toSafeExternalEnvironmentError(error, fallbackCode = "EXTERNAL_ENV_REQUEST_FAILED") {
+  const requestedCode = String(error?.code || "").trim();
+  const safeFallbackCode = Object.prototype.hasOwnProperty.call(
+    EXTERNAL_ENVIRONMENT_RENDERER_MESSAGES,
+    fallbackCode
+  )
+    ? fallbackCode
+    : "EXTERNAL_ENV_REQUEST_FAILED";
+  const code = Object.prototype.hasOwnProperty.call(
+    EXTERNAL_ENVIRONMENT_RENDERER_MESSAGES,
+    requestedCode
+  )
+    ? requestedCode
+    : safeFallbackCode;
+  return {
+    code,
+    message: EXTERNAL_ENVIRONMENT_RENDERER_MESSAGES[code],
+  };
+}
+
+function deriveExternalEnvironmentRendererStatus(state = {}) {
+  if (state.source === "external") {
+    if (state.status === "ready") return "active";
+    if (["failed", "needs-repair"].includes(state.status)) return "invalid";
+    if (["checking", "verifying", "preparing"].includes(state.status)) return "probing";
+    return "stale";
+  }
+  if (state.externalCandidateToken) return "valid";
+  if (state.externalPath) return state.error ? "invalid" : "stale";
+  return "unselected";
+}
+
+function toRendererEnvironmentState(state = {}, externalOverride) {
+  const normalizedState = state && typeof state === "object" ? { ...state } : {};
+  const hasExternalState = Boolean(
+    externalOverride ||
+    normalizedState.source === "external" ||
+    normalizedState.externalConfigured ||
+    normalizedState.externalCandidateToken ||
+    normalizedState.externalPath ||
+    String(normalizedState.error?.code || "").startsWith("EXTERNAL_ENV_")
+  );
+  if (!hasExternalState) {
+    delete normalizedState.external;
+    return normalizedState;
+  }
+  const candidateId = normalizeExternalEnvironmentCandidateId(
+    normalizedState.externalCandidateToken
+  ) || null;
+  const externalError = Object.prototype.hasOwnProperty.call(
+    externalOverride || {},
+    "error"
+  )
+    ? externalOverride.error
+    : normalizedState.error
+      ? toSafeExternalEnvironmentError(normalizedState.error)
+      : null;
+  normalizedState.error = externalError;
+  normalizedState.external = {
+    status: deriveExternalEnvironmentRendererStatus(normalizedState),
+    candidateId,
+    selectedPath: normalizedState.externalPath || "",
+    layout: normalizedState.externalLayout || null,
+    diagnostics: normalizedState.diagnostics || null,
+    canActivate: Boolean(candidateId && normalizedState.source !== "external"),
+    probedAt: normalizedState.externalLastVerifiedAt || null,
+    error: externalError,
+    ...(externalOverride || {}),
+  };
+  return normalizedState;
+}
+
+function broadcastEnvironmentState(state = environmentManager?.getState?.(), externalOverride) {
+  const rendererState = toRendererEnvironmentState(
+    state || { enabled: false, status: "disabled" },
+    externalOverride
+  );
+  sendToMainWindow("runtime-state", rendererState);
+  return rendererState;
+}
+
+function reportExternalEnvironmentIpcFailure(error, fallbackCode, externalOverride) {
+  const failure = toSafeExternalEnvironmentError(error, fallbackCode);
+  void startupLogger.warning("External environment IPC request failed.", {
+    code: failure.code,
+    reason: error?.message || String(error || failure.message),
+  });
+  const state = broadcastEnvironmentState(environmentManager?.getState?.(), {
+    status: "invalid",
+    candidateId: null,
+    canActivate: false,
+    error: failure,
+    ...(externalOverride || {}),
+  });
+  return {
+    success: false,
+    code: failure.code,
+    error: failure,
+    external: state.external,
+    state,
+  };
+}
+
+function getManagedReleaseSources() {
+  const primary = String(process.env.MOONSHINE_RUNTIME_BASE_URL || "https://download.moonshine.email").trim();
+  const mirror = String(process.env.MOONSHINE_RUNTIME_MIRROR_URL || "").trim();
+  return [
+    primary ? { id: "primary", baseUrl: primary, priority: 0 } : null,
+    mirror ? { id: "mirror", baseUrl: mirror, priority: 1 } : null,
+  ].filter(Boolean);
+}
+
+function createRuntimeManager() {
+  const sources = getManagedReleaseSources();
+  try {
+    return new RuntimeManager({
+      userData: app.getPath("userData"),
+      sources,
+      publicKeys: getRuntimeManifestPublicKeys(),
+      appVersion: app.getVersion(),
+      channel: String(process.env.MOONSHINE_RUNTIME_CHANNEL || "stable").trim().toLowerCase(),
+      onState: (state) => sendToMainWindow("runtime-state", state),
+      canActivate: async () =>
+        !backendSupervisor.getStatus().processRunning &&
+        activeProcessingTasks.size === 0 &&
+        activeFfmpegTasks.size === 0,
+    });
+  } catch (error) {
+    void startupLogger.warning("Runtime manager initialization failed; bundled runtime remains active.", {
+      code: error.code || "RUNTIME_MANAGER_INIT_FAILED",
+      reason: error.message,
+    });
+    return new RuntimeManager({ userData: app.getPath("userData") });
+  }
+}
+
+runtimeManager = createRuntimeManager();
+
+function getEnvironmentSourceConfig() {
+  return {
+    pipIndexUrl: String(process.env.MOONSHINE_PYPI_INDEX_URL || "").trim() || undefined,
+    torchIndexUrl: String(process.env.MOONSHINE_TORCH_INDEX_URL || "").trim() || undefined,
+    extraIndexUrl: String(process.env.MOONSHINE_PIP_EXTRA_INDEX_URL || "").trim() || undefined,
+    pythonInstallerUrl: String(process.env.MOONSHINE_PYTHON_INSTALLER_URL || "").trim() || undefined,
+  };
+}
+
+function createEnvironmentManager() {
+  const packaged = Boolean(app.isPackaged);
+  const backendProjectPath = getPackagedBackendProjectPath();
+  const environmentSourceConfig = getEnvironmentSourceConfig();
+  const requirementsPath = path.join(backendProjectPath, "requirements.txt");
+  const requirementsPaths = {
+    cpu: path.join(backendProjectPath, "requirements-cpu.lock.txt"),
+    cu130: path.join(backendProjectPath, "requirements-cu130.lock.txt"),
+  };
+  const ffmpegSourcePath = path.join(getPackagedFfmpegResourceRootPath(), "ffmpeg.exe");
+  return new EnvironmentManager({
+    userData: app.getPath("userData"),
+    appVersion: app.getVersion(),
+    backendProjectPath,
+    requirementsPath,
+    requirementsPaths,
+    requirementsLockPaths: requirementsPaths,
+    requirementsLockPath: requirementsPath,
+    ffmpegSourcePath,
+    offlinePayloadRoots: [
+      path.join(process.cwd(), "offline-payload"),
+      path.join(path.dirname(process.execPath), "offline-payload"),
+      path.join(path.dirname(process.execPath), "..", "offline-payload"),
+    ],
+    offlinePayloadLocationPath: path.join(path.dirname(getResourcesRootPath()), "offline-payload-source.txt"),
+    modelRoot: getDefaultModelDir(),
+    enabled: packaged,
+    sourceConfig: environmentSourceConfig,
+    publicKeys: getRuntimeManifestPublicKeys(),
+    requireSignedPayload: packaged,
+    pythonInstaller: async ({ signal, onProgress }) => {
+      const result = await installTargetPython(
+        (message, type = "info") => sendToMainWindow("backend-output", { message, type }),
+        {
+        signal,
+        installerUrl: environmentSourceConfig.pythonInstallerUrl,
+          onProgress,
+        }
+      );
+      if (!result?.success) {
+        const error = new Error(result?.error || result?.message || "Python installation failed.");
+        error.code = result?.code || "PYTHON_INSTALL_FAILED";
+        error.details = {
+          diagnostic: result?.diagnostic || result?.details || {},
+          recoveryHint: result?.recoveryHint || null,
+        };
+        throw error;
+      }
+      return result.pythonPath;
+    },
+    probe: async (options = {}) => {
+      const existingPath = String(process.env.PYTHONPATH || "").trim();
+      const pythonPath = [backendProjectPath, existingPath].filter(Boolean).join(path.delimiter);
+      const { probeEnvironment } = await import("./runtime/environment-probe.js");
+      return probeEnvironment({
+        ...options,
+        backendModule: "moonshine_server",
+        baseEnv: { ...process.env, PYTHONPATH: pythonPath },
+      });
+    },
+    onState: (state) => broadcastEnvironmentState(state),
+    canActivate: async () =>
+      !backendSupervisor.getStatus().processRunning &&
+      activeProcessingTasks.size === 0 &&
+      activeFfmpegTasks.size === 0,
+  });
+}
+
+environmentManager = createEnvironmentManager();
+function createModelManifestManager() {
+  try {
+    // v1.3 app-only releases keep the model catalog in the backend's built-in
+    // registry. R2 is reserved for app updater objects; model weights continue
+    // to use the existing Hugging Face/夸克 model-management flows.
+    const modelSources = app.isPackaged ? [] : getManagedReleaseSources();
+    return new ModelManifestManager({
+      layout: runtimeManager.layout,
+      sources: modelSources,
+      publicKeys: getRuntimeManifestPublicKeys(),
+      appVersion: app.getVersion(),
+      channel: runtimeManager.getState().channel,
+      onState: (state) => sendToMainWindow("model-manifest-state", state),
+    });
+  } catch (error) {
+    void startupLogger.warning("Model manifest manager initialization failed; automatic model downloads are unavailable.", {
+      code: error.code || "MODEL_MANIFEST_MANAGER_INIT_FAILED",
+      reason: error.message,
+    });
+    return new ModelManifestManager({ layout: runtimeManager.layout });
+  }
+}
+
+modelManifestManager = createModelManifestManager();
+const runtimeManagerInitialization = Promise.resolve(runtimeManager.initialize?.());
+const environmentManagerInitialization = Promise.resolve(environmentManager.initialize?.()).then(
+  async (state) => {
+    if (state?.status !== "ready" || typeof environmentManager.check !== "function") {
+      return state;
+    }
+    return await environmentManager.check();
+  }
+);
+void environmentManagerInitialization.then(() => {
+  broadcastEnvironmentState(environmentManager.getState());
+}).catch((error) => {
+  void startupLogger.warning("Local environment preferences could not be loaded.", {
+    code: error.code || "ENVIRONMENT_INITIALIZATION_FAILED",
+    reason: error.message,
+  });
+});
+void runtimeManagerInitialization.catch((error) => {
+  void startupLogger.warning("Runtime channel preferences could not be loaded.", {
+    code: error.code || "RUNTIME_CHANNEL_LOAD_FAILED",
+    reason: error.message,
+  });
+});
+void runtimeManagerInitialization.catch(() => null).then(async () => {
+  await modelManifestManager.setChannel?.(runtimeManager.getState().channel);
+  await modelManifestManager.initialize?.();
+  sendToMainWindow("model-manifest-state", modelManifestManager.getState());
+}).catch((error) => {
+  void startupLogger.warning("Cached model manifest could not be initialized.", {
+    code: error.code || "MODEL_MANIFEST_CACHE_FAILED",
+    reason: error.message,
+  });
+});
+
+function getRuntimeState() {
+  return toRendererEnvironmentState(
+    environmentManager?.getState?.() || { enabled: false, status: "disabled" }
+  );
+}
+
+async function selectExternalEnvironmentDirectory() {
+  try {
+    const selection = await dialog.showOpenDialog(mainWindow, {
+      properties: ["openDirectory"],
+    });
+    if (selection.canceled || !Array.isArray(selection.filePaths) || !selection.filePaths[0]) {
+      return {
+        success: true,
+        canceled: true,
+        cancelled: true,
+        state: getRuntimeState(),
+      };
+    }
+    const selectedPath = selection.filePaths[0];
+    const candidateId = createExternalEnvironmentDirectorySelection(selectedPath);
+    const external = {
+      status: "stale",
+      candidateId,
+      selectedPath,
+      layout: null,
+      diagnostics: null,
+      canActivate: false,
+      probedAt: null,
+      error: null,
+    };
+    const state = broadcastEnvironmentState(environmentManager?.getState?.(), external);
+    return {
+      success: true,
+      canceled: false,
+      cancelled: false,
+      candidateId,
+      selectedPath,
+      external,
+      state,
+    };
+  } catch (error) {
+    return reportExternalEnvironmentIpcFailure(
+      error,
+      "EXTERNAL_ENV_DIRECTORY_SELECTION_FAILED"
+    );
+  }
+}
+
+async function probeExternalEnvironmentSelection(_event, payload = {}) {
+  const selectionId = normalizeExternalEnvironmentCandidateId(payload?.candidateId);
+  const selection = getExternalEnvironmentDirectorySelection(selectionId);
+  if (!selection) {
+    return reportExternalEnvironmentIpcFailure(
+      { code: "EXTERNAL_ENV_SELECTION_INVALID" },
+      "EXTERNAL_ENV_SELECTION_INVALID"
+    );
+  }
+  try {
+    await environmentManagerInitialization.catch(() => null);
+    if (typeof environmentManager?.probeExternalEnvironment !== "function") {
+      throw Object.assign(new Error("External environment probe is unavailable"), {
+        code: "EXTERNAL_ENV_UNAVAILABLE",
+      });
+    }
+    const result = await environmentManager.probeExternalEnvironment({
+      directoryPath: selection.selectedPath,
+    });
+    if (result?.success === false) {
+      return reportExternalEnvironmentIpcFailure(result, "EXTERNAL_ENV_PROBE_FAILED", {
+        candidateId: selectionId,
+        selectedPath: selection.selectedPath,
+      });
+    }
+    const candidateId = normalizeExternalEnvironmentCandidateId(result?.candidateToken);
+    if (!candidateId) {
+      return reportExternalEnvironmentIpcFailure(
+        { code: "EXTERNAL_ENV_CANDIDATE_INVALID" },
+        "EXTERNAL_ENV_CANDIDATE_INVALID",
+        { candidateId: selectionId, selectedPath: selection.selectedPath }
+      );
+    }
+    const environment = result.environment || {};
+    const selectedPath =
+      environment.selectedPath || environment.normalizedPath || selection.selectedPath;
+    rememberExternalEnvironmentDirectorySelection(candidateId, selection.selectedPath);
+    const external = {
+      status: "valid",
+      candidateId,
+      selectedPath,
+      layout: environment.layout || null,
+      diagnostics: result.diagnostics || null,
+      canActivate: true,
+      probedAt: new Date().toISOString(),
+      error: null,
+    };
+    const state = broadcastEnvironmentState(result.state, external);
+    return {
+      success: true,
+      valid: true,
+      canActivate: true,
+      candidateId,
+      selectedPath,
+      diagnostics: external.diagnostics,
+      external,
+      state,
+    };
+  } catch (error) {
+    return reportExternalEnvironmentIpcFailure(error, "EXTERNAL_ENV_PROBE_FAILED", {
+      candidateId: selectionId,
+      selectedPath: selection.selectedPath,
+    });
+  }
+}
+
+async function activateExternalEnvironmentSelection(_event, payload = {}) {
+  const candidateToken = normalizeExternalEnvironmentCandidateId(payload?.candidateId);
+  const activationSelection = getExternalEnvironmentDirectorySelection(candidateToken);
+  if (!candidateToken) {
+    return reportExternalEnvironmentIpcFailure(
+      { code: "EXTERNAL_ENV_CANDIDATE_INVALID" },
+      "EXTERNAL_ENV_CANDIDATE_INVALID"
+    );
+  }
+  try {
+    await environmentManagerInitialization.catch(() => null);
+    if (typeof environmentManager?.activateExternalEnvironment !== "function") {
+      throw Object.assign(new Error("External environment activation is unavailable"), {
+        code: "EXTERNAL_ENV_UNAVAILABLE",
+      });
+    }
+    const result = await environmentManager.activateExternalEnvironment({ candidateToken });
+    if (result?.success === false) {
+      return reportExternalEnvironmentIpcFailure(result, "EXTERNAL_ENV_ACTIVATION_FAILED", {
+        candidateId: activationSelection ? candidateToken : null,
+        selectedPath: activationSelection?.selectedPath || "",
+      });
+    }
+    externalEnvironmentDirectorySelections.delete(candidateToken);
+    const environment = result.environment || result.config?.environment || {};
+    const external = {
+      status: "active",
+      candidateId: null,
+      selectedPath: environment.selectedPath || environment.normalizedPath || "",
+      layout: environment.layout || null,
+      diagnostics: result.diagnostics || null,
+      canActivate: false,
+      probedAt:
+        result.config?.environment?.lastVerifiedAt ||
+        result.config?.lastVerifiedAt ||
+        new Date().toISOString(),
+      error: null,
+    };
+    const state = broadcastEnvironmentState(result.state, external);
+    return {
+      success: true,
+      active: true,
+      selectedPath: external.selectedPath,
+      diagnostics: external.diagnostics,
+      external,
+      state,
+    };
+  } catch (error) {
+    return reportExternalEnvironmentIpcFailure(error, "EXTERNAL_ENV_ACTIVATION_FAILED", {
+      candidateId: activationSelection ? candidateToken : null,
+      selectedPath: activationSelection?.selectedPath || "",
+    });
+  }
+}
+
+async function forgetExternalEnvironmentSelection() {
+  try {
+    await environmentManagerInitialization.catch(() => null);
+    if (typeof environmentManager?.forgetExternalEnvironment !== "function") {
+      throw Object.assign(new Error("External environment reset is unavailable"), {
+        code: "EXTERNAL_ENV_UNAVAILABLE",
+      });
+    }
+    const result = await environmentManager.forgetExternalEnvironment();
+    if (result?.success === false) {
+      return reportExternalEnvironmentIpcFailure(result, "EXTERNAL_ENV_FORGET_FAILED");
+    }
+    externalEnvironmentDirectorySelections.clear();
+    const external = {
+      status: "unselected",
+      candidateId: null,
+      selectedPath: "",
+      layout: null,
+      diagnostics: null,
+      canActivate: false,
+      probedAt: null,
+      error: null,
+    };
+    const state = broadcastEnvironmentState(result.state, external);
+    return {
+      success: true,
+      fallback: result.fallback || null,
+      external,
+      state,
+    };
+  } catch (error) {
+    return reportExternalEnvironmentIpcFailure(error, "EXTERNAL_ENV_FORGET_FAILED");
+  }
+}
+
+ipcMain.handle("runtime-get-state", async () => {
+  await environmentManagerInitialization.catch(() => null);
+  return getRuntimeState();
+});
+ipcMain.handle("app-restart", async () => {
+  const readiness = getAppUpdateInstallReadiness();
+  if (!readiness.allowed) {
+    return {
+      success: false,
+      code: "APP_RESTART_BLOCKED",
+      reason: readiness.reason || "当前仍有任务正在运行，暂时不能重启应用。",
+      readiness,
+    };
+  }
+  const result = scheduleApplicationRestart({ app });
+  if (result.success) applicationQuitRequested = true;
+  return { ...result, readiness };
+});
+ipcMain.handle("runtime-set-channel", async (_event, channel) => {
+  const value = String(
+    channel && typeof channel === "object" ? channel.accelerator : channel ?? ""
+  ).trim().toLowerCase();
+  if (["auto", "cpu", "cu130"].includes(value)) {
+    return await environmentManager?.setAccelerator(value);
+  }
+  return {
+    success: false,
+    code: "ENVIRONMENT_LEGACY_CHANNEL_UNSUPPORTED",
+    error: "应用更新通道由发布配置管理；请在运行环境设置中选择自动、CPU 或 NVIDIA/cu130。",
+    state: getRuntimeState(),
+  };
+});
+ipcMain.handle("runtime-check", async (_event, options = {}) => environmentManager?.check(options));
+ipcMain.handle("runtime-ensure", async (event, options = {}) => {
+  const sendLog = createBackendOutputSender(event.sender, "environment-ensure");
+  return environmentManager?.ensure({
+    ...options,
+    onProgress: (progress) => reportEnvironmentProgress(sendLog, progress),
+  });
+});
+ipcMain.handle("runtime-rollback", async () => environmentManager?.rollback());
+ipcMain.handle("runtime-get-backend-spec", async () => environmentManager?.getActiveBackendSpec?.() || {});
+ipcMain.handle("environment-get-state", async () => getRuntimeState());
+ipcMain.handle("environment-set-accelerator", async (_event, value) => environmentManager?.setAccelerator(value));
+ipcMain.handle("environment-check", async (_event, options = {}) => environmentManager?.check(options));
+ipcMain.handle("environment-ensure", async (event, options = {}) => {
+  const sendLog = createBackendOutputSender(event.sender, "environment-ensure");
+  return environmentManager?.ensure({
+    ...options,
+    onProgress: (progress) => reportEnvironmentProgress(sendLog, progress),
+  });
+});
+ipcMain.handle("environment-rollback", async () => environmentManager?.rollback());
+ipcMain.handle("environment-get-backend-spec", async () => environmentManager?.getActiveBackendSpec?.() || {});
+ipcMain.handle("environment-external-select-directory", selectExternalEnvironmentDirectory);
+ipcMain.handle("environment-external-probe", probeExternalEnvironmentSelection);
+ipcMain.handle("environment-external-activate", activateExternalEnvironmentSelection);
+ipcMain.handle("environment-external-forget", forgetExternalEnvironmentSelection);
+ipcMain.handle("model-manifest-get-state", async () => modelManifestManager?.getState?.() || { enabled: false, status: "disabled" });
+ipcMain.handle("model-manifest-refresh", async (_event, options = {}) => modelManifestManager?.refresh(options));
+
+function getAppUpdateInstallReadiness() {
+  return evaluateAppUpdateInstallReadiness({
+    applicationQuitRequested,
+    activeProcessingTaskCount: activeProcessingTasks.size,
+    activeFfmpegTaskCount: activeFfmpegTasks.size,
+    backendStatus: backendSupervisor.getStatus(),
+  });
+}
+
+async function prepareAppUpdateInstallation() {
+  const readiness = await prepareAppUpdateInstall({
+    getReadiness: () => getAppUpdateInstallReadiness(),
+    stopBackend: () =>
+      stopBackendServiceAndPendingLaunch("Application update installation requested."),
+  });
+  if (!readiness.allowed && readiness.code?.startsWith("APP_UPDATE_BACKEND_")) {
+    void startupLogger.warning("Backend shutdown blocked app update installation.", {
+      code: readiness.code,
+      reason: readiness.reason,
+    });
+  }
+  return readiness;
+}
+
+function getAppUpdateState() {
+  return (
+    appUpdaterService?.getState?.() ||
+    createDefaultUpdateState({
+      enabled: false,
+      currentVersion: app.getVersion(),
+    })
+  );
+}
+
+function resolveAppUpdateChannel() {
+  return normalizeAppUpdateChannel(process.env.MOONSHINE_APP_UPDATE_CHANNEL);
+}
+
+function configureElectronUpdaterFeed(updater, channel) {
+  const feedUrl = buildAppUpdateFeedUrl(channel, {
+    baseUrl: process.env.MOONSHINE_UPDATE_BASE_URL,
+  });
+  if (typeof updater?.setFeedURL === "function") {
+    updater.setFeedURL({ provider: "generic", url: feedUrl });
+  }
+  return feedUrl;
+}
+
+function synchronizeAppUpdateChannel(channel) {
+  try {
+    const normalized = normalizeAppUpdateChannel(channel);
+    const feedUrl = configureElectronUpdaterFeed(appUpdaterService?.updater, normalized);
+    appManifestGuard?.setChannel?.(normalized);
+    const result = appUpdaterService?.setChannel?.(normalized) || {
+      success: true,
+      channel: normalized,
+      state: getAppUpdateState(),
+    };
+    if (result.state) sendToMainWindow("app-update-state", result.state);
+    return { ...result, feedUrl };
+  } catch (error) {
+    return {
+      success: false,
+      code: "APP_UPDATE_CHANNEL_SYNC_FAILED",
+      error: error?.message || String(error),
+      state: getAppUpdateState(),
+    };
+  }
+}
+
+async function initializeAppUpdater() {
+  const allowDev = process.env.MOONSHINE_ENABLE_DEV_UPDATER === "1";
+  const shouldEnable = Boolean(app.isPackaged || allowDev);
+  if (!shouldEnable) {
+    return { success: false, code: "APP_UPDATE_DISABLED", state: getAppUpdateState() };
+  }
+
+  try {
+    const electronUpdaterModule = await import("electron-updater");
+    const updater =
+      electronUpdaterModule.default?.autoUpdater ||
+      electronUpdaterModule.autoUpdater ||
+      electronUpdaterModule.default;
+    if (!updater || typeof updater.checkForUpdates !== "function") {
+      throw new Error("electron-updater did not expose an autoUpdater instance.");
+    }
+
+    const channel = resolveAppUpdateChannel();
+    configureElectronUpdaterFeed(updater, channel);
+
+    appUpdaterService?.dispose?.();
+    appManifestGuard = runtimeManager?.sourcePool
+      ? new AppManifestGuard({
+        sourcePool: runtimeManager.sourcePool,
+        publicKeys: getRuntimeManifestPublicKeys(),
+        channel,
+      })
+      : null;
+    appUpdaterService = new AppUpdaterService({
+      updater,
+      isPackaged: Boolean(app.isPackaged),
+      allowDev,
+      currentVersion: app.getVersion(),
+      channel,
+      initialCheckDelayMs: Number(process.env.MOONSHINE_UPDATE_CHECK_DELAY_MS) || 30_000,
+      send: (state) => sendToMainWindow("app-update-state", state),
+      preflight: appManifestGuard?.enabled ? () => appManifestGuard.preflight() : null,
+      validateUpdateInfo: appManifestGuard?.enabled
+        ? (updateInfo) => appManifestGuard.validateUpdateInfo(updateInfo)
+      : null,
+    });
+    synchronizeAppUpdateChannel(channel);
+    appUpdaterService.scheduleInitialCheck();
+    return { success: true, state: getAppUpdateState() };
+  } catch (error) {
+    const message = error?.message || String(error);
+    void startupLogger.warning("App updater initialization failed; update checks are disabled.", {
+      code: "APP_UPDATE_INIT_FAILED",
+      reason: message,
+    });
+    appUpdaterService?.dispose?.();
+    appUpdaterService = new AppUpdaterService({
+      updater: null,
+      isPackaged: false,
+      currentVersion: app.getVersion(),
+      initialError: error,
+    });
+    return {
+      success: false,
+      code: "APP_UPDATE_INIT_FAILED",
+      error: message,
+      state: getAppUpdateState(),
+    };
+  }
+}
+
+async function ensureAppUpdaterInitialized() {
+  if (!appUpdaterInitPromise) {
+    appUpdaterInitPromise = initializeAppUpdater();
+  }
+  return await appUpdaterInitPromise;
+}
+
+ipcMain.handle("app-update-get-state", async () => getAppUpdateState());
+ipcMain.handle("app-update-check", async () => {
+  await ensureAppUpdaterInitialized();
+  return await appUpdaterService.checkForUpdates();
+});
+ipcMain.handle("app-update-set-channel", async (_event, channel) => {
+  await ensureAppUpdaterInitialized();
+  return synchronizeAppUpdateChannel(channel);
+});
+ipcMain.handle("app-update-download", async () => {
+  await ensureAppUpdaterInitialized();
+  return await appUpdaterService.downloadUpdate();
+});
+ipcMain.handle("app-update-install", async () => {
+  await ensureAppUpdaterInitialized();
+  return await appUpdaterService.installUpdate(() => prepareAppUpdateInstallation());
+});
+ipcMain.handle("app-update-get-install-readiness", async () => getAppUpdateInstallReadiness());
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -434,7 +1236,7 @@ protocol.registerSchemesAsPrivileged([
 // Global configuration object
 let globalConfig = cloneConfig(DEFAULT_APP_CONFIG);
 
-const TARGET_PYTHON_VERSION = "3.12.11";
+const TARGET_PYTHON_VERSION = "3.12.10";
 const BUNDLED_RUNTIME_STATE_FILE = "runtime-state.json";
 const BUNDLED_RUNTIME_LOCK_FILE = ".prepare.lock";
 const BUNDLED_RUNTIME_LOCK_WAIT_MS = 300000;
@@ -553,7 +1355,7 @@ function getPackagedFfmpegResourceRootPath() {
 
 function getDefaultModelDir() {
   return app.isPackaged
-    ? getPackagedModelsPath()
+    ? path.join(app.getPath("userData"), PACKAGED_MODELS_RESOURCE_DIR)
     : path.join(process.cwd(), PACKAGED_MODELS_RESOURCE_DIR);
 }
 
@@ -1047,7 +1849,7 @@ function isSystemPythonVersionSupported(versionInfo) {
 
 function getDefaultBackendProjectPath() {
   if (app.isPackaged) {
-    return getPackagedBackendRuntimeProjectPath();
+    return getPackagedBackendProjectPath();
   }
 
   const workingTreeProjectPath = path.join(process.cwd(), PACKAGED_BACKEND_PROJECT_DIR);
@@ -1068,12 +1870,12 @@ function normalizeStoredBackendProjectPath(projectPath) {
   const legacyPath = path.normalize(getLegacyPackagedBackendProjectPath());
   const runtimePath = path.normalize(getPackagedBackendRuntimeProjectPath());
   if (!normalizedInput) {
-    return runtimePath;
+    return packagedPath;
   }
 
   const normalizedPath = path.normalize(normalizedInput);
-  if (normalizedPath === legacyPath || normalizedPath === packagedPath) {
-    return runtimePath;
+  if (normalizedPath === legacyPath || normalizedPath === runtimePath) {
+    return packagedPath;
   }
 
   return normalizedInput;
@@ -1100,7 +1902,7 @@ function isBundledBackendMode(projectPath) {
   const normalizedPath = path.normalize(
     normalizeStoredBackendProjectPath(projectPath || getDefaultBackendProjectPath())
   );
-  return normalizedPath === path.normalize(getPackagedBackendRuntimeProjectPath());
+  return normalizedPath === path.normalize(getPackagedBackendProjectPath());
 }
 
 function normalizeBackendPathValidationInput(input = {}) {
@@ -1672,7 +2474,58 @@ async function verifyBundledPythonRuntime(options = {}) {
   };
 }
 
+function reportEnvironmentProgress(sendLog, progress = {}) {
+  if (typeof sendLog !== "function") return;
+  const percent = Number(progress.percent);
+  const operationPercent = Number(progress.operationPercent);
+  const suffix = Number.isFinite(operationPercent) && progress.phase === "python-download"
+    ? `（${operationPercent}%）`
+    : Number.isFinite(percent)
+      ? `（${percent}%）`
+      : "";
+  const message = progress.message || `运行环境阶段：${progress.phase || "preparing"}${suffix}`;
+  sendLog(message, progress.status === "failed" ? "error" : progress.status === "complete" ? "success" : "info", {
+    stage: "environment-preparation",
+    progress,
+  });
+}
+
 async function ensureBundledRuntimeReady(sendLog, options = {}) {
+  if (environmentManager?.getState?.().enabled) {
+    const result = await environmentManager.ensure({
+      accelerator: options.accelerator || environmentManager.getState().preference || "auto",
+      signal: options.signal,
+      onProgress: (progress) => reportEnvironmentProgress(sendLog, progress),
+    });
+    if (!result.success) {
+      return augmentStartupFailure(
+        {
+          success: false,
+          code: result.code || "ENVIRONMENT_BOOTSTRAP_FAILED",
+          error: result.error || "Local Python environment preparation failed.",
+          diagnostic: result.details?.diagnostic || null,
+          attempts: result.details?.health
+            ? [{ label: "environment-health", status: "failed", diagnostic: result.details.health }]
+            : undefined,
+          details: result.details || {},
+          runtime: result.state,
+        },
+        {
+          stage: "environment-preparation",
+          userMessage: result.error || "Local Python environment preparation failed.",
+          recoveryHint: "请重试，或手动创建可用环境；也可以从夸克网盘下载可用运行时，再在后端管理的“已有环境”中选择。",
+        }
+      );
+    }
+    return {
+      success: true,
+      ...environmentManager.getActiveBackendSpec(),
+      path: getPackagedBackendProjectPath(),
+      backendMode: "bundled",
+      pythonPath: environmentManager.getActiveBackendSpec().pythonExecutable,
+    };
+  }
+
   const integrityResult = await ensurePackagedBackendIntegrity(
     getPackagedBackendRuntimeProjectPath()
   );
@@ -2217,7 +3070,7 @@ function buildManualVenvGuide(projectPath) {
   const safeProjectPath = projectPath || "<backend project path>";
   return {
     downloadUrl:
-      "https://www.python.org/ftp/python/3.12.11/python-3.12.11-amd64.exe",
+      "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe",
     commands: [
       `cd /d "${safeProjectPath}"`,
       "py -3.12 -m venv .venv",
@@ -3443,6 +4296,14 @@ ipcMain.handle("ensure-directory", async (event, dirPath) => {
 
 function getFfmpegCandidateBinRoots() {
   const roots = [];
+  const managedEnvironmentFfmpegRoot = environmentManager?.getActiveBackendSpec?.().ffmpegRoot;
+  if (managedEnvironmentFfmpegRoot) {
+    roots.push(managedEnvironmentFfmpegRoot, path.join(managedEnvironmentFfmpegRoot, "bin"));
+  }
+  const managedFfmpegRoot = runtimeManager?.getActiveBackendSpec?.().ffmpegRoot;
+  if (managedFfmpegRoot) {
+    roots.push(managedFfmpegRoot, path.join(managedFfmpegRoot, "bin"));
+  }
   const envRoot = String(process.env.MOONSHINE_FFMPEG_ROOT || "").trim();
   if (envRoot) {
     roots.push(envRoot, path.join(envRoot, "bin"));
@@ -4377,7 +5238,7 @@ ipcMain.handle("prepare-project-python", async (event, selectPath) => {
     sendLog(`Backend project path: ${workingPath}`, "info");
 
     if (isBundledBackendMode(workingPath)) {
-      sendLog("Using bundled offline backend mode.", "info");
+      sendLog("Using local managed Python environment mode.", "info");
       return await runStartupIpcOperation(
         () => ensureBundledRuntimeReady(sendLog),
         (error) =>
@@ -4785,8 +5646,19 @@ async function installTargetPython(sendLog, options = {}) {
         }
       );
     }
-    const downloadUrl =
-      "https://www.python.org/ftp/python/3.12.11/python-3.12.11-amd64.exe";
+    const downloadUrl = String(options.installerUrl ||
+      "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe").trim();
+    let parsedDownloadUrl;
+    try {
+      parsedDownloadUrl = new URL(downloadUrl);
+    } catch {
+      throw Object.assign(new Error("Python installer URL is invalid."), { code: "PYTHON_INSTALLER_URL_INVALID" });
+    }
+    if (parsedDownloadUrl.protocol !== "https:" || parsedDownloadUrl.username || parsedDownloadUrl.password) {
+      throw Object.assign(new Error("Python installer URL must be a credential-free HTTPS URL."), {
+        code: "PYTHON_INSTALLER_URL_INVALID",
+      });
+    }
 
     const downloadDir = path.join(app.getPath("temp"), "moonshine-python-installer");
     if (!fs.existsSync(downloadDir)) {
@@ -4798,6 +5670,43 @@ async function installTargetPython(sendLog, options = {}) {
       process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
     const installDir = path.join(localAppData, "Programs", "Python", "Python312");
     const installedPythonPath = path.join(installDir, "python.exe");
+    const reportProgress = (progress) => {
+      if (typeof options.onProgress !== "function") return;
+      try {
+        options.onProgress(progress);
+      } catch {
+        // Progress observers must not affect Python installation.
+      }
+    };
+    const verifyInstalledPython = async () => {
+      if (!fs.existsSync(installedPythonPath)) return null;
+      const result = await getPythonVersionFromCommand(installedPythonPath, [], {
+        env: getCleanPythonCommandEnv(),
+        stage: "python-install-verification",
+        failureCode: "PYTHON_INSTALL_VERIFICATION_FAILED",
+        userMessage: "Installed Python could not be verified.",
+      });
+      return result.success && isSupportedPythonVersion(result.version) ? result : null;
+    };
+
+    const existingVerification = await verifyInstalledPython().catch(() => null);
+    if (existingVerification) {
+      sendLog?.(`检测到已安装的 Python：${installedPythonPath}`, "success");
+      reportProgress({
+        phase: "python-ready",
+        status: "complete",
+        percent: 100,
+        message: `已找到 Python ${existingVerification.version.text}。`,
+        pythonPath: installedPythonPath,
+      });
+      return {
+        success: true,
+        reused: true,
+        message: `Python ${existingVerification.version.text} is already installed.`,
+        pythonPath: installedPythonPath,
+        pythonVersion: existingVerification.version.text,
+      };
+    }
 
     sendLog?.(`Downloading Python installer: ${downloadUrl}`, "info");
     await withTrackedStartupOperation(
@@ -4806,13 +5715,30 @@ async function installTargetPython(sendLog, options = {}) {
           ensureDiskSpace,
           getByteLength: getBufferByteLength,
           signal,
+          onProgress: (progress) => {
+            const downloadedMiB = (Number(progress.receivedBytes || 0) / (1024 * 1024)).toFixed(1);
+            reportProgress({
+              ...progress,
+              message: progress.percent === null
+                ? `正在下载 Python 安装包（${downloadedMiB} MiB）。`
+                : `正在下载 Python 安装包：${progress.percent}%`,
+            });
+          },
         }),
       options.signal
     );
     sendToMainWindow("python-install-path", filePath);
 
-    sendLog?.("Python installer downloaded. Starting installation...", "info");
-    await execFileCommand(
+    sendLog?.("Python 安装包下载完成，正在静默安装...", "info");
+    reportProgress({
+      phase: "python-install",
+      status: "installing",
+      percent: null,
+      message: "Python 安装包下载完成，正在静默安装。",
+      temporaryPath: filePath,
+    });
+    try {
+      await execFileCommand(
       filePath,
       [
         "/quiet",
@@ -4826,44 +5752,69 @@ async function installTargetPython(sendLog, options = {}) {
         timeout: 600000,
         stage: "python-install",
         failureCode: "PYTHON_INSTALL_FAILED",
-        userMessage: "Python installation failed.",
+        userMessage: "Python installation failed. Check the installer URL, permissions, and startup log.",
+        recoveryHint: "Retry after confirming network access to the Python installer and that the user can write to %LOCALAPPDATA%\\Programs\\Python.",
         signal: options.signal,
       }
-    );
-
-    fs.unlink(filePath, () => {});
-    if (!fs.existsSync(installedPythonPath)) {
-      throw new Error(`Python installation completed, but python.exe is missing: ${installedPythonPath}`);
-    }
-    const verification = await getPythonVersionFromCommand(installedPythonPath, [], {
-      env: getCleanPythonCommandEnv(),
-      stage: "python-install-verification",
-      failureCode: "PYTHON_INSTALL_VERIFICATION_FAILED",
-      userMessage: "Installed Python could not be verified.",
-    });
-    if (!verification.success || !isSupportedPythonVersion(verification.version)) {
-      throw new Error(
-        verification.error ||
-          `Installed Python ${verification.version?.text || "unknown"} is not supported.`
       );
+
+      reportProgress({
+        phase: "python-verify",
+        status: "verifying",
+        percent: null,
+        message: "Python 安装器已结束，正在确认解释器可用。",
+        pythonPath: installedPythonPath,
+      });
+      const verificationDeadline = Date.now() + 15_000;
+      let verification = null;
+      while (!options.signal?.aborted && Date.now() <= verificationDeadline) {
+        verification = await verifyInstalledPython().catch(() => null);
+        if (verification) break;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+
+      if (!verification) {
+        throw Object.assign(
+          new Error(`Python installation completed, but the interpreter could not be verified: ${installedPythonPath}`),
+          { code: "PYTHON_INSTALL_VERIFICATION_FAILED" }
+        );
+      }
+      sendLog?.(`Python ${verification.version.text} 安装并验证完成。`, "success");
+      reportProgress({
+        phase: "python-ready",
+        status: "complete",
+        percent: 100,
+        message: `Python ${verification.version.text} 安装并验证完成。`,
+        pythonPath: installedPythonPath,
+      });
+      return {
+        success: true,
+        message: `Python ${TARGET_PYTHON_VERSION} installed successfully.`,
+        pythonPath: installedPythonPath,
+        pythonVersion: verification.version.text,
+      };
+    } finally {
+      await fs.promises.unlink(filePath).catch(() => {});
+      sendLog?.("Python 临时安装包已清理。", "info");
     }
-    return {
-      success: true,
-      message: `Python ${TARGET_PYTHON_VERSION} installed successfully.`,
-      pythonPath: installedPythonPath,
-      pythonVersion: verification.version.text,
-    };
   } catch (error) {
-    return toLoggedStartupFailure(error, {
+    const failure = toLoggedStartupFailure(error, {
       code: "PYTHON_INSTALL_FAILED",
       stage: "python-install",
-      userMessage: "Python installation failed.",
+      userMessage: error?.message || "Python installation failed. Check the installer URL, permissions, and startup log.",
     });
+    return {
+      ...failure,
+      details: failure.details || failure.diagnostic || error?.details || {},
+    };
   }
 }
 
-ipcMain.handle("install-python", async () => {
-  return await installTargetPython();
+ipcMain.handle("install-python", async (event) => {
+  const sendLog = createBackendOutputSender(event.sender, "python-install");
+  return await installTargetPython(sendLog, {
+    onProgress: (progress) => reportEnvironmentProgress(sendLog, progress),
+  });
 });
 
 // IPC create venv
@@ -5215,6 +6166,60 @@ print(json.dumps(result))
   }
 }
 
+async function ensureManagedRuntimeForLaunch(sendLog, launchConfig, signal) {
+  if (!environmentManager?.getState?.().enabled) return null;
+  const accelerator = launchConfig.device === "cuda" ? "cu130" : "cpu";
+  sendLog?.(`Preparing local ${accelerator} Python environment...`, "info");
+  const result = await environmentManager.ensure({
+    accelerator,
+    signal,
+    onProgress: (progress) => reportEnvironmentProgress(sendLog, progress),
+  });
+  if (!result.success) {
+    return augmentStartupFailure(
+      {
+        success: false,
+        code: result.code || "RUNTIME_ENSURE_FAILED",
+        error: result.error || "Local Python environment preparation failed.",
+        runtime: result.state,
+      },
+      {
+        stage: "environment-preparation",
+        userMessage: result.error || "Local Python environment preparation failed.",
+        recoveryHint: "Open Application Updates, retry environment setup, or switch to CPU mode.",
+      }
+    );
+  }
+  const spec = environmentManager.getActiveBackendSpec();
+  if (!spec.pythonExecutable) {
+    return augmentStartupFailure(
+      {
+        success: false,
+        code: "RUNTIME_PYTHON_MISSING",
+        error: "Managed runtime did not expose a Python executable.",
+      },
+      { stage: "runtime-preparation" }
+    );
+  }
+  return { ...spec, success: true };
+}
+
+async function prepareModelManifestForLaunch(sendLog, signal) {
+  if (!modelManifestManager?.getState?.().enabled) return {};
+  const channel = normalizeAppUpdateChannel(process.env.MOONSHINE_APP_UPDATE_CHANNEL) || modelManifestManager.getState().channel;
+  const result = await modelManifestManager.refresh({ channel, signal });
+  if (!result.success) {
+    sendLog?.(
+      "Signed model catalog is unavailable; the app will start with automatic model downloads disabled.",
+      "warning",
+      { stage: "model-manifest", code: result.code, reason: result.error }
+    );
+  } else if (result.code === "MODEL_MANIFEST_USING_CACHE") {
+    sendLog?.("Using the last verified model catalog.", "warning", { stage: "model-manifest" });
+  }
+  return modelManifestManager.getBackendEnvironment();
+}
+
 async function launchBackendService(event, config, signal) {
   const sendLog = createBackendOutputSender(event.sender, "backend-start");
   try {
@@ -5318,7 +6323,32 @@ async function launchBackendService(event, config, signal) {
         : "--sam-release-before-processing"
     );
 
-    if (isBundledBackendMode(global.projectPath)) {
+    const managedRuntime = await ensureManagedRuntimeForLaunch(sendLog, launchConfig, signal);
+    cancellation = getBackendStartCancellation(signal);
+    if (cancellation) return cancellation;
+    if (managedRuntime && managedRuntime.success === false) return managedRuntime;
+    const modelManifestEnv = await prepareModelManifestForLaunch(sendLog, signal);
+    cancellation = getBackendStartCancellation(signal);
+    if (cancellation) return cancellation;
+
+    if (managedRuntime?.success) {
+      const effectiveModelDir = resolveEffectiveModelDir({
+        modelDir: launchConfig.modelDir || "",
+      });
+      backendPython = managedRuntime.pythonExecutable;
+      backendEnv = getUtf8ProcessEnv(
+        getIsolatedPythonCommandEnv(managedRuntime.pythonRoot, {
+          ...modelManifestEnv,
+          TORCH_HOME: effectiveModelDir,
+          XDG_CACHE_HOME: effectiveModelDir,
+          U2NET_HOME: effectiveModelDir,
+          HF_HOME: path.join(effectiveModelDir, "huggingface"),
+          MOONSHINE_RUNTIME_ROOT: managedRuntime.pythonRoot,
+          MOONSHINE_FFMPEG_ROOT: managedRuntime.ffmpegRoot || "",
+        })
+      );
+      args.push(`--model-dir=${effectiveModelDir}`);
+    } else if (isBundledBackendMode(global.projectPath)) {
       const bundledResult = await ensureBundledRuntimeReady(sendLog, { signal });
       cancellation = getBackendStartCancellation(signal);
       if (cancellation) return cancellation;
@@ -5335,6 +6365,7 @@ async function launchBackendService(event, config, signal) {
       backendPython = bundledResult.pythonPath;
       backendEnv = getUtf8ProcessEnv(
         getBundledRuntimeCommandEnv({
+          ...modelManifestEnv,
           TORCH_HOME: effectiveModelDir,
           XDG_CACHE_HOME: effectiveModelDir,
           U2NET_HOME: effectiveModelDir,
@@ -5360,7 +6391,7 @@ async function launchBackendService(event, config, signal) {
       }
 
       backendPython = venvInfo.pythonPath;
-      backendEnv = getIsolatedPythonCommandEnv(venvInfo.venvPath);
+      backendEnv = getIsolatedPythonCommandEnv(venvInfo.venvPath, modelManifestEnv);
       if (launchConfig.modelDir) {
         args.push(`--model-dir=${launchConfig.modelDir}`);
       }
@@ -6623,9 +7654,14 @@ applicationBootstrapPromise = app
   )
   .then((result) => {
     applicationBootstrapComplete = true;
+    void ensureAppUpdaterInitialized();
     return result;
   })
   .catch(handleFatalStartupError);
+
+app.on("will-quit", () => {
+  appUpdaterService?.dispose?.();
+});
 
 app.on("before-quit", (event) => {
   if (quitAfterBackendStop) return;

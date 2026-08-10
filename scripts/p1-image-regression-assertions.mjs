@@ -612,8 +612,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/components/global/ModelManagementPanel.vue",
-    description: "Model management panel reloads backend model status with the current global model directory",
-    pattern: /currentConfiguredModelDir = computed[\s\S]*generalConfig\.modelDir[\s\S]*modelRegistryRequestOptions = computed[\s\S]*modelDir: currentConfiguredModelDir\.value[\s\S]*modelRegistry\.refreshModels\(modelRegistryRequestOptions\.value\)[\s\S]*modelRegistry\.verifyModel\(modelId, modelRegistryRequestOptions\.value\)[\s\S]*modelRegistry\.startDownload\(model\.id, modelRegistryRequestOptions\.value\)[\s\S]*watch\(\s*currentConfiguredModelDir,[\s\S]*modelRegistry\.loadModels\(modelRegistryRequestOptions\.value\)/,
+    description: "Model management keeps the configured directory and passes gated license acceptance to downloads",
+    pattern: /currentConfiguredModelDir = computed[\s\S]*generalConfig\.modelDir[\s\S]*modelRegistryRequestOptions = computed[\s\S]*modelDir: currentConfiguredModelDir\.value[\s\S]*modelRegistry\.refreshModels\(modelRegistryRequestOptions\.value\)[\s\S]*modelRegistry\.verifyModel\(modelId, modelRegistryRequestOptions\.value\)[\s\S]*modelRegistry\.startDownload\(model\.id,\s*\{[\s\S]*\.\.\.modelRegistryRequestOptions\.value[\s\S]*licenseAcceptance[\s\S]*\}\)[\s\S]*watch\(\s*currentConfiguredModelDir,[\s\S]*modelRegistry\.loadModels\(modelRegistryRequestOptions\.value\)/,
   });
   assertPattern({
     file: "server/moonshine_server/api.py",
@@ -667,8 +667,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "scripts/package-win-matrix.mjs",
-    description: "Windows release matrix writes all runtime/model-bundle combinations and audited SAM3 acceleration metadata",
-    pattern: /const runtimeFlavors = \["cpu", "cu126", "cu130"\][\s\S]*const modelBundles = \["external-models", "bundled-models"\][\s\S]*writeReleaseMatrixManifest[\s\S]*samRuntime:[\s\S]*sam3:[\s\S]*cuda-only-unavailable[\s\S]*bundled-cuda-runtime[\s\S]*acceleration: verifiedSam3\?\.acceleration \|\| null[\s\S]*compatibilitySmoke: verifiedSam3\?\.compatibilitySmoke \|\| null[\s\S]*release-matrix\.json/,
+    description: "Windows release matrix defaults to CPU/cu130 full offline packages and audited SAM3 acceleration metadata",
+    pattern: /const DEFAULT_RUNTIME_FLAVORS = \["cpu", "cu130"\][\s\S]*const DEFAULT_MODEL_BUNDLES = \["bundled-models"\][\s\S]*writeReleaseMatrixManifest[\s\S]*packageKind[\s\S]*samRuntime:[\s\S]*sam3:[\s\S]*cuda-only-unavailable[\s\S]*bundled-cuda-runtime[\s\S]*acceleration: verifiedSam3\?\.acceleration \|\| null[\s\S]*compatibilitySmoke: verifiedSam3\?\.compatibilitySmoke \|\| null[\s\S]*release-matrix\.json/,
   });
   assertPattern({
     file: "scripts/prepare-electron-resources.mjs",

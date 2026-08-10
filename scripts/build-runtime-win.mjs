@@ -16,10 +16,13 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..");
 const buildResourcesRoot = path.join(repoRoot, "build-resources");
-const runtimeRoot = path.join(
-  buildResourcesRoot,
-  PACKAGED_RUNTIME_RESOURCE_DIR,
-  PACKAGED_RUNTIME_TARGET_DIR
+const configuredRuntimeOutputDir = String(process.env.MOONSHINE_RUNTIME_OUTPUT_DIR || "").trim();
+const runtimeRoot = path.resolve(
+  configuredRuntimeOutputDir || path.join(
+    buildResourcesRoot,
+    PACKAGED_RUNTIME_RESOURCE_DIR,
+    PACKAGED_RUNTIME_TARGET_DIR
+  )
 );
 const runtimeEnvPath = path.join(runtimeRoot, PACKAGED_RUNTIME_ENV_DIR);
 const runtimeManifestPath = path.join(runtimeRoot, PACKAGED_RUNTIME_METADATA_FILE);
@@ -48,7 +51,7 @@ const modelBundle = normalizeModelBundle(process.env.MOONSHINE_MODEL_BUNDLE);
 const runtimeEnvName =
   process.env.MOONSHINE_RUNTIME_ENV_NAME ||
   (hasExplicitRuntimeFlavor ? `moonshine-runtime-312-${runtimeFlavor}` : "moonshine-runtime-312");
-const targetPythonVersion = "3.12.11";
+const targetPythonVersion = "3.12.10";
 const torchVersion = "2.11.0";
 const torchvisionVersion = "0.26.0";
 const defaultCu126TorchWheelPath =

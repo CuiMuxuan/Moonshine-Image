@@ -385,6 +385,8 @@ class SamPromptBox(BaseModel):
 
 class MoonshineModelRegistryRequest(BaseModel):
     model_dir: Optional[str] = Field(None, description="Model directory selected by the desktop app")
+    license_accepted: bool = Field(False, description="User confirmed the model license for this download")
+    license_acceptance_id: Optional[str] = Field(None, description="Versioned license acceptance identifier")
 
 
 class MoonshineSamPredictRequest(BaseModel):

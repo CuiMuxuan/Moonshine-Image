@@ -366,7 +366,18 @@
                   <div class="text-subtitle2 text-weight-medium q-mb-sm">发布与许可证</div>
                   <div class="model-info-line">
                     <span>许可证</span>
-                    <strong>{{ getLicenseName(model) }}</strong>
+                    <div class="row items-center q-gutter-xs">
+                      <strong>{{ getLicenseName(model) }}</strong>
+                      <q-chip
+                        v-if="requiresLicenseAcceptance(model)"
+                        dense
+                        outline
+                        color="warning"
+                        text-color="warning"
+                      >
+                        下载前确认
+                      </q-chip>
+                    </div>
                   </div>
                   <div
                     v-if="getLicenseUrl(model)"
@@ -883,6 +894,10 @@ const modelBundleLabel = computed(() => {
 
 const runtimeNotice = computed(() => {
   const runtime = modelRegistry.runtime || {};
+  const manifest = modelRegistry.modelManifest || {};
+  if (manifest.source === "safe-fallback") {
+    return "签名模型清单当前不可用。已安装模型仍可识别，但为防止使用未验证的下载地址，软件内自动下载已暂时关闭。";
+  }
   if (runtime.runtimeFlavor === "cpu") {
     return "当前是 CPU 运行时，SAM3/SAM3.1 文本智能选区会显示为不可用；SAM1/SAM2.1 点选/框选仍按已安装模型和设备状态判断。";
   }
@@ -1133,6 +1148,29 @@ const getSourceLabel = (source) => {
 const getLicenseName = (model) => model?.license?.name || "待确认";
 const getLicenseUrl = (model) => model?.license?.url || "";
 const getLicenseNote = (model) => model?.license?.note || "";
+const requiresLicenseAcceptance = (model) => Boolean(model?.license?.requiresAcceptance);
+
+const requestLicenseAcceptance = async (model) => {
+  if (!requiresLicenseAcceptance(model)) return null;
+  const acceptanceId = String(model?.license?.acceptanceId || "").trim();
+  if (!acceptanceId) throw new Error("该模型缺少许可证确认标识，暂时不能下载。");
+  return new Promise((resolve) => {
+    $q.dialog({
+      title: "确认模型许可证",
+      message: [
+        `模型：${model?.label || model?.id || "当前模型"}`,
+        `许可证：${getLicenseName(model)}`,
+        getLicenseNote(model),
+        "继续即表示你已阅读并同意该许可证。",
+      ].filter(Boolean).join("\n\n"),
+      ok: { label: "我已阅读并同意", color: "primary", noCaps: true },
+      cancel: { label: "取消", flat: true, noCaps: true },
+      persistent: true,
+    })
+      .onOk(() => resolve({ accepted: true, acceptanceId }))
+      .onCancel(() => resolve(null));
+  });
+};
 
 const openExternalUrl = async (url) => {
   if (!url) return false;
@@ -1178,7 +1216,12 @@ const getPrimaryManualSourceUrl = (model) =>
 
 const downloadModel = async (model) => {
   try {
-    const task = await modelRegistry.startDownload(model.id, modelRegistryRequestOptions.value);
+    const licenseAcceptance = await requestLicenseAcceptance(model);
+    if (requiresLicenseAcceptance(model) && !licenseAcceptance) return;
+    const task = await modelRegistry.startDownload(model.id, {
+      ...modelRegistryRequestOptions.value,
+      licenseAcceptance,
+    });
     $q.notify({
       type: "info",
       message: "模型下载任务已开始",

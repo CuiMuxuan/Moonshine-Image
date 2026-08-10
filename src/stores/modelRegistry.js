@@ -13,6 +13,7 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
   const modelDir = ref("");
   const cuda = ref({});
   const runtime = ref({});
+  const modelManifest = ref({});
   const loading = ref(false);
   const error = ref("");
   const usingFallback = ref(false);
@@ -34,6 +35,7 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
     modelDir.value = payload.modelDir || "";
     cuda.value = payload.cuda || {};
     runtime.value = payload.runtime || {};
+    modelManifest.value = payload.modelManifest || {};
     usingFallback.value = Boolean(payload.usingFallback);
     error.value = payload.error?.message || "";
   };
@@ -169,6 +171,7 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
     modelDir,
     cuda,
     runtime,
+    modelManifest,
     loading,
     error,
     usingFallback,

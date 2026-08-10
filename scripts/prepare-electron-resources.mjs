@@ -158,6 +158,7 @@ function copyPackagedModels() {
 function resolveFfmpegSourceRoot() {
   const candidateRoots = [
     process.env.MOONSHINE_FFMPEG_ROOT,
+    path.join(buildResourcesRoot, PACKAGED_FFMPEG_RESOURCE_DIR),
     "C:\\code\\ffmpeg",
   ]
     .map((value) => String(value || "").trim())
@@ -168,15 +169,19 @@ function resolveFfmpegSourceRoot() {
       fs.existsSync(path.join(candidateRoot, "ffmpeg.exe")) &&
       fs.existsSync(path.join(candidateRoot, "ffprobe.exe"))
     ) {
-      return path.dirname(candidateRoot);
+      return candidateRoot;
     }
 
-    const binRoot = path.join(candidateRoot, "bin");
-    if (
-      fs.existsSync(path.join(binRoot, "ffmpeg.exe")) &&
-      fs.existsSync(path.join(binRoot, "ffprobe.exe"))
-    ) {
-      return candidateRoot;
+    for (const binRoot of [
+      path.join(candidateRoot, "bin"),
+      path.join(candidateRoot, PACKAGED_FFMPEG_TARGET_DIR),
+    ]) {
+      if (
+        fs.existsSync(path.join(binRoot, "ffmpeg.exe")) &&
+        fs.existsSync(path.join(binRoot, "ffprobe.exe"))
+      ) {
+        return candidateRoot;
+      }
     }
   }
 
@@ -197,7 +202,23 @@ function copyOptionalFile(sourcePath, destinationPath) {
 
 function copyPackagedFfmpegRuntime() {
   const sourceRoot = resolveFfmpegSourceRoot();
-  const sourceBinRoot = path.join(sourceRoot, "bin");
+  const sourceBinRoot = [
+    path.join(sourceRoot, "bin"),
+    path.join(sourceRoot, PACKAGED_FFMPEG_TARGET_DIR),
+    sourceRoot,
+  ].find(
+    (candidate) =>
+      fs.existsSync(path.join(candidate, "ffmpeg.exe")) &&
+      fs.existsSync(path.join(candidate, "ffprobe.exe")),
+  );
+  if (!sourceBinRoot) {
+    throw new Error(`FFmpeg runtime is incomplete: ${sourceRoot}`);
+  }
+  // A previous preparation may already have materialized the destination. Do
+  // not reset it and then try to copy files from the directory just removed.
+  if (path.resolve(sourceBinRoot) === path.resolve(packagedFfmpegRoot)) {
+    return;
+  }
   resetDir(packagedFfmpegRoot);
 
   const copiedRequired = [
@@ -231,14 +252,21 @@ function copyPackagedFfmpegRuntime() {
     "COPYING.LGPLv3",
     "README.txt",
   ].forEach((fileName) => {
+    copyOptionalFile(path.join(path.dirname(sourceBinRoot), fileName), path.join(packagedFfmpegRoot, fileName));
     copyOptionalFile(path.join(sourceRoot, fileName), path.join(packagedFfmpegRoot, fileName));
   });
 }
 
-function createManifestEntries() {
+function createManifestEntries({ includeBundledComponents = true, includeFfmpeg = true } = {}) {
   const entries = [];
+  const resourceDirs = protectedResourceDirs.filter(({ resourcePrefix }) =>
+    resourcePrefix === "backend"
+      || (includeFfmpeg && resourcePrefix === PACKAGED_FFMPEG_RESOURCE_DIR)
+      || (includeBundledComponents && resourcePrefix === PACKAGED_MODELS_RESOURCE_DIR),
+  );
+  const resourceFiles = includeBundledComponents ? protectedResourceFiles : [];
 
-  for (const resourceDir of protectedResourceDirs) {
+  for (const resourceDir of resourceDirs) {
     for (const absolutePath of listFiles(resourceDir.rootDir)) {
       const relativePath = path.relative(resourceDir.rootDir, absolutePath);
       const manifestPath = toPosixPath(path.join(resourceDir.resourcePrefix, relativePath));
@@ -252,7 +280,7 @@ function createManifestEntries() {
     }
   }
 
-  for (const protectedFile of protectedResourceFiles) {
+  for (const protectedFile of resourceFiles) {
     if (!fs.existsSync(protectedFile.absolutePath)) {
       throw new Error(`Protected resource file does not exist: ${protectedFile.absolutePath}`);
     }
@@ -281,21 +309,26 @@ function readPrivateKey() {
   return fs.readFileSync(privateKeyPath, "utf8");
 }
 
-export function prepareElectronResources() {
+export function prepareElectronResources({ includeBundledComponents = false, includeFfmpeg = true } = {}) {
   prepareBackendResources();
-  buildPackagedWindowsRuntime({ allowFallback: true });
-  copyPackagedModels();
-  copyPackagedFfmpegRuntime();
+  if (includeFfmpeg) {
+    copyPackagedFfmpegRuntime();
+  }
+  if (includeBundledComponents) {
+    buildPackagedWindowsRuntime({ allowFallback: true });
+    copyPackagedModels();
+  }
   resetDir(integrityRoot);
 
   const manifest = {
     schemaVersion: 1,
     appVersion: process.env.npm_package_version || "0.0.1",
     runtimeFlavor: process.env.MOONSHINE_RUNTIME_FLAVOR || "cu130",
-    modelBundle,
+    modelBundle: includeBundledComponents ? modelBundle : "external-models",
+    resourceMode: includeBundledComponents ? "bundled" : "app-only",
     generatedAt: new Date().toISOString(),
     hashAlgorithm: "sha256",
-    entries: createManifestEntries(),
+    entries: createManifestEntries({ includeBundledComponents, includeFfmpeg }),
   };
   const manifestBuffer = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
   const signature = crypto
@@ -310,7 +343,12 @@ export function prepareElectronResources() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
-  const manifest = prepareElectronResources();
+  const includeBundledComponents = ["1", "true", "yes"].includes(
+    String(process.env.MOONSHINE_PACKAGE_LEGACY_RUNTIME || "")
+      .trim()
+      .toLowerCase()
+  );
+  const manifest = prepareElectronResources({ includeBundledComponents });
   console.log(
     `Prepared ${manifest.entries.length} protected runtime files in ${buildResourcesRoot}`
   );

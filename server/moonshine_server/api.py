@@ -130,6 +130,7 @@ from moonshine_server.moonshine.model_registry import (
     build_model_status,
     download_task_manager,
     get_model_manifest,
+    get_model_manifest_metadata,
 )
 from moonshine_server.moonshine.sam_service import SamService, SamServiceError
 from moonshine_server.moonshine.sam_video_tasks import sam_video_task_manager
@@ -388,6 +389,7 @@ class Api:
                     "modelDir": str(self._model_dir()),
                     "cuda": cuda_info,
                     "runtime": self._get_release_runtime_profile(cuda_info),
+                    "modelManifest": get_model_manifest_metadata(),
                     "models": models,
                 }
             )
@@ -429,7 +431,14 @@ class Api:
         """Create an in-process model download task."""
         self._sync_model_dir(req.model_dir if req else "")
         try:
-            task = download_task_manager.create_download_task(model_id, self._model_dir())
+            task = download_task_manager.create_download_task(
+                model_id,
+                self._model_dir(),
+                license_acceptance={
+                    "accepted": bool(req.license_accepted) if req else False,
+                    "acceptanceId": req.license_acceptance_id if req else "",
+                },
+            )
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error))
 

@@ -29,9 +29,20 @@
             icon="settings"
             class="q-mr-sm"
             data-testid="open-global-settings-button"
-            @click="showSettings = true"
+            @click="handleSettingsButtonClick"
           >
-            <q-tooltip>全局设置</q-tooltip>
+            <q-badge
+              v-if="showUpdateSettingsBadge"
+              floating
+              rounded
+              :color="updateSettingsBadgeColor"
+              class="update-settings-badge"
+              data-testid="app-update-settings-badge"
+              aria-label="应用更新待处理"
+            >
+              <q-icon name="system_update_alt" size="10px" />
+            </q-badge>
+            <q-tooltip>{{ updateSettingsTooltip }}</q-tooltip>
           </q-btn>
         </template>
       </main-toolbar>
@@ -106,6 +117,76 @@
     @open-backend-manager="showBackendManager = true"
     @model-downloaded="handleModelDownloaded"
   />
+  <q-dialog
+    :model-value="runtimePreparationVisible"
+    transition-show="scale"
+    transition-hide="fade"
+    :transition-duration="180"
+    data-testid="runtime-preparation-dialog"
+    @update:model-value="handleRuntimeOnboardingModelValue"
+  >
+    <q-card class="runtime-onboarding-card">
+      <q-card-section class="runtime-onboarding-header">
+        <div class="runtime-onboarding-icon" aria-hidden="true">
+          <q-icon name="settings_suggest" size="26px" />
+        </div>
+        <div class="runtime-onboarding-heading">
+          <div class="text-h6 text-weight-medium">配置本地运行环境</div>
+          <div class="text-caption text-grey-7">首次使用前只需配置一次</div>
+        </div>
+        <q-space />
+        <q-btn
+          flat
+          round
+          dense
+          icon="close"
+          aria-label="暂不配置运行环境"
+          data-testid="runtime-preparation-close"
+          @click="dismissRuntimeOnboarding"
+        />
+      </q-card-section>
+      <q-separator />
+      <q-card-section class="runtime-onboarding-content">
+        <div class="text-body2 runtime-onboarding-copy">
+          图片和视频处理需要本机 Python、PyTorch 与 FFmpeg 环境。你可以现在进入后端管理完成创建，也可以稍后再配置。
+        </div>
+        <div
+          class="runtime-onboarding-status"
+          :class="{ 'runtime-onboarding-status--error': updateManager.runtimeState.status === 'failed' }"
+        >
+          <q-icon
+            :name="updateManager.runtimeState.status === 'failed' ? 'report_problem' : 'info'"
+            size="20px"
+          />
+          <div class="runtime-onboarding-status-copy">
+            <div class="text-body2 text-weight-medium">{{ updateManager.runtimeStatusLabel }}</div>
+            <div class="text-caption text-grey-7">
+              {{ updateManager.runtimeState.error?.message || "完成配置前，AI 后端不会自动启动。" }}
+            </div>
+          </div>
+        </div>
+      </q-card-section>
+      <q-card-actions align="right" class="runtime-onboarding-actions">
+        <q-btn
+          flat
+          no-caps
+          icon="schedule"
+          label="暂不配置"
+          data-testid="runtime-preparation-defer"
+          @click="dismissRuntimeOnboarding"
+        />
+        <q-btn
+          unelevated
+          no-caps
+          color="primary"
+          icon="tune"
+          label="引导配置"
+          data-testid="runtime-preparation-guide"
+          @click="openRuntimeOnboardingGuide"
+        />
+      </q-card-actions>
+    </q-card>
+  </q-dialog>
   <startup-overlay v-model="showStartupOverlay" @finished="handleStartupOverlayFinished" />
 </template>
 
@@ -134,6 +215,7 @@ import { useAppStateStore } from "src/stores/appState";
 import { useBackendEngineStore } from "src/stores/backendEngine";
 import { useConfigStore } from "src/stores/config";
 import { useRuntimeDiagnosticsStore } from "src/stores/runtimeDiagnostics";
+import { useUpdateManagerStore } from "src/stores/updateManager";
 import {
   BACKEND_PATH_CJK_WARNING_MESSAGE,
   buildBackendPathBlockedMessage,
@@ -148,6 +230,7 @@ const configStore = useConfigStore();
 const appStateStore = useAppStateStore();
 const backendEngineStore = useBackendEngineStore();
 const runtimeDiagnosticsStore = useRuntimeDiagnosticsStore();
+const updateManager = useUpdateManagerStore();
 const globalLoadingLogo = resolvePublicAssetPath("icons/cmx-logo256.png");
 
 const showBackendManager = ref(false);
@@ -157,6 +240,21 @@ const settingsTarget = ref({
   modelId: "",
 });
 const backendRunning = computed(() => backendEngineStore.isRunning);
+const startupExperienceFinished = ref(false);
+const runtimeOnboardingDismissed = ref(false);
+const runtimeEnvironmentNeedsAttention = computed(() =>
+  ["needs-create", "needs-repair", "needs-download", "failed"].includes(
+    updateManager.runtimeState.status
+  )
+);
+const runtimePreparationVisible = computed(() =>
+  startupExperienceFinished.value &&
+  updateManager.initialized &&
+  !runtimeOnboardingDismissed.value &&
+  !showSettings.value &&
+  !backendRunning.value &&
+  runtimeEnvironmentNeedsAttention.value
+);
 const showStartupOverlay = ref(false);
 const runtimeE2EFlag =
   typeof window !== "undefined" && window.__MOONSHINE_E2E__ === true;
@@ -165,6 +263,7 @@ const pendingBackendPathNotice = ref(null);
 const cudaDiagnosticNotificationKey = ref("");
 const backendSessionStartedAt = ref(0);
 let removeBackendServiceStateListener = null;
+const notifiedUpdateStates = new Set();
 
 const loadingState = ref({
   showing: false,
@@ -403,6 +502,70 @@ const openGlobalSettings = ({ tab = "", modelId = "" } = {}) => {
     modelId,
   };
   showSettings.value = true;
+};
+
+const dismissRuntimeOnboarding = () => {
+  runtimeOnboardingDismissed.value = true;
+};
+
+const handleRuntimeOnboardingModelValue = (visible) => {
+  if (!visible) dismissRuntimeOnboarding();
+};
+
+const openRuntimeOnboardingGuide = () => {
+  dismissRuntimeOnboarding();
+  showBackendManager.value = true;
+};
+
+const showUpdateSettingsBadge = computed(() =>
+  ["available", "downloaded"].includes(updateManager.state.status) ||
+  ["needs-create", "needs-repair", "needs-download", "failed"].includes(updateManager.runtimeState.status)
+);
+const updateSettingsBadgeColor = computed(() =>
+  updateManager.state.status === "downloaded" ? "positive" :
+    updateManager.runtimeState.status === "failed" ? "negative" : "warning"
+);
+const updateSettingsTooltip = computed(() => {
+  if (updateManager.state.status === "downloaded") return "更新已下载，打开应用更新";
+  if (updateManager.state.status === "available") return "发现可用更新，打开应用更新";
+  if (["needs-create", "needs-download"].includes(updateManager.runtimeState.status)) return "运行环境尚未创建，打开后端管理准备环境";
+  if (updateManager.runtimeState.status === "needs-repair") return "运行环境需要修复，打开后端管理处理";
+  if (updateManager.runtimeState.status === "failed") return "运行环境操作失败，打开后端管理重试";
+  return "全局设置";
+});
+
+const handleSettingsButtonClick = () => {
+  openGlobalSettings({
+    tab: showUpdateSettingsBadge.value ? "updates" : "",
+  });
+};
+
+const notifyAppUpdateState = (status, version) => {
+  if (!["available", "downloaded"].includes(status)) return;
+  const notificationKey = `${status}:${version || "unknown"}`;
+  if (notifiedUpdateStates.has(notificationKey)) return;
+  notifiedUpdateStates.add(notificationKey);
+
+  const downloaded = status === "downloaded";
+  $q.notify({
+    type: downloaded ? "positive" : "info",
+    message: downloaded
+      ? version
+        ? `版本 ${version} 已下载，可以重启安装。`
+        : "更新已下载，可以重启安装。"
+      : version
+        ? `发现稳定版 ${version}。`
+        : "发现可用的稳定版更新。",
+    position: "top",
+    timeout: downloaded ? 10_000 : 8_000,
+    actions: [
+      {
+        label: downloaded ? "安装" : "查看",
+        color: "white",
+        handler: () => openGlobalSettings({ tab: "updates" }),
+      },
+    ],
+  });
 };
 
 const handleModelDownloaded = (modelId) => {
@@ -837,6 +1000,14 @@ const prepareBackendEngine = async () => {
     return;
   }
 
+  if (
+    updateManager.runtimeState.enabled &&
+    updateManager.runtimeState.status !== "ready"
+  ) {
+    backendEngineStore.setStopped();
+    return;
+  }
+
   backendEngineStore.setPreparing("preparing");
 
   try {
@@ -923,6 +1094,7 @@ const prepareBackendEngine = async () => {
 };
 
 const handleStartupOverlayFinished = () => {
+  startupExperienceFinished.value = true;
   flushPendingBackendPathNotice();
 };
 
@@ -967,24 +1139,40 @@ const toggleThemeMode = async () => {
 };
 
 onMounted(async () => {
+  const updateInitialization = updateManager.initialize();
   removeBackendServiceStateListener =
     window.electron?.ipcRenderer?.on?.(
       "backend-service-state",
       handleBackendServiceState
     ) || null;
   await configStore.loadConfig();
-  showStartupOverlay.value =
+  const shouldShowStartupOverlay =
     !isE2EMode && configStore.config.ui?.showStartupAnimation !== false;
+  showStartupOverlay.value = shouldShowStartupOverlay;
+  startupExperienceFinished.value = !shouldShowStartupOverlay;
   applyUiPreferences();
   api.updateConfig(configStore.config);
   await appStateStore.loadState();
+  await updateInitialization;
   void prepareBackendEngine();
 });
 
 onUnmounted(() => {
+  updateManager.dispose();
   removeBackendServiceStateListener?.();
   removeBackendServiceStateListener = null;
 });
+
+watch(
+  () => [
+    updateManager.state.status,
+    updateManager.state.availableVersion,
+    updateManager.state.latestVersion,
+  ],
+  ([status, availableVersion, latestVersion]) => {
+    notifyAppUpdateState(status, availableVersion || latestVersion);
+  }
+);
 
 watch(
   () => configStore.config,
@@ -1114,6 +1302,90 @@ router.beforeEach(async (to, from) => {
 
 .global-loading-action {
   min-width: 156px;
+}
+
+.update-settings-badge {
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  min-height: 16px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.runtime-onboarding-card {
+  width: min(520px, calc(100vw - 32px));
+  max-width: 520px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.runtime-onboarding-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 20px 20px 16px;
+}
+
+.runtime-onboarding-icon {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--q-primary);
+  background: color-mix(in srgb, var(--q-primary) 12%, transparent);
+}
+
+.runtime-onboarding-heading {
+  min-width: 0;
+}
+
+.runtime-onboarding-content {
+  padding: 20px;
+}
+
+.runtime-onboarding-copy {
+  line-height: 1.65;
+}
+
+.runtime-onboarding-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid rgba(35, 120, 80, 0.24);
+  border-radius: 6px;
+  color: #237850;
+  background: rgba(35, 120, 80, 0.07);
+}
+
+.runtime-onboarding-status--error {
+  border-color: rgba(186, 55, 55, 0.28);
+  color: #ba3737;
+  background: rgba(186, 55, 55, 0.07);
+}
+
+.runtime-onboarding-status-copy {
+  min-width: 0;
+}
+
+.runtime-onboarding-actions {
+  gap: 8px;
+  padding: 0 20px 20px;
+}
+
+.runtime-onboarding-actions :deep(.q-btn) {
+  min-height: 38px;
+  transition: transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.runtime-onboarding-actions :deep(.q-btn:active) {
+  transform: scale(0.97);
 }
 
 .global-loading-message {

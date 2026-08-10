@@ -3,6 +3,10 @@
 
 import { defineConfig } from "#q-app/wrappers";
 import { prepareElectronResources } from "./scripts/prepare-electron-resources.mjs";
+import {
+  buildAppUpdateFeedUrl,
+  normalizeAppUpdateChannel,
+} from "./src-electron/updater/update-channel.js";
 
 const DEV_WATCH_IGNORED = [
   "**/IOPaint",
@@ -17,6 +21,17 @@ const electronDownloadMirror =
 const electronDownloadCacheRoot =
   process.env.MOONSHINE_ELECTRON_CACHE || ".electron-cache";
 const electronZipDir = process.env.MOONSHINE_ELECTRON_ZIP_DIR || "";
+const DEFAULT_UPDATE_FEED_URL =
+  "https://download.moonshine.email/app/win-x64/stable/";
+const appUpdateChannel = normalizeAppUpdateChannel(process.env.MOONSHINE_APP_UPDATE_CHANNEL);
+const updateFeedUrl =
+  String(process.env.MOONSHINE_UPDATE_URL || "").trim()
+  || (appUpdateChannel === "stable"
+    ? DEFAULT_UPDATE_FEED_URL
+    : buildAppUpdateFeedUrl(appUpdateChannel, {
+      baseUrl: process.env.MOONSHINE_UPDATE_BASE_URL,
+    }));
+const electronPublishConfig = [{ provider: "generic", url: updateFeedUrl }];
 const electronDownloadOptions = {
   cacheRoot: electronDownloadCacheRoot,
   ...(electronDownloadMirror
@@ -28,9 +43,19 @@ const electronDownloadOptions = {
     : {}),
 };
 
+const includeLegacyPackagedComponents = ["1", "true", "yes"].includes(
+  String(process.env.MOONSHINE_PACKAGE_LEGACY_RUNTIME || "")
+    .trim()
+    .toLowerCase(),
+);
+
 export default defineConfig((ctx) => {
   if (ctx.mode.electron && ctx.prod) {
-    prepareElectronResources();
+    prepareElectronResources({
+      // Normal Builder and Packager builds are app-only. Runtime/models are
+      // prepared only for an explicitly requested legacy compatibility build.
+      includeBundledComponents: includeLegacyPackagedComponents,
+    });
   }
 
   return {
@@ -263,8 +288,8 @@ export default defineConfig((ctx) => {
         asar: true,
         ...(electronZipDir ? { electronZipDir } : { download: electronDownloadOptions }),
 
-        // Application metadata
-        appVersion: "1.1.0",
+        // Application metadata comes from package.json to keep installer and
+        // runtime update versions aligned.
         appCopyright: "Copyright © 2023 CuiMuxuan",
         appCategoryType: "public.app-category.utilities",
 
@@ -292,24 +317,35 @@ export default defineConfig((ctx) => {
         ],
         extraResource: [
           "build-resources/backend",
-          "build-resources/runtime",
-          "build-resources/models",
           "build-resources/ffmpeg",
           "build-resources/integrity",
+          ...(includeLegacyPackagedComponents
+            ? ["build-resources/runtime", "build-resources/models"]
+            : []),
         ],
       },
 
       builder: {
         // https://www.electron.build/configuration/configuration
 
+        // Reuse the Electron distribution installed by npm. This keeps Builder
+        // aligned with the lockfile and avoids a second GitHub ZIP download.
+        electronDist: "node_modules/electron/dist",
+
         // Application metadata
         appId: "com.moonshine.image",
         productName: "Moonshine-Image",
+        afterPack: "scripts/after-pack-windows.mjs",
 
         // Windows packaging
         win: {
           target: ["nsis"],
           icon: "src-electron/icons/icon.ico",
+          publisherName: null,
+          // The first R2 release remains unsigned. A local afterPack hook uses
+          // the npm-bundled rcedit binary, avoiding electron-builder's GitHub
+          // winCodeSign download while still embedding the application icon.
+          signAndEditExecutable: false,
         },
 
         // Installer options
@@ -317,24 +353,18 @@ export default defineConfig((ctx) => {
           oneClick: false,
           allowToChangeInstallationDirectory: true,
           shortcutName: "Moonshine-Image",
+          include: "build-resources/installer-offline.nsh",
         },
 
-        // Files copied from the compiled Electron output
-        files: ["dist/electron/**/*", "!node_modules/**/*"],
-
-        // External runtime resources copied alongside app.asar
+        // App-only NSIS resources. The Python/Torch environment is created in
+        // userData on first launch; the small backend, FFmpeg executable and
+        // integrity receipt are kept in the installer so setup has no second
+        // public runtime download dependency. Full offline ZIPs are assembled
+        // separately from explicit payload roots.
         extraResources: [
           {
             from: "build-resources/backend",
             to: "backend",
-          },
-          {
-            from: "build-resources/runtime",
-            to: "runtime",
-          },
-          {
-            from: "build-resources/models",
-            to: "models",
           },
           {
             from: "build-resources/ffmpeg",
@@ -349,13 +379,7 @@ export default defineConfig((ctx) => {
         // Installer artifact naming
         artifactName: "Moonshine-Image-Setup-${version}.${ext}",
         // Auto-update configuration
-        publish: [
-          {
-            provider: "github",
-            owner: "CuiMuxuan",
-            repo: "moonshine-image",
-          },
-        ],
+        publish: electronPublishConfig,
       },
     },
 
