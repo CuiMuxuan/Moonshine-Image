@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { parse as parseYaml } from "yaml";
+import { resolveAppEdition } from "../../src-electron/updater/edition.js";
 
 import {
   INTEGRITY_MANIFEST_FILE,
@@ -153,30 +154,36 @@ function auditIntegrity(resourcesRoot, integrityPublicKeyPem) {
   };
 }
 
-function auditUpdateMetadata(artifactDir, expectedVersion) {
-  const latestPath = path.join(artifactDir, "latest.yml");
-  assert(fs.existsSync(latestPath), `Missing update metadata: ${latestPath}`);
-  const latest = parseYaml(fs.readFileSync(latestPath, "utf8"));
-  assert(String(latest?.version || "") === expectedVersion, "latest.yml version does not match the release version");
-  assert(Array.isArray(latest.files) && latest.files.length === 1, "latest.yml must contain exactly one installer");
+function auditUpdateMetadata(artifactDir, expectedVersion, expectedIdentity) {
+  const metadataFile = expectedIdentity.channel === "test" ? "test.yml" : "latest.yml";
+  const metadataPath = path.join(artifactDir, metadataFile);
+  assert(fs.existsSync(metadataPath), `Missing update metadata: ${metadataPath}`);
+  const latest = parseYaml(fs.readFileSync(metadataPath, "utf8"));
+  assert(String(latest?.version || "") === expectedVersion, `${metadataFile} version does not match the release version`);
+  assert(Array.isArray(latest.files) && latest.files.length === 1, `${metadataFile} must contain exactly one installer`);
 
   const fileEntry = latest.files[0];
   const installerName = String(latest.path || fileEntry?.url || "");
-  assert(installerName && path.basename(installerName) === installerName, "latest.yml installer path is unsafe");
-  assert(installerName.toLowerCase().endsWith(".exe"), "latest.yml installer must be an exe");
-  assert(fileEntry.url === installerName, "latest.yml path and files[0].url must match");
-  assert(fileEntry.sha512 === latest.sha512, "latest.yml sha512 fields must match");
+  assert(installerName && path.basename(installerName) === installerName, `${metadataFile} installer path is unsafe`);
+  assert(installerName.toLowerCase().endsWith(".exe"), `${metadataFile} installer must be an exe`);
+  const expectedInstallerName = expectedIdentity.artifactName
+    .replace("${version}", expectedVersion)
+    .replace("${ext}", "exe");
+  assert(installerName === expectedInstallerName, `${metadataFile} installer does not match the edition identity`);
+  assert(fileEntry.url === installerName, `${metadataFile} path and files[0].url must match`);
+  assert(fileEntry.sha512 === latest.sha512, `${metadataFile} sha512 fields must match`);
 
   const installerPath = path.join(artifactDir, installerName);
   const blockmapPath = `${installerPath}.blockmap`;
   assert(fs.existsSync(installerPath), `Missing installer: ${installerPath}`);
   assert(fs.existsSync(blockmapPath), `Missing installer blockmap: ${blockmapPath}`);
   const installerSize = fs.statSync(installerPath).size;
-  assert(installerSize === fileEntry.size, "latest.yml installer size does not match the exe");
-  assert(sha512Base64File(installerPath) === fileEntry.sha512, "latest.yml installer sha512 does not match the exe");
+  assert(installerSize === fileEntry.size, `${metadataFile} installer size does not match the exe`);
+  assert(sha512Base64File(installerPath) === fileEntry.sha512, `${metadataFile} installer sha512 does not match the exe`);
   assert(fs.statSync(blockmapPath).size > 0, "Installer blockmap is empty");
 
   return {
+    metadataFile,
     version: expectedVersion,
     installerName,
     installerBytes: installerSize,
@@ -193,11 +200,14 @@ export function auditAppOnlyPackage({
   const resolvedArtifactDir = path.resolve(String(artifactDir || ""));
   assert(artifactDir, "artifactDir is required");
   assert(expectedVersion, "expectedVersion is required");
+  const identity = resolveAppEdition(expectedVersion);
   const resourcesRoot = path.join(resolvedArtifactDir, "win-unpacked", "resources");
   assert(fs.existsSync(resourcesRoot), `Missing unpacked resources: ${resourcesRoot}`);
   return {
     artifactDir: resolvedArtifactDir,
+    edition: identity.edition,
+    identity,
     integrity: auditIntegrity(resourcesRoot, integrityPublicKeyPem),
-    updateMetadata: auditUpdateMetadata(resolvedArtifactDir, String(expectedVersion)),
+    updateMetadata: auditUpdateMetadata(resolvedArtifactDir, String(expectedVersion), identity),
   };
 }

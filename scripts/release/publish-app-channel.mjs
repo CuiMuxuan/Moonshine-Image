@@ -14,10 +14,10 @@ import {
 
 const usage = `Usage: node scripts/release/publish-app-channel.mjs [options]
 
-Publishes test/beta/stable latest.yml and the matching signed app manifest after immutable verification.
+Publishes test/stable latest.yml and the matching signed app manifest after immutable verification.
 
 Options:
-  --channel <test|beta|stable> channel to publish
+  --channel <test|stable>      channel to publish (must match the app edition)
   --confirm-channel <channel:version> exact publication confirmation
   --artifact-dir <path>       electron-builder output directory
   --manifest <path>           latest.yml path (defaults inside artifact-dir)

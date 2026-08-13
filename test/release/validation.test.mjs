@@ -13,6 +13,7 @@ import {
   checkRemoteObject,
   createValidationReport,
   evaluateSourceAvailability,
+  inspectLocalInstall,
   inspectManagedEnvironment,
   objectUrl,
   recordCheck,
@@ -193,10 +194,102 @@ test("managed environment inspection accepts a safe active pointer", async (t) =
   fs.writeFileSync(path.join(root, "active.json"), JSON.stringify({
     flavor: "cpu",
     path: "environments/cpu/spec",
+    pythonExecutableRelative: "python.exe",
     sequence: 1,
   }));
   fs.writeFileSync(path.join(root, "environments", "cpu", "spec", "python.exe"), "python");
   const result = await inspectManagedEnvironment({ environmentRoot: root, expectedFlavor: "cpu" });
   assert.equal(result.flavor, "cpu");
   assert.equal(result.python, "environments/cpu/spec/python.exe");
+});
+
+test("managed environment inspection finds the application user-data pointer and nested venv", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "moonshine-validation-user-data-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const environmentPath = path.join(root, "environments", "win-x64", "cpu", "spec");
+  fs.mkdirSync(path.join(environmentPath, "venv", "Scripts"), { recursive: true });
+  fs.writeFileSync(path.join(environmentPath, "venv", "Scripts", "python.exe"), "python");
+  fs.writeFileSync(path.join(root, "environments", "active.json"), JSON.stringify({
+    accelerator: "cpu",
+    path: "environments/win-x64/cpu/spec",
+    pythonExecutableRelative: "venv/Scripts/python.exe",
+    specHash: "a".repeat(64),
+  }));
+  const result = await inspectManagedEnvironment({ environmentRoot: root, expectedFlavor: "cpu" });
+  assert.equal(result.python, "environments/win-x64/cpu/spec/venv/Scripts/python.exe");
+  assert.equal(result.pythonExecutable, path.join(environmentPath, "venv", "Scripts", "python.exe"));
+  assert.equal(result.specHash, "a".repeat(64));
+});
+
+test("managed environment inspection rejects staging and escaping Python pointers", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "moonshine-validation-unsafe-pointer-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const environmentPath = path.join(root, "environments", "win-x64", "cpu", "spec");
+  fs.mkdirSync(path.join(environmentPath, "venv", "Scripts"), { recursive: true });
+  fs.writeFileSync(path.join(environmentPath, "venv", "Scripts", "python.exe"), "python");
+  fs.writeFileSync(path.join(root, "environments", "active.json"), JSON.stringify({
+    accelerator: "cpu",
+    path: "environments/win-x64/cpu/spec",
+    pythonExecutableRelative: "../../.staging/python.exe",
+  }));
+  await assert.rejects(
+    inspectManagedEnvironment({ environmentRoot: root, expectedFlavor: "cpu" }),
+    /unsafe Python path/i,
+  );
+});
+
+test("local installation inspection tolerates absent optional preload and requires packaged resources", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "moonshine-validation-install-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const files = [
+    "resources/app.asar",
+    "resources/backend/server/main.py",
+    "resources/backend/server/requirements-cpu.lock.txt",
+    "resources/backend/server/requirements-cu130.lock.txt",
+    "resources/ffmpeg/win-x64/ffmpeg.exe",
+    "Moonshine-Image.exe",
+  ];
+  for (const relative of files) {
+    const target = path.join(root, relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, relative.endsWith(".exe") ? Buffer.from("MZfixture") : "fixture");
+  }
+  const protectedFiles = files.filter((relative) => relative.startsWith("resources/backend/") || relative.startsWith("resources/ffmpeg/"));
+  const integrityManifest = {
+    schemaVersion: 1,
+    appVersion: "1.3.1",
+    runtimeFlavor: "app-only",
+    resourceMode: "app-only",
+    hashAlgorithm: "sha256",
+    entries: protectedFiles.map((relative) => {
+      const target = path.join(root, relative);
+      return {
+        path: relative.slice("resources/".length).replace(/\\/g, "/"),
+        size: fs.statSync(target).size,
+        sha256: createHash("sha256").update(fs.readFileSync(target)).digest("hex"),
+      };
+    }),
+  };
+  const integrityBytes = Buffer.from(`${JSON.stringify(integrityManifest, null, 2)}\n`, "utf8");
+  const integrityRoot = path.join(root, "resources", "integrity");
+  fs.mkdirSync(integrityRoot, { recursive: true });
+  fs.writeFileSync(path.join(integrityRoot, "manifest.json"), integrityBytes);
+  fs.writeFileSync(path.join(integrityRoot, "manifest.sig"), `${sign(null, integrityBytes, privateKey).toString("base64")}\n`);
+  const result = await inspectLocalInstall({
+    installRoot: root,
+    appExecutable: path.join(root, "Moonshine-Image.exe"),
+    integrityPublicKeyPem: publicKey.export({ type: "spki", format: "pem" }),
+  });
+  assert.equal(result.missingRequired.length, 0);
+  assert.equal(result.integrity.status, "pass", JSON.stringify(result.integrity));
+  assert.equal(result.files["resources/preload/electron-preload.cjs"].present, false);
+  assert.equal(result.files["resources/preload/electron-preload.cjs"].required, false);
+
+  fs.writeFileSync(path.join(root, "resources", "backend", "server", "main.py"), "tampered");
+  const tampered = await inspectLocalInstall({
+    installRoot: root,
+    integrityPublicKeyPem: publicKey.export({ type: "spki", format: "pem" }),
+  });
+  assert.equal(tampered.integrity.status, "fail");
+  assert.match(tampered.integrity.issues.join("\n"), /size mismatch|hash mismatch/);
 });

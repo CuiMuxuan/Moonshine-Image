@@ -5,8 +5,10 @@ import os
 import sys
 import tempfile
 import unittest
+import torch
 from pathlib import Path
 from unittest import mock
+from types import SimpleNamespace
 
 SERVER_ROOT = Path(__file__).resolve().parents[1]
 if str(SERVER_ROOT) not in sys.path:
@@ -14,9 +16,13 @@ if str(SERVER_ROOT) not in sys.path:
 
 from moonshine_server.moonshine.model_registry import (
     ModelDownloadTaskManager,
+    _device_compatible,
     build_model_status,
     get_model_manifest_metadata,
 )
+from moonshine_server.moonshine.sam_service import SamService, SamServiceError
+from moonshine_server.api import Api
+from moonshine_server.model_manager import ModelManager
 
 
 def model_record(**overrides):
@@ -76,6 +82,129 @@ def signed_document(models, channel="stable", sequence=3):
 
 
 class SignedModelManifestTests(unittest.TestCase):
+    def test_model_manager_initializes_mat_on_cpu_without_cuda(self):
+        manager = ModelManager.__new__(ModelManager)
+        fake_generator = mock.Mock()
+        fake_generator.z_dim = 512
+        fake_generator.to.return_value = fake_generator
+        loaded_network = mock.Mock()
+        loaded_network.c_dim = 0
+
+        with mock.patch(
+            "moonshine_server.model.mat.Generator", return_value=fake_generator
+        ), mock.patch(
+            "moonshine_server.model.mat.set_seed"
+        ), mock.patch(
+            "moonshine_server.model.mat._resolve_mat_model_path", return_value="mat.pth"
+        ), mock.patch(
+            "moonshine_server.helper.load_model", return_value=loaded_network
+        ) as load_model:
+            model = manager._init_mat_cpu("cpu")
+
+        self.assertEqual(model.device.type, "cpu")
+        self.assertEqual(model.torch_dtype, torch.float32)
+        self.assertEqual(model.z.device.type, "cpu")
+        self.assertEqual(model.label.device.type, "cpu")
+        load_model.assert_called_once_with(fake_generator, "mat.pth", model.device, None)
+
+    def test_prepare_endpoint_loads_an_ordinary_model_on_cpu(self):
+        api = Api.__new__(Api)
+        api.config = SimpleNamespace(device="cpu")
+        api.model_manager = SimpleNamespace(name="lama", model=None)
+        api.model_manager.switch = mock.Mock(
+            side_effect=lambda model_id: setattr(api.model_manager, "model", object())
+        )
+        api._sync_model_dir = mock.Mock()
+        api._model_dir = mock.Mock(return_value=Path.cwd())
+        cpu_info = {"cuda_available": False, "cuda_compatible": False}
+        api._get_cuda_info = mock.Mock(return_value=cpu_info)
+        model = {
+            "id": "lama",
+            "type": "image",
+            "installed": True,
+            "verified": True,
+            "deviceCompatible": True,
+        }
+
+        with mock.patch("moonshine_server.api.build_model_status", return_value=[model]):
+            response = api.api_prepare_moonshine_model("lama", None)
+
+        payload = json.loads(response.body)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["loaded"])
+        self.assertTrue(payload["runtimeReady"])
+        self.assertTrue(payload["ready"])
+        self.assertEqual(payload["readiness"]["status"], "ready")
+
+    def test_cpu_accepts_ordinary_models_but_keeps_sam2_sam3_restricted(self):
+        cpu = {"cuda_available": False, "cuda_compatible": False}
+        for model in (
+            {"id": "lama", "recommendedDevice": "cuda", "minimumVram": 2048},
+            {"id": "mat", "family": "mat", "recommendedDevice": "cuda", "minimumVram": 6144},
+            {"id": "slbr", "recommendedDevice": "cuda", "minimumVram": 2048},
+            {"id": "sam_vit_b", "family": "sam", "recommendedDevice": "cuda"},
+        ):
+            with self.subTest(model=model["id"]):
+                self.assertTrue(_device_compatible(model, cpu))
+
+        for family in ("sam2", "sam3"):
+            with self.subTest(family=family):
+                self.assertFalse(_device_compatible({"id": family, "family": family}, cpu))
+
+    def test_file_verification_is_separate_from_runtime_load_state(self):
+        manifest = [{
+            "id": "lama",
+            "label": "LaMa",
+            "type": "image",
+            "family": "lama",
+            "files": [{"path": "big-lama.pt"}],
+        }]
+        file_status = {
+            "path": "big-lama.pt",
+            "exists": True,
+            "valid": True,
+        }
+        with tempfile.TemporaryDirectory(prefix="moonshine-model-state-") as root, mock.patch(
+            "moonshine_server.moonshine.model_registry._active_model_manifest",
+            return_value=(manifest, {}),
+        ), mock.patch(
+            "moonshine_server.moonshine.model_registry._file_status",
+            return_value=file_status,
+        ):
+            model = build_model_status(Path(root))[0]
+
+        self.assertTrue(model["installed"])
+        self.assertTrue(model["verified"])
+        self.assertEqual(model["fileStatus"], "verified")
+        self.assertFalse(model["loaded"])
+        self.assertEqual(model["loadState"], "not_loaded")
+        self.assertFalse(model["runtimeReady"])
+        self.assertFalse(model["ready"])
+
+    def test_sam1_prepares_on_cpu_while_sam2_and_sam3_remain_cuda_only(self):
+        service = SamService(Path.cwd(), "cpu")
+        installed = lambda family: {
+            "id": f"{family}_model",
+            "family": family,
+            "installed": True,
+            "missingFiles": [],
+            "enabledCapabilities": {"imagePoint": True},
+        }
+
+        with mock.patch.object(service, "_build_status", return_value=[installed("sam")]), mock.patch.object(
+            service, "_get_predictor", return_value=object()
+        ) as predictor:
+            result = service.prepare_model("sam_model")
+        predictor.assert_called_once_with("sam_model")
+        self.assertTrue(result["runtimeReady"])
+
+        for family in ("sam2", "sam3"):
+            with self.subTest(family=family), mock.patch.object(
+                service, "_build_status", return_value=[installed(family)]
+            ):
+                with self.assertRaisesRegex(SamServiceError, "CUDA-only"):
+                    service.prepare_model(f"{family}_model")
+
     def test_verified_manifest_replaces_the_bundled_catalog(self):
         with tempfile.TemporaryDirectory(prefix="moonshine-model-manifest-") as root:
             root_path = Path(root)
@@ -143,6 +272,40 @@ class SignedModelManifestTests(unittest.TestCase):
                         },
                     )
 
+    def test_duplicate_active_download_reuses_the_existing_task(self):
+        with tempfile.TemporaryDirectory(prefix="moonshine-model-dedupe-") as root:
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "MOONSHINE_REQUIRE_SIGNED_MODEL_MANIFEST": "0",
+                    "MOONSHINE_MODEL_MANIFEST_PATH": "",
+                },
+                clear=False,
+            ), mock.patch("threading.Thread.start"):
+                manager = ModelDownloadTaskManager()
+                first = manager.create_download_task("lama", Path(root))
+                second = manager.create_download_task("lama", Path(root))
+
+            self.assertIs(first, second)
+            self.assertEqual(first.id, second.id)
+
+    def test_same_model_in_different_directories_uses_distinct_tasks(self):
+        with tempfile.TemporaryDirectory(prefix="moonshine-model-dirs-") as root:
+            root_path = Path(root)
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "MOONSHINE_REQUIRE_SIGNED_MODEL_MANIFEST": "0",
+                    "MOONSHINE_MODEL_MANIFEST_PATH": "",
+                },
+                clear=False,
+            ), mock.patch("threading.Thread.start"):
+                manager = ModelDownloadTaskManager()
+                first = manager.create_download_task("lama", root_path / "first")
+                second = manager.create_download_task("lama", root_path / "second")
+
+            self.assertNotEqual(first.id, second.id)
+
     def test_invalid_remote_source_fails_closed_in_required_mode(self):
         with tempfile.TemporaryDirectory(prefix="moonshine-model-invalid-") as root:
             root_path = Path(root)
@@ -172,4 +335,3 @@ class SignedModelManifestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -11,7 +11,10 @@ import { path7za } from "7zip-bin";
 
 import { signManifestPayload } from "./release/manifest-signing.mjs";
 import { canonicalizeJson } from "../src-electron/runtime/manifest-verifier.js";
-import { buildEnvironmentSpec } from "../src-electron/runtime/environment-spec.js";
+import {
+  BUNDLED_FFMPEG_SPEC_HASH,
+  buildEnvironmentSpec,
+} from "../src-electron/runtime/environment-spec.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -222,21 +225,10 @@ async function createPayloadManifest({
   };
 }
 
-function resolveFfmpegExecutable(root) {
-  const candidates = [
-    path.join(root, "ffmpeg.exe"),
-    path.join(root, "bin", "ffmpeg.exe"),
-    path.join(root, "win-x64", "ffmpeg.exe"),
-  ];
-  const selected = candidates.find((candidate) => fs.existsSync(candidate));
-  return selected || null;
-}
-
-async function resolveOfflineEnvironmentSpec({ version, variant, runtimeRoot, ffmpegRoot }) {
-  if (!runtimeRoot || !ffmpegRoot) return null;
+async function resolveOfflineEnvironmentSpec({ version, variant, runtimeRoot }) {
+  if (!runtimeRoot) return null;
   const requirementsPath = path.join(repoRoot, "server", `requirements-${variant}.lock.txt`);
-  const ffmpegPath = resolveFfmpegExecutable(ffmpegRoot);
-  if (!fs.existsSync(requirementsPath) || !ffmpegPath) return null;
+  if (!fs.existsSync(requirementsPath)) return null;
   let runtimeManifest = {};
   const runtimeManifestPath = path.join(runtimeRoot, "runtime-manifest.json");
   if (fs.existsSync(runtimeManifestPath)) {
@@ -247,13 +239,12 @@ async function resolveOfflineEnvironmentSpec({ version, variant, runtimeRoot, ff
     }
   }
   const requirementsDigest = await hashFileStreaming(requirementsPath);
-  const ffmpegDigest = await hashFileStreaming(ffmpegPath);
   return buildEnvironmentSpec({
     appVersion: version,
     pythonVersion: runtimeManifest.pythonVersion || "3.12.10",
     accelerator: variant,
     requirementsLockHash: requirementsDigest.sha256,
-    ffmpegHash: ffmpegDigest.sha256,
+    ffmpegHash: BUNDLED_FFMPEG_SPEC_HASH,
   });
 }
 
@@ -382,7 +373,6 @@ export async function buildOfflineBundle({
   installerPath,
   payloadRoot,
   runtimeRoot,
-  ffmpegRoot,
   modelsRoot,
   outputDir = path.join(repoRoot, "dist", "releases", `v${version}`),
   privateKeyPem,
@@ -409,43 +399,35 @@ export async function buildOfflineBundle({
   ensureDirectory(offlinePayloadRoot);
 
   try {
-    let inheritedEnvironmentSpec = null;
     let modelSelection = null;
-    if (payloadRoot) {
-      const sourceManifestPath = path.join(path.resolve(payloadRoot), "payload-manifest.json");
-      if (fs.existsSync(sourceManifestPath)) {
-        try {
-          const sourceManifest = JSON.parse(fs.readFileSync(sourceManifestPath, "utf8"));
-          const sourcePayload = sourceManifest?.payload && typeof sourceManifest.payload === "object"
-            ? sourceManifest.payload
-            : sourceManifest;
-          inheritedEnvironmentSpec = sourcePayload?.environmentSpec || sourcePayload?.spec || null;
-        } catch {
-          inheritedEnvironmentSpec = null;
-        }
-      }
-    }
     fs.copyFileSync(installer, path.join(stagingRoot, path.basename(installer)));
-    if (payloadRoot) {
-      copyDirectoryContents(payloadRoot, offlinePayloadRoot);
-    } else {
-      if (!runtimeRoot) throw new Error("runtimeRoot or payloadRoot is required");
-      copyDirectoryContents(runtimeRoot, path.join(offlinePayloadRoot, "runtime"));
-      if (ffmpegRoot) copyDirectoryContents(ffmpegRoot, path.join(offlinePayloadRoot, "ffmpeg"));
-      if (modelsRoot) {
-        modelSelection = copySelectedModelFiles(modelsRoot, path.join(offlinePayloadRoot, "models"));
-        if (!allowMissingModels && modelSelection.missing.length > 0) {
-          throw new Error(`Offline model source is missing required default weights: ${modelSelection.missing.join(", ")}`);
-        }
+    const sourcePayloadRoot = payloadRoot ? path.resolve(payloadRoot) : null;
+    const resolvedRuntimeRoot = runtimeRoot
+      ? path.resolve(runtimeRoot)
+      : sourcePayloadRoot
+        ? path.join(sourcePayloadRoot, "runtime")
+        : null;
+    if (!resolvedRuntimeRoot) throw new Error("runtimeRoot or payloadRoot is required");
+    copyDirectoryContents(resolvedRuntimeRoot, path.join(offlinePayloadRoot, "runtime"));
+
+    const payloadModelsRoot = sourcePayloadRoot ? path.join(sourcePayloadRoot, "models") : null;
+    const resolvedModelsRoot = modelsRoot
+      ? path.resolve(modelsRoot)
+      : payloadModelsRoot && fs.existsSync(payloadModelsRoot)
+        ? payloadModelsRoot
+        : null;
+    if (resolvedModelsRoot) {
+      modelSelection = copySelectedModelFiles(resolvedModelsRoot, path.join(offlinePayloadRoot, "models"));
+      if (!allowMissingModels && modelSelection.missing.length > 0) {
+        throw new Error(`Offline model source is missing required default weights: ${modelSelection.missing.join(", ")}`);
       }
     }
 
     const environmentSpec = await resolveOfflineEnvironmentSpec({
       version: normalizedVersion,
       variant: normalizedVariant,
-      runtimeRoot: runtimeRoot || (payloadRoot ? path.join(payloadRoot, "runtime") : null),
-      ffmpegRoot: ffmpegRoot || (payloadRoot ? path.join(payloadRoot, "ffmpeg") : null),
-    }) || inheritedEnvironmentSpec;
+      runtimeRoot: resolvedRuntimeRoot,
+    });
     const payload = await createPayloadManifest({
       payloadRoot: offlinePayloadRoot,
       version: normalizedVersion,
@@ -454,9 +436,6 @@ export async function buildOfflineBundle({
     });
     if (!payload.files.some(({ path: relative }) => relative.startsWith("runtime/"))) {
       throw new Error("Offline payload must contain runtime/ files");
-    }
-    if (!payload.files.some(({ path: relative }) => relative.startsWith("ffmpeg/"))) {
-      throw new Error("Offline payload must contain ffmpeg/ files");
     }
     const keyPem = privateKeyPem || resolvePrivateKey({ privateKeyFile, allowUnsigned });
     const signed = signPayloadManifest(payload, { privateKeyPem: keyPem, keyId });
@@ -485,9 +464,9 @@ export async function buildOfflineBundle({
       },
       models: modelSelection,
       sources: {
-        runtime: runtimeRoot ? path.resolve(runtimeRoot) : null,
-        ffmpeg: ffmpegRoot ? path.resolve(ffmpegRoot) : null,
-        models: modelsRoot ? path.resolve(modelsRoot) : null,
+        runtime: resolvedRuntimeRoot,
+        ffmpeg: "bundled-in-installer",
+        models: resolvedModelsRoot,
       },
     };
     const reportPath = path.join(destination, `${packageName}.json`);
@@ -510,7 +489,7 @@ export async function buildOfflineBundle({
 }
 
 function usage() {
-  return `Usage: node scripts/build-offline-bundle-win.mjs --variant <cpu|cu130> --installer <path> [options]\n\nOptions:\n  --version <version>            App version (default: package.json)\n  --payload-root <path>          Existing offline-payload directory\n  --runtime-root <path>          Prepared runtime directory\n  --ffmpeg-root <path>           FFmpeg directory\n  --models-root <path>           Model directory (optional)\n  --allow-missing-models         Diagnostic mode only; permit an incomplete default model set\n  --output-dir <path>             Output directory\n  --private-key-file <path>       Ed25519 key for payload-manifest.json\n  --allow-unsigned                Local diagnostic mode only\n  --dry-run                       Assemble and report without creating ZIP\n  --keep-staging                  Keep temporary assembly directory\n`;
+  return `Usage: node scripts/build-offline-bundle-win.mjs --variant <cpu|cu130> --installer <path> [options]\n\nOptions:\n  --version <version>            App version (default: package.json)\n  --payload-root <path>          Existing offline-payload directory\n  --runtime-root <path>          Prepared runtime directory\n  --models-root <path>           Model directory (optional)\n  --allow-missing-models         Diagnostic mode only; permit an incomplete default model set\n  --output-dir <path>             Output directory\n  --private-key-file <path>       Ed25519 key for payload-manifest.json\n  --allow-unsigned                Local diagnostic mode only\n  --dry-run                       Assemble and report without creating ZIP\n  --keep-staging                  Keep temporary assembly directory\n`;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
@@ -525,7 +504,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
         installerPath: args.installer,
         payloadRoot: args["payload-root"],
         runtimeRoot: args["runtime-root"],
-        ffmpegRoot: args["ffmpeg-root"],
         modelsRoot: args["models-root"],
         outputDir: args["output-dir"],
         privateKeyFile: args["private-key-file"],

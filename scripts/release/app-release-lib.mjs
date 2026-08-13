@@ -9,6 +9,7 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { parse as parseYaml } from "yaml";
+import { assertEditionChannel } from "../../src-electron/updater/edition.js";
 
 export const DEFAULT_BUCKET = "moonshine-image-app-release-prod";
 export const DEFAULT_PUBLIC_BASE_URL = "https://download.moonshine.email";
@@ -16,7 +17,7 @@ export const DEFAULT_RELEASE_PREFIX = "app/win-x64";
 export const STABLE_MANIFEST_NAME = "latest.yml";
 export const APP_MANIFEST_PREFIX = "manifests";
 export const APP_MANIFEST_NAME = "latest.json";
-export const APP_RELEASE_CHANNELS = Object.freeze(["test", "beta", "stable"]);
+export const APP_RELEASE_CHANNELS = Object.freeze(["test", "stable"]);
 
 const IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
 const STABLE_MANIFEST_CACHE_CONTROL = "no-cache, no-store, must-revalidate";
@@ -273,6 +274,7 @@ export async function loadReleaseDescriptor({
       `latest.yml version ${manifestVersion} does not match requested version ${expectedVersion}`
     );
   }
+  const edition = assertEditionChannel(expectedVersion, expectedChannel);
 
   const manifestInstallerValue =
     manifest.path ||
@@ -335,6 +337,8 @@ export async function loadReleaseDescriptor({
 
   return {
     version: expectedVersion,
+    edition: edition.edition,
+    identity: edition,
     channel: expectedChannel,
     artifactDir: resolvedArtifactDir,
     manifest,
@@ -360,6 +364,7 @@ export function buildReleaseObjects(
 ) {
   const prefix = normalizeReleasePrefix(releasePrefix);
   const releaseChannel = normalizeReleaseChannel(channel);
+  assertEditionChannel(descriptor.version, releaseChannel);
   const channelPrefix = joinObjectKey(prefix, releaseChannel);
   const manifestArchivePrefix = joinObjectKey(
     prefix,

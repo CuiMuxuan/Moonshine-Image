@@ -83,7 +83,80 @@ test("environment manager starts without an active environment and persists acce
     const result = await manager.setAccelerator("cu130");
     assert.equal(result.success, true);
     assert.equal(manager.getState().preference, "cu130");
-    assert.equal(JSON.parse(await fs.readFile(path.join(root, "environments", "preference.json"), "utf8")).preference, "cu130");
+    const persisted = JSON.parse(await fs.readFile(path.join(root, "environments", "preference.json"), "utf8"));
+    assert.equal(persisted.schema, 2);
+    assert.equal(persisted.preference, "cu130");
+    assert.equal(persisted.explicit, true);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("environment manager ignores unsafe Python pointers and resolves the final venv", async () => {
+  const { root, manager } = await makeManager();
+  try {
+    const activePath = path.join(root, "environments", "win-x64", "cpu", "hash");
+    manager.active = {
+      absolutePath: activePath,
+      pythonExecutableRelative: "../../.staging/old/venv/Scripts/python.exe",
+    };
+
+    assert.equal(
+      manager._activePythonExecutable(),
+      path.join(activePath, "venv", process.platform === "win32" ? "Scripts" : "bin", process.platform === "win32" ? "python.exe" : "python"),
+    );
+    assert.equal(manager.getActiveBackendSpec().pythonExecutable, manager._activePythonExecutable());
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("environment manager migrates an ambiguous legacy CPU preference back to auto", async () => {
+  const { root, manager } = await makeManager();
+  try {
+    await fs.mkdir(path.join(root, "environments"), { recursive: true });
+    await fs.writeFile(
+      path.join(root, "environments", "preference.json"),
+      `${JSON.stringify({ preference: "cpu" })}\n`,
+    );
+    manager.bootstrap.getActive = async () => null;
+
+    await manager.initialize();
+
+    assert.equal(manager.getState().preference, "auto");
+    assert.equal(manager.getState().preferenceExplicit, false);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("cu130 capability failure preserves an existing managed environment", async () => {
+  const { root, manager } = await makeManager();
+  try {
+    const activePath = path.join(root, "environments", "win-x64", "cpu", "hash");
+    const active = {
+      absolutePath: activePath,
+      path: "environments/win-x64/cpu/hash",
+      accelerator: "cpu",
+      specHash: "hash",
+    };
+    manager.active = active;
+    manager.bootstrap.getActive = async () => active;
+    manager.bootstrap.bootstrap = async () => ({
+      success: false,
+      code: "ENVIRONMENT_CU130_UNAVAILABLE",
+      error: "英伟达驱动低于 CUDA 13.0 最低所需版本，请更新英伟达驱动。",
+      details: { minimumDriverMajor: 570 },
+    });
+
+    const result = await manager.ensure({ accelerator: "cu130" });
+
+    assert.equal(result.success, false);
+    assert.equal(result.capabilityWarning, true);
+    assert.equal(result.preservedActive, true);
+    assert.equal(manager.getState().status, "ready");
+    assert.equal(manager.getState().activePath, activePath);
+    assert.equal(manager.getState().error, null);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -107,7 +180,76 @@ test("environment manager exposes the active backend spec after a successful boo
     assert.equal(manager.getState().status, "ready");
     assert.equal(manager.getState().restartRequired, true);
     assert.equal(manager.getActiveBackendSpec().pythonExecutable, path.join(activePath, "venv", "Scripts", "python.exe"));
-    assert.equal(manager.getActiveBackendSpec().ffmpegRoot, path.join(activePath, "ffmpeg"));
+    assert.equal(manager.getActiveBackendSpec().ffmpegRoot, path.dirname(path.join(root, "ffmpeg.exe")));
+    assert.equal(manager.getActiveBackendSpec().ffmpegPath, path.join(root, "ffmpeg.exe"));
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("environment manager keeps a FFmpeg-degraded managed environment usable", async () => {
+  const { root, manager, ffmpeg } = await makeManager();
+  try {
+    const activePath = path.join(root, "environments", "win-x64", "cpu", "hash");
+    const active = { absolutePath: activePath, path: "environments/win-x64/cpu/hash", accelerator: "cpu", specHash: "hash" };
+    manager.bootstrap.bootstrap = async () => ({
+      success: true,
+      degraded: true,
+      selection: { selectedAccelerator: "cpu", reason: "manual-cpu" },
+      state: { steps: [], status: "degraded" },
+      health: {
+        success: true,
+        degraded: true,
+        python: { ok: true, version: "3.12.11" },
+        torch: { ok: true, version: "2.11.0+cpu" },
+        cuda: { ok: true, available: false },
+        backend: { ok: true },
+        ffmpeg: { ok: false, path: ffmpeg },
+        capabilities: { core: true, image: true, video: false, ffmpeg: false },
+      },
+    });
+    manager.bootstrap.getActive = async () => active;
+
+    const result = await manager.ensure({ accelerator: "cpu" });
+    assert.equal(result.success, true);
+    assert.equal(manager.getState().status, "degraded");
+    assert.equal(manager.getState().videoAvailable, false);
+    assert.equal(manager.getActiveBackendSpec().pythonExecutable, path.join(activePath, "venv", "Scripts", "python.exe"));
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("environment manager cancels one active preparation and restores the previous state", async () => {
+  const { root, manager } = await makeManager();
+  try {
+    manager.bootstrap.getActive = async () => null;
+    manager.bootstrap.bootstrap = async ({ signal, onProgress }) => {
+      onProgress?.({ phase: "install-requirements", status: "running", percent: 60 });
+      if (!signal.aborted) {
+        await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+      }
+      return {
+        success: false,
+        cancelled: true,
+        code: "ENVIRONMENT_PREPARATION_CANCELLED",
+        error: "运行环境准备已取消。",
+        state: { status: "cancelled", steps: [] },
+      };
+    };
+
+    const pending = manager.ensure({ accelerator: "cpu" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(manager.getState().canCancel, true);
+    assert.ok(manager.getState().operationId);
+    const cancelled = manager.cancelPreparation();
+    assert.equal(cancelled.success, true);
+    assert.equal(manager.getState().status, "cancelling");
+    const result = await pending;
+    assert.equal(result.cancelled, true);
+    assert.equal(manager.getState().status, "needs-create");
+    assert.equal(manager.getState().canCancel, false);
+    assert.equal(manager.getState().operationId, null);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -128,6 +270,178 @@ test("environment manager refuses activation while the backend is busy", async (
     const result = await blocked.ensure({ accelerator: "cpu" });
     assert.equal(result.success, false);
     assert.equal(result.code, "ENVIRONMENT_BUSY");
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("environment update status is read-only and a confirmed switch prepares the selected environment", async () => {
+  const { root, manager } = await makeManager();
+  try {
+    const cpuPath = path.join(root, "environments", "win-x64", "cpu", "cpu-hash");
+    const cudaPath = path.join(root, "environments", "win-x64", "cu130", "cuda-hash");
+    const cpuActive = {
+      absolutePath: cpuPath,
+      path: "environments/win-x64/cpu/cpu-hash",
+      accelerator: "cpu",
+      specHash: "cpu-hash",
+    };
+    const cudaActive = {
+      absolutePath: cudaPath,
+      path: "environments/win-x64/cu130/cuda-hash",
+      accelerator: "cu130",
+      specHash: "cuda-hash",
+    };
+    const selection = {
+      selectedAccelerator: "cu130",
+      reason: "auto-nvidia-compatible",
+      nvidia: {
+        available: true,
+        compatible: true,
+        gpuName: "NVIDIA GeForce RTX 4060 Ti",
+        driverVersion: "576.88",
+        driverMajor: 576,
+        reason: "",
+      },
+    };
+    const health = {
+      success: true,
+      python: { version: "3.12.11" },
+      torch: { version: "2.11.0+cu130" },
+      cuda: { available: true, version: "13.0" },
+      ffmpeg: { ok: true, version: "8.0" },
+      capabilities: { core: true, image: true, video: true, ffmpeg: true },
+    };
+    manager._applyActive(cpuActive, { status: "ready", error: null });
+    manager._applyDiagnostics({
+      ...health,
+      torch: { version: "2.11.0+cpu" },
+      cuda: { available: false, version: null },
+    });
+    manager.bootstrap.detector = async () => selection;
+    manager.bootstrap.bootstrap = async ({ accelerator }) => {
+      assert.equal(accelerator, "cu130");
+      return { success: true, created: true, selection, health, state: { steps: [] } };
+    };
+    manager.bootstrap.getActive = async () => cudaActive;
+
+    const stateBeforeStatus = manager.getState();
+    const status = await manager.getUpdateStatus();
+    assert.equal(status.success, true);
+    assert.equal(status.available, true);
+    assert.equal(status.python.version, "3.12.11");
+    assert.equal(status.torch.version, "2.11.0+cpu");
+    assert.equal(status.nvidiaDeviceName, "NVIDIA GeForce RTX 4060 Ti");
+    assert.equal(status.nvidiaDriverVersion, "576.88");
+    assert.equal(status.canSwitchToCu130, true);
+    assert.equal(status.canSwitchToCpu, false);
+    assert.equal(manager.getState().nvidiaDeviceName, stateBeforeStatus.nvidiaDeviceName);
+
+    const plan = await manager.getUpdatePlan({ target: "cu130" });
+    assert.equal(plan.success, true);
+    assert.equal(plan.allowed, true);
+    assert.equal(plan.requiresConfirmation, true);
+
+    const switched = await manager.switchEnvironment({ target: "cu130", confirmed: true });
+    assert.equal(switched.success, true);
+    assert.equal(switched.needsPrepare, false);
+    assert.equal(switched.state.selectedAccelerator, "cu130");
+    assert.equal(switched.state.nvidiaDeviceName, "NVIDIA GeForce RTX 4060 Ti");
+    assert.equal(switched.state.canSwitchToCpu, true);
+    assert.equal(switched.updateStatus.available, true);
+    const persisted = JSON.parse(await fs.readFile(path.join(root, "environments", "preference.json"), "utf8"));
+    assert.equal(persisted.preference, "cu130");
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("environment update plan blocks cu130 without a compatible NVIDIA driver before bootstrap", async () => {
+  const { root, manager } = await makeManager();
+  try {
+    const active = {
+      absolutePath: path.join(root, "environments", "win-x64", "cpu", "cpu-hash"),
+      path: "environments/win-x64/cpu/cpu-hash",
+      accelerator: "cpu",
+      specHash: "cpu-hash",
+    };
+    manager._applyActive(active, { status: "ready", error: null });
+    manager._applyDiagnostics({
+      success: true,
+      python: { version: "3.12.11" },
+      torch: { version: "2.11.0+cpu" },
+      cuda: { available: false, version: null },
+    });
+    manager.bootstrap.detector = async () => ({
+      selectedAccelerator: "cpu",
+      reason: "driver-too-old",
+      nvidia: {
+        available: true,
+        compatible: false,
+        gpuName: "NVIDIA GeForce RTX 4060 Ti",
+        driverVersion: "560.94",
+        driverMajor: 560,
+        reason: "NVIDIA driver 560.94 is below the cu130 minimum (570)",
+      },
+    });
+    let bootstrapCalls = 0;
+    manager.bootstrap.bootstrap = async () => {
+      bootstrapCalls += 1;
+      return { success: true };
+    };
+
+    const plan = await manager.getUpdatePlan({ target: "cu130" });
+    assert.equal(plan.success, false);
+    assert.equal(plan.allowed, false);
+    assert.equal(plan.code, "ENVIRONMENT_CU130_UNAVAILABLE");
+    assert.match(plan.reason, /560\.94/);
+    assert.match(plan.requiredAction, /570\+/);
+
+    const status = await manager.getUpdateStatus();
+    assert.match(status.acceleratorChangeReason, /560\.94/);
+    assert.match(status.acceleratorChangeReason, /570\+/);
+    assert.match(status.acceleratorChangeReason, /升级 NVIDIA 驱动后重新检测/);
+
+    const switched = await manager.switchEnvironment({ target: "cu130", confirmed: true });
+    assert.equal(switched.success, false);
+    assert.equal(switched.allowed, false);
+    assert.equal(bootstrapCalls, 0);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("environment update inspection remains available for a degraded but usable environment", async () => {
+  const { root, manager } = await makeManager();
+  try {
+    const active = {
+      absolutePath: path.join(root, "environments", "win-x64", "cpu", "cpu-hash"),
+      path: "environments/win-x64/cpu/cpu-hash",
+      accelerator: "cpu",
+      specHash: "cpu-hash",
+    };
+    manager._applyActive(active, { status: "degraded", error: null });
+    manager._applyDiagnostics({
+      success: true,
+      degraded: true,
+      python: { version: "3.12.11" },
+      torch: { version: "2.11.0+cpu" },
+      cuda: { available: false, version: null },
+      ffmpeg: { ok: false, version: null },
+      capabilities: { core: true, image: true, video: false, ffmpeg: false },
+    });
+    manager.bootstrap.detector = async () => ({
+      selectedAccelerator: "cpu",
+      reason: "no-nvidia",
+      nvidia: { available: false, compatible: false, reason: "NVIDIA 未检测到" },
+    });
+
+    const status = await manager.getUpdateStatus();
+    assert.equal(status.success, true);
+    assert.equal(status.available, true);
+    assert.equal(status.status, "degraded");
+    assert.equal(status.python.version, "3.12.11");
+    assert.equal(status.torch.version, "2.11.0+cpu");
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -205,7 +519,7 @@ test("startup re-probes configured external environments and blocks backend laun
   }
 });
 
-test("forgetting an external environment restores a healthy managed environment", async () => {
+test("forgetting an external environment restores a usable FFmpeg-degraded managed environment", async () => {
   const seed = await makeManager();
   const configured = externalResult(seed.root);
   let forgotten = false;
@@ -234,10 +548,12 @@ test("forgetting an external environment restores a healthy managed environment"
     });
     manager.bootstrap.probe = async () => ({
       success: true,
+      degraded: true,
       python: { version: "3.12.11" },
       torch: { version: "2.11.0+cpu" },
       cuda: { available: false, version: null },
-      ffmpeg: { version: "ffmpeg version 8.0" },
+      ffmpeg: { ok: false, version: null },
+      capabilities: { core: true, image: true, video: false, ffmpeg: false },
     });
     await manager.initialize();
     assert.equal(manager.getState().source, "external");
@@ -246,7 +562,7 @@ test("forgetting an external environment restores a healthy managed environment"
     assert.equal(result.success, true);
     assert.equal(forgotten, true);
     assert.equal(manager.getState().source, "managed");
-    assert.equal(manager.getState().status, "ready");
+    assert.equal(manager.getState().status, "degraded");
     assert.equal(manager.getState().externalConfigured, false);
     assert.equal(manager.getActiveBackendSpec().source, "managed");
     assert.equal(manager.getActiveBackendSpec().specHash, "managed-hash");

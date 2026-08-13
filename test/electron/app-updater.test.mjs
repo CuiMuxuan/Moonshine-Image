@@ -95,25 +95,36 @@ test("app updater maps check and download events to a stable state", async () =>
   assert.ok(states.some((state) => state.status === APP_UPDATE_STATUS.DOWNLOADING));
 });
 
-test("app update channel changes clear stale availability but preserve a downloaded update", async () => {
+test("app updater retains the installed package build timestamp separately from update checks", () => {
+  const updater = new FakeUpdater();
+  const { service } = createService(updater, {
+    currentVersionUpdatedAt: "2026-08-13T08:30:00.000Z",
+  });
+
+  const state = service.getState();
+  assert.equal(state.currentVersion, "1.2.0");
+  assert.equal(state.currentVersionUpdatedAt, "2026-08-13T08:30:00.000Z");
+  assert.equal(state.checkedAt, null);
+});
+
+test("app update channel is immutable for the installed edition", async () => {
   const updater = new FakeUpdater();
   const { service } = createService(updater);
   await service.checkForUpdates();
 
-  const changed = service.setChannel("beta");
-  assert.equal(changed.success, true);
-  assert.equal(changed.changed, true);
-  assert.equal(changed.state.channel, "beta");
-  assert.equal(changed.state.status, APP_UPDATE_STATUS.IDLE);
-  assert.equal(changed.state.availableVersion, null);
-
-  await service.checkForUpdates();
-  await service.downloadUpdate();
-  const locked = service.setChannel("stable");
+  const locked = service.setChannel("test");
   assert.equal(locked.success, false);
   assert.equal(locked.code, "APP_UPDATE_CHANNEL_LOCKED");
-  assert.equal(locked.state.channel, "beta");
-  assert.equal(locked.state.status, APP_UPDATE_STATUS.DOWNLOADED);
+  assert.equal(locked.state.channel, "stable");
+  assert.equal(locked.state.status, APP_UPDATE_STATUS.AVAILABLE);
+  assert.equal(locked.state.availableVersion, "1.3.0");
+
+  const unchanged = service.setChannel("stable");
+  assert.equal(unchanged.success, true);
+  assert.equal(unchanged.changed, false);
+  assert.equal(unchanged.locked, true);
+  assert.equal(unchanged.state.edition, "official");
+  assert.equal(unchanged.state.channelLocked, true);
 });
 
 test("install is blocked while the host reports active work", async () => {
@@ -378,16 +389,18 @@ test("release configuration keeps packager compatibility and exposes an installe
 
   assert.match(config, /bundler:\s*["']packager["']/);
   assert.match(config, /provider:\s*["']generic["']/);
-  assert.match(
-    config,
-    /https:\/\/download\.moonshine\.email\/app\/win-x64\/stable\//,
-  );
+  assert.match(config, /resolveAppEdition\(packageJson\.version\)/);
+  assert.match(config, /buildAppUpdateFeedUrl\(appEdition\.channel\)/);
+  assert.match(config, /appId:\s*appEdition\.appId/);
+  assert.match(config, /productName:\s*appEdition\.productName/);
+  assert.match(config, /artifactName:\s*appEdition\.artifactName/);
+  assert.doesNotMatch(config, /MOONSHINE_APP_UPDATE_CHANNEL|MOONSHINE_UPDATE_URL|MOONSHINE_UPDATE_BASE_URL/);
   assert.doesNotMatch(config, /provider:\s*["']github["']/);
   assert.match(config, /publish:\s*electronPublishConfig/);
   assert.match(config, /electronDist:\s*["']node_modules\/electron\/dist["']/);
   assert.match(config, /afterPack:\s*["']scripts\/after-pack-windows\.mjs["']/);
-  assert.match(config, /signAndEditExecutable:\s*false/);
-  assert.match(config, /publisherName:\s*null/);
+  assert.doesNotMatch(config, /signAndEditExecutable:\s*false/);
+  assert.doesNotMatch(config, /publisherName:\s*null/);
   assert.doesNotMatch(config, /forceCodeSigning:\s*true/);
   assert.match(config, /App-only NSIS resources/);
   assert.match(config, /includeBundledComponents:\s*includeLegacyPackagedComponents/);
@@ -415,4 +428,7 @@ test("release configuration keeps packager compatibility and exposes an installe
   assert.match(mainSource, /stopBackendServiceAndPendingLaunch/);
   assert.match(mainSource, /synchronizeAppUpdateChannel/);
   assert.match(mainSource, /setFeedURL/);
+  assert.match(mainSource, /APP_IDENTITY\.channel/);
+  assert.match(mainSource, /allowPrerelease\s*=\s*APP_IDENTITY\.edition\s*===\s*["']test["']/);
+  assert.match(mainSource, /APP_UPDATE_CHANNEL_LOCKED/);
 });

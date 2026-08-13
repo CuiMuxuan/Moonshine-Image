@@ -185,6 +185,61 @@ class SamService:
             raise SamServiceError(f"SAM model is not installed: {model_id}. Missing: {missing}")
         return model
 
+    def prepare_model(self, model_id: str) -> dict:
+        """Validate and lazily initialize the predictor used by a SAM model."""
+        model = next((item for item in self._build_status() if item.get("id") == model_id), None)
+        if model is None:
+            raise SamServiceError(f"Unknown SAM model: {model_id}")
+        if not model.get("installed"):
+            missing = ", ".join(model.get("missingFiles") or [])
+            raise SamServiceError(f"SAM model is not installed: {model_id}. Missing: {missing}")
+
+        family = str(model.get("family") or "").lower()
+        if family in {"sam2", "sam3"} and self.device != "cuda":
+            raise SamServiceError(
+                f"{family.upper()} is CUDA-only in Moonshine; use a CUDA runtime or select SAM1."
+            )
+        capabilities = model.get("enabledCapabilities") or {}
+        if family in {"sam", "sam2"}:
+            self._get_predictor(model_id)
+        elif family == "sam3":
+            if capabilities.get("imageText"):
+                self._get_text_predictor(model_id)
+            elif capabilities.get("imagePoint") or capabilities.get("imageBox"):
+                self._get_sam3_image_predictor(model_id)
+            elif capabilities.get("videoPoint") or capabilities.get("videoBox") or capabilities.get("videoText"):
+                self._get_video_predictor(model_id)
+            else:
+                raise SamServiceError(f"No enabled predictor capability for SAM model: {model_id}")
+        else:
+            raise SamServiceError(f"Unsupported SAM model family: {family or model_id}")
+        return {
+            "modelId": model_id,
+            "loaded": True,
+            "loadState": "loaded",
+            "runtimeReady": True,
+            "ready": True,
+        }
+
+    def model_load_state(self, model_id: str) -> dict:
+        """Report cached predictor state without loading weights."""
+        keys = (
+            self._predictors,
+            self._sam3_image_predictors,
+            self._video_predictors,
+            self._text_predictors,
+        )
+        loaded = any(
+            any(isinstance(key, tuple) and key[0] == model_id for key in cache)
+            for cache in keys
+        )
+        return {
+            "loaded": loaded,
+            "loadState": "loaded" if loaded else "not_loaded",
+            "runtimeReady": loaded,
+            "ready": loaded,
+        }
+
     def _build_status(self) -> list[dict]:
         cuda_info = None
         if self.device == "cuda":
@@ -618,6 +673,11 @@ class SamService:
             return predictor
 
         model = self._get_model_status(model_id)
+        if model.get("family") in {"sam2", "sam3"} and self.device != "cuda":
+            raise SamServiceError(
+                f"{str(model.get('family')).upper()} is CUDA-only in Moonshine; "
+                "use a CUDA runtime or select SAM1."
+            )
         checkpoint_path = self._get_checkpoint_path(model)
         if model.get("family") == "sam2":
             model_type = SAM2_MODEL_TYPES.get(model_id)
@@ -712,6 +772,10 @@ class SamService:
             return predictor
 
         model = self._get_sam2_model_status(model_id)
+        if self.device != "cuda":
+            raise SamServiceError(
+                "SAM2 is CUDA-only in Moonshine; use a CUDA runtime for video propagation."
+            )
         model_type = SAM2_MODEL_TYPES.get(model_id)
         if not model_type:
             raise SamServiceError(f"Unsupported SAM2.1 video model id: {model_id}")
@@ -752,7 +816,7 @@ class SamService:
         if self.device != "cuda" or not torch.cuda.is_available():
             raise SamServiceError(
                 "SAM3/SAM3.1 视频智能选区当前依赖官方 CUDA 视频 predictor。"
-                "请使用 CUDA 启动后端后再运行视频文本/框选传播。"
+                "请使用 CUDA 启动服务后再运行视频文本/框选传播。"
             )
 
         checkpoint_path = self._get_checkpoint_path(model)
@@ -881,20 +945,20 @@ class SamService:
         if "out of memory" in lower_message:
             return (
                 "SAM 推理显存不足。请切换到更小的 SAM 型号、降低图片分辨率，"
-                "或改用 CPU/更大显存的 CUDA 运行时。"
+                "或改用 CPU/更大显存的 CUDA 运行环境。"
             )
         if "no available kernel" in lower_message or "flash attention" in lower_message:
             if str(model_id or "").startswith("sam3"):
                 return (
-                    "SAM3/SAM3.1 CUDA attention kernel 不可用。当前运行时已优先使用稳定 math SDP，"
-                    "若仍失败，请切换 CPU 或更新 PyTorch/CUDA 运行时。"
+                    "SAM3/SAM3.1 CUDA attention kernel 不可用。当前运行环境已优先使用稳定 math SDP，"
+                    "若仍失败，请切换 CPU 或更新 PyTorch/CUDA 运行环境。"
                 )
             return (
-                "SAM2.1 CUDA attention kernel 不可用。当前运行时已优先使用稳定 math SDP，"
-                "若仍失败，请切换 CPU 或更新 PyTorch/CUDA 运行时。"
+                "SAM2.1 CUDA attention kernel 不可用。当前运行环境已优先使用稳定 math SDP，"
+                "若仍失败，请切换 CPU 或更新 PyTorch/CUDA 运行环境。"
             )
         if "cuda" in lower_message and "not available" in lower_message:
-            return "当前 CUDA 不可用，SAM 已无法在 CUDA 上推理。请切换 CPU 或检查运行时。"
+            return "当前 CUDA 不可用，SAM 已无法在 CUDA 上推理。请切换 CPU 或检查运行环境。"
         return f"SAM 推理失败：{message}"
 
     @staticmethod

@@ -296,9 +296,8 @@ export async function probeExternalEnvironment({
   ) {
     throw new ExternalEnvironmentError("Bundled backend path is unavailable", "EXTERNAL_ENV_BACKEND_PATH_INVALID");
   }
-  if (!ffmpegPath || !path.isAbsolute(ffmpegPath) || await pathType(ffmpegPath, fsImpl) !== "file") {
-    throw new ExternalEnvironmentError("Bundled FFmpeg is unavailable", "EXTERNAL_ENV_FFMPEG_UNAVAILABLE");
-  }
+  const resolvedFfmpegPath = ffmpegPath && path.isAbsolute(ffmpegPath) ? path.resolve(ffmpegPath) : "";
+  const ffmpegExists = Boolean(resolvedFfmpegPath) && await pathType(resolvedFfmpegPath, fsImpl) === "file";
   const isolatedEnv = createIsolatedPythonEnv({
     baseEnv,
     envRoot: layout.normalizedPath,
@@ -374,8 +373,13 @@ export async function probeExternalEnvironment({
   const backendResult = await run(layout.pythonExecutable, ["-c", BACKEND_IMPORT_SCRIPT], "external-environment-backend");
   commandFailure(backendResult, "Bundled backend cannot import with the external environment", "EXTERNAL_ENV_BACKEND_IMPORT_FAILED");
 
-  const ffmpegResult = await run(path.resolve(ffmpegPath), ["-version"], "external-environment-ffmpeg", baseEnv);
-  commandFailure(ffmpegResult, "Bundled FFmpeg health check failed", "EXTERNAL_ENV_FFMPEG_UNAVAILABLE");
+  const ffmpegResult = ffmpegExists
+    ? await run(resolvedFfmpegPath, ["-version"], "external-environment-ffmpeg", baseEnv)
+    : { success: false, code: "ENOENT", stdout: "", stderr: "Bundled FFmpeg is unavailable" };
+  const ffmpegOk = Boolean(ffmpegResult.success);
+  const ffmpegError = ffmpegOk
+    ? null
+    : `FFmpeg: ${String(ffmpegResult.stderr || ffmpegResult.stdout || `exit code ${ffmpegResult.code}`).trim()}`;
 
   const resolvedAfterProbe = await resolveExternalEnvironmentLayout(layout.normalizedPath, { fsImpl, platform });
   if (resolvedAfterProbe.fingerprint !== layout.fingerprint) {
@@ -402,6 +406,7 @@ export async function probeExternalEnvironment({
     },
     diagnostics: {
       success: true,
+      degraded: !ffmpegOk,
       python: { ok: true, version: String(python.version), bits: Number(python.bits), executable: layout.pythonExecutable },
       torch: { ok: true, version: String(torch.version || "") },
       cuda: {
@@ -413,11 +418,19 @@ export async function probeExternalEnvironment({
       dependencies: { ok: true },
       backend: { ok: true, module: "moonshine_server" },
       ffmpeg: {
-        ok: true,
-        path: path.resolve(ffmpegPath),
+        ok: ffmpegOk,
+        path: resolvedFfmpegPath || null,
         version: String(ffmpegResult.stdout || ffmpegResult.stderr).trim().split(/\r?\n/, 1)[0] || "",
+        error: ffmpegError,
+        diagnostic: {
+          code: ffmpegResult.code,
+          stdout: String(ffmpegResult.stdout || "").trim().slice(-2_000),
+          stderr: String(ffmpegResult.stderr || "").trim().slice(-2_000),
+        },
       },
       errors: [],
+      warnings: ffmpegError ? [ffmpegError] : [],
+      capabilities: { core: true, image: true, video: ffmpegOk, ffmpeg: ffmpegOk },
     },
   };
 }

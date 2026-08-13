@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   detectAccelerator,
+  evaluateNvidiaResult,
   isCu130Compatible,
 } from "../../src-electron/runtime/environment-detector.js";
 
@@ -53,3 +54,42 @@ test("manual CPU skips probing and manual cu130 never silently falls back", asyn
   );
 });
 
+test("RTX 4060 Ti driver 560.94 emits explicit terminal data when auto falls back to CPU", async () => {
+  const emitted = [];
+  const result = await detectAccelerator({
+    preference: "auto",
+    runner: async () => ({
+      code: 0,
+      stdout: "NVIDIA GeForce RTX 4060 Ti, 560.94\n",
+      stderr: "",
+    }),
+    minimumDriverMajor: 570,
+    onEvent: (event) => emitted.push(event),
+  });
+
+  assert.equal(result.selectedAccelerator, "cpu");
+  assert.equal(result.nvidia.gpuName, "NVIDIA GeForce RTX 4060 Ti");
+  assert.equal(result.nvidia.driverVersion, "560.94");
+  assert.equal(result.nvidia.compatible, false);
+  assert.equal(result.event.type, "cu130-fallback-cpu");
+  assert.equal(result.event.logOnly, true);
+  assert.equal(result.event.status, "warning");
+  assert.equal(result.event.terminal, true);
+  assert.equal(result.event.terminalType, "warning");
+  assert.equal(result.event.minimumDriverMajor, 570);
+  assert.match(result.event.message, /RTX 4060 Ti.*560\.94.*570.*CPU/u);
+  assert.deepEqual(emitted, result.events);
+});
+
+test("NVIDIA evaluation keeps GPU model and driver as separate diagnostics", () => {
+  const result = evaluateNvidiaResult({
+    code: 0,
+    stdout: "NVIDIA GeForce RTX 4060 Ti, 560.94\n",
+  }, 570);
+
+  assert.equal(result.available, true);
+  assert.equal(result.gpuName, "NVIDIA GeForce RTX 4060 Ti");
+  assert.equal(result.driverVersion, "560.94");
+  assert.equal(result.driverMajor, 560);
+  assert.match(result.reason, /below the cu130 minimum \(570\)/u);
+});

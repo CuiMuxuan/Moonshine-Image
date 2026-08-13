@@ -14,6 +14,7 @@ import {
   inspectOfflineBundle,
   normalizeVariant,
 } from "../../scripts/build-offline-bundle-win.mjs";
+import { BUNDLED_FFMPEG_SPEC_HASH } from "../../src-electron/runtime/environment-spec.js";
 
 function writeFile(root, relativePath, contents) {
   const target = path.join(root, ...relativePath.split("/"));
@@ -43,6 +44,7 @@ function createFixture(t) {
   writeFile(models, "sam3/sam3.pt", "must-not-ship");
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   return {
+    root,
     installer,
     runtime,
     ffmpeg,
@@ -78,7 +80,6 @@ test("offline bundle creates a verifiable outer ZIP with NSIS sibling and signed
     variant: "cpu",
     installerPath: fixture.installer,
     runtimeRoot: fixture.runtime,
-    ffmpegRoot: fixture.ffmpeg,
     modelsRoot: fixture.models,
     outputDir: fixture.outputDir,
     privateKeyPem: fixture.privateKeyPem,
@@ -97,6 +98,8 @@ test("offline bundle creates a verifiable outer ZIP with NSIS sibling and signed
   assert.equal(manifest.appVersion, "1.3.0");
   assert.equal(manifest.variant, "cpu");
   assert.equal(manifest.payload, undefined);
+  assert.equal(manifest.ffmpegHash, BUNDLED_FFMPEG_SPEC_HASH);
+  assert.equal(manifest.files.some((entry) => entry.path.startsWith("ffmpeg/")), false);
   assert.deepEqual(
     manifest.files.filter((entry) => entry.path.startsWith("models/")).map((entry) => entry.path),
     [
@@ -127,7 +130,6 @@ test("offline bundle refuses unsigned production assembly unless explicitly allo
       variant: "cu130",
       installerPath: fixture.installer,
       runtimeRoot: fixture.runtime,
-      ffmpegRoot: fixture.ffmpeg,
       outputDir: fixture.outputDir,
     }),
     /requires .*private[- ]key/i,
@@ -137,7 +139,6 @@ test("offline bundle refuses unsigned production assembly unless explicitly allo
     variant: "cu130",
     installerPath: fixture.installer,
     runtimeRoot: fixture.runtime,
-    ffmpegRoot: fixture.ffmpeg,
     outputDir: fixture.outputDir,
     allowUnsigned: true,
     dryRun: true,
@@ -145,18 +146,21 @@ test("offline bundle refuses unsigned production assembly unless explicitly allo
   assert.equal(result.payload.signed, false);
 });
 
-test("offline bundle refuses an incomplete payload without FFmpeg", async (t) => {
+test("offline bundle filters legacy payload FFmpeg because the installer already contains it", async (t) => {
   const fixture = createFixture(t);
-  await assert.rejects(
-    buildOfflineBundle({
-      version: "1.3.0",
-      variant: "cpu",
-      installerPath: fixture.installer,
-      runtimeRoot: fixture.runtime,
-      outputDir: fixture.outputDir,
-      allowUnsigned: true,
-      dryRun: true,
-    }),
-    /must contain ffmpeg\//i,
-  );
+  const payloadRoot = path.join(fixture.root, "legacy-payload");
+  writeFile(payloadRoot, "runtime/env/python.exe", "python");
+  writeFile(payloadRoot, "ffmpeg/ffmpeg.exe", "legacy duplicate");
+  const result = await buildOfflineBundle({
+    version: "1.3.0",
+    variant: "cpu",
+    installerPath: fixture.installer,
+    payloadRoot,
+    outputDir: fixture.outputDir,
+    privateKeyPem: fixture.privateKeyPem,
+  });
+  const listing = spawnSync(path7za, ["l", result.archivePath], { encoding: "utf8" });
+  assert.equal(listing.status, 0, listing.stderr);
+  assert.doesNotMatch(listing.stdout, /offline-payload[\\/]ffmpeg[\\/]/i);
+  assert.match(listing.stdout, /offline-payload[\\/]runtime[\\/]env[\\/]python\.exe/i);
 });

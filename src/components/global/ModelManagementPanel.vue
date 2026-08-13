@@ -6,9 +6,9 @@
     <div v-if="!backendRunning" class="model-empty-state">
       <q-icon name="power_settings_new" size="42px" color="warning" />
       <div>
-        <div class="text-subtitle1 text-weight-medium">需要启动后端服务</div>
+        <div class="text-subtitle1 text-weight-medium">需要启动服务</div>
         <div class="text-body2 text-grey-7 q-mt-xs">
-          模型状态、校验和下载由 Moonshine 后端统一管理。
+          模型状态、校验和下载由 Moonshine 服务统一管理。
         </div>
       </div>
       <q-btn
@@ -16,7 +16,7 @@
         no-caps
         color="primary"
         icon="terminal"
-        label="打开后端管理"
+        label="打开服务管理"
         class="settings-action-button model-empty-action"
         @click="$emit('open-backend-manager')"
       />
@@ -27,10 +27,22 @@
         <div class="model-management-title">
           <div class="text-subtitle1 text-weight-medium">模型管理</div>
           <div class="text-caption text-grey-7">
-            模型目录：{{ modelRegistry.modelDir || "后端默认目录" }}
+            模型路径：{{ modelRegistry.modelDir || "服务默认路径" }}
           </div>
         </div>
         <q-space />
+        <q-btn
+          flat
+          round
+          color="primary"
+          icon="folder_open"
+          class="model-path-button"
+          aria-label="打开模型路径"
+          :disable="!resolvedModelDir"
+          @click="openModelDirectory"
+        >
+          <q-tooltip>打开模型路径</q-tooltip>
+        </q-btn>
         <q-btn
           outline
           no-caps
@@ -221,15 +233,36 @@
                 </div>
 
                 <q-linear-progress
-                  v-if="isTaskRunning(model.id)"
-                  :value="getTaskProgress(model.id)"
+                  v-if="isModelPreparing(model.id)"
+                  :value="getPreparationProgress(model.id)"
                   rounded
                   color="primary"
                   class="q-mb-md"
                 />
 
                 <q-banner
-                  v-if="getTaskMessage(model.id)"
+                  v-if="getPreparationMessage(model.id)"
+                  rounded
+                  :class="getPreparationStage(model.id) === 'failed' ? 'settings-warning-banner' : 'settings-info-banner'"
+                  class="q-mb-md"
+                >
+                  <div class="task-banner-content">
+                    <span>{{ getPreparationMessage(model.id) }}</span>
+                    <q-btn
+                      v-if="getPreparationStage(model.id) === 'failed' && hasManualInstallGuide(model)"
+                      flat
+                      dense
+                      no-caps
+                      color="primary"
+                      icon="folder_open"
+                      label="查看手动安装"
+                      @click="openManualInstallGuide(model)"
+                    />
+                  </div>
+                </q-banner>
+
+                <q-banner
+                  v-if="getTaskMessage(model.id) && !getPreparationMessage(model.id)"
                   rounded
                   :class="getTask(model.id)?.status === 'failed' ? 'settings-warning-banner' : 'settings-info-banner'"
                   class="q-mb-md"
@@ -281,7 +314,7 @@
                       <strong>{{ model.deviceCompatible ? "适配" : "不适配" }}</strong>
                     </div>
                     <div class="model-info-line">
-                      <span>发布运行时</span>
+                      <span>发布运行环境</span>
                       <strong>{{ runtimeFlavorLabel }}</strong>
                     </div>
                     <div class="model-info-line">
@@ -436,7 +469,7 @@
                           caption
                           class="text-warning"
                         >
-                          已检测到 legacy 旧文件，新目录文件优先使用。
+                          已检测到 legacy 旧文件，新路径文件优先使用。
                         </q-item-label>
                         <q-item-label
                           v-if="file.legacyDetected || file.legacyExists"
@@ -482,9 +515,9 @@
           </q-banner>
 
           <div class="manual-install-section">
-            <div class="text-subtitle2 text-weight-medium q-mb-sm">模型目录</div>
+            <div class="text-subtitle2 text-weight-medium q-mb-sm">模型路径</div>
             <div class="manual-path-row">
-              <code>{{ modelRegistry.modelDir || "后端默认目录" }}</code>
+              <code>{{ modelRegistry.modelDir || "服务默认路径" }}</code>
               <q-btn
                 flat
                 dense
@@ -494,7 +527,7 @@
                 :disable="!modelRegistry.modelDir"
                 @click="copyText(modelRegistry.modelDir)"
               >
-                <q-tooltip>复制模型目录</q-tooltip>
+                <q-tooltip>复制模型路径</q-tooltip>
               </q-btn>
             </div>
           </div>
@@ -763,12 +796,16 @@ const sam3LexiconFilters = reactive({
   nouns: "",
 });
 const defaultManualInstallHint =
-  "请手动下载对应模型文件并放入当前模型目录。也可以私信作者或者加入交流群获取模型文件或百度网盘链接。";
+  "请手动下载对应模型文件并放入当前模型路径。也可以私信作者或者加入交流群获取模型文件或百度网盘链接。";
 
 const currentConfiguredModelDir = computed(() => {
   const generalConfig = configStore.config?.general || {};
   return String(generalConfig.modelDir || "").trim();
 });
+
+const resolvedModelDir = computed(() =>
+  String(modelRegistry.modelDir || currentConfiguredModelDir.value || "").trim()
+);
 
 const modelRegistryRequestOptions = computed(() => ({
   modelDir: currentConfiguredModelDir.value,
@@ -882,7 +919,7 @@ const runtimeFlavorLabel = computed(() => {
   if (flavor === "cpu") return "CPU";
   if (flavor === "cu126") return "CUDA 12.6";
   if (flavor === "cu130") return "CUDA 13.0";
-  return "外部运行时";
+  return "外部运行环境";
 });
 
 const modelBundleLabel = computed(() => {
@@ -898,11 +935,11 @@ const runtimeNotice = computed(() => {
   if (manifest.source === "safe-fallback") {
     return "签名模型清单当前不可用。已安装模型仍可识别，但为防止使用未验证的下载地址，软件内自动下载已暂时关闭。";
   }
-  if (runtime.runtimeFlavor === "cpu") {
-    return "当前是 CPU 运行时，SAM3/SAM3.1 文本智能选区会显示为不可用；SAM1/SAM2.1 点选/框选仍按已安装模型和设备状态判断。";
-  }
   if (runtime.externalModels) {
-    return "当前包使用外置模型模式，缺失模型时请在模型管理中下载或手动放置到对应 sam/、sam2/、sam3/ 子目录。";
+    return "若无法自动下载模型，请从下方下载源手动下载模型并将其存放于模型路径下。";
+  }
+  if (runtime.runtimeFlavor === "cpu") {
+    return "当前是 CPU 运行环境，SAM3/SAM3.1 文本智能选区会显示为不可用；SAM1/SAM2.1 点选/框选仍按已安装模型和设备状态判断。";
   }
   return "";
 });
@@ -1071,6 +1108,28 @@ const refreshModels = async () => {
     $q.notify({
       type: "negative",
       message: error.message || "模型状态刷新失败",
+      position: "top",
+    });
+  }
+};
+
+const openModelDirectory = async () => {
+  if (!resolvedModelDir.value) return;
+  try {
+    const ipc = window.electron?.ipcRenderer;
+    if (!ipc?.invoke) throw new Error("当前环境无法打开本地路径");
+    const ensured = await ipc.invoke("ensure-directory", resolvedModelDir.value);
+    if (ensured === false || ensured?.success === false) {
+      throw new Error(ensured?.error || "模型路径创建失败");
+    }
+    const result = await ipc.invoke("show-item-in-folder", {
+      filePath: resolvedModelDir.value,
+    });
+    if (!result?.success) throw new Error(result?.error || "模型路径打开失败");
+  } catch (error) {
+    $q.notify({
+      type: "negative",
+      message: error.message || "模型路径打开失败",
       position: "top",
     });
   }
@@ -1272,6 +1331,56 @@ const getTaskMessage = (modelId) => {
   return task.message || "";
 };
 
+const getPreparation = (modelId) => {
+  if (typeof modelRegistry.getPreparationForModel === "function") {
+    return modelRegistry.getPreparationForModel(modelId) || null;
+  }
+  return modelRegistry.preparations?.[modelId] || modelRegistry.preparationStates?.[modelId] || null;
+};
+
+const getPreparationStage = (modelId) => {
+  const preparation = getPreparation(modelId);
+  return String(preparation?.stage || preparation?.status || "").toLowerCase();
+};
+
+const preparationStageLabels = {
+  checking: "正在检查模型文件",
+  downloading: "正在下载模型",
+  verifying: "正在校验模型",
+  loading: "正在加载模型",
+  ready: "模型已就绪",
+  failed: "模型准备失败",
+};
+
+const isModelPreparing = (modelId) => {
+  const stage = getPreparationStage(modelId);
+  return ["checking", "downloading", "verifying", "loading"].includes(stage) || isTaskRunning(modelId);
+};
+
+const normalizeProgress = (value) => {
+  const progress = Number(value || 0);
+  if (!Number.isFinite(progress)) return 0;
+  return Math.max(0, Math.min(1, progress > 1 ? progress / 100 : progress));
+};
+
+const getPreparationProgress = (modelId) => {
+  const preparation = getPreparation(modelId);
+  if (!preparation) return getTaskProgress(modelId);
+  if (getPreparationStage(modelId) === "ready") return 1;
+  return normalizeProgress(preparation.progress ?? preparation.downloadProgress);
+};
+
+const getPreparationMessage = (modelId) => {
+  const preparation = getPreparation(modelId);
+  if (!preparation) return "";
+  const stage = getPreparationStage(modelId);
+  const base = preparation.message || preparation.error || preparationStageLabels[stage] || "";
+  const progress = getPreparationProgress(modelId);
+  return stage === "downloading" && progress > 0
+    ? `${base}（${Math.round(progress * 100)}%）`
+    : base;
+};
+
 const getModelWarning = (model) => {
   if (model?.family === "sam3" && modelRegistry.runtime?.sam3TextPackageReason) {
     return modelRegistry.runtime.sam3TextPackageReason;
@@ -1280,14 +1389,14 @@ const getModelWarning = (model) => {
     return model.recommendedVramWarning.message;
   }
   if (!model?.deviceCompatible) {
-    return "当前设备或运行时不满足该模型建议条件，模型不会误报为可用。";
+    return "当前设备或运行环境不满足该模型建议条件，模型不会误报为可用。";
   }
   if (model?.corruptFiles?.length) {
     return "模型文件校验失败，请重新下载或按手动安装说明替换文件。";
   }
   const legacyFile = (model?.files || []).find((file) => file.legacyDetected);
   if (legacyFile) {
-    return `当前模型仍从 legacy 根目录旧路径识别：${legacyFile.legacyPathUsed || legacyFile.resolvedPath}。建议迁移到 ${legacyFile.migrationTarget || legacyFile.canonicalPath}。`;
+    return `当前模型仍从 legacy 根路径识别：${legacyFile.legacyPathUsed || legacyFile.resolvedPath}。建议迁移到 ${legacyFile.migrationTarget || legacyFile.canonicalPath}。`;
   }
   return "";
 };
@@ -1424,6 +1533,13 @@ onMounted(async () => {
 
 .model-management-title {
   min-width: 0;
+}
+
+.model-path-button {
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
 }
 
 .model-filter-empty {
@@ -1797,6 +1913,23 @@ onMounted(async () => {
 }
 
 @media (max-width: 760px) {
+  .model-management-toolbar {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .model-management-title {
+    width: 100%;
+  }
+
+  .model-management-toolbar > .q-space {
+    display: none;
+  }
+
+  .model-path-button {
+    margin-left: auto;
+  }
+
   .model-empty-state {
     flex-wrap: wrap;
   }

@@ -198,9 +198,7 @@ function resolveOfflineSource(runtimeFlavor, type) {
     generic,
     type === "runtime"
       ? path.join(repoRoot, "dist", "components", "prepared", `v${version}`, `runtime-${runtimeFlavor}`, "win-x64")
-      : type === "ffmpeg"
-        ? path.join(repoRoot, "build-resources", "ffmpeg", "win-x64")
-        : path.join(repoRoot, "models"),
+      : path.join(repoRoot, "models"),
   ]
     .map((candidate) => String(candidate || "").trim())
     .filter(Boolean)
@@ -217,7 +215,6 @@ async function buildOfflineOne(runtimeFlavor, modelBundle) {
     variant: runtimeFlavor,
     installerPath,
     runtimeRoot: resolveOfflineSource(runtimeFlavor, "runtime"),
-    ffmpegRoot: resolveOfflineSource(runtimeFlavor, "ffmpeg"),
     modelsRoot: modelBundle === "bundled-models" ? resolveOfflineSource(runtimeFlavor, "models") : undefined,
     outputDir: releaseRoot,
     privateKeyFile: process.env.MOONSHINE_MANIFEST_PRIVATE_KEY_FILE,

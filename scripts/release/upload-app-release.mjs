@@ -21,7 +21,7 @@ Options:
   --installer <path>          installer path (defaults from latest.yml)
   --blockmap <path>           blockmap path (defaults to <installer>.blockmap)
   --app-manifest <path>       optional signed app manifest JSON
-  --channel <test|beta|stable> release channel (default: stable)
+  --channel <test|stable>      release channel (must match the app edition)
   --version <version>         require this exact release version
   --config-file <path>        optional KEY=VALUE R2 configuration file
   --report <path>             write the sanitized JSON report to a file

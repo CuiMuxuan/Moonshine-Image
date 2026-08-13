@@ -10,6 +10,9 @@ const { privateKey, publicKey } = generateKeyPairSync("ed25519");
 function makeManifest() {
   const payload = {
     schemaVersion: 1,
+    edition: "official",
+    productName: "Moonshine-Image",
+    appId: "com.moonshine.image",
     channel: "stable",
     sequence: 7,
     appVersion: "1.3.1",
@@ -66,17 +69,18 @@ test("AppManifestGuard is inert when no release public key is configured", async
   assert.equal(guard.validateUpdateInfo({ version: "9.9.9" }).valid, true);
 });
 
-test("AppManifestGuard clears prior verification when the update channel changes", async () => {
+test("AppManifestGuard rejects signed app identity mismatches", async () => {
   const manifest = makeManifest();
+  manifest.payload.appId = "com.moonshine.image.test";
+  manifest.signature.value = sign(null, canonicalizeJson(manifest.payload), privateKey).toString("base64");
   const guard = new AppManifestGuard({
     sources: [{ id: "primary", baseUrl: "https://download.example" }],
     publicKeys: { "moonshine-app-manifest-v1": publicKey },
     fetchImpl: async () => new Response(JSON.stringify(manifest), { status: 200 }),
     now: () => Date.parse("2026-08-08T00:00:00.000Z"),
   });
-  await guard.preflight();
-  assert.equal(guard.getState().appVersion, "1.3.1");
-  const state = guard.setChannel("beta");
-  assert.equal(state.channel, "beta");
-  assert.equal(state.appVersion, null);
+  await assert.rejects(
+    guard.preflight(),
+    (error) => error.code === "APP_MANIFEST_EDITION_MISMATCH",
+  );
 });

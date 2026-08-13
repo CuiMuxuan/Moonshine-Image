@@ -15,7 +15,7 @@ Options:
   --installer <path>         installer path
   --blockmap <path>          blockmap path
   --version <version>        exact app version
-  --channel <test|beta|stable> channel (default: stable)
+  --channel <test|stable>     channel (must match the app edition)
   --sequence <number>        signed sequence (required)
   --output <path>            signed manifest output (required)
   --private-key-file <path>  Ed25519 private key file

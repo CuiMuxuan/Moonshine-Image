@@ -120,8 +120,8 @@ test("runtime onboarding waits for startup and never blocks a ready environment"
   assert.doesNotMatch(dialogSource, /preparing|creating|repairing|downloading|verifying/);
   assert.match(layoutSource, /openGlobalSettings\(\{ tab: "updates" \}\)/);
   assert.match(layoutSource, /startupExperienceFinished\.value = true/);
-  assert.match(layoutSource, /updateManager\.runtimeState\.status !== "ready"/);
-  assert.match(electronMainSource, /state\?\.status !== "ready"/);
+  assert.match(layoutSource, /!\["ready", "degraded"\]\.includes\(updateManager\.runtimeState\.status\)/);
+  assert.match(electronMainSource, /!\["ready", "degraded"\]\.includes\(state\?\.status\)/);
   assert.match(electronMainSource, /return await environmentManager\.check\(\)/);
   assert.match(
     electronMainSource,
@@ -129,7 +129,17 @@ test("runtime onboarding waits for startup and never blocks a ready environment"
   );
 });
 
-test("the settings update panel is progressive and confirms installation", () => {
+test("packaged startup reuses the managed environment instead of rebuilding a project venv", () => {
+  assert.match(layoutSource, /projectResult\.backendMode === "bundled"/);
+  assert.match(layoutSource, /await updateManager\.checkRuntime\(/);
+  assert.match(layoutSource, /\["ready", "degraded"\]\.includes\(runtimeState\.status\)/);
+  assert.match(
+    layoutSource,
+    /if \(usesManagedEnvironment\) \{[\s\S]*updateManager\.checkRuntime[\s\S]*\} else \{[\s\S]*invoke\("prepare-project-python"/
+  );
+});
+
+test("the settings update panel is progressive, confirms installation, and displays a locked edition channel", () => {
   assert.match(settingsSource, /v-if="showCheckUpdateAction"/);
   assert.match(settingsSource, /v-if="showDownloadUpdateAction"/);
   assert.match(settingsSource, /v-if="showInstallUpdateAction"/);
@@ -142,11 +152,14 @@ test("the settings update panel is progressive and confirms installation", () =>
   assert.match(settingsSource, /\{\{ updateManager\.state\.releaseNotes \}\}/);
   assert.doesNotMatch(settingsSource, /v-html[^\n]*releaseNotes/);
   assert.match(settingsSource, /global-settings-update-channel/);
-  assert.match(settingsSource, /label: "测试"/);
-  assert.match(settingsSource, /handleUpdateChannel/);
+  assert.match(settingsSource, /更新通道：\{\{ updateChannelLabel \}\}（\{\{ updateEditionLabel \}\}，已锁定）/);
+  assert.match(settingsSource, /updateEditionLabel/);
+  assert.doesNotMatch(settingsSource, /handleUpdateChannel/);
+  assert.doesNotMatch(settingsSource, /updateChannelOptions/);
+  assert.match(settingsSource, /当前为最新版本。/);
 });
 
-test("the update store switches the selected release channel through the preload API", async () => {
+test("the update store preserves the main-process channel state without a renderer selector", async () => {
   const originalWindow = globalThis.window;
   globalThis.window = {
     electron: {
@@ -186,6 +199,7 @@ test("runtime state is local environment state with a normalized accelerator", (
   });
 
   assert.equal(updateManager.runtimeState.selectedAccelerator, "cu130");
+  assert.equal(updateManager.runtimeState.preference, "auto");
   assert.equal(updateManager.runtimeState.specHash, "sha256:environment-spec");
   assert.equal(updateManager.runtimeState.pythonVersion, "3.12.10");
   assert.equal("channel" in updateManager.runtimeState, false);
@@ -193,11 +207,36 @@ test("runtime state is local environment state with a normalized accelerator", (
   assert.equal(updateManager.runtimeState.restartRequired, false);
 });
 
-test("settings summarizes environment state while backend manager owns environment actions", () => {
+test("automatic accelerator preference remains auto when hardware detection resolves to CPU", () => {
+  setActivePinia(createPinia());
+  const updateManager = useUpdateManagerStore();
+  updateManager.applyRuntimeState({
+    enabled: true,
+    status: "ready",
+    preference: "auto",
+    selectedAccelerator: "cpu",
+    detectedAccelerator: "cpu",
+  });
+  assert.equal(updateManager.runtimeState.preference, "auto");
+  assert.equal(updateManager.runtimeState.selectedAccelerator, "cpu");
+  assert.equal(updateManager.runtimeState.detectedAccelerator, "cpu");
+});
+
+test("settings exposes the environment path while app updates remain app-only", () => {
   assert.match(settingsSource, /运行环境/);
   assert.doesNotMatch(settingsSource, /运行时组件/);
   assert.doesNotMatch(settingsSource, /runtimeChannelOptions|global-settings-runtime-channel|发布通道（应用与组件）/);
-  assert.match(settingsSource, /global-settings-open-backend-manager/);
+  assert.match(settingsSource, /global-settings-runtime-path/);
+  assert.match(settingsSource, /copyRuntimeEnvironmentPath/);
+  assert.match(settingsSource, /openRuntimeEnvironmentPath/);
+  assert.match(settingsSource, /environment-open-path/);
+  assert.match(settingsSource, /settings-panel-grid--service/);
+  assert.match(settingsSource, /name="backend" icon="dns" label="服务配置"/);
+  assert.match(settingsSource, /name="image" icon="image" label="图片处理"/);
+  assert.match(settingsSource, /name="video" icon="videocam" label="视频处理"/);
+  assert.doesNotMatch(settingsSource, /name="advanced"|高级配置/);
+  assert.doesNotMatch(settingsSource, /global-settings-runtime-panel/);
+  assert.doesNotMatch(settingsSource, /global-settings-open-backend-manager/);
   assert.doesNotMatch(settingsSource, /global-settings-runtime-ensure/);
   assert.match(backendManagerSource, /label: "自动（推荐）"/);
   assert.match(backendManagerSource, /label: "CPU"/);
@@ -205,14 +244,17 @@ test("settings summarizes environment state while backend manager owns environme
   assert.match(backendManagerSource, /backend-managed-environment-check/);
   assert.match(backendManagerSource, /backend-managed-environment-ensure/);
   assert.match(backendManagerSource, /backend-managed-environment-restart-required/);
+  assert.match(backendManagerSource, /backend-managed-environment-cancel/);
+  assert.match(backendManagerSource, /v-if="!managedEnvironmentBusy"/);
+  assert.match(backendManagerSource, /if \(status === "degraded"\) return "blocked"/);
+  assert.match(backendManagerSource, /\.runtime-path-feedback > \.q-icon/);
   assert.match(backendManagerSource, /label: "立即重启"/);
   assert.match(backendManagerSource, /label: "稍后重启"/);
-  assert.match(settingsSource, /global-settings-runtime-restart-required/);
-  assert.match(settingsSource, /updateManager\.restartApplication\(\)/);
-  assert.match(settingsSource, /global-settings-runtime-diagnostics/);
-  assert.match(settingsSource, /specHash/);
+  assert.doesNotMatch(settingsSource, /global-settings-runtime-restart-required/);
+  assert.doesNotMatch(settingsSource, /global-settings-runtime-diagnostics/);
   assert.doesNotMatch(layoutSource, /运行时组件/);
   assert.match(layoutSource, /运行环境尚未创建/);
+  assert.match(layoutSource, /showBackendManager\.value = true/);
 });
 
 test("the update store routes external environment actions through IPC fallbacks", async () => {
@@ -330,8 +372,8 @@ test("the update store routes external environment actions through IPC fallbacks
   }
 });
 
-test("backend manager offers a read-only external Python environment workflow", () => {
-  assert.match(backendManagerSource, /Python 环境来源/);
+test("service manager offers a read-only external Python environment workflow", () => {
+  assert.match(backendManagerSource, /Python 运行环境来源/);
   assert.match(backendManagerSource, /label: "自动管理"/);
   assert.match(backendManagerSource, /label: "已有环境"/);
   assert.match(backendManagerSource, /<q-stepper[\s\S]*?header-nav/);
@@ -353,12 +395,12 @@ test("backend manager offers a read-only external Python environment workflow", 
   });
   assert.match(backendManagerSource, /label="重新校验"/);
   assert.match(backendManagerSource, /label="使用此环境"/);
-  assert.match(backendManagerSource, /label="忘记此目录"/);
+  assert.match(backendManagerSource, /label="忘记此路径"/);
   assert.match(backendManagerSource, /label="停止使用"/);
-  assert.match(backendManagerSource, /外部目录未被修改/);
-  assert.match(backendManagerSource, /未检测到运行时/);
+  assert.match(backendManagerSource, /外部路径未被修改/);
+  assert.match(backendManagerSource, /未检测到运行环境/);
   assert.match(backendManagerSource, /正在自动安装/);
-  assert.match(backendManagerSource, /请重试，或手动创建可用环境/);
+  assert.match(backendManagerSource, /请重试，或手动创建可用运行环境/);
   assert.doesNotMatch(backendManagerSource, /离线|offline/i);
   assert.doesNotMatch(backendManagerSource, /if \(!candidateId\) pythonEnvironmentSource\.value = "managed"/);
   assert.match(backendManagerSource, /const checkedProjectPath = resolveCheckedProjectPath\(projectResult\)/);

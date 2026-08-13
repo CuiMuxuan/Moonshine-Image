@@ -6,6 +6,7 @@ export const DEFAULT_APP_UPDATE_STATE = Object.freeze({
   channel: "stable",
   status: "disabled",
   currentVersion: "",
+  currentVersionUpdatedAt: null,
   availableVersion: null,
   latestVersion: null,
   releaseName: null,
@@ -34,24 +35,60 @@ export const DEFAULT_EXTERNAL_ENVIRONMENT_STATE = Object.freeze({
   error: null,
 });
 
+export const DEFAULT_ENVIRONMENT_UPDATE_STATE = Object.freeze({
+  usable: false,
+  source: "managed",
+  status: "idle",
+  checkedAt: null,
+  currentAccelerator: null,
+  pythonVersion: null,
+  torchVersion: null,
+  torchPackage: null,
+  cudaVersion: null,
+  cudaAvailable: null,
+  gpuName: null,
+  nvidiaDeviceName: null,
+  nvidiaDriverVersion: null,
+  canSwitchToCu130: false,
+  canSwitchToCpu: false,
+  acceleratorChangeReason: null,
+  reason: null,
+  requiredAction: null,
+  error: null,
+});
+
 export const DEFAULT_RUNTIME_UPDATE_STATE = Object.freeze({
   enabled: false,
   status: "disabled",
   source: "managed",
   external: { ...DEFAULT_EXTERNAL_ENVIRONMENT_STATE },
-  selectedAccelerator: "auto",
+  preference: "auto",
+  preferenceExplicit: false,
+  selectedAccelerator: null,
   detectedAccelerator: null,
   specHash: null,
   pythonVersion: null,
   torchVersion: null,
   cudaVersion: null,
   ffmpegVersion: null,
+  ffmpegPath: null,
+  activePath: null,
+  targetPath: null,
+  videoAvailable: null,
+  operationId: null,
+  canCancel: false,
   canRollback: false,
   checkedAt: null,
   updatedAt: null,
   progress: null,
   restartRequired: false,
   error: null,
+  nvidiaDeviceName: null,
+  nvidiaDriverVersion: null,
+  canSwitchToCu130: false,
+  canSwitchToCpu: false,
+  acceleratorChangeReason: null,
+  environmentUpdate: { ...DEFAULT_ENVIRONMENT_UPDATE_STATE },
 });
 
 const UPDATE_ACTIONS = Object.freeze({
@@ -86,6 +123,7 @@ export const useUpdateManagerStore = defineStore("updateManager", () => {
   const initialized = ref(false);
   const pendingAction = ref(null);
   const pendingRuntimeAction = ref(null);
+  const runtimeCancellationPending = ref(false);
   const pendingExternalAction = ref(null);
   let unsubscribe = null;
   let unsubscribeRuntime = null;
@@ -104,9 +142,17 @@ export const useUpdateManagerStore = defineStore("updateManager", () => {
     ["channel", "manifestSequence", "availableComponents", "activeComponents", "lastSourceId"].forEach(
       (key) => delete environmentState[key]
     );
-    const selectedAccelerator = normalizeRuntimeAccelerator(
-      environmentState.selectedAccelerator || environmentState.accelerator || runtimeState.value.selectedAccelerator
+    const preference = normalizeRuntimeAccelerator(
+      environmentState.preference ?? runtimeState.value.preference ?? "auto"
     );
+    const selectedValue = Object.hasOwn(environmentState, "selectedAccelerator")
+      ? environmentState.selectedAccelerator
+      : Object.hasOwn(environmentState, "accelerator")
+        ? environmentState.accelerator
+        : runtimeState.value.selectedAccelerator;
+    const selectedAccelerator = ["cpu", "cu130"].includes(String(selectedValue || "").toLowerCase())
+      ? String(selectedValue).toLowerCase()
+      : null;
     const externalState = {
       ...(environmentState.external || environmentState.externalEnvironment || {}),
     };
@@ -139,6 +185,7 @@ export const useUpdateManagerStore = defineStore("updateManager", () => {
     runtimeState.value = {
       ...runtimeState.value,
       ...environmentState,
+      preference,
       selectedAccelerator,
       source: ["managed", "external"].includes(environmentState.source)
         ? environmentState.source
@@ -148,6 +195,55 @@ export const useUpdateManagerStore = defineStore("updateManager", () => {
         : runtimeState.value.external,
     };
     return runtimeState.value;
+  };
+
+  const applyEnvironmentUpdateResult = (result = {}) => {
+    if (!result || typeof result !== "object") return runtimeState.value.environmentUpdate;
+    const status = result.updateStatus && typeof result.updateStatus === "object"
+      ? result.updateStatus
+      : result.status && typeof result.status === "object"
+        ? result.status
+        : result;
+    const currentAccelerator = status.currentAccelerator || status.selectedAccelerator || null;
+    const gpuName = status.nvidiaDeviceName || status.gpu?.model || null;
+    const nvidiaDriverVersion = status.nvidiaDriverVersion || status.gpu?.driverVersion || null;
+    const torchVersion = status.torch?.version || status.torchVersion || null;
+    const cudaVersion = status.torch?.cudaVersion ?? status.cudaVersion ?? null;
+    const cudaAvailable = status.torch?.cudaAvailable ?? status.cudaAvailable ?? null;
+    const usable = status.available === true && status.success !== false;
+    const environmentUpdate = {
+      ...runtimeState.value.environmentUpdate,
+      usable,
+      source: status.source || runtimeState.value.source,
+      status: status.status || runtimeState.value.status,
+      checkedAt: status.checkedAt || (usable ? new Date().toISOString() : runtimeState.value.environmentUpdate.checkedAt) || null,
+      currentAccelerator,
+      pythonVersion: status.python?.version || status.pythonVersion || null,
+      torchVersion,
+      torchPackage: currentAccelerator === "cu130" ? "cuda" : currentAccelerator === "cpu" ? "cpu" : null,
+      cudaVersion,
+      cudaAvailable,
+      gpuName,
+      nvidiaDeviceName: gpuName,
+      nvidiaDriverVersion,
+      canSwitchToCu130: Boolean(status.canSwitchToCu130),
+      canSwitchToCpu: Boolean(status.canSwitchToCpu),
+      acceleratorChangeReason: status.acceleratorChangeReason || null,
+      reason: status.reason || null,
+      requiredAction: status.requiredAction || null,
+      error: status.success === false
+        ? { message: String(status.error?.message || status.error || status.reason || "运行环境更新检测失败。"), code: status.code || null }
+        : null,
+    };
+    applyRuntimeState({
+      nvidiaDeviceName: environmentUpdate.nvidiaDeviceName,
+      nvidiaDriverVersion: environmentUpdate.nvidiaDriverVersion,
+      canSwitchToCu130: environmentUpdate.canSwitchToCu130,
+      canSwitchToCpu: environmentUpdate.canSwitchToCpu,
+      acceleratorChangeReason: environmentUpdate.acceleratorChangeReason,
+      environmentUpdate,
+    });
+    return runtimeState.value.environmentUpdate;
   };
 
   const applyFailure = (error, fallbackRetryAction = null) => {
@@ -190,7 +286,7 @@ export const useUpdateManagerStore = defineStore("updateManager", () => {
     } catch (error) {
       applyRuntimeState({
         status: "failed",
-        error: { message: String(error?.message || error || "运行时状态读取失败。"), code: "RUNTIME_STATE_FAILED" },
+        error: { message: String(error?.message || error || "运行环境状态读取失败。"), code: "RUNTIME_STATE_FAILED" },
       });
     }
 
@@ -433,6 +529,90 @@ export const useUpdateManagerStore = defineStore("updateManager", () => {
   const ensureRuntime = (options = {}) => invokeRuntimeAction("ensure", "ensureRuntime", "runtime-ensure", options);
   const rollbackRuntime = (options = {}) =>
     invokeRuntimeAction("rollback", "rollbackRuntime", "runtime-rollback", options);
+  const invokeEnvironmentUpdateAction = async (action, methodName, channelName, payload = {}) => {
+    const api = getElectronApi();
+    if (!api) {
+      const result = {
+        success: false,
+        available: false,
+        code: "ENVIRONMENT_UPDATE_UNAVAILABLE",
+        reason: "当前环境不支持运行环境更新检测。",
+      };
+      applyEnvironmentUpdateResult(result);
+      return result;
+    }
+    if (pendingRuntimeAction.value) {
+      return {
+        success: false,
+        allowed: false,
+        code: "RUNTIME_ACTION_IN_PROGRESS",
+        reason: "另一项运行环境操作正在进行，请稍候。",
+        state: runtimeState.value,
+      };
+    }
+    pendingRuntimeAction.value = action;
+    try {
+      const result = api[methodName]
+        ? await api[methodName](payload)
+        : await api.invoke?.(channelName, payload);
+      if (result?.state) applyRuntimeState(result.state);
+      applyEnvironmentUpdateResult(result);
+      return result;
+    } catch (error) {
+      const result = {
+        success: false,
+        available: false,
+        code: "ENVIRONMENT_UPDATE_REQUEST_FAILED",
+        reason: String(error?.message || error || "运行环境更新检测失败。"),
+      };
+      applyEnvironmentUpdateResult(result);
+      return result;
+    } finally {
+      pendingRuntimeAction.value = null;
+    }
+  };
+  const checkEnvironmentUpdate = () =>
+    invokeEnvironmentUpdateAction(
+      "environment-update-check",
+      "getEnvironmentUpdateStatus",
+      "environment-update-status",
+    );
+  const getEnvironmentSwitchPlan = (target) =>
+    invokeEnvironmentUpdateAction(
+      "environment-update-plan",
+      "getEnvironmentUpdatePlan",
+      "environment-update-plan",
+      { target },
+    );
+  const switchEnvironmentAccelerator = ({ target, confirmed = false } = {}) =>
+    invokeEnvironmentUpdateAction(
+      "environment-update-switch",
+      "switchEnvironment",
+      "environment-update-switch",
+      { target, confirmed },
+    );
+  const cancelEnvironmentPreparation = async () => {
+    const api = getElectronApi();
+    if (!api) return { success: false, code: "RUNTIME_UNAVAILABLE", state: runtimeState.value };
+    if (runtimeCancellationPending.value) {
+      return { success: false, code: "ENVIRONMENT_CANCELLATION_IN_PROGRESS", state: runtimeState.value };
+    }
+    runtimeCancellationPending.value = true;
+    try {
+      const result = api.cancelEnvironmentPreparation
+        ? await api.cancelEnvironmentPreparation()
+        : api.cancelRuntime
+          ? await api.cancelRuntime()
+          : await api.invoke?.("environment-cancel");
+      if (result?.state) applyRuntimeState(result.state);
+      return result;
+    } catch (error) {
+      const normalized = { message: String(error?.message || error || "取消运行环境准备失败。"), code: error?.code || null };
+      return { success: false, code: "ENVIRONMENT_CANCEL_REQUEST_FAILED", error: normalized, state: runtimeState.value };
+    } finally {
+      runtimeCancellationPending.value = false;
+    }
+  };
   const selectExternalEnvironmentDirectory = () =>
     invokeExternalEnvironmentAction(
       "select",
@@ -535,6 +715,8 @@ export const useUpdateManagerStore = defineStore("updateManager", () => {
     creating: "正在创建",
     repairing: "正在修复",
     ready: "环境就绪",
+    degraded: "环境可用，视频受限",
+    cancelling: "正在取消",
     "needs-create": "需要创建",
     "needs-repair": "需要修复",
     // Compatibility aliases for older main-process states.
@@ -547,17 +729,22 @@ export const useUpdateManagerStore = defineStore("updateManager", () => {
   const runtimeCanCheck = computed(() =>
     runtimeState.value.enabled &&
     !isRuntimeActionPending.value &&
-    !["checking", "preparing", "creating", "repairing", "downloading", "verifying", "rolling-back"].includes(runtimeState.value.status)
+    !["checking", "preparing", "creating", "repairing", "downloading", "verifying", "rolling-back", "cancelling"].includes(runtimeState.value.status)
   );
   const runtimeCanEnsure = computed(() =>
     runtimeState.value.enabled &&
     !isRuntimeActionPending.value &&
-    !["checking", "preparing", "creating", "repairing", "downloading", "verifying", "rolling-back"].includes(runtimeState.value.status)
+    !["checking", "preparing", "creating", "repairing", "downloading", "verifying", "rolling-back", "cancelling"].includes(runtimeState.value.status)
   );
   const runtimeCanRollback = computed(() =>
     runtimeState.value.enabled &&
     !isRuntimeActionPending.value &&
-    (runtimeState.value.canRollback === true || runtimeState.value.status === "ready")
+    (runtimeState.value.canRollback === true || ["ready", "degraded"].includes(runtimeState.value.status))
+  );
+  const runtimeCanCancel = computed(() =>
+    runtimeState.value.enabled &&
+    runtimeState.value.canCancel === true &&
+    !runtimeCancellationPending.value
   );
   const runtimeCanRestart = computed(() =>
     runtimeState.value.enabled &&
@@ -599,12 +786,14 @@ export const useUpdateManagerStore = defineStore("updateManager", () => {
     isActionPending,
     pendingRuntimeAction,
     isRuntimeActionPending,
+    runtimeCancellationPending,
     pendingExternalAction,
     isExternalEnvironmentActionPending,
     runtimeStatusLabel,
     runtimeCanCheck,
     runtimeCanEnsure,
     runtimeCanRollback,
+    runtimeCanCancel,
     runtimeCanRestart,
     canCheck,
     canDownload,
@@ -617,9 +806,14 @@ export const useUpdateManagerStore = defineStore("updateManager", () => {
     downloadUpdate,
     installUpdate,
     applyRuntimeState,
+    applyEnvironmentUpdateResult,
     checkRuntime,
     ensureRuntime,
     rollbackRuntime,
+    checkEnvironmentUpdate,
+    getEnvironmentSwitchPlan,
+    switchEnvironmentAccelerator,
+    cancelEnvironmentPreparation,
     selectExternalEnvironmentDirectory,
     probeExternalEnvironment,
     activateExternalEnvironment,

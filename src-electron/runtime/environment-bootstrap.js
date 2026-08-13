@@ -5,8 +5,15 @@ import os from "node:os";
 import path from "node:path";
 
 import { runStartupProcess } from "../startup-process.js";
+import {
+  redactCommandArgs,
+  redactSensitiveText,
+  sanitizeDiagnosticValue,
+  truncateUtf8Tail,
+} from "../startup-diagnostics.js";
 import { detectAccelerator } from "./environment-detector.js";
 import {
+  BUNDLED_FFMPEG_SPEC_HASH,
   DEFAULT_PYTHON_VERSION,
   buildEnvironmentSpec,
   verifyEnvironmentSpecHash,
@@ -84,12 +91,12 @@ function payloadDestinationPath(stagingPath, relative, label) {
       "ENVIRONMENT_PAYLOAD_PATH_INVALID",
     );
   }
-  if (prefix === "models") return null;
+  if (prefix === "models" || prefix === "ffmpeg") return null;
   const remainder = normalized.slice(prefix.length + 1);
   if (!remainder) {
     throw new EnvironmentBootstrapError(`Offline payload entry is not a file: ${normalized}`, "ENVIRONMENT_PAYLOAD_FILE_INVALID");
   }
-  return path.resolve(stagingPath, prefix === "runtime" ? remainder : path.join("ffmpeg", remainder));
+  return path.resolve(stagingPath, remainder);
 }
 
 export const BOOTSTRAP_STATUS = Object.freeze({
@@ -98,6 +105,8 @@ export const BOOTSTRAP_STATUS = Object.freeze({
   BOOTSTRAPPING: "bootstrapping",
   PROBING: "probing",
   READY: "ready",
+  DEGRADED: "degraded",
+  CANCELLED: "cancelled",
   FAILED: "failed",
   ROLLING_BACK: "rolling-back",
 });
@@ -138,6 +147,43 @@ function normalizeProcessResult(result) {
   };
 }
 
+function processResultFromError(error) {
+  const diagnostic = error?.diagnostic || error?.details?.diagnostic || {};
+  const numericCode = diagnostic.exitCode ?? error?.exitCode ?? error?.code;
+  return normalizeProcessResult({
+    success: false,
+    code: Number.isFinite(Number(numericCode)) ? Number(numericCode) : 1,
+    stdout: diagnostic.stdoutTail ?? diagnostic.stdout ?? error?.stdout ?? "",
+    stderr:
+      diagnostic.stderrTail ??
+      diagnostic.stderr ??
+      error?.stderr ??
+      error?.userMessage ??
+      error?.message ??
+      String(error || "process failed"),
+    diagnostic: sanitizeDiagnosticValue(diagnostic),
+  });
+}
+
+const COMMAND_LABELS = Object.freeze({
+  "create-venv": "创建项目虚拟环境",
+  "upgrade-pip": "更新 pip",
+  "install-requirements": "安装 Python 与 PyTorch 依赖",
+  "relocate-offline-runtime": "调整离线运行环境",
+});
+
+function commandFailureSummary(result) {
+  const lines = `${result?.stderr || ""}\n${result?.stdout || ""}`
+    .split(/\r?\n/u)
+    .map((line) => redactSensitiveText(line.trim()))
+    .filter(Boolean);
+  return (
+    lines.find((line) => /(?:^|\b)(?:ERROR|FATAL)\b|No matching distribution|Could not find|certificate verify failed|timed out|connection (?:reset|refused)/iu.test(line)) ||
+    lines.at(-1) ||
+    "请查看验收报告中的命令诊断。"
+  );
+}
+
 function hashBuffer(value) {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -173,13 +219,68 @@ function fileNameForFfmpeg(sourcePath, platform) {
 function resolveInstallerPath(value) {
   if (typeof value === "string") return value;
   if (value && typeof value === "object") {
-    return value.path || value.pythonExecutable || value.executable || "";
+    return value.path || value.pythonPath || value.pythonExecutable || value.executable || "";
   }
   return "";
 }
 
+function parsePythonVersionOutput(value) {
+  const match = String(value ?? "").match(/(?:Python\s+)?(\d+)\.(\d+)(?:\.(\d+))?/i);
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: match[3] === undefined ? null : Number(match[3]),
+    text: `${match[1]}.${match[2]}${match[3] === undefined ? "" : `.${match[3]}`}`,
+  };
+}
+
+function matchesPythonMajorMinor(actual, expected) {
+  const actualVersion = parsePythonVersionOutput(actual);
+  const expectedVersion = parsePythonVersionOutput(expected);
+  return Boolean(
+    actualVersion
+    && expectedVersion
+    && actualVersion.major === expectedVersion.major
+    && actualVersion.minor === expectedVersion.minor,
+  );
+}
+
+function normalizeDistributionName(value) {
+  return String(value || "").trim().toLowerCase().replace(/[-_.]+/gu, "-");
+}
+
+function parseLockedRequirements(value) {
+  return String(value || "")
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#") && !line.startsWith("-"))
+    .map((line) => line.split(";", 1)[0].trim())
+    .map((line) => {
+      const match = line.match(/^([A-Za-z0-9_.-]+)(?:\[[^\]]+\])?==([^\s]+)$/u);
+      return match
+        ? { name: normalizeDistributionName(match[1]), version: match[2] }
+        : null;
+    })
+    .filter(Boolean);
+}
+
 function makeOperationId(now) {
   return `env-${Number(now())}-${process.pid}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function cancellationError(signal) {
+  const reason = signal?.reason;
+  if (reason instanceof EnvironmentBootstrapError) return reason;
+  return new EnvironmentBootstrapError(
+    reason?.message || "运行环境准备已取消。",
+    "ENVIRONMENT_PREPARATION_CANCELLED",
+    { cancelled: true },
+  );
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw cancellationError(signal);
 }
 
 async function defaultCommandRunner(command, args, options = {}) {
@@ -204,11 +305,15 @@ async function defaultCommandRunner(command, args, options = {}) {
 }
 
 async function invokeCommandRunner(runner, command, args, options) {
-  if (typeof runner === "function") return normalizeProcessResult(await runner(command, args, options));
-  if (runner && typeof runner.run === "function") {
-    return normalizeProcessResult(await runner.run(command, args, options));
+  try {
+    if (typeof runner === "function") return normalizeProcessResult(await runner(command, args, options));
+    if (runner && typeof runner.run === "function") {
+      return normalizeProcessResult(await runner.run(command, args, options));
+    }
+    return defaultCommandRunner(command, args, options);
+  } catch (error) {
+    return processResultFromError(error);
   }
-  return defaultCommandRunner(command, args, options);
 }
 
 function mergeSources(base, overrides = {}, accelerator) {
@@ -298,6 +403,7 @@ export class EnvironmentBootstrap {
     this.environmentsRoot = path.join(this.rootDir, "environments", this.platformArch);
     this.activePointerPath = path.join(this.rootDir, "environments", "active.json");
     this.historyPath = path.join(this.rootDir, "environments", "history.json");
+    this.failureReceiptPath = path.join(this.rootDir, "environments", "last-failure.json");
     this.stagingRoot = path.join(this.rootDir, "environments", ".staging");
     this.state = {
       status: BOOTSTRAP_STATUS.IDLE,
@@ -341,6 +447,27 @@ export class EnvironmentBootstrap {
 
   async _fileHash(filePath) {
     return hashBuffer(await this.fs.readFile(requiredPath(filePath, "filePath")));
+  }
+
+  async _clearFailureReceipt() {
+    await this.fs.rm(this.failureReceiptPath, { force: true }).catch(() => {});
+  }
+
+  async _writeFailureReceipt({ error, progress, targetPath, operationId }) {
+    const receipt = sanitizeDiagnosticValue({
+      schemaVersion: ENVIRONMENT_BOOTSTRAP_SCHEMA,
+      appVersion: this.appVersion,
+      platformArch: this.platformArch,
+      operationId,
+      failedAt: new Date(this.now()).toISOString(),
+      phase: progress?.phase || null,
+      targetPath: targetPath || null,
+      selectedAccelerator: this.state.selectedAccelerator,
+      selectionReason: this.state.selectionReason,
+      error: serializeError(error),
+    });
+    await this._writeJsonAtomic(this.failureReceiptPath, receipt, operationId || "failure");
+    return receipt;
   }
 
   async _streamFileDigest(filePath) {
@@ -480,9 +607,7 @@ export class EnvironmentBootstrap {
       entries.push({ ...file, path: relative, sha256: expectedHash, sourcePath: resolved.path, digest });
     }
     const hasRuntime = entries.some(({ path: relative }) => relative.startsWith("runtime/"));
-    const hasFfmpeg = entries.some(({ path: relative }) => relative.startsWith("ffmpeg/"));
     if (!hasRuntime) throw new EnvironmentBootstrapError("Offline payload runtime files are required", "ENVIRONMENT_PAYLOAD_RUNTIME_MISSING");
-    if (!hasFfmpeg) throw new EnvironmentBootstrapError("Offline payload FFmpeg files are required", "ENVIRONMENT_PAYLOAD_FFMPEG_MISSING");
     const specHash = manifest.specHash ? normalizeHash(manifest.specHash, "payload specHash") : null;
     return {
       manifest,
@@ -514,18 +639,16 @@ export class EnvironmentBootstrap {
       });
     } else {
       const requirementsEntry = entries.find(({ path: relative }) => /(^|\/)requirements(?:[-_.]lock)?\.(?:txt|lock)$/i.test(relative));
-      const ffmpegEntry = entries.find(({ path: relative }) => /(^|\/)(?:ffmpeg|ffmpeg\.exe)$/i.test(relative));
       const requirementsLockHash = normalizeHash(
         manifest.requirementsLockHash || requirementsEntry?.sha256,
         "requirementsLockHash",
       );
-      const ffmpegHash = normalizeHash(manifest.ffmpegHash || ffmpegEntry?.sha256, "ffmpegHash");
       spec = buildEnvironmentSpec({
         appVersion: this.appVersion,
         pythonVersion: manifest.pythonVersion || this.pythonVersion,
         accelerator: variant,
         requirementsLockHash,
-        ffmpegHash,
+        ffmpegHash: manifest.ffmpegHash || BUNDLED_FFMPEG_SPEC_HASH,
       });
     }
     if (!verifyEnvironmentSpecHash(spec)) {
@@ -557,7 +680,7 @@ export class EnvironmentBootstrap {
     return copied;
   }
 
-  async _offlineRuntimePaths(stagingPath, entries) {
+  async _offlineRuntimePaths(stagingPath) {
     const pythonCandidates = this.platform === "win32"
       ? [
         path.join(stagingPath, "venv", "Scripts", "python.exe"),
@@ -597,12 +720,13 @@ export class EnvironmentBootstrap {
         break;
       }
     }
-    const ffmpegEntry = entries.find(({ path: relative }) => /(^|\/)ffmpeg(?:\.exe)?$/i.test(relative));
-    if (!ffmpegEntry) {
-      throw new EnvironmentBootstrapError("Offline payload FFmpeg executable is missing", "ENVIRONMENT_PAYLOAD_FFMPEG_MISSING");
-    }
-    const ffmpegPath = payloadDestinationPath(stagingPath, ffmpegEntry.path, "payload FFmpeg path");
-    return { pythonExecutable, ffmpegPath, condaUnpackExecutable };
+    const ffmpegResource = await this._inspectBundledFfmpeg();
+    return {
+      pythonExecutable,
+      ffmpegPath: ffmpegResource.path,
+      ffmpegResource,
+      condaUnpackExecutable,
+    };
   }
 
   async _resolveHash(value, filePath, label) {
@@ -629,9 +753,27 @@ export class EnvironmentBootstrap {
   async _activePointer() {
     const pointer = await this._readJson(this.activePointerPath);
     if (!pointer || typeof pointer !== "object") return null;
+    if (!this._isSafeRelativePointerPath(pointer.path)) return null;
     const activePath = pointer.path ? path.resolve(this.rootDir, pointer.path) : "";
-    if (!activePath || !activePath.startsWith(`${this.environmentsRoot}${path.sep}`)) return null;
+    if (!activePath || !this._isWithin(activePath, this.environmentsRoot)) return null;
     return { ...pointer, absolutePath: activePath };
+  }
+
+  _isWithin(candidate, root) {
+    const relative = path.relative(path.resolve(root), path.resolve(candidate));
+    return relative === "" || (relative && !relative.startsWith(`..${path.sep}`) && relative !== "..");
+  }
+
+  _isSafeRelativePointerPath(value) {
+    if (typeof value !== "string" || !value.trim()) return false;
+    const normalized = value.replace(/\\/g, "/");
+    if (path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value) || normalized.startsWith("/") || normalized.includes(".staging")) return false;
+    const segments = normalized.split("/");
+    return !segments.some((segment) => !segment || segment === "." || segment === "..");
+  }
+
+  _isSafePythonPointerPath(value) {
+    return value == null || this._isSafeRelativePointerPath(value);
   }
 
   async getActive() {
@@ -658,42 +800,141 @@ export class EnvironmentBootstrap {
     }
   }
 
-  async _run(command, args, label, signal) {
+  async _isCompatiblePython(pythonExecutable, signal) {
+    try {
+      await this.fs.access(pythonExecutable);
+    } catch {
+      return false;
+    }
+    const result = await invokeCommandRunner(this.commandRunner, pythonExecutable, ["--version"], {
+      cwd: this.state.stagingPath || this.rootDir,
+      env: this.baseEnv,
+      signal,
+      timeoutMs: Math.min(this.timeoutMs, 30_000),
+      stage: "environment-bootstrap-python-reuse",
+    });
+    return result.success && matchesPythonMajorMinor(`${result.stdout}\n${result.stderr}`, this.pythonVersion);
+  }
+
+  async _hasUsablePip(pythonExecutable, signal) {
+    const result = await invokeCommandRunner(this.commandRunner, pythonExecutable, ["-m", "pip", "--version"], {
+      cwd: this.state.stagingPath || this.rootDir,
+      env: this.baseEnv,
+      signal,
+      timeoutMs: Math.min(this.timeoutMs, 30_000),
+      stage: "environment-bootstrap-pip-check",
+    });
+    return result.success;
+  }
+
+  async _lockedRequirementsSatisfied(pythonExecutable, requirementsPath, signal) {
+    let expected;
+    try {
+      expected = parseLockedRequirements(await this.fs.readFile(requirementsPath, "utf8"));
+    } catch {
+      return false;
+    }
+    if (expected.length === 0) return false;
+    const listResult = await invokeCommandRunner(
+      this.commandRunner,
+      pythonExecutable,
+      ["-m", "pip", "list", "--format=json", "--disable-pip-version-check"],
+      {
+        cwd: this.state.stagingPath || this.rootDir,
+        env: this.baseEnv,
+        signal,
+        timeoutMs: Math.min(this.timeoutMs, 60_000),
+        stage: "environment-bootstrap-dependency-check",
+      },
+    );
+    if (!listResult.success) return false;
+    let installed;
+    try {
+      installed = new Map(JSON.parse(listResult.stdout).map((entry) => [
+        normalizeDistributionName(entry.name),
+        String(entry.version || ""),
+      ]));
+    } catch {
+      return false;
+    }
+    if (!expected.every((entry) => installed.get(entry.name) === entry.version)) return false;
+    const checkResult = await invokeCommandRunner(
+      this.commandRunner,
+      pythonExecutable,
+      ["-m", "pip", "check", "--disable-pip-version-check"],
+      {
+        cwd: this.state.stagingPath || this.rootDir,
+        env: this.baseEnv,
+        signal,
+        timeoutMs: Math.min(this.timeoutMs, 60_000),
+        stage: "environment-bootstrap-dependency-consistency",
+      },
+    );
+    return checkResult.success;
+  }
+
+  async _run(command, args, label, signal, output = {}) {
+    throwIfAborted(signal);
     const result = await invokeCommandRunner(this.commandRunner, command, args, {
       cwd: this.state.stagingPath || this.rootDir,
       env: this.baseEnv,
       signal,
       timeoutMs: this.timeoutMs,
       stage: `environment-bootstrap-${label}`,
+      onStdout: output.onStdout,
+      onStderr: output.onStderr,
     });
-    const record = { label, command, args: [...args], code: result.code, stdout: result.stdout, stderr: result.stderr };
+    throwIfAborted(signal);
+    const record = {
+      label,
+      command: redactSensitiveText(command),
+      args: redactCommandArgs(args),
+      code: result.code,
+      stdout: redactSensitiveText(truncateUtf8Tail(result.stdout)),
+      stderr: redactSensitiveText(truncateUtf8Tail(result.stderr)),
+      diagnostic: sanitizeDiagnosticValue(result.diagnostic || null),
+    };
     const lastStep = this.state.steps.at(-1);
     if (lastStep) lastStep.command = record;
     if (!result.success) {
       throw new EnvironmentBootstrapError(
-        `${label} failed${result.stderr ? `: ${result.stderr.trim().split(/\r?\n/, 1)[0]}` : ""}`,
+        `${COMMAND_LABELS[label] || label}失败（退出码 ${record.code}）：${commandFailureSummary(record)}`,
         "ENVIRONMENT_COMMAND_FAILED",
-        { label, command, args, result: record },
+        { phase: label, label, command: record.command, args: record.args, result: record },
       );
     }
     return result;
   }
 
   async _discoverPython(signal, sources = this.sourceConfig, onProgress) {
+    throwIfAborted(signal);
+    const discoveries = [];
+    const verifyCandidate = async (candidate, stage) => {
+      const result = await invokeCommandRunner(this.commandRunner, candidate, ["--version"], {
+        cwd: this.rootDir,
+        env: this.baseEnv,
+        signal,
+        timeoutMs: Math.min(this.timeoutMs, 30_000),
+        stage,
+      });
+      const versionOutput = `${result.stdout || ""}\n${result.stderr || ""}`;
+      const version = parsePythonVersionOutput(versionOutput);
+      discoveries.push({
+        candidate: redactSensitiveText(candidate),
+        version: version?.text || null,
+        usable: Boolean(result.success),
+        compatible: Boolean(result.success && matchesPythonMajorMinor(versionOutput, this.pythonVersion)),
+      });
+      return discoveries.at(-1).compatible;
+    };
     const configured = this.pythonExecutable;
     const candidates = Array.isArray(configured) ? configured : [configured];
     for (const candidate of candidates) {
       if (!candidate) continue;
       try {
-        const result = await invokeCommandRunner(this.commandRunner, candidate, ["--version"], {
-          cwd: this.rootDir,
-          env: this.baseEnv,
-          signal,
-          timeoutMs: Math.min(this.timeoutMs, 30_000),
-          stage: "environment-bootstrap-python-discover",
-        });
-        if (result.success) return String(candidate);
+        if (await verifyCandidate(candidate, "environment-bootstrap-python-discover")) return String(candidate);
       } catch {
+        throwIfAborted(signal);
         // Continue to the next candidate or the injected Python installer.
       }
     }
@@ -706,7 +947,10 @@ export class EnvironmentBootstrap {
         onProgress,
       });
       const installedPath = resolveInstallerPath(installed);
-      if (installedPath) return String(installedPath);
+      throwIfAborted(signal);
+      if (installedPath && await verifyCandidate(installedPath, "environment-bootstrap-python-install-verify")) {
+        return String(installedPath);
+      }
     } else if (this.pythonInstaller && typeof this.pythonInstaller.install === "function") {
       const installed = await this.pythonInstaller.install({
         version: this.pythonVersion,
@@ -716,31 +960,120 @@ export class EnvironmentBootstrap {
         onProgress,
       });
       const installedPath = resolveInstallerPath(installed);
-      if (installedPath) return String(installedPath);
+      throwIfAborted(signal);
+      if (installedPath && await verifyCandidate(installedPath, "environment-bootstrap-python-install-verify")) {
+        return String(installedPath);
+      }
     }
+    const expected = parsePythonVersionOutput(this.pythonVersion);
+    const expectedFamily = expected ? `${expected.major}.${expected.minor}.x` : this.pythonVersion;
+    const found = discoveries.filter((entry) => entry.version).map((entry) => entry.version).join(", ");
     throw new EnvironmentBootstrapError(
-      "No supported Python interpreter was found and no installer was provided",
+      `No supported Python ${expectedFamily} interpreter was found${found ? `; detected incompatible version(s): ${found}` : ""}`,
       "ENVIRONMENT_PYTHON_NOT_FOUND",
+      { expectedVersion: expectedFamily, discoveries },
     );
   }
 
-  async _copyFfmpeg(stagingPath, expectedHash = "") {
-    if (!this.ffmpegSourcePath) {
-      throw new EnvironmentBootstrapError("ffmpegSourcePath is required", "ENVIRONMENT_FFMPEG_SOURCE_REQUIRED");
-    }
-    const source = requiredPath(this.ffmpegSourcePath, "ffmpegSourcePath");
-    const target = path.join(stagingPath, "ffmpeg", fileNameForFfmpeg(source, this.platform));
-    await this.fs.mkdir(path.dirname(target), { recursive: true });
-    await this.fs.copyFile(source, target);
-    const hash = await this._fileHash(target);
-    if (expectedHash && hash !== expectedHash) {
-      throw new EnvironmentBootstrapError(
-        `FFmpeg hash does not match ${source}`,
-        "ENVIRONMENT_HASH_MISMATCH",
-        { expected: expectedHash, actual: hash, filePath: source },
+  async _inspectBundledFfmpeg() {
+    const source = this.ffmpegSourcePath
+      ? requiredPath(this.ffmpegSourcePath, "ffmpegSourcePath")
+      : path.join(
+        this.rootDir,
+        ".missing-bundled-ffmpeg",
+        fileNameForFfmpeg(this.ffmpegSourcePath, this.platform),
       );
+    const base = {
+      path: source,
+      root: path.dirname(source),
+      hash: BUNDLED_FFMPEG_SPEC_HASH,
+      source: "bundled",
+      available: false,
+      integrityOk: false,
+      expectedHash: null,
+      actualHash: null,
+      error: null,
+    };
+    if (!this.ffmpegSourcePath) {
+      return {
+        ...base,
+        error: serializeError(new EnvironmentBootstrapError(
+          "应用内置 FFmpeg 路径未配置。",
+          "ENVIRONMENT_FFMPEG_SOURCE_REQUIRED",
+          { filePath: source },
+        )),
+      };
     }
-    return { path: target, hash };
+
+    let expectedHash = null;
+    try {
+      expectedHash = this.ffmpegHash ? normalizeHash(this.ffmpegHash, "ffmpegHash") : null;
+    } catch (error) {
+      return { ...base, error: serializeError(error) };
+    }
+
+    let actualHash;
+    try {
+      actualHash = await this._fileHash(source);
+    } catch (error) {
+      return {
+        ...base,
+        expectedHash,
+        error: serializeError(new EnvironmentBootstrapError(
+          `应用内置 FFmpeg 不可用：${error.message}`,
+          "ENVIRONMENT_FFMPEG_UNAVAILABLE",
+          { filePath: source, cause: error?.code || null },
+        )),
+      };
+    }
+    if (expectedHash && actualHash !== expectedHash) {
+      return {
+        ...base,
+        expectedHash,
+        actualHash,
+        error: serializeError(new EnvironmentBootstrapError(
+          "应用内置 FFmpeg 完整性校验失败。",
+          "ENVIRONMENT_HASH_MISMATCH",
+          { expected: expectedHash, actual: actualHash, filePath: source },
+        )),
+      };
+    }
+    return {
+      ...base,
+      available: true,
+      integrityOk: true,
+      expectedHash,
+      actualHash,
+    };
+  }
+
+  _applyBundledFfmpegState(health, resource) {
+    if (resource?.available !== false) return health;
+    const coreSuccess = health?.success !== false;
+    const resourceMessage = resource?.error?.message || "应用内置 FFmpeg 不可用。";
+    const warning = resourceMessage.startsWith("FFmpeg:")
+      ? resourceMessage
+      : `FFmpeg: ${resourceMessage}`;
+    return {
+      ...(health || {}),
+      success: coreSuccess,
+      degraded: coreSuccess,
+      ffmpeg: {
+        ...(health?.ffmpeg || {}),
+        ok: false,
+        path: resource?.path || health?.ffmpeg?.path || "",
+        error: warning,
+        resourceError: clone(resource?.error || null),
+      },
+      warnings: [...new Set([...(health?.warnings || []), warning])],
+      capabilities: {
+        ...(health?.capabilities || {}),
+        core: coreSuccess,
+        image: coreSuccess,
+        video: false,
+        ffmpeg: false,
+      },
+    };
   }
 
   _sourceConfig(accelerator, sourceOverrides) {
@@ -790,6 +1123,7 @@ export class EnvironmentBootstrap {
   }
 
   async check({ accelerator = "auto", signal } = {}) {
+    throwIfAborted(signal);
     const selection = await this.detector({
       preference: normalizeAcceleratorPreference(accelerator),
       runner: this.acceleratorRunner,
@@ -813,6 +1147,21 @@ export class EnvironmentBootstrap {
     return result;
   }
 
+  async cleanupStaleStaging() {
+    const removed = [];
+    const entries = await this.fs.readdir(this.stagingRoot, { withFileTypes: true }).catch((error) => {
+      if (error?.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of entries) {
+      if (!entry.isDirectory?.()) continue;
+      const target = path.join(this.stagingRoot, entry.name);
+      await this.fs.rm(target, { recursive: true, force: true });
+      removed.push(target);
+    }
+    return { success: true, removed, count: removed.length };
+  }
+
   async bootstrap({ accelerator = "auto", force = false, sourceOverrides = {}, signal, onProgress } = {}) {
     const startedAt = this.now();
     const operationId = makeOperationId(this.now);
@@ -823,6 +1172,10 @@ export class EnvironmentBootstrap {
       message: "正在准备运行环境。",
     };
     const reportProgress = (patch) => {
+      if (patch?.logOnly) {
+        emitProgress(onProgress, patch);
+        return;
+      }
       lastProgress = { ...lastProgress, ...patch };
       emitProgress(onProgress, lastProgress);
     };
@@ -842,6 +1195,7 @@ export class EnvironmentBootstrap {
     reportProgress(lastProgress);
     let stagingPath = null;
     try {
+      throwIfAborted(signal);
       const preference = normalizeAcceleratorPreference(accelerator);
       const selection = await this._step("detect-accelerator", () => this.detector({
         preference,
@@ -861,48 +1215,106 @@ export class EnvironmentBootstrap {
       const requirements = this._requirementsFor(selectedAccelerator);
       const requirementsLockHash = await this._step("hash-requirements", () =>
         this._resolveHash(requirements.requirementsLockHash, requirements.requirementsLockPath, "requirementsLockHash"));
-      const ffmpegHash = await this._step("hash-ffmpeg", () =>
-        this._resolveHash(this.ffmpegHash, this.ffmpegSourcePath, "ffmpegHash"));
+      const ffmpeg = await this._step("inspect-ffmpeg", () => this._inspectBundledFfmpeg());
       const spec = buildEnvironmentSpec({
         appVersion: this.appVersion,
         pythonVersion: this.pythonVersion,
         accelerator: selectedAccelerator,
         requirementsLockHash,
-        ffmpegHash,
+        ffmpegHash: ffmpeg.hash,
       });
       this.state.specHash = spec.specHash;
       reportProgress({ phase: "resolve-environment", percent: 10, message: "正在检查可复用的运行环境。" });
-      const previous = await this._activePointer();
+      let previous = await this._activePointer();
       const targetPath = path.join(this.environmentsRoot, selectedAccelerator, spec.specHash);
-      if (!force && previous?.specHash === spec.specHash && previous?.absolutePath === targetPath) {
-        const activePython = previous?.pythonExecutableRelative
+      this.state.targetPath = targetPath;
+      reportProgress({
+        phase: "environment-path",
+        percent: 10,
+        message: `运行环境将创建在：${targetPath}`,
+        environmentPath: targetPath,
+      });
+      if (previous?.specHash === spec.specHash && previous?.absolutePath === targetPath) {
+        const activePython = previous?.pythonExecutableRelative && this._isSafePythonPointerPath(previous.pythonExecutableRelative)
           ? path.resolve(targetPath, previous.pythonExecutableRelative)
           : path.join(
             targetPath,
             "venv",
             ...(this.platform === "win32" ? ["Scripts", "python.exe"] : ["bin", "python"]),
           );
-        const activeFfmpeg = previous?.ffmpegRelative
-          ? path.resolve(targetPath, previous.ffmpegRelative)
-          : path.join(targetPath, "ffmpeg", fileNameForFfmpeg(this.ffmpegSourcePath, this.platform));
-        const healthy = await this._step("probe-active", () => this.probe({
+        const probedHealth = await this._step("probe-active", () => this.probe({
           root: targetPath,
           pythonExecutable: activePython,
-          ffmpegPath: activeFfmpeg,
+          ffmpegPath: ffmpeg.path,
           accelerator: selectedAccelerator,
           platform: this.platform,
           baseEnv: this.baseEnv,
+          signal,
         }));
+        const healthy = this._applyBundledFfmpegState(probedHealth, ffmpeg);
         if (healthy?.success !== false) {
-          this._setStatus(BOOTSTRAP_STATUS.READY, { activePath: targetPath, finishedAt: this.now() });
-          reportProgress({ phase: "complete", status: "complete", percent: 100, message: "现有运行环境校验通过。" });
-          return { success: true, created: false, reused: true, selection, spec, activePath: targetPath, state: this.getState() };
+          if (previous && !this._isSafePythonPointerPath(previous.pythonExecutableRelative)) {
+            await this._writeJsonAtomic(this.activePointerPath, {
+              ...previous,
+              pythonExecutableRelative: path.relative(targetPath, activePython).replace(/\\/g, "/"),
+            }, "migrate-pointer");
+            previous = { ...previous, pythonExecutableRelative: path.relative(targetPath, activePython).replace(/\\/g, "/") };
+          }
+          await this._clearFailureReceipt();
+          const status = healthy?.degraded ? BOOTSTRAP_STATUS.DEGRADED : BOOTSTRAP_STATUS.READY;
+          this._setStatus(status, { activePath: targetPath, finishedAt: this.now() });
+          reportProgress({
+            phase: "complete",
+            status: "complete",
+            percent: 100,
+            message: healthy?.degraded ? "现有运行环境可用，但视频组件需要修复。" : "现有运行环境校验通过。",
+          });
+          return {
+            success: true,
+            degraded: Boolean(healthy?.degraded),
+            created: false,
+            reused: true,
+            selection,
+            spec,
+            health: healthy,
+            activePath: targetPath,
+            state: this.getState(),
+          };
         }
+        reportProgress({
+          phase: "repair-environment",
+          percent: 11,
+          message: force
+            ? "现有运行环境未通过完整性校验，正在按缺失步骤修复。"
+            : "现有运行环境未通过完整性校验，正在重建缺失步骤。",
+        });
       }
 
       stagingPath = path.join(this.stagingRoot, operationId);
       this.state.stagingPath = stagingPath;
       await this.fs.mkdir(stagingPath, { recursive: true });
+      let seededFromActive = false;
+      if (previous?.specHash === spec.specHash && previous?.absolutePath === targetPath) {
+        try {
+          await this.fs.cp(targetPath, stagingPath, { recursive: true, force: true });
+          seededFromActive = true;
+          reportProgress({
+            phase: "reuse-environment",
+            percent: 12,
+            message: "已保留现有运行环境内容，将只修复缺失或损坏的步骤。",
+          });
+        } catch {
+          await this.fs.rm(stagingPath, { recursive: true, force: true });
+          await this.fs.mkdir(stagingPath, { recursive: true });
+        }
+      }
+      await this.fs.writeFile(path.join(stagingPath, ".operation.json"), `${JSON.stringify({
+        schema: ENVIRONMENT_BOOTSTRAP_SCHEMA,
+        operationId,
+        pid: process.pid,
+        targetPath,
+        startedAt: new Date(startedAt).toISOString(),
+      }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
       this._setStatus(BOOTSTRAP_STATUS.BOOTSTRAPPING);
       reportProgress({ phase: "python-discovery", percent: 12, message: "正在查找 Python 3.12 解释器。" });
       const python = await this._step("discover-python", () => this._discoverPython(
@@ -923,26 +1335,74 @@ export class EnvironmentBootstrap {
       ));
       reportProgress({ phase: "python-ready", status: "running", percent: 35, message: "Python 解释器已就绪。" });
       const venvPath = path.join(stagingPath, "venv");
-      reportProgress({ phase: "create-venv", percent: 40, message: "正在创建项目虚拟环境。" });
-      await this._step("create-venv", () => this._run(python, ["-m", "venv", venvPath], "create-venv", signal));
       const venvPython = this.platform === "win32"
         ? path.join(venvPath, "Scripts", "python.exe")
         : path.join(venvPath, "bin", "python");
-      reportProgress({ phase: "upgrade-pip", percent: 50, message: "正在更新 pip。" });
-      await this._step("upgrade-pip", () => this._run(venvPython, ["-m", "pip", "install", "--upgrade", "pip", "--index-url", sources.pipIndexUrl], "upgrade-pip", signal));
+      const reusableVenv = seededFromActive && await this._isCompatiblePython(venvPython, signal);
+      if (reusableVenv) {
+        reportProgress({ phase: "create-venv", percent: 45, message: "项目虚拟环境校验通过，跳过创建。" });
+      } else {
+        await this.fs.rm(venvPath, { recursive: true, force: true });
+        reportProgress({ phase: "create-venv", percent: 40, message: "正在创建项目虚拟环境。" });
+        await this._step("create-venv", () => this._run(python, ["-m", "venv", venvPath], "create-venv", signal));
+      }
+      const usablePip = reusableVenv && await this._hasUsablePip(venvPython, signal);
+      if (usablePip) {
+        reportProgress({ phase: "pip-ready", percent: 55, message: "pip 校验通过，跳过更新。" });
+      } else {
+        reportProgress({ phase: "upgrade-pip", percent: 50, message: "正在更新 pip。" });
+        await this._step("upgrade-pip", () => this._run(venvPython, ["-m", "pip", "install", "--upgrade", "pip", "--index-url", sources.pipIndexUrl], "upgrade-pip", signal));
+        reportProgress({ phase: "pip-ready", percent: 55, message: "pip 更新完成。" });
+      }
       if (!requirements.requirementsPath) {
         throw new EnvironmentBootstrapError("requirementsPath is required", "ENVIRONMENT_REQUIREMENTS_PATH_REQUIRED");
       }
       const installArgs = ["-m", "pip", "install", "-r", requiredPath(requirements.requirementsPath, "requirementsPath"), "--index-url", sources.pipIndexUrl];
       if (sources.torchIndexUrl) installArgs.push("--extra-index-url", sources.torchIndexUrl);
       if (sources.extraIndexUrl) installArgs.push("--extra-index-url", sources.extraIndexUrl);
-      reportProgress({ phase: "install-requirements", percent: 60, message: "正在安装 Python 与 PyTorch 依赖。" });
-      await this._step("install-requirements", () => this._run(venvPython, installArgs, "install-requirements", signal));
-      reportProgress({ phase: "copy-ffmpeg", percent: 88, message: "正在准备应用内置 FFmpeg。" });
-      const ffmpeg = await this._step("copy-ffmpeg", () => this._copyFfmpeg(stagingPath, ffmpegHash));
+      const dependenciesReady = reusableVenv && usablePip && await this._lockedRequirementsSatisfied(
+        venvPython,
+        requirements.requirementsPath,
+        signal,
+      );
+      if (dependenciesReady) {
+        reportProgress({ phase: "dependencies-ready", percent: 86, message: "锁定依赖校验通过，跳过安装。" });
+      } else {
+        reportProgress({
+          phase: "install-requirements",
+          percent: 60,
+          message: "正在安装 Python 与 PyTorch 依赖。此步骤耗时较长，可关闭弹窗继续使用软件；实际功能将在运行环境就绪后生效。",
+        });
+        const streamOutput = (stream) => (value) => {
+          const message = redactSensitiveText(String(value || ""));
+          if (!message.trim()) return;
+          reportProgress({
+            phase: "install-requirements-output",
+            status: "running",
+            logOnly: true,
+            terminalType: stream === "stderr" ? "warning" : "info",
+            message,
+          });
+        };
+        await this._step("install-requirements", () => this._run(
+          venvPython,
+          installArgs,
+          "install-requirements",
+          signal,
+          { onStdout: streamOutput("stdout"), onStderr: streamOutput("stderr") },
+        ));
+        reportProgress({ phase: "dependencies-ready", percent: 86, message: "Python 与 PyTorch 依赖安装完成。" });
+      }
+      reportProgress({
+        phase: "resolve-ffmpeg",
+        percent: 88,
+        message: ffmpeg.available
+          ? "应用内置 FFmpeg 校验通过。"
+          : "应用内置 FFmpeg 不可用，将以图片功能模式继续。",
+      });
       this._setStatus(BOOTSTRAP_STATUS.PROBING);
       reportProgress({ phase: "health-probe", percent: 94, message: "正在校验 Python、PyTorch、后端模块与 FFmpeg。" });
-      const health = await this._step("probe-environment", () => this.probe({
+      const probedHealth = await this._step("probe-environment", () => this.probe({
         root: stagingPath,
         pythonExecutable: venvPython,
         ffmpegPath: ffmpeg.path,
@@ -951,40 +1411,86 @@ export class EnvironmentBootstrap {
         baseEnv: this.baseEnv,
         signal,
       }));
+      const health = this._applyBundledFfmpegState(probedHealth, ffmpeg);
       if (health?.success === false) {
         throw new EnvironmentBootstrapError("Environment health probe failed", "ENVIRONMENT_PROBE_FAILED", { health });
       }
       await this.fs.mkdir(stagingPath, { recursive: true });
       await this.fs.writeFile(path.join(stagingPath, "environment-spec.json"), `${JSON.stringify(spec, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-      await this.fs.writeFile(path.join(stagingPath, ".ready.json"), `${JSON.stringify({ schema: ENVIRONMENT_BOOTSTRAP_SCHEMA, specHash: spec.specHash, readyAt: new Date(this.now()).toISOString() }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+      await this.fs.writeFile(path.join(stagingPath, ".ready.json"), `${JSON.stringify({
+        schema: ENVIRONMENT_BOOTSTRAP_SCHEMA,
+        specHash: spec.specHash,
+        degraded: Boolean(health?.degraded),
+        readyAt: new Date(this.now()).toISOString(),
+      }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
       const pointer = {
         schema: ENVIRONMENT_BOOTSTRAP_SCHEMA,
         accelerator: selectedAccelerator,
         specHash: spec.specHash,
         path: path.relative(this.rootDir, targetPath).replace(/\\/g, "/"),
         activatedAt: new Date(this.now()).toISOString(),
-        pythonExecutableRelative: path.relative(targetPath, venvPython).replace(/\\/g, "/"),
-        ffmpegRelative: path.relative(targetPath, ffmpeg.path).replace(/\\/g, "/"),
+        pythonExecutableRelative: path.relative(stagingPath, venvPython).replace(/\\/g, "/"),
+        ffmpegSource: "bundled",
       };
+      await this.fs.rm(path.join(stagingPath, ".operation.json"), { force: true });
       await this._step("activate", () => this._activate(stagingPath, targetPath, pointer, operationId, previous));
       stagingPath = null;
+      await this._clearFailureReceipt();
       if (previous && previous.specHash !== pointer.specHash) await this._appendHistory(previous);
-      this._setStatus(BOOTSTRAP_STATUS.READY, { stagingPath: null, activePath: targetPath, finishedAt: this.now() });
-      reportProgress({ phase: "complete", status: "complete", percent: 100, message: "运行环境创建并校验完成。" });
-      return { success: true, created: true, reused: false, selection, spec, health, activePath: targetPath, state: this.getState() };
+      const completedStatus = health?.degraded ? BOOTSTRAP_STATUS.DEGRADED : BOOTSTRAP_STATUS.READY;
+      this._setStatus(completedStatus, { stagingPath: null, activePath: targetPath, finishedAt: this.now() });
+      reportProgress({
+        phase: "complete",
+        status: "complete",
+        percent: 100,
+        message: health?.degraded ? "运行环境创建完成，但视频组件需要修复。" : "运行环境创建并校验完成。",
+      });
+      return {
+        success: true,
+        degraded: Boolean(health?.degraded),
+        created: true,
+        reused: false,
+        selection,
+        spec,
+        health,
+        activePath: targetPath,
+        state: this.getState(),
+      };
     } catch (error) {
       if (stagingPath) await this.fs.rm(stagingPath, { recursive: true, force: true }).catch(() => {});
-      const normalized = error instanceof EnvironmentBootstrapError
+      const normalized = signal?.aborted
+        ? cancellationError(signal)
+        : error instanceof EnvironmentBootstrapError
         ? error
         : new EnvironmentBootstrapError(error?.message || String(error), "ENVIRONMENT_BOOTSTRAP_FAILED", { cause: error });
-      this._setStatus(BOOTSTRAP_STATUS.FAILED, { stagingPath: null, error: serializeError(normalized), finishedAt: this.now() });
+      const cancelled = normalized.code === "ENVIRONMENT_PREPARATION_CANCELLED";
+      if (!cancelled) {
+        await this._writeFailureReceipt({
+          error: normalized,
+          progress: lastProgress,
+          targetPath: this.state.targetPath,
+          operationId,
+        }).catch(() => {});
+      }
+      this._setStatus(cancelled ? BOOTSTRAP_STATUS.CANCELLED : BOOTSTRAP_STATUS.FAILED, {
+        stagingPath: null,
+        error: cancelled ? null : serializeError(normalized),
+        finishedAt: this.now(),
+      });
       reportProgress({
         phase: lastProgress.phase || "failed",
-        status: "failed",
+        status: cancelled ? "cancelled" : "failed",
         message: normalized.message,
-        error: serializeError(normalized),
+        error: cancelled ? null : serializeError(normalized),
       });
-      return { success: false, code: normalized.code, error: normalized.message, details: clone(normalized.details), state: this.getState() };
+      return {
+        success: false,
+        cancelled,
+        code: normalized.code,
+        error: normalized.message,
+        details: clone(normalized.details),
+        state: this.getState(),
+      };
     }
   }
 
@@ -1024,8 +1530,8 @@ export class EnvironmentBootstrap {
       const previous = await this._activePointer();
       const targetPath = path.join(this.environmentsRoot, verified.selectedAccelerator, spec.specHash);
       if (!force && previous?.specHash === spec.specHash && previous?.absolutePath === targetPath) {
-        const paths = await this._offlineRuntimePaths(targetPath, verified.entries);
-        const health = await this._step("probe-offline-active", () => this.probe({
+        const paths = await this._offlineRuntimePaths(targetPath);
+        const probedHealth = await this._step("probe-offline-active", () => this.probe({
           root: targetPath,
           pythonExecutable: paths.pythonExecutable,
           ffmpegPath: paths.ffmpegPath,
@@ -1034,10 +1540,13 @@ export class EnvironmentBootstrap {
           baseEnv: this.baseEnv,
           signal,
         }));
+        const health = this._applyBundledFfmpegState(probedHealth, paths.ffmpegResource);
         if (health?.success !== false) {
-          this._setStatus(BOOTSTRAP_STATUS.READY, { activePath: targetPath, finishedAt: this.now() });
+          const status = health?.degraded ? BOOTSTRAP_STATUS.DEGRADED : BOOTSTRAP_STATUS.READY;
+          this._setStatus(status, { activePath: targetPath, finishedAt: this.now() });
           return {
             success: true,
+            degraded: Boolean(health?.degraded),
             created: false,
             reused: true,
             offline: true,
@@ -1057,12 +1566,12 @@ export class EnvironmentBootstrap {
       this.state.stagingPath = stagingPath;
       await this.fs.mkdir(stagingPath, { recursive: true });
       await this._step("copy-offline-payload", () => this._copyOfflineEntries(stagingPath, verified.entries));
-      const paths = await this._step("locate-offline-runtime", () => this._offlineRuntimePaths(stagingPath, verified.entries));
+      const paths = await this._step("locate-offline-runtime", () => this._offlineRuntimePaths(stagingPath));
       if (paths.condaUnpackExecutable) {
         await this._step("relocate-offline-runtime", () => this._run(paths.condaUnpackExecutable, [], "relocate-offline-runtime", signal));
       }
       this._setStatus(BOOTSTRAP_STATUS.PROBING);
-      const health = await this._step("probe-offline-environment", () => this.probe({
+      const probedHealth = await this._step("probe-offline-environment", () => this.probe({
         root: stagingPath,
         pythonExecutable: paths.pythonExecutable,
         ffmpegPath: paths.ffmpegPath,
@@ -1071,6 +1580,7 @@ export class EnvironmentBootstrap {
         baseEnv: this.baseEnv,
         signal,
       }));
+      const health = this._applyBundledFfmpegState(probedHealth, paths.ffmpegResource);
       if (health?.success === false) {
         throw new EnvironmentBootstrapError("Offline environment health probe failed", "ENVIRONMENT_PROBE_FAILED", { health });
       }
@@ -1080,6 +1590,7 @@ export class EnvironmentBootstrap {
         specHash: spec.specHash,
         source: "offline-payload",
         payloadVariant: verified.variant,
+        degraded: Boolean(health?.degraded),
         readyAt: new Date(this.now()).toISOString(),
       }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
       const pointer = {
@@ -1088,16 +1599,18 @@ export class EnvironmentBootstrap {
         specHash: spec.specHash,
         path: path.relative(this.rootDir, targetPath).replace(/\\/g, "/"),
         activatedAt: new Date(this.now()).toISOString(),
-        pythonExecutableRelative: path.relative(targetPath, paths.pythonExecutable).replace(/\\/g, "/"),
-        ffmpegRelative: path.relative(targetPath, paths.ffmpegPath).replace(/\\/g, "/"),
+        pythonExecutableRelative: path.relative(stagingPath, paths.pythonExecutable).replace(/\\/g, "/"),
+        ffmpegSource: "bundled",
         source: "offline-payload",
       };
       await this._step("activate-offline-payload", () => this._activate(stagingPath, targetPath, pointer, operationId, previous));
       stagingPath = null;
       if (previous && previous.specHash !== pointer.specHash) await this._appendHistory(previous);
-      this._setStatus(BOOTSTRAP_STATUS.READY, { stagingPath: null, activePath: targetPath, finishedAt: this.now() });
+      const completedStatus = health?.degraded ? BOOTSTRAP_STATUS.DEGRADED : BOOTSTRAP_STATUS.READY;
+      this._setStatus(completedStatus, { stagingPath: null, activePath: targetPath, finishedAt: this.now() });
       return {
         success: true,
+        degraded: Boolean(health?.degraded),
         created: true,
         reused: false,
         offline: true,

@@ -7,6 +7,7 @@ import { parse as parseYaml } from "yaml";
 import { signManifestPayload } from "./manifest-signing.mjs";
 import { MANIFEST_KEY_ID } from "../../src-electron/runtime/manifest-verifier.js";
 import { normalizeVersion } from "./app-release-lib.mjs";
+import { assertEditionChannel } from "../../src-electron/updater/edition.js";
 
 const VERSIONED_APP_PREFIX = "app/win-x64";
 
@@ -75,11 +76,15 @@ export async function buildAppManifestPayload({
   if (yamlFile?.size !== undefined && Number(yamlFile.size) !== installer.size) throw new Error("Installer size does not match latest.yml");
   const yamlPrefix = String(releasePrefix).replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
   const normalizedChannel = requiredText(channel, "channel").toLowerCase();
-  if (!/^(test|beta|stable)$/.test(normalizedChannel)) throw new Error(`Unsupported channel: ${normalizedChannel}`);
+  if (!/^(test|stable)$/.test(normalizedChannel)) throw new Error(`Unsupported channel: ${normalizedChannel}`);
+  const edition = assertEditionChannel(version, normalizedChannel);
   const normalizedSequence = Number(sequence);
   if (!Number.isSafeInteger(normalizedSequence) || normalizedSequence < 1) throw new Error("sequence must be a positive safe integer");
   return {
     schemaVersion: 1,
+    edition: edition.edition,
+    productName: edition.productName,
+    appId: edition.appId,
     channel: normalizedChannel,
     sequence: normalizedSequence,
     appVersion: version,

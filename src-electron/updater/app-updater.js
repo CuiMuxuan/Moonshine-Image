@@ -80,6 +80,7 @@ export function normalizeUpdaterError(error, options = {}) {
 
 export function createDefaultUpdateState(options = {}) {
   const enabled = Boolean(options.enabled);
+  const channel = normalizeAppUpdateChannel(options.channel);
   const initialError = options.error
     ? normalizeUpdaterError(options.error, {
       phase: options.errorPhase,
@@ -88,9 +89,14 @@ export function createDefaultUpdateState(options = {}) {
     : null;
   return {
     enabled,
-    channel: normalizeAppUpdateChannel(options.channel),
+    edition: options.edition || (channel === "test" ? "test" : "official"),
+    channel,
+    channelLocked: true,
     status: enabled ? APP_UPDATE_STATUS.IDLE : APP_UPDATE_STATUS.DISABLED,
     currentVersion: toNullableString(options.currentVersion) || "",
+    // This is package metadata for the version currently installed, not the
+    // timestamp of its most recent update check.
+    currentVersionUpdatedAt: toNullableString(options.currentVersionUpdatedAt),
     availableVersion: null,
     latestVersion: null,
     releaseName: null,
@@ -163,7 +169,9 @@ export class AppUpdaterService {
     this.state = createDefaultUpdateState({
       enabled: Boolean(this.updater) && (this.isPackaged || this.allowDev),
       currentVersion: options.currentVersion,
+      currentVersionUpdatedAt: options.currentVersionUpdatedAt,
       channel: options.channel,
+      edition: options.edition,
       error: options.initialError,
     });
     this.timer = null;
@@ -187,34 +195,16 @@ export class AppUpdaterService {
     }
     const normalized = normalizeAppUpdateChannel(channel);
     if (normalized === this.state.channel) {
-      return { success: true, changed: false, channel: normalized, state: this.getState() };
+      return { success: true, changed: false, locked: true, channel: normalized, state: this.getState() };
     }
-    if (this.activeOperation || this._isProtectedFromCheck()) {
-      return {
-        success: false,
-        code: "APP_UPDATE_CHANNEL_LOCKED",
-        state: this.getState(),
-      };
-    }
-
-    this._setState({
-      channel: normalized,
-      status: this.state.enabled ? APP_UPDATE_STATUS.IDLE : APP_UPDATE_STATUS.DISABLED,
-      availableVersion: null,
-      latestVersion: null,
-      releaseName: null,
-      releaseDate: null,
-      progress: 0,
-      bytesPerSecond: 0,
-      transferred: 0,
-      total: 0,
-      checkedAt: null,
-      downloadedAt: null,
-      error: null,
-      retryAction: null,
-      installBlockedReason: null,
-    });
-    return { success: true, changed: true, channel: normalized, state: this.getState() };
+    return {
+      success: false,
+      changed: false,
+      locked: true,
+      code: "APP_UPDATE_CHANNEL_LOCKED",
+      channel: this.state.channel,
+      state: this.getState(),
+    };
   }
 
   attach() {
@@ -512,7 +502,7 @@ export class AppUpdaterService {
       const readiness = (await canInstall()) || {};
       if (!readiness.allowed) {
         const reason = toNullableString(readiness.reason) ||
-          "当前仍有任务或后端服务运行，暂不能安装更新。";
+          "当前仍有任务或服务运行，暂不能安装更新。";
         this._setState({
           status: APP_UPDATE_STATUS.DOWNLOADED,
           error: null,

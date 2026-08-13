@@ -17,7 +17,7 @@ Verifies deterministic release keys without listing the bucket.
 
 Options:
   --scope <immutable|channel|stable> object set to verify (default: immutable)
-  --channel <test|beta|stable> channel to verify (default: stable)
+  --channel <test|stable>      channel to verify (must match the app edition)
   --public-only              verify the public custom domain without R2 credentials
   --artifact-dir <path>      electron-builder output directory
   --manifest <path>          latest.yml path (defaults inside artifact-dir)

@@ -115,7 +115,7 @@ HF_MODEL_REPO_BASE_URL = "https://huggingface.co/CuiMuxuan/moonshine-models/reso
 MANUAL_MODEL_SOURCE_URL = "https://pan.quark.cn/s/2e51ec70c7b9"
 MANUAL_MODEL_INSTALL_HINT = (
     "如果 Hugging Face 主源下载不可用，请从夸克网盘副源手动下载对应模型文件，"
-    "并放入当前模型目录。也可以私信作者或者加入交流群获取模型文件或百度网盘链接。"
+    "并放入当前模型路径。也可以私信作者或者加入交流群获取模型文件或百度网盘链接。"
 )
 SAM_MODEL_MANUAL_SOURCES = [
     {
@@ -125,13 +125,13 @@ SAM_MODEL_MANUAL_SOURCES = [
     }
 ]
 SAM_MODEL_INSTALL_HINT = (
-    "SAM 模型推荐按版本分目录放置：SAM1 放入 sam/，SAM2.1 放入 sam2/，"
+    "SAM 模型推荐按版本分路径放置：SAM1 放入 sam/，SAM2.1 放入 sam2/，"
     "SAM3/SAM3.1 放入 sam3/。同一版本的不同型号按各自 checkpoint 文件名并列管理；"
-    "根目录 checkpoint 不再作为 SAM 模型安装位置识别。"
+    "根路径 checkpoint 不再作为 SAM 模型安装位置识别。"
 )
 SAM3_LICENSE_HINT = (
     "SAM3/SAM3.1 权重由 Moonshine-Image 模型库提供下载时，仍需保留来源、版本、"
-    "hash 与 Meta SAM License 确认记录；运行时只使用本项目模型目录下的本地 checkpoint。"
+    "hash 与 Meta SAM License 确认记录；运行环境只使用本项目模型路径下的本地 checkpoint。"
 )
 LAMA_LICENSE = {
     "name": "Apache-2.0",
@@ -218,7 +218,7 @@ MODEL_MANIFEST = (
             "outputRequired": True,
         },
         "parameters": {},
-        "parameterHelp": "当前模型参数由后端自动控制，无需手动调整。",
+        "parameterHelp": "当前模型参数由服务自动控制，无需手动调整。",
         "capabilities": {
             "speed": 7.0,
             "realImageQuality": 8.0,
@@ -384,7 +384,7 @@ MODEL_MANIFEST = (
         ],
         "manualSources": SAM_MODEL_MANUAL_SOURCES,
         "manualHint": (
-            "请将 sam_vit_b_01ec64.pth 放入当前模型目录的 sam/ 子目录。"
+            "请将 sam_vit_b_01ec64.pth 放入当前模型路径的 sam/ 子路径。"
             + SAM_MODEL_INSTALL_HINT
         ),
         "files": [
@@ -439,7 +439,7 @@ MODEL_MANIFEST = (
         ],
         "manualSources": SAM_MODEL_MANUAL_SOURCES,
         "manualHint": (
-            "请将 sam_vit_l_0b3195.pth 放入当前模型目录的 sam/ 子目录。"
+            "请将 sam_vit_l_0b3195.pth 放入当前模型路径的 sam/ 子路径。"
             + SAM_MODEL_INSTALL_HINT
         ),
         "files": [
@@ -494,7 +494,7 @@ MODEL_MANIFEST = (
         ],
         "manualSources": SAM_MODEL_MANUAL_SOURCES,
         "manualHint": (
-            "请将 sam_vit_h_4b8939.pth 放入当前模型目录的 sam/ 子目录。"
+            "请将 sam_vit_h_4b8939.pth 放入当前模型路径的 sam/ 子路径。"
             + SAM_MODEL_INSTALL_HINT
         ),
         "files": [
@@ -549,7 +549,7 @@ MODEL_MANIFEST = (
         ],
         "manualSources": SAM_MODEL_MANUAL_SOURCES,
         "manualHint": (
-            "请将 sam2.1_hiera_tiny.pt 放入当前模型目录的 sam2/ 子目录。"
+            "请将 sam2.1_hiera_tiny.pt 放入当前模型路径的 sam2/ 子路径。"
             + SAM_MODEL_INSTALL_HINT
         ),
         "files": [
@@ -604,7 +604,7 @@ MODEL_MANIFEST = (
         ],
         "manualSources": SAM_MODEL_MANUAL_SOURCES,
         "manualHint": (
-            "请将 sam2.1_hiera_small.pt 放入当前模型目录的 sam2/ 子目录。"
+            "请将 sam2.1_hiera_small.pt 放入当前模型路径的 sam2/ 子路径。"
             + SAM_MODEL_INSTALL_HINT
         ),
         "files": [
@@ -659,7 +659,7 @@ MODEL_MANIFEST = (
         ],
         "manualSources": SAM_MODEL_MANUAL_SOURCES,
         "manualHint": (
-            "请将 sam2.1_hiera_base_plus.pt 放入当前模型目录的 sam2/ 子目录。"
+            "请将 sam2.1_hiera_base_plus.pt 放入当前模型路径的 sam2/ 子路径。"
             + SAM_MODEL_INSTALL_HINT
         ),
         "files": [
@@ -714,7 +714,7 @@ MODEL_MANIFEST = (
         ],
         "manualSources": SAM_MODEL_MANUAL_SOURCES,
         "manualHint": (
-            "请将 sam2.1_hiera_large.pt 放入当前模型目录的 sam2/ 子目录。"
+            "请将 sam2.1_hiera_large.pt 放入当前模型路径的 sam2/ 子路径。"
             + SAM_MODEL_INSTALL_HINT
         ),
         "files": [
@@ -769,7 +769,7 @@ MODEL_MANIFEST = (
         ],
         "manualSources": SAM_MODEL_MANUAL_SOURCES,
         "manualHint": (
-            "请将 sam3.pt 放入当前模型目录的 sam3/ 子目录。"
+            "请将 sam3.pt 放入当前模型路径的 sam3/ 子路径。"
             + SAM_MODEL_INSTALL_HINT
             + SAM3_LICENSE_HINT
         ),
@@ -826,7 +826,7 @@ MODEL_MANIFEST = (
         ],
         "manualSources": SAM_MODEL_MANUAL_SOURCES,
         "manualHint": (
-            "请将 sam3.1_multiplex.pt 放入当前模型目录的 sam3/ 子目录。"
+            "请将 sam3.1_multiplex.pt 放入当前模型路径的 sam3/ 子路径。"
             + SAM_MODEL_INSTALL_HINT
             + SAM3_LICENSE_HINT
         ),
@@ -1210,17 +1210,23 @@ def _file_status(model_dir: Path, file_spec: dict) -> dict:
 
 
 def _device_compatible(model: dict, cuda_info: Optional[dict]) -> bool:
-    minimum_vram = model.get("minimumVram")
-    if not minimum_vram:
-        return True
+    """Return hard runtime compatibility, not the preferred accelerator.
 
-    recommended_device = str(model.get("recommendedDevice") or "").lower()
-    if recommended_device != "cuda":
+    ``recommendedDevice`` and VRAM values are performance guidance. LaMa, MAT,
+    SLBR and SAM1 have CPU implementations and must remain preparable without
+    CUDA. SAM2/SAM3 are intentionally restricted by the packaged application.
+    """
+    family = str(model.get("family") or model.get("id") or "").strip().lower()
+    if family not in {"sam2", "sam3"}:
         return True
 
     cuda_info = cuda_info or {}
     if not cuda_info.get("cuda_available") or cuda_info.get("cuda_compatible") is False:
         return False
+
+    minimum_vram = model.get("minimumVram")
+    if not minimum_vram:
+        return True
 
     memory_mb = cuda_info.get("total_memory_mb") or cuda_info.get("free_memory_mb") or 0
     try:
@@ -1274,7 +1280,8 @@ def build_model_status(model_dir: Path, cuda_info: Optional[dict] = None) -> lis
             for file_status in file_statuses
             if file_status["exists"] and not file_status["valid"]
         ]
-        installed = len(file_statuses) > 0 and not missing_files and not corrupt_files
+        verified = len(file_statuses) > 0 and not missing_files and not corrupt_files
+        installed = verified
         device_compatible = _device_compatible(manifest_item, cuda_info)
         recommended_vram_warning = _recommended_vram_warning(manifest_item, cuda_info)
 
@@ -1284,6 +1291,24 @@ def build_model_status(model_dir: Path, cuda_info: Optional[dict] = None) -> lis
             "license": manifest_item.get("license") or _model_license_metadata(manifest_item),
             "files": file_statuses,
             "installed": installed,
+            "verified": verified,
+            "fileStatus": "verified" if verified else ("corrupt" if corrupt_files else "missing"),
+            "loadState": "not_loaded",
+            "loaded": False,
+            "runtimeReady": False,
+            "ready": False,
+            "readiness": {
+                "status": "not_loaded" if verified and device_compatible else "blocked",
+                "reason": (
+                    None
+                    if verified and device_compatible
+                    else (
+                        "device_incompatible"
+                        if verified
+                        else ("files_corrupt" if corrupt_files else "files_missing")
+                    )
+                ),
+            },
             "available": installed and device_compatible,
             "missingFiles": missing_files,
             "corruptFiles": corrupt_files,
@@ -1317,6 +1342,7 @@ class ModelDownloadTask:
     created_at: float = field(default_factory=_now)
     updated_at: float = field(default_factory=_now)
     completed_at: Optional[float] = None
+    model_dir: str = field(default="", repr=False)
     manifest_item: Optional[dict] = field(default=None, repr=False)
     thread: Optional[threading.Thread] = field(default=None, repr=False)
 
@@ -1363,21 +1389,60 @@ class ModelDownloadTaskManager:
             if not acceptance.get("accepted") or str(acceptance.get("acceptanceId") or "").strip() != expected_id:
                 raise ValueError("下载该模型前必须确认并接受对应许可证。")
 
+        resolved_model_dir = Path(model_dir).expanduser().resolve()
+        with self._lock:
+            self._prune_completed_tasks_locked()
+            active_task = next(
+                (
+                    task
+                    for task in self._tasks.values()
+                    if task.model_id == model_id
+                    and task.model_dir == str(resolved_model_dir)
+                    and task.status in {"queued", "running"}
+                ),
+                None,
+            )
+            if active_task is not None:
+                return active_task
+
         task = ModelDownloadTask(
             id=uuid.uuid4().hex,
             model_id=model_id,
+            model_dir=str(resolved_model_dir),
             manifest_item=manifest_item,
         )
         thread = threading.Thread(
             target=self._run_download_task,
-            args=(task.id, Path(model_dir).expanduser().resolve()),
+            args=(task.id, resolved_model_dir),
             daemon=True,
         )
         task.thread = thread
         with self._lock:
+            # Close the small race between the first lookup and task registration.
+            active_task = next(
+                (
+                    existing
+                    for existing in self._tasks.values()
+                    if existing.model_id == model_id
+                    and existing.model_dir == str(resolved_model_dir)
+                    and existing.status in {"queued", "running"}
+                ),
+                None,
+            )
+            if active_task is not None:
+                return active_task
             self._tasks[task.id] = task
-        thread.start()
+            thread.start()
         return task
+
+    def _prune_completed_tasks_locked(self, keep: int = 100):
+        completed = sorted(
+            (task for task in self._tasks.values() if task.status in {"completed", "failed"}),
+            key=lambda task: task.completed_at or task.updated_at,
+            reverse=True,
+        )
+        for task in completed[keep:]:
+            self._tasks.pop(task.id, None)
 
     def get_task(self, task_id: str) -> Optional[ModelDownloadTask]:
         with self._lock:

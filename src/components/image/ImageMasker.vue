@@ -271,7 +271,7 @@
                       v-model="samTextPrompt"
                       dense
                       outlined
-                      :disable="samPredicting || samTextBatchRunning || !props.samImage || !props.samTextAvailable"
+                      :disable="samPredicting || samTextBatchRunning || !props.samImage"
                       label="自定义文本"
                       placeholder="输入短名词短语"
                       class="sam-text-prompt"
@@ -576,6 +576,7 @@ import {
   normalizeButtonSize,
 } from "src/config/ConfigManager";
 import { useConfigStore } from "src/stores/config";
+import { useModelRegistryStore } from "src/stores/modelRegistry";
 import {
   MASK_TOOL_MODES,
   hexToRgba,
@@ -597,12 +598,35 @@ import { useEditorStore } from "src/stores/editor";
 
 const editor = inject("image-editor", { value: null });
 const configStore = useConfigStore();
+const modelRegistryStore = useModelRegistryStore();
+const globalSettings = inject("globalSettings", null);
 const $q = useQuasar();
 
 const SAM_TOOL_MODES = Object.freeze({
   SELECT: "select",
   ERASE: "erase",
 });
+
+const requestModelLicenseAcceptance = async (model) => {
+  if (!model?.license?.requiresAcceptance) return null;
+  const acceptanceId = String(model.license.acceptanceId || "").trim();
+  if (!acceptanceId) throw new Error("该模型缺少许可证确认标识，暂时不能下载。");
+  return new Promise((resolve) => {
+    $q.dialog({
+      title: "确认模型许可证",
+      message: [
+        `模型：${model.label || model.id || "当前模型"}`,
+        `许可证：${model.license.name || "待确认"}`,
+        model.license.note,
+        "继续即表示你已阅读并同意该许可证。",
+      ].filter(Boolean).join("\n\n"),
+      ok: { label: "我已阅读并同意", color: "primary", noCaps: true },
+      cancel: { label: "取消", flat: true, noCaps: true },
+      persistent: true,
+    }).onOk(() => resolve({ accepted: true, acceptanceId }))
+      .onCancel(() => resolve(null));
+  });
+};
 
 const props = defineProps({
   scale: {
@@ -1031,7 +1055,7 @@ const samPerformanceText = computed(() => {
 const samCudaUsageHint = computed(() => {
   const performance = samLastPerformance.value;
   if (!performance || String(performance.device || "").toLowerCase() !== "cpu") return "";
-  return "当前 SAM 在 CPU 上运行。如需使用 CUDA，请在全局设置或后端管理中将启动设备改为 CUDA，确认 CUDA 版运行时与 PyTorch 可用，然后重启后端。";
+  return "当前 SAM 在 CPU 上运行。如需使用 CUDA，请在全局设置或服务管理中将启动设备改为 CUDA，确认 CUDA 版运行环境与 PyTorch 可用，然后重启服务。";
 });
 
 const samToolToggleIcon = computed(() =>
@@ -1169,7 +1193,7 @@ const selectedSamModelSupportsPointBox = computed(() => {
   return ["sam", "sam2", "sam3"].includes(selectedSamModelFamily.value);
 });
 const selectedSamModelCanRunText = computed(
-  () => selectedSamModelSupportsText.value && Boolean(props.samTextAvailable)
+  () => selectedSamModelSupportsText.value
 );
 const selectedSamModelHasRunnableFeature = computed(
   () => selectedSamModelSupportsPointBox.value || selectedSamModelCanRunText.value
@@ -1177,7 +1201,6 @@ const selectedSamModelHasRunnableFeature = computed(
 const canRunSamTextPrediction = computed(
   () =>
     selectedSamModelSupportsText.value &&
-    Boolean(props.samTextAvailable) &&
     Boolean(props.samImage) &&
     Boolean(samTextPromptSpec.value.text) &&
     !samPredicting.value &&
@@ -1186,7 +1209,6 @@ const canRunSamTextPrediction = computed(
 const canRunSamBatchTextPrediction = computed(
   () =>
     selectedSamModelSupportsText.value &&
-    Boolean(props.samTextAvailable) &&
     Boolean(samTextPromptSpec.value.text) &&
     props.samTextBatchTargetCount > 0 &&
     !samPredicting.value &&
@@ -1194,7 +1216,6 @@ const canRunSamBatchTextPrediction = computed(
 );
 const samTextBatchTooltip = computed(() => {
   if (!selectedSamModelSupportsText.value) return "当前 SAM 模型不支持文本智选";
-  if (!props.samTextAvailable) return "请先安装 SAM3 文本模型";
   if (!samTextPromptSpec.value.text) return "先输入文本提示或选择颜色/目标";
   if (props.samTextBatchTargetCount <= 0) return "请先选择图片";
   if (samTextBatchRunning.value) return "正在检索选中图片";
@@ -2407,6 +2428,30 @@ const runSamPrediction = async ({ point = null, box = null } = {}) => {
   if (!(await requestSamCpuRiskConfirmation(runModelId))) {
     return;
   }
+  try {
+    const model = modelRegistryStore.models.find((item) => item.id === runModelId);
+    await modelRegistryStore.ensureModelReady(runModelId, {
+      requestLicenseAcceptance: () => requestModelLicenseAcceptance(model),
+      onProgress: (state) => emit("sam-processing-state", {
+        running: state.stage !== "ready",
+        message: state.message || "正在准备智能选区模型",
+        progress: state.progress,
+      }),
+    });
+  } catch (error) {
+    emit("sam-processing-state", { running: false, message: "", progress: null });
+    $q.notify({
+      type: "negative",
+      message: error?.message || "智能选区模型准备失败",
+      position: "top",
+      actions: [{
+        label: "打开模型管理",
+        color: "white",
+        handler: () => globalSettings?.open?.({ tab: "models", modelId: runModelId }),
+      }],
+    });
+    return;
+  }
   rememberExecutedSamModel(runModelId);
   samPredicting.value = true;
   try {
@@ -2460,18 +2505,34 @@ const runSamTextPrediction = async () => {
     });
     return;
   }
-  if (!props.samTextAvailable) {
-    $q.notify({
-      type: "warning",
-      message: "请先在模型管理中安装 SAM3 文本模型",
-      position: "top",
-    });
-    return;
-  }
   closeSamToolbarPopups();
   ensureSamBaseSnapshot();
   const runModelId = getTextModelId();
   if (!(await requestSamCpuRiskConfirmation(runModelId))) {
+    return;
+  }
+  try {
+    const model = modelRegistryStore.models.find((item) => item.id === runModelId);
+    await modelRegistryStore.ensureModelReady(runModelId, {
+      requestLicenseAcceptance: () => requestModelLicenseAcceptance(model),
+      onProgress: (state) => emit("sam-processing-state", {
+        running: state.stage !== "ready",
+        message: state.message || "正在准备文本智能选区模型",
+        progress: state.progress,
+      }),
+    });
+  } catch (error) {
+    emit("sam-processing-state", { running: false, message: "", progress: null });
+    $q.notify({
+      type: "negative",
+      message: error?.message || "文本智能选区模型准备失败",
+      position: "top",
+      actions: [{
+        label: "打开模型管理",
+        color: "white",
+        handler: () => globalSettings?.open?.({ tab: "models", modelId: runModelId }),
+      }],
+    });
     return;
   }
   rememberExecutedSamModel(runModelId);

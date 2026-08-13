@@ -32,7 +32,8 @@ function createReleaseFixture(t, version = "1.3.0") {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "moonshine-app-release-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-  const installerName = `Moonshine-Image-Setup-${version}.exe`;
+  const productName = version.includes("-test.") ? "Moonshine-Image-Test" : "Moonshine-Image";
+  const installerName = `${productName}-Setup-${version}.exe`;
   const installer = Buffer.from("installer-payload-for-release-tests");
   const blockmap = Buffer.from("blockmap-payload-for-release-tests");
   fs.writeFileSync(path.join(dir, installerName), installer);
@@ -207,7 +208,7 @@ test("release descriptor validates latest.yml and produces deterministic keys", 
   assert.equal(objects.stableManifest.cacheControl, "no-cache, no-store, must-revalidate");
 });
 
-test("signed app manifest is an optional immutable object with a stable pointer", () => {
+test("signed app manifest is an optional immutable object with an edition pointer", () => {
   const descriptor = {
     version: "1.3.0",
     installer: { name: "Moonshine-Image-Setup-1.3.0.exe", path: "x", size: 4, sha256: "a".repeat(64) },
@@ -220,10 +221,16 @@ test("signed app manifest is an optional immutable object with a stable pointer"
   assert.equal(objects.stableAppManifest.key, "manifests/stable/latest.json");
   assert.equal(objects.stableAppManifest.immutable, false);
 
-  const betaObjects = buildReleaseObjects(descriptor, releaseConfig.releasePrefix, { channel: "beta" });
-  assert.equal(betaObjects.archivedAppManifest.key, "manifests/1.3.0/beta/latest.json");
-  assert.equal(betaObjects.channelAppManifest.key, "manifests/beta/latest.json");
-  assert.equal(betaObjects.stableAppManifest, undefined);
+  const testDescriptor = {
+    ...descriptor,
+    version: "1.3.3-test.1",
+    installer: { ...descriptor.installer, name: "Moonshine-Image-Test-Setup-1.3.3-test.1.exe" },
+    blockmap: { ...descriptor.blockmap, name: "Moonshine-Image-Test-Setup-1.3.3-test.1.exe.blockmap" },
+  };
+  const testObjects = buildReleaseObjects(testDescriptor, releaseConfig.releasePrefix, { channel: "test" });
+  assert.equal(testObjects.archivedAppManifest.key, "manifests/1.3.3-test.1/test/latest.json");
+  assert.equal(testObjects.channelAppManifest.key, "manifests/test/latest.json");
+  assert.equal(testObjects.stableAppManifest, undefined);
 });
 
 test("release descriptor rejects version and artifact mismatches", async (t) => {
@@ -482,12 +489,12 @@ test("stable publication is separately confirmed and writes latest.yml last", as
   assert.ok(fetchCalls.every((url) => url.includes("verify=")));
 });
 
-test("beta channel uses its own immutable path and requires channel confirmation", async (t) => {
-  const fixture = createReleaseFixture(t);
-  const descriptor = await loadReleaseDescriptor({ artifactDir: fixture.dir, channel: "beta" });
-  const objects = buildReleaseObjects(descriptor, releaseConfig.releasePrefix, { channel: "beta" });
-  assert.equal(objects.installer.key, "app/win-x64/beta/Moonshine-Image-Setup-1.3.0.exe");
-  assert.equal(objects.channelManifest.key, "app/win-x64/beta/latest.yml");
+test("test edition uses its own immutable path and requires channel confirmation", async (t) => {
+  const fixture = createReleaseFixture(t, "1.3.3-test.1");
+  const descriptor = await loadReleaseDescriptor({ artifactDir: fixture.dir, channel: "test" });
+  const objects = buildReleaseObjects(descriptor, releaseConfig.releasePrefix, { channel: "test" });
+  assert.equal(objects.installer.key, "app/win-x64/test/Moonshine-Image-Test-Setup-1.3.3-test.1.exe");
+  assert.equal(objects.channelManifest.key, "app/win-x64/test/latest.yml");
 
   const client = new FakeS3Client();
   const fetchImpl = createPublicFetch(client);
@@ -495,7 +502,7 @@ test("beta channel uses its own immutable path and requires channel confirmation
     client,
     config: releaseConfig,
     descriptor,
-    channel: "beta",
+    channel: "test",
     fetchImpl,
     attempts: 1,
     retryDelayMs: 0,
@@ -505,28 +512,45 @@ test("beta channel uses its own immutable path and requires channel confirmation
       client,
       config: releaseConfig,
       descriptor,
-      channel: "beta",
-      confirmation: "1.3.0",
+      channel: "test",
+      confirmation: "1.3.3-test.1",
       fetchImpl,
       attempts: 1,
       retryDelayMs: 0,
     }),
-    /requires --confirm-channel beta:1.3.0/,
+    /requires --confirm-channel test:1.3.3-test.1/,
   );
   const result = await publishChannelRelease({
     client,
     config: releaseConfig,
     descriptor,
-    channel: "beta",
-    confirmation: "beta:1.3.0",
+    channel: "test",
+    confirmation: "test:1.3.3-test.1",
     fetchImpl,
     attempts: 1,
     retryDelayMs: 0,
   });
-  assert.equal(result.phase, "beta");
-  assert.ok(client.objects.get("app/win-x64/beta/latest.yml"));
-  assert.equal(digest(client.objects.get("app/win-x64/beta/latest.yml").body), descriptor.manifestArtifact.sha256);
-  assert.doesNotThrow(() => assertChannelConfirmation("beta:1.3.0", "beta", "1.3.0"));
+  assert.equal(result.phase, "test");
+  assert.ok(client.objects.get("app/win-x64/test/latest.yml"));
+  assert.equal(digest(client.objects.get("app/win-x64/test/latest.yml").body), descriptor.manifestArtifact.sha256);
+  assert.doesNotThrow(() => assertChannelConfirmation("test:1.3.3-test.1", "test", "1.3.3-test.1"));
+});
+
+test("application release descriptors reject cross-channel editions", async (t) => {
+  const official = createReleaseFixture(t, "1.3.0");
+  const testEdition = createReleaseFixture(t, "1.3.3-test.1");
+  await assert.rejects(
+    loadReleaseDescriptor({ artifactDir: official.dir, channel: "test" }),
+    /locked to the stable channel/,
+  );
+  await assert.rejects(
+    loadReleaseDescriptor({ artifactDir: testEdition.dir, channel: "stable" }),
+    /locked to the test channel/,
+  );
+  await assert.rejects(
+    loadReleaseDescriptor({ artifactDir: official.dir, channel: "beta" }),
+    /Unsupported release channel/,
+  );
 });
 
 test("CLI parser rejects unknown and ambiguous options", () => {

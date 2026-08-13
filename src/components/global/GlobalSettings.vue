@@ -18,54 +18,46 @@
         />
       </q-card-section>
 
-      <q-card-section class="settings-tabs-section q-pt-sm">
-        <q-tabs
-          v-model="activeTab"
-          dense
-          align="justify"
-          active-color="primary"
-          indicator-color="primary"
-          outside-arrows
-          mobile-arrows
-          class="settings-main-tabs"
-        >
-          <q-tab
-            name="general"
-            label="通用配置"
-            data-testid="global-settings-tab-general"
-          />
-          <q-tab
-            name="backend"
-            label="后端配置"
-            data-testid="global-settings-tab-backend"
-          />
-          <q-tab
-            name="models"
-            label="模型管理"
-            data-testid="global-settings-tab-models"
-          />
-          <q-tab name="files" label="文件管理" data-testid="global-settings-tab-files" />
-          <q-tab
-            name="appearance"
-            label="外观主题"
-            data-testid="global-settings-tab-appearance"
-          />
-          <q-tab
-            name="advanced"
-            label="高级配置"
-            data-testid="global-settings-tab-advanced"
-          />
-          <q-tab
-            name="updates"
-            label="应用更新"
-            data-testid="global-settings-tab-updates"
-          />
-        </q-tabs>
-        <q-separator class="q-mt-sm" />
-      </q-card-section>
+      <q-card-section class="settings-workspace q-pa-none">
+        <nav class="settings-sidebar" aria-label="全局设置分类">
+          <q-tabs
+            v-model="activeTab"
+            vertical
+            dense
+            active-color="primary"
+            indicator-color="primary"
+            class="settings-main-tabs"
+          >
+            <q-tab name="general" icon="tune" label="通用配置" data-testid="global-settings-tab-general">
+              <q-tooltip>通用配置</q-tooltip>
+            </q-tab>
+            <q-tab name="backend" icon="dns" label="服务配置" data-testid="global-settings-tab-backend">
+              <q-tooltip>服务配置</q-tooltip>
+            </q-tab>
+            <q-tab name="models" icon="model_training" label="模型管理" data-testid="global-settings-tab-models">
+              <q-tooltip>模型管理</q-tooltip>
+            </q-tab>
+            <q-tab name="files" icon="folder" label="文件管理" data-testid="global-settings-tab-files">
+              <q-tooltip>文件管理</q-tooltip>
+            </q-tab>
+            <q-tab name="appearance" icon="palette" label="外观主题" data-testid="global-settings-tab-appearance">
+              <q-tooltip>外观主题</q-tooltip>
+            </q-tab>
+            <q-tab name="image" icon="image" label="图片处理" data-testid="global-settings-tab-image">
+              <q-tooltip>图片处理</q-tooltip>
+            </q-tab>
+            <q-tab name="video" icon="videocam" label="视频处理" data-testid="global-settings-tab-video">
+              <q-tooltip>视频处理</q-tooltip>
+            </q-tab>
+            <q-tab name="updates" icon="system_update_alt" label="应用更新" data-testid="global-settings-tab-updates">
+              <q-tooltip>应用更新</q-tooltip>
+            </q-tab>
+          </q-tabs>
+        </nav>
+        <q-separator vertical />
 
-      <q-card-section class="settings-content-section">
-        <q-scroll-area class="settings-scroll-area">
+        <div class="settings-content-section">
+          <q-scroll-area class="settings-scroll-area">
           <q-tab-panels v-model="activeTab" animated class="bg-transparent">
             <q-tab-panel name="general" class="q-px-none">
               <div class="section">
@@ -145,11 +137,11 @@
               class="q-px-none"
               data-testid="global-settings-backend-panel"
             >
-              <div class="section settings-panel-grid">
+              <div class="section settings-panel-grid settings-panel-grid--service">
                 <SettingsPanel v-bind="settingsHelp.backendPort" @request-help="openSettingsHelp">
                   <q-input
                     v-model.number="localConfig.general.backendPort"
-                    label="后端端口"
+                    label="服务端口"
                     type="number"
                     :min="1024"
                     :max="65535"
@@ -174,16 +166,94 @@
                   />
                 </SettingsPanel>
                 <SettingsPanel v-bind="settingsHelp.backendProjectPath" @request-help="openSettingsHelp">
-                  <q-input v-model="localConfig.general.backendProjectPath" label="后端项目路径" outlined dense readonly>
+                  <template #actions>
+                    <q-btn
+                      round
+                      dense
+                      flat
+                      icon="content_copy"
+                      class="settings-copy-button"
+                      aria-label="复制服务项目路径"
+                      :disable="!localConfig.general.backendProjectPath"
+                      @click="copyManagedPath(localConfig.general.backendProjectPath, '服务项目路径')"
+                    >
+                      <q-tooltip>复制路径</q-tooltip>
+                    </q-btn>
+                  </template>
+                  <q-input v-model="localConfig.general.backendProjectPath" label="服务项目路径" outlined dense readonly>
+                    <q-tooltip v-if="localConfig.general.backendProjectPath">
+                      {{ localConfig.general.backendProjectPath }}
+                    </q-tooltip>
                     <template #append>
-                      <q-btn round dense flat icon="folder" class="settings-icon-button" aria-label="选择后端项目路径" @click="selectBackendProjectPath" />
+                      <q-btn round dense flat icon="folder_open" class="settings-icon-button" aria-label="选择服务项目路径" @click="selectBackendProjectPath">
+                        <q-tooltip>选择路径</q-tooltip>
+                      </q-btn>
+                    </template>
+                  </q-input>
+                </SettingsPanel>
+                <SettingsPanel v-bind="settingsHelp.runtimeEnvironmentPath" @request-help="openSettingsHelp">
+                  <template #actions>
+                    <q-btn
+                      round
+                      dense
+                      flat
+                      icon="content_copy"
+                      class="settings-copy-button"
+                      aria-label="复制运行环境路径"
+                      :disable="!runtimeEnvironmentPath"
+                      @click="copyRuntimeEnvironmentPath"
+                    >
+                      <q-tooltip>复制路径</q-tooltip>
+                    </q-btn>
+                  </template>
+                  <q-input
+                    :model-value="runtimeEnvironmentPath"
+                    label="运行环境路径"
+                    outlined
+                    dense
+                    readonly
+                    data-testid="global-settings-runtime-path"
+                  >
+                    <q-tooltip v-if="runtimeEnvironmentPath">{{ runtimeEnvironmentPath }}</q-tooltip>
+                    <template #append>
+                      <q-btn
+                        round
+                        dense
+                        flat
+                        icon="folder_open"
+                        class="settings-icon-button"
+                        aria-label="打开运行环境路径"
+                        :disable="!runtimeEnvironmentPath"
+                        @click="openRuntimeEnvironmentPath"
+                      >
+                        <q-tooltip>打开路径</q-tooltip>
+                      </q-btn>
                     </template>
                   </q-input>
                 </SettingsPanel>
                 <SettingsPanel v-bind="settingsHelp.modelDir" @request-help="openSettingsHelp">
-                  <q-input v-model="localConfig.general.modelDir" label="模型目录" outlined dense readonly>
+                  <template #actions>
+                    <q-btn
+                      round
+                      dense
+                      flat
+                      icon="content_copy"
+                      class="settings-copy-button"
+                      aria-label="复制模型路径"
+                      :disable="!localConfig.general.modelDir"
+                      @click="copyManagedPath(localConfig.general.modelDir, '模型路径')"
+                    >
+                      <q-tooltip>复制路径</q-tooltip>
+                    </q-btn>
+                  </template>
+                  <q-input v-model="localConfig.general.modelDir" label="模型路径" outlined dense readonly>
+                    <q-tooltip v-if="localConfig.general.modelDir">
+                      {{ localConfig.general.modelDir }}
+                    </q-tooltip>
                     <template #append>
-                      <q-btn round dense flat icon="folder" class="settings-icon-button" aria-label="选择模型目录" @click="selectModelPath" />
+                      <q-btn round dense flat icon="folder_open" class="settings-icon-button" aria-label="选择模型路径" @click="selectModelPath">
+                        <q-tooltip>选择路径</q-tooltip>
+                      </q-btn>
                     </template>
                   </q-input>
                 </SettingsPanel>
@@ -214,18 +284,56 @@
 
             <q-tab-panel name="files" class="q-px-none">
               <div class="section q-gutter-md">
-                <div class="settings-panel-grid">
+                <div class="settings-panel-grid settings-panel-grid--file-management">
                   <SettingsPanel v-bind="settingsHelp.downloadPath" @request-help="openSettingsHelp">
+                    <template #actions>
+                      <q-btn
+                        round
+                        dense
+                        flat
+                        icon="content_copy"
+                        class="settings-copy-button"
+                        aria-label="复制下载或导出路径"
+                        :disable="!localConfig.fileManagement.downloadPath"
+                        @click="copyManagedPath(localConfig.fileManagement.downloadPath, '下载 / 导出路径')"
+                      >
+                        <q-tooltip>复制路径</q-tooltip>
+                      </q-btn>
+                    </template>
                     <q-input v-model="localConfig.fileManagement.downloadPath" label="下载 / 导出路径" outlined dense readonly>
+                      <q-tooltip v-if="localConfig.fileManagement.downloadPath">
+                        {{ localConfig.fileManagement.downloadPath }}
+                      </q-tooltip>
                       <template #append>
-                        <q-btn round dense flat icon="folder" class="settings-icon-button" aria-label="选择下载或导出路径" @click="selectDownloadPath" />
+                        <q-btn round dense flat icon="folder_open" class="settings-icon-button" aria-label="选择下载或导出路径" @click="selectDownloadPath">
+                          <q-tooltip>选择路径</q-tooltip>
+                        </q-btn>
                       </template>
                     </q-input>
                   </SettingsPanel>
                   <SettingsPanel v-bind="settingsHelp.tempPath" @request-help="openSettingsHelp">
+                    <template #actions>
+                      <q-btn
+                        round
+                        dense
+                        flat
+                        icon="content_copy"
+                        class="settings-copy-button"
+                        aria-label="复制临时文件路径"
+                        :disable="!localConfig.fileManagement.tempPath"
+                        @click="copyManagedPath(localConfig.fileManagement.tempPath, '临时文件路径')"
+                      >
+                        <q-tooltip>复制路径</q-tooltip>
+                      </q-btn>
+                    </template>
                     <q-input v-model="localConfig.fileManagement.tempPath" label="临时文件路径" outlined dense readonly>
+                      <q-tooltip v-if="localConfig.fileManagement.tempPath">
+                        {{ localConfig.fileManagement.tempPath }}
+                      </q-tooltip>
                       <template #append>
-                        <q-btn round dense flat icon="folder" class="settings-icon-button" aria-label="选择临时文件路径" @click="selectTempPath" />
+                        <q-btn round dense flat icon="folder_open" class="settings-icon-button" aria-label="选择临时文件路径" @click="selectTempPath">
+                          <q-tooltip>选择路径</q-tooltip>
+                        </q-btn>
                       </template>
                     </q-input>
                   </SettingsPanel>
@@ -241,7 +349,7 @@
                   <div class="cleanup-row">
                     <div class="cleanup-copy">
                       <div class="text-caption text-grey-7">
-                        清理配置临时目录下的图片和视频中间文件，最近失败现场可按需保留。
+                        清理配置临时路径下的图片和视频中间文件，最近失败现场可按需保留。
                       </div>
                     </div>
                     <q-btn
@@ -347,7 +455,7 @@
                       <q-toggle
                         v-model="localConfig.general.autoStart"
                         color="primary"
-                        aria-label="自动启动后端"
+                        aria-label="自动启动服务"
                       />
                     </div>
                   </SettingsPanel>
@@ -427,18 +535,10 @@
               </div>
             </q-tab-panel>
 
-            <q-tab-panel name="advanced" class="q-px-none">
+            <q-tab-panel name="image" class="q-px-none">
               <div class="section">
-                <q-tabs v-model="advancedTab" dense active-color="primary" indicator-color="primary">
-                  <q-tab name="image" label="图片处理" />
-                  <q-tab name="video" label="视频处理" />
-                </q-tabs>
-                <q-separator class="q-my-sm" />
-
-                <q-tab-panels v-model="advancedTab" animated class="bg-transparent">
-                  <q-tab-panel name="image" class="q-pa-none">
                     <div class="q-gutter-lg">
-                      <div class="settings-panel-grid">
+                      <div class="settings-panel-grid settings-panel-grid--image-core">
                         <SettingsPanel v-bind="settingsHelp.imageHistoryLimit" @request-help="openSettingsHelp">
                           <q-input
                             v-model.number="localConfig.advanced.imageHistoryLimit"
@@ -475,8 +575,6 @@
                             dense
                           />
                         </SettingsPanel>
-                      </div>
-
                       <SettingsPanel v-bind="settingsHelp.imageProcessingMethod" @request-help="openSettingsHelp">
                         <q-select v-model="localConfig.advanced.imageProcessingMethod" :options="imageProcessingOptions" emit-value map-options outlined dense :disable="!canChangeImageProcessingMethod" />
                         <div v-if="!canChangeImageProcessingMethod" class="text-caption text-orange q-mt-xs">当前已有图片载入，暂时不能切换处理方式。</div>
@@ -538,6 +636,7 @@
                           data-testid="global-settings-image-sam-default-model"
                         />
                       </SettingsPanel>
+                      </div>
 
                       <SettingsPanel
                         v-bind="settingsHelp.samRenderCache"
@@ -651,9 +750,11 @@
                       </SettingsPanel>
                     </div>
 
-                  </q-tab-panel>
+              </div>
+            </q-tab-panel>
 
-                  <q-tab-panel name="video" class="q-pa-none">
+            <q-tab-panel name="video" class="q-px-none">
+              <div class="section">
                     <div class="q-gutter-lg">
                       <SettingsPanel v-bind="settingsHelp.videoProcessingEngine" @request-help="openSettingsHelp">
                         <q-select
@@ -920,8 +1021,6 @@
                       </div>
                     </div>
 
-                  </q-tab-panel>
-                </q-tab-panels>
               </div>
             </q-tab-panel>
 
@@ -949,22 +1048,19 @@
                   {{ updateManager.state.error.message }}
                 </q-banner>
 
-                <div class="block update-panel-block">
-                  <q-select
-                    v-model="updateChannel"
-                    label="更新通道"
-                    emit-value
-                    map-options
-                    outlined
-                    dense
-                    class="q-mb-md"
-                    :options="updateChannelOptions"
-                    :disable="updateManager.isActionPending"
-                    data-testid="global-settings-update-channel"
-                    @update:model-value="handleUpdateChannel"
-                  />
-                  <div class="row items-center q-gutter-sm">
-                    <div class="text-body2">{{ updateStatusSummary }}</div>
+                <div class="block update-panel-block update-panel-block--app">
+                  <div class="row items-center q-gutter-xs q-mb-md text-caption text-grey-7" data-testid="global-settings-update-channel">
+                    <q-icon name="lock" size="16px" />
+                    <span>更新通道：{{ updateChannelLabel }}（{{ updateEditionLabel }}，已锁定）</span>
+                  </div>
+                  <div class="update-status-hero" data-testid="global-settings-update-summary">
+                    <div class="update-status-hero__icon" :class="`update-status-hero__icon--${updateStatusColor}`">
+                      <q-icon :name="updateStatusIcon" size="22px" />
+                    </div>
+                    <div class="update-status-hero__copy">
+                      <div class="update-status-hero__eyebrow">应用版本</div>
+                      <div class="update-status-hero__title">{{ updateStatusSummary }}</div>
+                    </div>
                     <q-space />
                     <q-btn
                       v-if="showCheckUpdateAction"
@@ -980,15 +1076,34 @@
                     />
                   </div>
 
-                  <div
-                    v-if="updateManager.state.checkedAt || updateManager.state.releaseDate"
-                    class="row q-col-gutter-md q-mt-sm text-caption text-grey-7"
-                  >
-                    <div v-if="updateManager.state.checkedAt">
-                      上次检查：{{ formatUpdateDateTime(updateManager.state.checkedAt) }}
+                  <div class="update-meta-grid q-mt-md" aria-label="应用更新状态详情">
+                    <div class="update-meta-item">
+                      <q-icon name="verified" size="16px" />
+                      <div>
+                        <div class="update-meta-item__label">当前版本</div>
+                        <div class="update-meta-item__value">{{ updateManager.state.currentVersion || "未知" }}</div>
+                      </div>
                     </div>
-                    <div v-if="updateManager.state.releaseDate">
-                      发布日期：{{ formatUpdateDateTime(updateManager.state.releaseDate) }}
+                    <div class="update-meta-item">
+                      <q-icon name="history" size="16px" />
+                      <div>
+                        <div class="update-meta-item__label">当前版本更新时间</div>
+                        <div class="update-meta-item__value">{{ currentVersionUpdatedAtText }}</div>
+                      </div>
+                    </div>
+                    <div class="update-meta-item">
+                      <q-icon name="schedule" size="16px" />
+                      <div>
+                        <div class="update-meta-item__label">上次检查</div>
+                        <div class="update-meta-item__value">{{ lastUpdateCheckedAtText }}</div>
+                      </div>
+                    </div>
+                    <div v-if="updateManager.state.availableVersion" class="update-meta-item">
+                      <q-icon name="new_releases" size="16px" />
+                      <div>
+                        <div class="update-meta-item__label">可用版本发布日期</div>
+                        <div class="update-meta-item__value">{{ availableReleaseDateText }}</div>
+                      </div>
                     </div>
                   </div>
 
@@ -1036,89 +1151,115 @@
                   </div>
                 </div>
 
-                <div class="block update-panel-block" data-testid="global-settings-runtime-panel">
-                  <div class="row items-center settings-section-heading">
-                    <div>
-                      <div class="text-subtitle2 text-weight-medium">运行环境</div>
-                      <div class="text-caption text-grey-7">
-                        {{ runtimeStatusSummary }}
-                      </div>
-                    </div>
-                    <q-space />
-                    <q-badge :color="runtimeStatusColor" data-testid="global-settings-runtime-status">
-                      {{ updateManager.runtimeStatusLabel }}
-                    </q-badge>
-                  </div>
-
-                  <q-banner
-                    v-if="updateManager.runtimeState.error"
-                    rounded
-                    class="settings-warning-banner q-mb-md"
-                    data-testid="global-settings-runtime-error"
-                  >
-                    {{ updateManager.runtimeState.error.message }}
-                  </q-banner>
-
-                  <q-banner
-                    v-if="updateManager.runtimeState.restartRequired"
-                    rounded
-                    inline-actions
-                    class="settings-warning-banner q-mb-md"
-                    data-testid="global-settings-runtime-restart-required"
-                  >
-                    运行环境已更新。重启应用后将使用新环境。
-                    <template #action>
-                      <q-btn
-                        flat
-                        no-caps
-                        color="primary"
-                        icon="restart_alt"
-                        label="重启应用"
-                        :disable="!updateManager.runtimeCanRestart"
-                        data-testid="global-settings-runtime-restart"
-                        @click="handleRestartApplication"
-                      />
-                    </template>
-                  </q-banner>
-
-                  <div class="row items-center q-gutter-sm q-mt-md">
-                    <q-icon name="info" color="info" size="18px" />
-                    <span class="text-caption text-grey-7">环境检测、创建/修复和已有环境选择请在后端管理中完成。</span>
-                    <q-space />
-                    <q-btn
-                      outline
-                      no-caps
-                      color="primary"
-                      icon="dns"
-                      label="打开后端管理"
-                      data-testid="global-settings-open-backend-manager"
-                      @click="$emit('open-backend-manager')"
-                    />
-                  </div>
-
-                  <div
-                    v-if="runtimeDiagnosticsSummary.length"
-                    class="row q-col-gutter-sm text-caption text-grey-7 q-mt-md"
-                    data-testid="global-settings-runtime-diagnostics"
-                  >
-                    <span v-for="item in runtimeDiagnosticsSummary" :key="item.label" class="col-12 col-sm-auto">
-                      {{ item.label }}：{{ item.value }}
-                    </span>
-                  </div>
-
-                  <div class="row justify-end q-mt-md">
-                    <span class="text-caption text-grey-6">当前状态仅作摘要显示</span>
-                  </div>
-                </div>
-
                 <div v-if="updateManager.state.releaseNotes" class="block update-panel-block">
                   <div class="text-subtitle2 text-weight-medium q-mb-sm">版本说明</div>
                   <div class="text-body2 update-release-notes">{{ updateManager.state.releaseNotes }}</div>
                 </div>
+
+                <div class="block environment-update-card" data-testid="global-settings-environment-update">
+                  <div class="environment-update-card__header">
+                    <div class="row items-center no-wrap q-gutter-sm">
+                      <div class="environment-update-card__icon">
+                        <q-icon name="memory" size="20px" />
+                      </div>
+                      <div>
+                        <div class="text-subtitle2 text-weight-medium">运行环境更新检测</div>
+                        <div class="text-caption text-grey-7">检查当前环境版本与可用的 CPU / CUDA 切换方式</div>
+                      </div>
+                    </div>
+                    <q-badge :color="runtimeEnvironmentUpdateBadgeColor" class="environment-update-card__status">
+                      {{ runtimeEnvironmentUpdateStatusLabel }}
+                    </q-badge>
+                  </div>
+
+                  <template v-if="runtimeEnvironmentUpdateUsable">
+                    <div class="environment-update-metrics q-mt-md">
+                      <div class="environment-update-metric">
+                        <span>Python</span>
+                        <strong>{{ runtimeEnvironmentUpdate.pythonVersion || "未提供" }}</strong>
+                      </div>
+                      <div class="environment-update-metric">
+                        <span>PyTorch</span>
+                        <strong>{{ runtimeEnvironmentTorchText }}</strong>
+                      </div>
+                      <div class="environment-update-metric">
+                        <span>显卡</span>
+                        <strong>{{ runtimeEnvironmentUpdate.gpuName || "未检测到 NVIDIA 显卡" }}</strong>
+                      </div>
+                      <div class="environment-update-metric">
+                        <span>NVIDIA 驱动</span>
+                        <strong>{{ runtimeEnvironmentUpdate.nvidiaDriverVersion || "未检测到" }}</strong>
+                      </div>
+                    </div>
+                    <div class="environment-update-card__footer q-mt-md">
+                      <div class="text-caption text-grey-7">
+                        {{ runtimeEnvironmentUpdateCheckedAtText }}
+                      </div>
+                      <div class="row items-center q-gutter-sm">
+                        <q-btn
+                          v-if="runtimeEnvironmentUpdate.canSwitchToCpu"
+                          outline
+                          no-caps
+                          color="primary"
+                          icon="settings_suggest"
+                          label="切换为 CPU 运行环境"
+                          :loading="runtimeEnvironmentSwitching"
+                          @click="requestRuntimeEnvironmentSwitch('cpu')"
+                        />
+                        <q-btn
+                          v-if="runtimeEnvironmentUpdate.canSwitchToCu130"
+                          outline
+                          no-caps
+                          color="positive"
+                          icon="bolt"
+                          label="切换为 CUDA 运行环境"
+                          :loading="runtimeEnvironmentSwitching"
+                          @click="requestRuntimeEnvironmentSwitch('cu130')"
+                        />
+                        <q-btn
+                          flat
+                          dense
+                          no-caps
+                          color="primary"
+                          icon="refresh"
+                          label="重新检测"
+                          :loading="runtimeEnvironmentChecking"
+                          @click="refreshRuntimeEnvironmentUpdate"
+                        />
+                      </div>
+                    </div>
+                  </template>
+                  <div v-else class="environment-update-empty q-mt-md">
+                    <q-icon name="info" size="20px" />
+                    <div>
+                      <div class="text-body2 text-weight-medium">当前无可用运行环境</div>
+                      <div class="text-caption text-grey-7">
+                        {{ runtimeEnvironmentUpdateUnavailableMessage }}
+                      </div>
+                      <q-btn
+                        v-if="runtimeEnvironmentIsReady"
+                        flat
+                        dense
+                        no-caps
+                        color="primary"
+                        icon="refresh"
+                        label="重新检测"
+                        class="q-mt-sm"
+                        :loading="runtimeEnvironmentChecking"
+                        @click="refreshRuntimeEnvironmentUpdate"
+                      />
+                    </div>
+                  </div>
+                  <div v-if="runtimeEnvironmentUpdate.acceleratorChangeReason" class="environment-update-hint q-mt-sm">
+                    <q-icon name="tips_and_updates" size="16px" />
+                    <span>{{ runtimeEnvironmentUpdate.acceleratorChangeReason }}</span>
+                  </div>
+                </div>
               </div>
             </q-tab-panel>
           </q-tab-panels>
-        </q-scroll-area>
+          </q-scroll-area>
+        </div>
       </q-card-section>
 
       <q-card-section v-if="validationErrors.length" class="q-pt-none q-pb-none">
@@ -1190,7 +1331,7 @@
 
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
-import { useQuasar } from "quasar";
+import { copyToClipboard, useQuasar } from "quasar";
 import ModelManagementPanel from "src/components/global/ModelManagementPanel.vue";
 import SettingsPanel from "src/components/global/SettingsPanel.vue";
 import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_MASKING_CONFIG, DEFAULT_TEMP_CLEANUP, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT, SLBR_LOCAL_INFERENCE_STRATEGY_OPTIONS, UI_BUTTON_SIZE_OPTIONS, VIDEO_ENCODING_QUALITY_PRESET_OPTIONS, VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS, VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS, VIDEO_PROCESSING_ENGINE_OPTIONS, VIDEO_TEMPORAL_ENHANCEMENT_MODES } from "src/config/ConfigManager";
@@ -1214,17 +1355,12 @@ const fileManagerStore = useFileManagerStore();
 const modelRegistryStore = useModelRegistryStore();
 const updateManager = useUpdateManagerStore();
 const globalLoadingState = inject("globalLoadingState", ref({ showing: false }));
-const updateChannel = ref("stable");
-const updateChannelOptions = [
-  { label: "稳定", value: "stable" },
-  { label: "测试候选", value: "beta" },
-  { label: "测试", value: "test" },
-];
 const updateChannelLabel = computed(() => ({
   stable: "稳定",
   beta: "测试候选",
   test: "测试",
 }[updateManager.state.channel] || updateManager.state.channel || "稳定"));
+const updateEditionLabel = computed(() => (updateManager.state.edition === "test" ? "测试版" : "正式版"));
 
 const launchModeOptions = [{ label: "CUDA 加速", value: "cuda" }, { label: "CPU 模式", value: "cpu" }];
 const MAT_CUDA_FALLBACK_MESSAGE = "MAT 需要 CUDA，当前已自动切换为 LaMa。";
@@ -1416,28 +1552,29 @@ const settingsHelp = Object.freeze({
       "同一作用域内的重复组合会阻止保存，输入框获得焦点时不会触发页面快捷键。",
     ]
   ),
-  backendPort: createSettingsHelp("backend-port", "后端端口", "后端服务监听的本机端口，修改后会重新加载页面以应用。"),
+  backendPort: createSettingsHelp("backend-port", "服务端口", "本地服务监听的端口，修改后会重新加载页面以应用。"),
   launchMode: createSettingsHelp("launch-mode", "启动方式", "CUDA 模式优先使用显卡；CPU 模式兼容性更高，但处理速度通常较慢。"),
-  backendProjectPath: createSettingsHelp("backend-project-path", "后端项目路径", "外部 Python 后端所在目录，应包含项目运行所需的完整文件。"),
-  modelDir: createSettingsHelp("model-directory", "模型目录", "集中存放处理模型的目录，后端启动和模型管理会共同使用。"),
+  backendProjectPath: createSettingsHelp("backend-project-path", "服务项目路径", "外部 Python 服务所在路径，应包含项目运行所需的完整文件。"),
+  runtimeEnvironmentPath: createSettingsHelp("runtime-environment-path", "运行环境路径", "当前服务实际使用的 Python 运行环境。可复制或在资源管理器中打开；环境切换请在服务管理中完成。"),
+  modelDir: createSettingsHelp("model-directory", "模型路径", "集中存放处理模型的路径，服务启动和模型管理会共同使用。"),
   defaultModel: createSettingsHelp("default-backend-model", "默认模型", "新建图片处理任务时优先选用的补洞模型。"),
-  downloadPath: createSettingsHelp("download-path", "下载 / 导出路径", "图片和视频未指定其他位置时默认保存到此目录。"),
-  tempPath: createSettingsHelp("temp-path", "临时文件路径", "处理过程中的帧、缓存和中间结果保存在此目录。"),
-  imageFolderName: createSettingsHelp("image-folder-name", "图片输出文件夹名", "批量导出图片时在导出根目录下创建的单级文件夹。"),
-  videoFolderName: createSettingsHelp("video-folder-name", "视频输出文件夹名", "批量导出视频时在导出根目录下创建的单级文件夹。"),
+  downloadPath: createSettingsHelp("download-path", "下载 / 导出路径", "图片和视频未指定其他位置时默认保存到此路径。"),
+  tempPath: createSettingsHelp("temp-path", "临时文件路径", "处理过程中的帧、缓存和中间结果保存在此路径。"),
+  imageFolderName: createSettingsHelp("image-folder-name", "图片输出文件夹名", "批量导出图片时在导出根路径下创建的单级文件夹。"),
+  videoFolderName: createSettingsHelp("video-folder-name", "视频输出文件夹名", "批量导出视频时在导出根路径下创建的单级文件夹。"),
   tempCleanup: createSettingsHelp(
     "temp-cleanup",
     "临时文件清理",
-    "按保留时间清理应用临时目录中的图片、视频中间文件和已完成任务现场。",
+    "按保留时间清理应用临时路径中的图片、视频中间文件和已完成任务现场。",
     "dialog",
     [
       "自动清理关闭时不会在启动阶段执行，但仍可使用“立即清理”。",
       "最近失败现场用于故障排查；启用保留后，仅删除超过保留数量的较旧现场。",
-      "清理范围仅限应用管理的临时子目录，不会处理导出目录或其他任意路径。",
+      "清理范围仅限应用管理的临时子路径，不会处理导出路径或其他任意位置。",
     ]
   ),
   startupAnimation: createSettingsHelp("startup-animation", "启动动画", "控制应用启动阶段是否显示过渡动画。"),
-  autoStart: createSettingsHelp("auto-start-backend", "自动启动后端", "应用打开后自动准备并启动后端服务；关闭后可在主界面手动启动。"),
+  autoStart: createSettingsHelp("auto-start-backend", "自动启动服务", "应用打开后自动准备并启动服务；关闭后可在主界面手动启动。"),
   buttonSize: createSettingsHelp("drawing-button-size", "绘制工具按钮大小", "调整图片和视频绘制工具按钮的默认尺寸，不改变画布或导出结果。"),
   imageHistoryLimit: createSettingsHelp("image-history-limit", "图片历史记录上限", "限制图片处理页可撤销和恢复的历史步骤数量。"),
   imageWarningSize: createSettingsHelp("image-warning-size", "图片警告大小", "单张图片超过该体积时提示资源占用风险，并影响自动传输策略。"),
@@ -1541,7 +1678,6 @@ const emit = defineEmits(["update:modelValue", "open-backend-manager", "model-do
 
 const showDialog = computed({ get: () => props.modelValue, set: (value) => emit("update:modelValue", value) });
 const activeTab = ref("general");
-const advancedTab = ref("image");
 const selectedModelId = ref("lama");
 const activeSettingsHelpTopic = ref("");
 const activeSettingsHelp = computed(
@@ -1656,13 +1792,23 @@ const updateStatusColor = computed(() => {
   };
   return colors[updateManager.state.status] || "grey-7";
 });
+const updateStatusIcon = computed(() => ({
+  available: "new_releases",
+  checking: "sync",
+  downloading: "downloading",
+  downloaded: "task_alt",
+  installing: "system_update_alt",
+  "up-to-date": "verified",
+  error: "error_outline",
+  disabled: "update_disabled",
+}[updateManager.state.status] || "update"));
 const updateStatusSummary = computed(() => {
   const updateState = updateManager.state;
   if (!updateState.enabled || updateState.status === "disabled") {
     return "当前构建未启用应用更新。";
   }
   if (updateState.status === "checking") return `正在获取${updateChannelLabel.value}通道信息...`;
-  if (updateState.status === "up-to-date") return `已确认当前版本为${updateChannelLabel.value}通道最新版本。`;
+  if (updateState.status === "up-to-date") return "当前为最新版本。";
   if (updateState.status === "downloading") {
     const version = updateState.availableVersion || updateState.latestVersion;
     return version ? `正在下载版本 ${version}。` : "正在下载更新。";
@@ -1690,59 +1836,140 @@ const showInstallUpdateAction = computed(
     ["downloaded", "installing"].includes(updateManager.state.status) ||
     (updateManager.state.status === "error" && updateManager.retryAction === "install")
 );
-const normalizeRuntimeAccelerator = (value) => {
-  const accelerator = String(value || "").trim().toLowerCase();
-  return ["auto", "cpu", "cu130"].includes(accelerator) ? accelerator : "auto";
+const currentVersionUpdatedAtText = computed(() => {
+  const value = updateManager.state.currentVersionUpdatedAt || updateManager.state.currentVersionReleaseDate || updateManager.state.installedAt;
+  return value ? formatUpdateDateTime(value) : "未提供";
+});
+const lastUpdateCheckedAtText = computed(() =>
+  updateManager.state.checkedAt ? formatUpdateDateTime(updateManager.state.checkedAt) : "尚未检查"
+);
+const availableReleaseDateText = computed(() =>
+  updateManager.state.releaseDate ? formatUpdateDateTime(updateManager.state.releaseDate) : "未提供"
+);
+const runtimeEnvironmentChecking = ref(false);
+const runtimeEnvironmentSwitching = ref(false);
+const runtimeEnvironmentUpdate = computed(() => {
+  const state = updateManager.runtimeState || {};
+  const nested = state.environmentUpdate || state.runtimeUpdate;
+  if (nested && typeof nested === "object") return nested;
+
+  // Keep the panel useful while older runtimes are still returning the
+  // diagnostics fields at the runtime-state root. Newer IPC responses use
+  // `environmentUpdate`, but these aliases make the UI forward/backward
+  // compatible during a rolling update.
+  return {
+    usable: state.environmentUpdateUsable ?? state.usable,
+    pythonVersion: state.environmentUpdatePythonVersion ?? state.pythonVersion,
+    torchVersion: state.environmentUpdateTorchVersion ?? state.torchVersion,
+    torchPackage: state.environmentUpdateTorchPackage ?? state.torchPackage,
+    gpuName: state.environmentUpdateGpuName ?? state.gpuName,
+    nvidiaDriverVersion: state.environmentUpdateNvidiaDriverVersion ?? state.nvidiaDriverVersion,
+    checkedAt: state.environmentUpdateCheckedAt ?? state.checkedAt,
+    selectedAccelerator: state.environmentUpdateSelectedAccelerator ?? state.selectedAccelerator,
+    canSwitchToCpu: state.environmentUpdateCanSwitchToCpu ?? state.canSwitchToCpu,
+    canSwitchToCu130: state.environmentUpdateCanSwitchToCu130 ?? state.canSwitchToCu130,
+    acceleratorChangeReason: state.environmentUpdateAcceleratorChangeReason ?? state.acceleratorChangeReason,
+  };
+});
+const runtimeEnvironmentIsReady = computed(() =>
+  ["ready", "degraded"].includes(updateManager.runtimeState.status)
+);
+const runtimeEnvironmentUpdateUsable = computed(() =>
+  runtimeEnvironmentUpdate.value.usable === true && runtimeEnvironmentIsReady.value
+);
+const runtimeEnvironmentUpdateStatusLabel = computed(() => {
+  if (runtimeEnvironmentChecking.value) return "检测中";
+  if (runtimeEnvironmentSwitching.value) return "正在切换";
+  if (!runtimeEnvironmentUpdateUsable.value) return "不可用";
+  const accelerator = runtimeEnvironmentUpdate.value.selectedAccelerator || updateManager.runtimeState.selectedAccelerator;
+  return accelerator === "cu130" ? "CUDA 运行环境" : "CPU 运行环境";
+});
+const runtimeEnvironmentUpdateBadgeColor = computed(() => {
+  if (runtimeEnvironmentChecking.value || runtimeEnvironmentSwitching.value) return "primary";
+  if (!runtimeEnvironmentUpdateUsable.value) return "grey-7";
+  return runtimeEnvironmentUpdate.value.selectedAccelerator === "cu130" || updateManager.runtimeState.selectedAccelerator === "cu130"
+    ? "positive"
+    : "secondary";
+});
+const runtimeEnvironmentTorchText = computed(() => {
+  const environment = runtimeEnvironmentUpdate.value;
+  const version = environment.torchVersion || updateManager.runtimeState.torchVersion || "未提供";
+  const packageName = environment.torchPackage === "cuda" || environment.selectedAccelerator === "cu130"
+    ? "CUDA"
+    : environment.torchPackage === "cpu" || environment.selectedAccelerator === "cpu"
+      ? "CPU"
+      : "";
+  return packageName ? `${version} (${packageName})` : version;
+});
+const runtimeEnvironmentUpdateCheckedAtText = computed(() => {
+  const checkedAt = runtimeEnvironmentUpdate.value.checkedAt || updateManager.runtimeState.checkedAt;
+  return checkedAt ? `上次环境检测：${formatUpdateDateTime(checkedAt)}` : "尚未完成运行环境更新检测";
+});
+const runtimeEnvironmentUpdateUnavailableMessage = computed(() => {
+  if (runtimeEnvironmentIsReady.value) {
+    return "正在等待运行环境检测结果；可点击重新检测。";
+  }
+  return "请先在服务管理中创建或选择可用运行环境。";
+});
+const runtimeEnvironmentLastRequestedKey = ref("");
+const runtimeEnvironmentPath = computed(() =>
+  String(
+    updateManager.runtimeState.activePath ||
+    updateManager.runtimeState.targetPath ||
+    updateManager.runtimeState.externalPath ||
+    ""
+  ).trim()
+);
+
+const refreshRuntimeEnvironmentUpdate = async () => {
+  if (!runtimeEnvironmentUpdateUsable.value && !runtimeEnvironmentIsReady.value) return;
+  const action = updateManager.checkEnvironmentUpdate;
+  if (typeof action !== "function") return;
+  runtimeEnvironmentChecking.value = true;
+  try {
+    const result = await action();
+    notifyUpdateFailure(result, "运行环境更新检测失败。");
+  } finally {
+    runtimeEnvironmentChecking.value = false;
+  }
 };
-const runtimeAcceleratorLabel = (value) => ({
-  auto: "自动",
-  cpu: "CPU",
-  cu130: "NVIDIA cu130",
-}[normalizeRuntimeAccelerator(value)] || "自动");
-const runtimeStatusColor = computed(() => ({
-  ready: "positive",
-  "needs-create": "warning",
-  "needs-repair": "warning",
-  "needs-download": "warning",
-  preparing: "primary",
-  creating: "primary",
-  repairing: "primary",
-  downloading: "primary",
-  verifying: "primary",
-  checking: "info",
-  failed: "negative",
-  "rolling-back": "warning",
-  disabled: "grey-7",
-}[updateManager.runtimeState.status] || "grey-7"));
-const runtimeStatusSummary = computed(() => {
-  const state = updateManager.runtimeState;
-  if (!state.enabled || state.status === "disabled") return "当前构建未启用本地环境管理。";
-  if (["needs-create", "needs-download", "idle"].includes(state.status)) return "尚未创建本地运行环境。";
-  if (state.status === "needs-repair") return "当前环境需要修复。";
-  if (state.status === "checking") return "正在检查本机 Python、PyTorch、CUDA 和 FFmpeg。";
-  if (["preparing", "creating", "repairing", "downloading"].includes(state.status)) {
-    return "正在创建或修复本地运行环境。";
+
+const requestRuntimeEnvironmentSwitch = async (target) => {
+  const targetLabel = target === "cu130" ? "CUDA" : "CPU";
+  const planAction = updateManager.getEnvironmentSwitchPlan;
+  const switchAction = updateManager.switchEnvironmentAccelerator;
+  if (typeof switchAction !== "function") return;
+  let plan = null;
+  if (typeof planAction === "function") {
+    runtimeEnvironmentChecking.value = true;
+    try {
+      const result = await planAction(target);
+      plan = result?.plan || result?.data || result;
+      if (result?.success === false) {
+        notifyUpdateFailure(result, `无法切换为 ${targetLabel} 运行环境。`);
+        return;
+      }
+    } finally {
+      runtimeEnvironmentChecking.value = false;
+    }
   }
-  if (state.status === "verifying") return "正在验证本地环境并等待切换。";
-  if (state.status === "ready") {
-    return `当前加速器：${runtimeAcceleratorLabel(state.selectedAccelerator)}。`;
-  }
-  if (state.status === "failed") return "本地运行环境操作未完成，可重试。";
-  return "尚未检查本地运行环境。";
-});
-const runtimeDiagnosticsSummary = computed(() => {
-  const state = updateManager.runtimeState;
-  const diagnostics = [];
-  if ((state.selectedAccelerator || state.accelerator) && (state.enabled || state.status !== "disabled")) {
-    diagnostics.push({ label: "加速器", value: runtimeAcceleratorLabel(state.selectedAccelerator || state.accelerator) });
-  }
-  if (state.specHash) diagnostics.push({ label: "specHash", value: state.specHash });
-  if (state.pythonVersion) diagnostics.push({ label: "Python", value: state.pythonVersion });
-  if (state.torchVersion) diagnostics.push({ label: "PyTorch", value: state.torchVersion });
-  if (state.cudaVersion) diagnostics.push({ label: "CUDA", value: state.cudaVersion });
-  if (state.ffmpegVersion) diagnostics.push({ label: "FFmpeg", value: state.ffmpegVersion });
-  return diagnostics;
-});
+  const guidance = plan?.reason || plan?.message || runtimeEnvironmentUpdate.value.acceleratorChangeReason || "切换将重新准备对应的运行环境，现有环境将保留。";
+  $q.dialog({
+    title: `切换为 ${targetLabel} 运行环境`,
+    message: guidance,
+    cancel: true,
+    persistent: true,
+  }).onOk(async () => {
+    runtimeEnvironmentSwitching.value = true;
+    try {
+      const result = await switchAction({ target, confirmed: true });
+      if (notifyUpdateFailure(result, `切换为 ${targetLabel} 运行环境失败。`)) return;
+      $q.notify({ type: "positive", message: `已开始准备 ${targetLabel} 运行环境。`, position: "top" });
+    } finally {
+      runtimeEnvironmentSwitching.value = false;
+    }
+  });
+};
 
 const notifyUpdateFailure = (result, fallbackMessage) => {
   if (result?.success !== false) return false;
@@ -1761,29 +1988,13 @@ const notifyUpdateFailure = (result, fallbackMessage) => {
   return true;
 };
 
-const handleUpdateChannel = async (channel) => {
-  const previous = updateManager.state.channel || "stable";
-  const result = await updateManager.setAppUpdateChannel(channel);
-  if (notifyUpdateFailure(result, "切换更新通道失败。")) {
-    updateChannel.value = previous;
-  }
-};
-
 const handleCheckForUpdates = async () => {
   const result = await updateManager.checkForUpdates();
   if (notifyUpdateFailure(result, "检查更新失败。")) return;
   if (result?.state?.status === "up-to-date") {
-    $q.notify({ type: "positive", message: `当前已是${updateChannelLabel.value}通道最新版本。`, position: "top" });
+    $q.notify({ type: "positive", message: "当前为最新版本。", position: "top" });
   }
 };
-
-watch(
-  () => updateManager.state.channel,
-  (channel) => {
-    updateChannel.value = ["stable", "beta", "test"].includes(channel) ? channel : "stable";
-  },
-  { immediate: true },
-);
 
 const handleDownloadUpdate = async () => {
   const result = await updateManager.downloadUpdate();
@@ -1817,11 +2028,6 @@ const handleInstallUpdate = () => {
   });
 };
 
-const handleRestartApplication = async () => {
-  const result = await updateManager.restartApplication();
-  notifyUpdateFailure(result, "重启应用失败。");
-};
-
 const openSettingsHelp = (topic) => {
   const help = settingsHelpByTopic[topic];
   if (help?.helpMode === "dialog") {
@@ -1832,7 +2038,7 @@ const openSettingsHelp = (topic) => {
 const validatePort = (port) => {
   if (!port || port < 1024 || port > 65535) {
     portError.value = true;
-    portErrorMessage.value = "后端端口必须在 1024-65535 范围内。";
+    portErrorMessage.value = "服务端口必须在 1024-65535 范围内。";
   } else {
     portError.value = false;
     portErrorMessage.value = "";
@@ -1925,11 +2131,44 @@ const selectFolder = async (title) => {
   const result = await window.electron.ipcRenderer.invoke("select-folder", { title });
   return result.canceled || result.filePaths.length === 0 ? "" : result.filePaths[0];
 };
-const selectDownloadPath = async () => { try { const value = await selectFolder("选择下载 / 导出目录"); if (value) localConfig.value.fileManagement.downloadPath = value; } catch (error) { $q.notify({ type: "negative", message: `选择目录失败：${error.message}` }); } };
-const selectTempPath = async () => { try { const value = await selectFolder("选择临时文件目录"); if (value) localConfig.value.fileManagement.tempPath = value; } catch (error) { $q.notify({ type: "negative", message: `选择目录失败：${error.message}` }); } };
+const copyRuntimeEnvironmentPath = async () => {
+  if (!runtimeEnvironmentPath.value) return;
+  try {
+    await copyToClipboard(runtimeEnvironmentPath.value);
+    $q.notify({ type: "positive", message: "运行环境路径已复制。", position: "top" });
+  } catch (error) {
+    $q.notify({ type: "negative", message: `复制运行环境路径失败：${error.message}` });
+  }
+};
+const copyManagedPath = async (value, label = "路径") => {
+  const pathValue = String(value || "").trim();
+  if (!pathValue) return;
+  try {
+    await copyToClipboard(pathValue);
+    $q.notify({ type: "positive", message: `${label}已复制。`, position: "top" });
+  } catch (error) {
+    $q.notify({ type: "negative", message: `复制${label}失败：${error.message}`, position: "top" });
+  }
+};
+const openRuntimeEnvironmentPath = async () => {
+  if (!runtimeEnvironmentPath.value) return;
+  try {
+    const ipc = window.electron?.ipcRenderer;
+    const result = ipc?.openEnvironmentPath
+      ? await ipc.openEnvironmentPath()
+      : await ipc?.invoke?.("environment-open-path");
+    if (!result?.success) {
+      throw new Error(result?.error?.message || result?.error || "无法打开运行环境路径。");
+    }
+  } catch (error) {
+    $q.notify({ type: "negative", message: `打开运行环境路径失败：${error.message}` });
+  }
+};
+const selectDownloadPath = async () => { try { const value = await selectFolder("选择下载 / 导出路径"); if (value) localConfig.value.fileManagement.downloadPath = value; } catch (error) { $q.notify({ type: "negative", message: `选择路径失败：${error.message}` }); } };
+const selectTempPath = async () => { try { const value = await selectFolder("选择临时文件路径"); if (value) localConfig.value.fileManagement.tempPath = value; } catch (error) { $q.notify({ type: "negative", message: `选择路径失败：${error.message}` }); } };
 const selectModelPath = async () => {
   try {
-    const value = await selectFolder("选择模型目录");
+    const value = await selectFolder("选择模型路径");
     if (!value) return;
     const validation = await validateBackendPaths({
       backendProjectPath: localConfig.value.general.backendProjectPath || "",
@@ -1958,13 +2197,13 @@ const selectModelPath = async () => {
     }
     localConfig.value.general.modelDir = value;
   } catch (error) {
-    $q.notify({ type: "negative", message: `选择模型目录失败：${error.message}` });
+    $q.notify({ type: "negative", message: `选择模型路径失败：${error.message}` });
   }
 };
 const selectBackendProjectPath = async () => {
   if (!window.electron?.ipcRenderer?.invoke) return;
   try {
-    const value = await selectFolder("选择后端项目路径");
+    const value = await selectFolder("选择服务项目路径");
     if (!value) return;
     const validation = await validateBackendPaths({
       backendProjectPath: value,
@@ -1994,12 +2233,12 @@ const selectBackendProjectPath = async () => {
     const checkResult = await window.electron.ipcRenderer.invoke("check-project", value);
     if (checkResult.success) {
       localConfig.value.general.backendProjectPath = value;
-      $q.notify({ type: "positive", message: "后端项目路径设置成功", position: "top" });
+      $q.notify({ type: "positive", message: "服务项目路径设置成功", position: "top" });
       return;
     }
-    $q.notify({ type: "negative", message: `无效的后端项目路径：${checkResult.error}`, position: "top" });
+    $q.notify({ type: "negative", message: `无效的服务项目路径：${checkResult.error}`, position: "top" });
   } catch (error) {
-    $q.notify({ type: "negative", message: `选择后端项目路径失败：${error.message}`, position: "top" });
+    $q.notify({ type: "negative", message: `选择服务项目路径失败：${error.message}`, position: "top" });
   }
 };
 const cleanupAppTempFilesNow = async () => {
@@ -2027,7 +2266,7 @@ const cleanupAppTempFilesNow = async () => {
       type: "positive",
       message:
         removedTotal > 0
-          ? `已清理 ${removedFileCount} 个文件、${removedDirectoryCount} 个目录、${removedTaskCount} 个视频任务。`
+          ? `已清理 ${removedFileCount} 个文件、${removedDirectoryCount} 个文件夹、${removedTaskCount} 个视频任务。`
           : "没有符合条件的临时文件。",
       position: "top",
       timeout: 3000,
@@ -2110,7 +2349,11 @@ const saveSettings = async () => {
 };
 const confirmAction = () => { showConfirmDialog.value = false; if (pendingAction.value) { pendingAction.value(); pendingAction.value = null; } };
 const applyInitialTarget = () => {
-  if (props.initialTab) activeTab.value = props.initialTab;
+  if (props.initialTab) {
+    const requestedTab = props.initialTab === "advanced" ? "image" : props.initialTab;
+    const validTabs = ["general", "backend", "models", "files", "appearance", "image", "video", "updates"];
+    activeTab.value = validTabs.includes(requestedTab) ? requestedTab : "general";
+  }
   if (props.initialModelId) selectedModelId.value = props.initialModelId;
 };
 const handleModelDownloaded = (modelId) => {
@@ -2144,6 +2387,19 @@ watch(() => [props.initialTab, props.initialModelId], () => {
     applyInitialTarget();
   }
 });
+watch(
+  () => [showDialog.value, activeTab.value, updateManager.runtimeState.status, updateManager.runtimeState.activePath],
+  () => {
+    if (!showDialog.value || activeTab.value !== "updates") return;
+    if (!["ready", "degraded"].includes(updateManager.runtimeState.status)) return;
+    if (typeof updateManager.checkEnvironmentUpdate !== "function") return;
+    const requestKey = `${updateManager.runtimeState.activePath || ""}:${updateManager.runtimeState.updatedAt || ""}`;
+    if (runtimeEnvironmentLastRequestedKey.value === requestKey) return;
+    runtimeEnvironmentLastRequestedKey.value = requestKey;
+    void refreshRuntimeEnvironmentUpdate();
+  },
+  { immediate: true }
+);
 watch(() => configStore.config, (newConfig) => {
   if (!showDialog.value) {
     localConfig.value = buildSerializableConfig(newConfig);
@@ -2183,7 +2439,7 @@ onUnmounted(() => {
   --settings-text-primary: rgba(17, 24, 39, 0.92);
   --settings-text-secondary: rgba(17, 24, 39, 0.62);
   --settings-field-surface: transparent;
-  width: min(1040px, calc(100vw - clamp(16px, 4vw, 48px)));
+  width: min(1180px, calc(100vw - clamp(16px, 4vw, 48px)));
   max-width: calc(100vw - clamp(16px, 4vw, 48px));
   height: min(900px, calc(100vh - clamp(16px, 4vh, 48px)));
   max-height: calc(100vh - clamp(16px, 4vh, 48px));
@@ -2193,24 +2449,39 @@ onUnmounted(() => {
   overflow: hidden;
 }
 .settings-header,
-.settings-tabs-section,
 .settings-actions {
   flex: 0 0 auto;
 }
-.settings-tabs-section { padding-bottom: 0; }
-.settings-main-tabs :deep(.q-tab) {
-  min-width: 112px;
-  min-height: 44px;
+.settings-workspace { display: flex; flex: 1 1 auto; min-height: 0; }
+.settings-sidebar {
+  flex: 0 0 184px;
+  min-width: 0;
+  padding: 12px 8px;
+  background: rgba(119, 88, 196, 0.035);
 }
+.settings-main-tabs { width: 100%; }
+.settings-main-tabs :deep(.q-tab) {
+  min-height: 44px;
+  justify-content: flex-start;
+  border-radius: 10px;
+  margin: 2px 0;
+  padding: 0 12px;
+}
+.settings-main-tabs :deep(.q-tab__content) { flex-direction: row; justify-content: flex-start; gap: 10px; }
+.settings-main-tabs :deep(.q-tab__label) { white-space: nowrap; }
 .settings-content-section {
   flex: 1 1 auto;
   min-height: 0;
-  padding-top: 8px;
+  min-width: 0;
+  padding: 8px 16px 0;
 }
 .settings-scroll-area { height: 100%; }
 .section { padding-top: 4px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
 .settings-panel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.settings-panel-grid--service { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.settings-panel-grid--file-management { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.settings-panel-grid--image-core { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .block, .mini-block { border: 1px solid var(--settings-border); border-radius: 16px; }
 .block { background: var(--settings-block-surface); }
 .mini-block { background: var(--settings-mini-surface); }
@@ -2230,6 +2501,71 @@ onUnmounted(() => {
 }
 .settings-action-button :deep(.q-icon.on-left) { margin-right: 0; }
 .update-release-notes { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
+.update-panel-block--app { overflow: hidden; }
+.update-status-hero {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+}
+.update-status-hero__icon {
+  display: grid;
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid rgba(117, 88, 196, 0.18);
+  border-radius: 12px;
+  background: rgba(117, 88, 196, 0.09);
+  color: var(--q-primary);
+}
+.update-status-hero__icon--positive { border-color: rgba(33, 186, 69, 0.22); background: rgba(33, 186, 69, 0.1); color: #168343; }
+.update-status-hero__icon--negative { border-color: rgba(193, 42, 58, 0.24); background: rgba(193, 42, 58, 0.1); color: #c12a3a; }
+.update-status-hero__icon--info { border-color: rgba(33, 150, 243, 0.22); background: rgba(33, 150, 243, 0.1); color: #1976d2; }
+.update-status-hero__copy { min-width: 0; flex: 1 1 auto; }
+.update-status-hero__eyebrow { color: var(--settings-text-secondary); font-size: 11px; line-height: 1.3; }
+.update-status-hero__title { overflow-wrap: anywhere; color: var(--settings-text-primary); font-size: 15px; font-weight: 600; line-height: 1.45; }
+.update-meta-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.update-meta-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--settings-border);
+  border-radius: 10px;
+  background: var(--settings-field-surface);
+  color: var(--settings-text-secondary);
+}
+.update-meta-item > div { min-width: 0; }
+.update-meta-item__label { font-size: 11px; line-height: 1.3; }
+.update-meta-item__value { overflow-wrap: anywhere; color: var(--settings-text-primary); font-size: 12px; line-height: 1.45; }
+.environment-update-card { overflow: hidden; }
+.environment-update-card__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.environment-update-card__icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 11px;
+  background: rgba(117, 88, 196, 0.1);
+  color: var(--q-primary);
+}
+.environment-update-card__status { flex: 0 0 auto; }
+.environment-update-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.environment-update-metric {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--settings-border);
+  border-radius: 10px;
+  background: var(--settings-field-surface);
+}
+.environment-update-metric span { display: block; color: var(--settings-text-secondary); font-size: 11px; line-height: 1.3; }
+.environment-update-metric strong { display: block; overflow-wrap: anywhere; margin-top: 3px; color: var(--settings-text-primary); font-size: 12px; line-height: 1.45; }
+.environment-update-card__footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.environment-update-card__footer > .row { justify-content: flex-end; }
+.environment-update-empty { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px dashed var(--settings-border); border-radius: 10px; color: var(--settings-text-secondary); }
+.environment-update-hint { display: flex; align-items: flex-start; gap: 8px; color: var(--settings-text-secondary); font-size: 12px; line-height: 1.5; }
 .settings-section-heading { gap: 8px; }
 .settings-help-button {
   width: 44px;
@@ -2238,12 +2574,18 @@ onUnmounted(() => {
   min-height: 44px;
   color: var(--settings-text-secondary);
 }
-.settings-icon-button {
+  .settings-icon-button {
   width: 44px;
   min-width: 44px;
   height: 44px;
-  min-height: 44px;
-}
+    min-height: 44px;
+  }
+  .settings-copy-button {
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
+    min-height: 32px;
+  }
 .cleanup-row { display: flex; align-items: center; gap: 16px; }
 .cleanup-copy { flex: 1 1 auto; min-width: 0; }
 .cleanup-button { flex: 0 0 auto; }
@@ -2356,12 +2698,23 @@ onUnmounted(() => {
   filter: brightness(0.92);
 }
 @media (max-width: 900px) {
+  .settings-sidebar { flex-basis: 64px; padding-inline: 6px; }
+  .settings-content-section { padding-inline: 12px; }
+  .settings-main-tabs :deep(.q-tab) { justify-content: center; padding-inline: 0; }
+  .settings-main-tabs :deep(.q-tab__content) { justify-content: center; }
+  .settings-main-tabs :deep(.q-tab__label) { display: none; }
+  .settings-panel-grid--service { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .shortcut-row { grid-template-columns: 1fr; }
   .shortcut-actions { justify-content: flex-end; flex-wrap: wrap; }
   .cleanup-row { align-items: stretch; flex-direction: column; }
   .cleanup-button { width: 100%; }
+  .grid,
+  .settings-panel-grid,
+  .settings-toggle-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
 }
-@media (max-width: 700px) {
+@media (max-width: 760px) {
   .settings-card {
     width: calc(100vw - 12px);
     max-width: calc(100vw - 12px);
@@ -2369,5 +2722,10 @@ onUnmounted(() => {
     max-height: calc(100vh - 12px);
   }
   .startup-preferences-row { grid-template-columns: 1fr; }
+  .settings-panel-grid--service { grid-template-columns: 1fr; }
+  .settings-panel-grid--image-core { grid-template-columns: minmax(0, 1fr); }
+  .update-meta-grid, .environment-update-metrics { grid-template-columns: minmax(0, 1fr); }
+  .environment-update-card__footer { align-items: flex-start; flex-direction: column; }
+  .environment-update-card__footer > .row { justify-content: flex-start; }
 }
 </style>

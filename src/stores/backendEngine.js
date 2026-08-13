@@ -12,7 +12,7 @@ const SERVICE_STATES = new Set([
 const PHASE_LABELS = Object.freeze({
   idle: "正在准备 Moonshine AI 引擎",
   preparing: "正在准备 Moonshine AI 引擎",
-  checkingRuntime: "正在检测运行时",
+  checkingRuntime: "正在检测运行环境",
   loadingModel: "正在加载模型",
   startingEngine: "正在启动 AI 引擎",
   verifying: "正在确认可用性",

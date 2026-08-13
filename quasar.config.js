@@ -5,8 +5,9 @@ import { defineConfig } from "#q-app/wrappers";
 import { prepareElectronResources } from "./scripts/prepare-electron-resources.mjs";
 import {
   buildAppUpdateFeedUrl,
-  normalizeAppUpdateChannel,
 } from "./src-electron/updater/update-channel.js";
+import { resolveAppEdition } from "./src-electron/updater/edition.js";
+import packageJson from "./package.json" with { type: "json" };
 
 const DEV_WATCH_IGNORED = [
   "**/IOPaint",
@@ -21,16 +22,8 @@ const electronDownloadMirror =
 const electronDownloadCacheRoot =
   process.env.MOONSHINE_ELECTRON_CACHE || ".electron-cache";
 const electronZipDir = process.env.MOONSHINE_ELECTRON_ZIP_DIR || "";
-const DEFAULT_UPDATE_FEED_URL =
-  "https://download.moonshine.email/app/win-x64/stable/";
-const appUpdateChannel = normalizeAppUpdateChannel(process.env.MOONSHINE_APP_UPDATE_CHANNEL);
-const updateFeedUrl =
-  String(process.env.MOONSHINE_UPDATE_URL || "").trim()
-  || (appUpdateChannel === "stable"
-    ? DEFAULT_UPDATE_FEED_URL
-    : buildAppUpdateFeedUrl(appUpdateChannel, {
-      baseUrl: process.env.MOONSHINE_UPDATE_BASE_URL,
-    }));
+const appEdition = resolveAppEdition(packageJson.version);
+const updateFeedUrl = buildAppUpdateFeedUrl(appEdition.channel);
 const electronPublishConfig = [{ provider: "generic", url: updateFeedUrl }];
 const electronDownloadOptions = {
   cacheRoot: electronDownloadCacheRoot,
@@ -279,8 +272,8 @@ export default defineConfig((ctx) => {
         // protocol: 'myapp://path',
         // Windows only
         // win32metadata: { ... }
-        name: "Moonshine-Image",
-        executableName: "Moonshine-Image",
+        name: appEdition.productName,
+        executableName: appEdition.executableName,
         icon: "src-electron/icons/icon.ico",
         dir: ".",
         out: "dist/electron/packaged",
@@ -297,9 +290,9 @@ export default defineConfig((ctx) => {
         win32metadata: {
           CompanyName: "CuiMuxuan",
           FileDescription: "Moonshine 图像处理客户端",
-          OriginalFilename: "Moonshine-Image.exe",
-          ProductName: "Moonshine-Image",
-          InternalName: "Moonshine-Image",
+          OriginalFilename: `${appEdition.executableName}.exe`,
+          ProductName: appEdition.productName,
+          InternalName: appEdition.executableName,
         },
 
         // Ignore source-only files from the packaged app root
@@ -333,26 +326,30 @@ export default defineConfig((ctx) => {
         electronDist: "node_modules/electron/dist",
 
         // Application metadata
-        appId: "com.moonshine.image",
-        productName: "Moonshine-Image",
+        appId: appEdition.appId,
+        productName: appEdition.productName,
+        // electron-builder derives electron-updater's cache directory from the
+        // packaged package name. Keep it unique so test and official editions
+        // cannot share downloaded installers under %LOCALAPPDATA%.
+        extraMetadata: {
+          name: appEdition.packageName,
+        },
         afterPack: "scripts/after-pack-windows.mjs",
 
         // Windows packaging
         win: {
           target: ["nsis"],
           icon: "src-electron/icons/icon.ico",
-          publisherName: null,
           // The first R2 release remains unsigned. A local afterPack hook uses
           // the npm-bundled rcedit binary, avoiding electron-builder's GitHub
           // winCodeSign download while still embedding the application icon.
-          signAndEditExecutable: false,
         },
 
         // Installer options
         nsis: {
           oneClick: false,
           allowToChangeInstallationDirectory: true,
-          shortcutName: "Moonshine-Image",
+          shortcutName: appEdition.productName,
           include: "build-resources/installer-offline.nsh",
         },
 
@@ -377,7 +374,7 @@ export default defineConfig((ctx) => {
         ],
 
         // Installer artifact naming
-        artifactName: "Moonshine-Image-Setup-${version}.${ext}",
+        artifactName: appEdition.artifactName,
         // Auto-update configuration
         publish: electronPublishConfig,
       },

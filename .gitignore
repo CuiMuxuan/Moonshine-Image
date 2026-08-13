@@ -55,3 +55,7 @@ progress.md
 .npm-cache/
 .electron-cache/
 .codegraph/
+
+# Local browser and agent tool state
+.playwright-cli/
+.workbuddy-ai/

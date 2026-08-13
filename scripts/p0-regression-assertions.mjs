@@ -507,7 +507,7 @@ function runAssertions() {
   assertAbsentPattern({
     file: "src-electron/electron-main.js",
     description: "Bundled runtime fallback does not send raw diagnostic stderr to the renderer",
-    pattern: /内置 Python 运行时重定位出现警告[\s\S]*?"warning",\s*\{[^}]*diagnostic:\s*relocationFailure\.diagnostic/,
+    pattern: /内置 Python 运行环境重定位出现警告[\s\S]*?"warning",\s*\{[^}]*diagnostic:\s*relocationFailure\.diagnostic/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",
@@ -533,6 +533,16 @@ function runAssertions() {
     file: "src-electron/electron-main.js",
     description: "Backend startup IPC returns the supervisor result with the actual runtime port",
     pattern: /async function launchBackendService\(event, config, signal\)[\s\S]*const startResult = await backendSupervisor\.start\(\{[\s\S]*return \{[\s\S]*\.\.\.startResult,[\s\S]*requestedPort: portResolution\.requestedPort,[\s\S]*portChanged: portResolution\.portChanged,[\s\S]*ipcMain\.handle\("start-backend-service"[\s\S]*launchBackendService\(event, config, abortController\.signal\)/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "Backend startup derives the actual CPU/CUDA device from the active environment",
+    pattern: /const effectiveDevice = managedRuntime\?\.success[\s\S]*`--device=\$\{effectiveDevice\}`[\s\S]*if \(effectiveDevice === "cuda"\)/,
+  });
+  assertPattern({
+    file: "src-electron/electron-main.js",
+    description: "A cu130 capability warning preserves and launches the existing healthy environment",
+    pattern: /const preservedCapabilityFallback = result\.capabilityWarning === true[\s\S]*result\.preservedActive === true;[\s\S]*if \(!result\.success && !preservedCapabilityFallback\)[\s\S]*return \{ \.\.\.spec, success: true, effectiveDevice \};/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",
@@ -624,7 +634,7 @@ function runAssertions() {
       /\? await startAction\(options\)/,
       /const actualPort = Number\(result\.port \|\| backendConfig\.port\);/,
       /await syncRuntimeBackendPort\(actualPort\);/,
-      /后端服务启动成功，端口: \$\{actualPort\}/,
+      /服务启动成功，端口：\$\{actualPort\}/,
     ],
   });
   assertPattern({
@@ -639,8 +649,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/components/common/CudaStatus.vue",
-    description: "CUDA status menu displays runtime package, PyTorch CUDA, NVIDIA driver, and nvcc details",
-    pattern: /(?=[\s\S]*useRuntimeDiagnosticsStore)(?=[\s\S]*inject\("runtimeDiagnostics")(?=[\s\S]*refreshCudaStatus)(?=[\s\S]*runtimeDiagnostics\.refreshCudaDiagnostics\(\{ force: true, notify: true \}\))(?=[\s\S]*CPU 运行包)(?=[\s\S]*statusBadgeColor)(?=[\s\S]*grey-7)(?=[\s\S]*PyTorch CUDA)(?=[\s\S]*NVIDIA 驱动)(?=[\s\S]*CUDA Toolkit)(?=[\s\S]*torch_cuda_available)(?=[\s\S]*nvidia_driver_available)(?=[\s\S]*nvcc_available)[\s\S]*/,
+    description: "CUDA status menu displays layered runtime package, PyTorch CUDA, NVIDIA driver, and nvcc details",
+    pattern: /(?=[\s\S]*useRuntimeDiagnosticsStore)(?=[\s\S]*inject\("runtimeDiagnostics"\s*,?)(?=[\s\S]*refreshCudaStatus)(?=[\s\S]*runtimeDiagnostics\.refreshCudaDiagnostics\(\{ force: true, notify: true \}\))(?=[\s\S]*CPU 运行包)(?=[\s\S]*statusBadgeColor)(?=[\s\S]*PyTorch CUDA)(?=[\s\S]*NVIDIA 驱动)(?=[\s\S]*CUDA Toolkit)(?=[\s\S]*const cudaAvailable)(?=[\s\S]*nvidia_driver_available)(?=[\s\S]*nvcc_available)[\s\S]*/,
   });
   assertPattern({
     file: "src/stores/runtimeDiagnostics.js",

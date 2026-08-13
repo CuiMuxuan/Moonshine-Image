@@ -75,8 +75,11 @@ test("settings panels remain keyboard accessible and theme-aware", () => {
   assert.match(panelSource, /helpMode !== 'dialog' && \(\$slots\.description \|\| description\)/);
   assert.doesNotMatch(panelSource, /<q-tooltip|tooltipVisible/);
   assert.match(panelSource, /min-width:\s*44px/);
-  assert.match(settingsSource, /outside-arrows/);
-  assert.match(settingsSource, /mobile-arrows/);
+  assert.match(settingsSource, /<nav class="settings-sidebar" aria-label="全局设置分类">/);
+  assert.match(settingsSource, /<q-tabs[\s\S]*vertical[\s\S]*class="settings-main-tabs"/);
+  assert.match(settingsSource, /@media \(max-width: 900px\)[\s\S]*\.q-tab__label\) \{ display: none; \}/);
+  assert.match(settingsSource, /<q-tooltip>通用配置<\/q-tooltip>/);
+  assert.doesNotMatch(settingsSource, /outside-arrows|mobile-arrows/);
   assert.match(settingsSource, /--settings-text-secondary/);
   assert.match(settingsSource, /class="settings-icon-button"/);
   assert.match(settingsSource, /画笔大小/);

@@ -58,7 +58,7 @@ export const classifyMoonshineError = (error, fallback = "操作失败") => {
     return {
       code: "engine-not-running",
       title: "AI 引擎未启动",
-      message: "Moonshine AI 引擎未启动或端口未响应，请打开诊断检查运行时和模型状态。",
+      message: "Moonshine AI 引擎未启动或端口未响应，请打开诊断检查运行环境和模型状态。",
       detail,
       action: "diagnostics",
     };
@@ -73,7 +73,7 @@ export const classifyMoonshineError = (error, fallback = "操作失败") => {
     return {
       code: "insufficient-disk-space",
       title: "磁盘空间不足",
-      message: detail || "磁盘空间不足，请清理磁盘空间或更换输出/临时目录后重试。",
+      message: detail || "磁盘空间不足，请清理磁盘空间或更换输出/临时路径后重试。",
       detail,
       action: "",
     };
@@ -91,7 +91,7 @@ export const classifyMoonshineError = (error, fallback = "操作失败") => {
     return {
       code: "model-not-found",
       title: "AI 模型未找到",
-      message: "当前选择的 AI 模型文件缺失，请检查模型目录或打开诊断查看详情。",
+      message: "当前选择的 AI 模型文件缺失，请检查模型路径或打开诊断查看详情。",
       detail,
       action: "diagnostics",
     };
@@ -108,7 +108,7 @@ export const classifyMoonshineError = (error, fallback = "操作失败") => {
     return {
       code: "invalid-response",
       title: "响应结果无法识别",
-      message: "Moonshine AI 引擎返回的处理结果无法识别，请打开诊断查看后端输出。",
+      message: "Moonshine AI 引擎返回的处理结果无法识别，请打开诊断查看服务输出。",
       detail,
       action: "diagnostics",
     };

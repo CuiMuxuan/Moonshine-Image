@@ -92,6 +92,14 @@ function makeFailure(label, result) {
   return `${label}: ${details}`;
 }
 
+function processDiagnostic(result) {
+  return {
+    code: result.code,
+    stdout: String(result.stdout || "").trim().slice(-2_000),
+    stderr: String(result.stderr || "").trim().slice(-2_000),
+  };
+}
+
 function resolvePythonExecutable(root, platform, supplied) {
   if (supplied) return path.resolve(String(supplied));
   const relative = platform === "win32" ? path.join("Scripts", "python.exe") : path.join("bin", "python");
@@ -118,10 +126,11 @@ export async function probeEnvironment({
   const python = resolvePythonExecutable(root, platform, pythonExecutable);
   const ffmpeg = resolveFfmpegPath(root, platform, ffmpegPath);
   const errors = [];
-  const run = async (command, args, label) => {
+  const warnings = [];
+  const run = async (command, args, label, { cwd = path.resolve(root) } = {}) => {
     try {
       return normalizeProcessResult(await invokeRunner(runner, command, args, {
-        cwd: path.resolve(root),
+        cwd,
         env: baseEnv,
         timeoutMs,
         signal,
@@ -142,6 +151,7 @@ export async function probeEnvironment({
     ok: pythonResult.success,
     executable: python,
     version: normalizeVersion(pythonResult.stdout || pythonResult.stderr),
+    diagnostic: processDiagnostic(pythonResult),
   };
   if (!pythonInfo.ok) errors.push(makeFailure("Python", pythonResult));
 
@@ -150,6 +160,7 @@ export async function probeEnvironment({
   const torchInfo = {
     ok: torchResult.success,
     version: normalizeVersion(torchPayload?.version || firstLine(torchResult.stdout)),
+    diagnostic: processDiagnostic(torchResult),
   };
   if (!torchInfo.ok) errors.push(makeFailure("PyTorch", torchResult));
 
@@ -160,6 +171,7 @@ export async function probeEnvironment({
     available: cudaResult.success && Boolean(cudaPayload.available),
     version: cudaPayload.version ? String(cudaPayload.version) : null,
     deviceCount: Number.isFinite(Number(cudaPayload.deviceCount)) ? Number(cudaPayload.deviceCount) : 0,
+    diagnostic: processDiagnostic(cudaResult),
   };
   if (!cudaInfo.ok) errors.push(makeFailure("CUDA", cudaResult));
   if (String(accelerator).toLowerCase() === "cu130" && (!cudaInfo.ok || !cudaInfo.available)) {
@@ -174,19 +186,28 @@ export async function probeEnvironment({
     ok: backendResult.success,
     module: String(backendModule),
     error: backendResult.success ? null : makeFailure("Backend", backendResult),
+    diagnostic: processDiagnostic(backendResult),
   };
   if (!backendInfo.ok) errors.push(backendInfo.error);
 
-  const ffmpegResult = await run(ffmpeg, ["-version"], "ffmpeg");
+  const ffmpegResult = await run(ffmpeg, ["-version"], "ffmpeg", {
+    cwd: path.dirname(ffmpeg),
+  });
   const ffmpegInfo = {
     ok: ffmpegResult.success,
     path: ffmpeg,
     version: normalizeVersion(ffmpegResult.stdout || ffmpegResult.stderr),
+    error: ffmpegResult.success ? null : makeFailure("FFmpeg", ffmpegResult),
+    diagnostic: processDiagnostic(ffmpegResult),
   };
-  if (!ffmpegInfo.ok) errors.push(makeFailure("FFmpeg", ffmpegResult));
+  if (!ffmpegInfo.ok) warnings.push(ffmpegInfo.error);
+
+  const success = errors.length === 0;
+  const degraded = success && !ffmpegInfo.ok;
 
   return {
-    success: errors.length === 0,
+    success,
+    degraded,
     accelerator: String(accelerator),
     python: pythonInfo,
     torch: torchInfo,
@@ -194,6 +215,13 @@ export async function probeEnvironment({
     backend: backendInfo,
     ffmpeg: ffmpegInfo,
     errors,
+    warnings,
+    capabilities: {
+      core: success,
+      image: success,
+      video: success && ffmpegInfo.ok,
+      ffmpeg: ffmpegInfo.ok,
+    },
   };
 }
 

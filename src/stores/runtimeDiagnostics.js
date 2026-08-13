@@ -37,7 +37,7 @@ export const useRuntimeDiagnosticsStore = defineStore("runtimeDiagnostics", () =
     return cudaStatus.value;
   };
 
-  const setCudaUnavailable = (message = "后端服务未启动") => {
+  const setCudaUnavailable = (message = "服务未启动") => {
     cudaStatus.value = {
       available: false,
       info: { message },

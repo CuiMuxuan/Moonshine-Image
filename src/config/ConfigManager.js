@@ -196,7 +196,7 @@ export class ConfigManager {
       config.general.backendPort < 1024 ||
       config.general.backendPort > 65535
     ) {
-      errors.push("后端端口必须在 1024-65535 范围内。");
+      errors.push("服务端口必须在 1024-65535 范围内。");
     }
 
     if (!["cuda", "cpu"].includes(config.general?.launchMode)) {
@@ -214,11 +214,11 @@ export class ConfigManager {
       config.general?.backendProjectPath &&
       typeof config.general.backendProjectPath !== "string"
     ) {
-      errors.push("后端项目路径必须是字符串。");
+      errors.push("服务项目路径必须是字符串。");
     }
 
     if (config.general?.modelDir && typeof config.general.modelDir !== "string") {
-      errors.push("模型目录必须是字符串。");
+      errors.push("模型路径必须是字符串。");
     }
 
     if (

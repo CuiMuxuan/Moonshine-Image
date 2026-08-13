@@ -62,12 +62,12 @@ function createFixture(t) {
     `${crypto.sign(null, manifestBytes, privateKey).toString("base64")}\n`,
   );
 
-  const installerName = "Moonshine-Image-Setup-1.3.0.exe";
+  const installerName = "Moonshine-Image-Test-Setup-1.3.3-test.1.exe";
   const installerBytes = Buffer.from("fake installer bytes");
   fs.writeFileSync(path.join(artifactDir, installerName), installerBytes);
   fs.writeFileSync(path.join(artifactDir, `${installerName}.blockmap`), "blockmap");
-  fs.writeFileSync(path.join(artifactDir, "latest.yml"), stringifyYaml({
-    version: "1.3.0",
+  fs.writeFileSync(path.join(artifactDir, "test.yml"), stringifyYaml({
+    version: "1.3.3-test.1",
     files: [{
       url: installerName,
       sha512: digest(installerBytes, "sha512", "base64"),
@@ -88,12 +88,13 @@ test("app-only audit verifies integrity and updater metadata", (t) => {
   const fixture = createFixture(t);
   const result = auditAppOnlyPackage({
     artifactDir: fixture.artifactDir,
-    expectedVersion: "1.3.0",
+    expectedVersion: "1.3.3-test.1",
     integrityPublicKeyPem: fixture.publicKeyPem,
   });
   assert.equal(result.integrity.resourceMode, "app-only");
   assert.equal(result.integrity.entryCount, 3);
   assert.deepEqual(result.integrity.prefixes.sort(), ["backend", "ffmpeg"]);
+  assert.equal(result.updateMetadata.metadataFile, "test.yml");
   assert.equal(result.updateMetadata.installerBytes, 20);
 });
 
@@ -103,7 +104,7 @@ test("app-only audit rejects forbidden bundled resources", (t) => {
   assert.throws(
     () => auditAppOnlyPackage({
       artifactDir: fixture.artifactDir,
-      expectedVersion: "1.3.0",
+      expectedVersion: "1.3.3-test.1",
       integrityPublicKeyPem: fixture.publicKeyPem,
     }),
     /forbidden resource directory: runtime/,
@@ -116,18 +117,18 @@ test("app-only audit rejects unprotected backend files and stale updater hashes"
   assert.throws(
     () => auditAppOnlyPackage({
       artifactDir: fixture.artifactDir,
-      expectedVersion: "1.3.0",
+      expectedVersion: "1.3.3-test.1",
       integrityPublicKeyPem: fixture.publicKeyPem,
     }),
     /Unprotected backend resources/,
   );
 
   fs.rmSync(path.join(fixture.resourcesRoot, "backend", "unprotected.py"));
-  fs.appendFileSync(path.join(fixture.artifactDir, "Moonshine-Image-Setup-1.3.0.exe"), "tampered");
+  fs.appendFileSync(path.join(fixture.artifactDir, "Moonshine-Image-Test-Setup-1.3.3-test.1.exe"), "tampered");
   assert.throws(
     () => auditAppOnlyPackage({
       artifactDir: fixture.artifactDir,
-      expectedVersion: "1.3.0",
+      expectedVersion: "1.3.3-test.1",
       integrityPublicKeyPem: fixture.publicKeyPem,
     }),
     /installer size does not match/,

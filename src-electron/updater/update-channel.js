@@ -1,4 +1,4 @@
-export const APP_UPDATE_CHANNELS = Object.freeze(["test", "beta", "stable"]);
+export const APP_UPDATE_CHANNELS = Object.freeze(["test", "stable"]);
 export const DEFAULT_APP_UPDATE_CHANNEL = "stable";
 export const DEFAULT_APP_UPDATE_BASE_URL = "https://download.moonshine.email/app/win-x64";
 

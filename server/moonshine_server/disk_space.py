@@ -62,7 +62,7 @@ def ensure_disk_space(
             f"{operation}磁盘空间不足。"
             f"预计至少需要 {format_bytes(required_bytes)}，"
             f"当前可用 {format_bytes(free_bytes)}。"
-            "请清理磁盘空间或在全局设置中更换输出/临时目录后重试。"
+            "请清理磁盘空间或在全局设置中更换输出/临时路径后重试。"
         )
     return DiskSpaceCheckResult(
         path=path,

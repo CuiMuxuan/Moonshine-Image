@@ -7,7 +7,13 @@ const FALLBACK_IMAGE_MODELS = Object.freeze([
     description: "通用擦除与修复模型",
     type: "image",
     installed: true,
+    verified: true,
     available: true,
+    loaded: false,
+    loadState: "not_loaded",
+    runtimeReady: false,
+    ready: false,
+    readiness: { status: "not_loaded", reason: "not_loaded" },
     requiresMask: true,
     downloadable: false,
     sourceLinks: [],
@@ -21,7 +27,7 @@ const FALLBACK_IMAGE_MODELS = Object.freeze([
       outputRequired: true,
     },
     parameters: {},
-    parameterHelp: "当前模型参数由后端自动控制，无需手动调整。",
+    parameterHelp: "当前模型参数由服务自动控制，无需手动调整。",
     capabilities: {
       speed: 6.0,
       realImageQuality: 8.0,
@@ -46,7 +52,20 @@ const normalizeModel = (model = {}) => ({
   variant: String(model.variant || "").trim(),
   category: String(model.category || "").trim(),
   installed: Boolean(model.installed),
+  verified: model.verified == null ? Boolean(model.installed) : Boolean(model.verified),
   available: model.available !== false && Boolean(model.installed),
+  loaded: Boolean(model.loaded),
+  loadState: String(model.loadState || (model.loaded ? "loaded" : "not_loaded")),
+  runtimeReady: Boolean(model.runtimeReady ?? model.ready),
+  ready: Boolean(model.ready ?? model.runtimeReady),
+  readiness:
+    model.readiness && typeof model.readiness === "object"
+      ? model.readiness
+      : {
+          status: model.loaded ? "ready" : "not_loaded",
+          reason: model.loaded ? null : "not_loaded",
+        },
+  fileStatus: String(model.fileStatus || (model.installed ? "verified" : "missing")),
   requiresMask: model.requiresMask !== false,
   downloadable: Boolean(model.downloadable),
   sourceLinks: Array.isArray(model.sourceLinks) ? model.sourceLinks : [],
@@ -204,6 +223,24 @@ const getModelTask = async (taskId) => (
   api.get(`/api/v1/moonshine/models/tasks/${encodeURIComponent(taskId)}`)
 );
 
+const prepareModel = async (modelId, options = {}) => {
+  const response = await api.post(
+    `/api/v1/moonshine/models/${encodeURIComponent(modelId)}/prepare`,
+    buildModelDirectoryPayload(options)
+  );
+  return {
+    ...response,
+    loaded: Boolean(response?.loaded),
+    runtimeReady: Boolean(response?.runtimeReady ?? response?.ready),
+    ready: Boolean(response?.ready ?? response?.runtimeReady),
+    loadState: String(response?.loadState || (response?.loaded ? "loaded" : "failed")),
+    readiness: response?.readiness || {
+      status: response?.loaded ? "ready" : "failed",
+      reason: response?.loaded ? null : "load_failed",
+    },
+  };
+};
+
 export default {
   getModels,
   getImageModels,
@@ -212,4 +249,5 @@ export default {
   switchModel,
   startModelDownload,
   getModelTask,
+  prepareModel,
 };

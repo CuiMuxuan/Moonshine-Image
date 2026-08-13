@@ -156,6 +156,25 @@ test("external probe returns stable errors for Python, torch, CUDA, pip, and bac
   );
 });
 
+test("external probe keeps the Python environment valid when bundled FFmpeg is unavailable", async (t) => {
+  const data = await fixture(t);
+  const directory = await makeLayout(data.root, EXTERNAL_ENVIRONMENT_LAYOUTS.VENV);
+  const { runner } = healthyRunner({ failStage: "external-environment-ffmpeg", backendPath: data.backend });
+  const result = await probeExternalEnvironment({
+    directoryPath: directory,
+    backendProjectPath: data.backend,
+    ffmpegPath: data.ffmpeg,
+    runner,
+    platform: "win32",
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.diagnostics.degraded, true);
+  assert.equal(result.diagnostics.ffmpeg.ok, false);
+  assert.equal(result.diagnostics.capabilities.video, false);
+  assert.match(result.diagnostics.warnings[0], /FFmpeg/);
+});
+
 test("candidate tokens expire and activation rejects a changed Python fingerprint", async (t) => {
   const data = await fixture(t);
   const directory = await makeLayout(data.root, EXTERNAL_ENVIRONMENT_LAYOUTS.VENV);

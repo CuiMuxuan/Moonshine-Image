@@ -3,6 +3,9 @@ import { createHash } from "node:crypto";
 export const ENVIRONMENT_SPEC_SCHEMA = 1;
 export const DEFAULT_PYTHON_VERSION = "3.12.10";
 export const ACCELERATOR_PREFERENCES = Object.freeze(["auto", "cpu", "cu130"]);
+export const BUNDLED_FFMPEG_SPEC_HASH = createHash("sha256")
+  .update("moonshine-image:app-bundled-ffmpeg:v1")
+  .digest("hex");
 
 const HASH_PATTERN = /^[a-f0-9]{64}$/i;
 

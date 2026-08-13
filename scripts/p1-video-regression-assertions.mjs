@@ -57,16 +57,6 @@ function assertFunctionBodyAbsent({ file, functionName, description, forbidden }
   console.log(`PASS  ${description}`);
 }
 
-function assertOrder({ file, description, before, after }) {
-  const content = readText(file);
-  const beforeIndex = content.indexOf(before);
-  const afterIndex = content.indexOf(after);
-  if (beforeIndex < 0 || afterIndex < 0 || beforeIndex >= afterIndex) {
-    throw new Error(`Assertion failed: ${description}\nFile: ${file}`);
-  }
-  console.log(`PASS  ${description}`);
-}
-
 function logSection(title) {
   console.log(`\n[${title}]`);
 }
@@ -276,7 +266,6 @@ function runFfmpegSmoke() {
 function resolveTemporalTestPython() {
   const candidates = [
     process.env.MOONSHINE_PYTHON_PATH,
-    "C:\\Users\\cjh02\\anaconda3\\envs\\moonshine-runtime-312\\python.exe",
     "python",
   ]
     .map((value) => String(value || "").trim())
@@ -562,7 +551,7 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "Backend management hint is only shown during backend model processing",
-    pattern: /normalizedPhase === VIDEO_PROCESSING_PHASES\.BACKEND && backendRunningState\?\.value[\s\S]*可打开后端管理页面查看进度/,
+    pattern: /normalizedPhase === VIDEO_PROCESSING_PHASES\.BACKEND && backendRunningState\?\.value[\s\S]*可打开服务管理页面查看进度/,
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
@@ -593,8 +582,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/pages/VideoPage.vue",
-    description: "Video backend model preflight switches MAT through the shared inpaint model path and falls back to LaMa on non-CUDA",
-    pattern: /(?=[\s\S]*MAT_CUDA_FALLBACK_MESSAGE = "MAT 需要 CUDA，当前已自动切换为 LaMa。")(?=[\s\S]*const ensureBackendVideoModel = async \(modelId = currentModel\.value\) => \{[\s\S]*if \(!isMaskInpaintModel\(requestedModel\)\) return true)(?=[\s\S]*modelRegistryStore\.switchModel\(requestedModel\))(?=[\s\S]*requestedModel === "mat"[\s\S]*handleModelChange\("lama"\)[\s\S]*MAT_CUDA_FALLBACK_MESSAGE)[\s\S]*/,
+    description: "Video backend model preflight prepares supported models and falls MAT back to LaMa on non-CUDA",
+    pattern: /(?=[\s\S]*MAT_CUDA_FALLBACK_MESSAGE = "MAT 需要 CUDA，当前已自动切换为 LaMa。")(?=[\s\S]*const prepareModelForVideoRun = async \(modelId, \{ propagateError = false \} = \{\}\)[\s\S]*modelRegistryStore\.ensureModelReady\(modelId)(?=[\s\S]*const ensureBackendVideoModel = async \(modelId = currentModel\.value\) => \{[\s\S]*VIDEO_PROCESSING_MODEL_IDS\.includes\(requestedModel\))(?=[\s\S]*propagateError: requestedModel === "mat")(?=[\s\S]*requestedModel === "mat"[\s\S]*handleModelChange\("lama"\)[\s\S]*MAT_CUDA_FALLBACK_MESSAGE)[\s\S]*/,
   });
   assertPattern({
     file: "server/moonshine_server/schema.py",
@@ -803,7 +792,7 @@ function runAssertions() {
   assertPattern({
     file: "server/moonshine_server/moonshine/sam_service.py",
     description: "SAM2 video service stages local video paths, registers multiple object prompts, and reports real progress phases",
-    pattern: /(?=[\s\S]*import cv2)(?=[\s\S]*def _emit_progress)(?=[\s\S]*def _stage_video_to_jpeg_frames[\s\S]*progress_callback)(?=[\s\S]*cv2\.VideoCapture)(?=[\s\S]*cv2\.imwrite)(?=[\s\S]*def _normalize_video_objects)(?=[\s\S]*duplicate_ids)(?=[\s\S]*def propagate_video)(?=[\s\S]*input_type: str = "jpegFrameDirectory")(?=[\s\S]*video_path: Optional\[str\])(?=[\s\S]*progress_callback: Optional\[Callable)(?=[\s\S]*emit_frame_loading_progress)(?=[\s\S]*progress_callback=emit_frame_loading_progress)(?=[\s\S]*for prompt_index, prompt in enumerate\(normalized_objects)(?=[\s\S]*predictor\.add_new_points_or_box)(?=[\s\S]*status="propagating")(?=[\s\S]*status="writing_masks")(?=[\s\S]*"objectCount": len\(normalized_objects\))(?=[\s\S]*"type": normalized_input_type)[\s\S]*/,
+    pattern: /(?=[\s\S]*import cv2)(?=[\s\S]*def _emit_progress)(?=[\s\S]*def _stage_video_to_jpeg_frames[\s\S]*progress_callback)(?=[\s\S]*open_video_capture\(video_path\))(?=[\s\S]*write_image_file)(?=[\s\S]*def _normalize_video_objects)(?=[\s\S]*duplicate_ids)(?=[\s\S]*def propagate_video)(?=[\s\S]*input_type: str = "jpegFrameDirectory")(?=[\s\S]*video_path: Optional\[str\])(?=[\s\S]*progress_callback: Optional\[Callable)(?=[\s\S]*emit_frame_loading_progress)(?=[\s\S]*progress_callback=emit_frame_loading_progress)(?=[\s\S]*for prompt_index, prompt in enumerate\(normalized_objects)(?=[\s\S]*predictor\.add_new_points_or_box)(?=[\s\S]*status="propagating")(?=[\s\S]*status="writing_masks")(?=[\s\S]*"objectCount": len\(normalized_objects\))(?=[\s\S]*"type": normalized_input_type)[\s\S]*/,
   });
   assertPattern({
     file: "server/moonshine_server/plugins/segment_anything2/sam2_video_predictor.py",
@@ -883,7 +872,7 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/VideoPage.vue",
     description: "SAM2 video selection uses global loading with job progress and explains missing local video paths",
-    pattern: /(?=[\s\S]*v-if="isProcessing \|\| samVideoState\.running")(?=[\s\S]*samVideoMissingLocalPathMessage)(?=[\s\S]*当前视频没有后端可读取的本地文件路径)(?=[\s\S]*getSamVideoJobStageText)(?=[\s\S]*applySamVideoJobProgress)(?=[\s\S]*runSamVideoPropagationJob)(?=[\s\S]*createSamVideoPropagationJob)(?=[\s\S]*getSamVideoPropagationJob)(?=[\s\S]*getSamVideoPropagationJobResult)(?=[\s\S]*正向传播)(?=[\s\S]*反向传播)(?=[\s\S]*缓存阶段 · 写入本地蒙版资产)(?=[\s\S]*updateSamVideoGlobalLoadingOverlay\("完成阶段：正在写入智能选区轨道", 1\))(?=[\s\S]*actionLabel: "打开后端管理")(?=[\s\S]*可打开后端管理页面查看进度)(?=[\s\S]*hideGlobalLoadingOverlay\(\))[\s\S]*/,
+    pattern: /(?=[\s\S]*v-if="isProcessing \|\| samVideoState\.running")(?=[\s\S]*samVideoMissingLocalPathMessage)(?=[\s\S]*当前视频没有服务可读取的本地文件路径)(?=[\s\S]*getSamVideoJobStageText)(?=[\s\S]*applySamVideoJobProgress)(?=[\s\S]*runSamVideoPropagationJob)(?=[\s\S]*createSamVideoPropagationJob)(?=[\s\S]*getSamVideoPropagationJob)(?=[\s\S]*getSamVideoPropagationJobResult)(?=[\s\S]*正向传播)(?=[\s\S]*反向传播)(?=[\s\S]*缓存阶段 · 写入本地蒙版资产)(?=[\s\S]*updateSamVideoGlobalLoadingOverlay\("完成阶段：正在写入智能选区轨道", 1\))(?=[\s\S]*actionLabel: "打开服务管理")(?=[\s\S]*可打开服务管理页面查看进度)(?=[\s\S]*hideGlobalLoadingOverlay\(\))[\s\S]*/,
   });
   assertPattern({
     file: "src/layouts/MainLayout.vue",

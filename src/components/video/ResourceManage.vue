@@ -360,7 +360,7 @@
               ]"
               @click="emit('open-output')"
             >
-              <q-tooltip>打开目录</q-tooltip>
+              <q-tooltip>打开路径</q-tooltip>
             </q-btn>
           </div>
 
@@ -689,7 +689,7 @@ const batchSizeText = computed(() => {
   return Number.isFinite(size) && size > 0 ? String(Math.round(size)) : "—";
 });
 const backendPreparingText = computed(
-  () => props.enginePreparingLabel || props.engineRunTooltip || "正在启动后端服务"
+  () => props.enginePreparingLabel || props.engineRunTooltip || "正在启动服务"
 );
 const runButtonIcon = computed(() => (props.enginePreparing ? "sync" : "play_arrow"));
 const runButtonLabel = computed(() => {
@@ -713,7 +713,7 @@ const previewActionTooltip = computed(() => {
   return `先处理前 ${props.previewTrialSeconds || 3} 秒样片`;
 });
 const openButtonLabel = computed(() =>
-  actionButtonMode.value === "full" ? "打开目录" : "打开"
+  actionButtonMode.value === "full" ? "打开路径" : "打开"
 );
 const isSlbrModel = computed(() => props.currentModel === "slbr");
 const parameterSchema = computed(() => props.currentModelMetadata?.parameters || {});
@@ -737,7 +737,7 @@ const modelParameterHelp = computed(() =>
 );
 const showModelParameterHelp = computed(() => Boolean(modelParameterHelp.value));
 const modelStatusLabel = computed(() => {
-  if (!props.backendRunning) return "后端未启动";
+  if (!props.backendRunning) return "服务未启动";
   if (props.currentModelMetadata?.corruptFiles?.length > 0) return "需修复";
   if (!props.currentModelMetadata?.installed) return "未安装";
   return "已安装";

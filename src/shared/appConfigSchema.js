@@ -70,24 +70,24 @@ const containsControlCharacter = (value) =>
 
 export const getManagedFolderNameValidationError = (value) => {
   if (typeof value !== "string") {
-    return "目录名必须是字符串。";
+    return "文件夹名必须是字符串。";
   }
   if (!value || !value.trim()) {
-    return "目录名不能为空。";
+    return "文件夹名不能为空。";
   }
   if (value === "." || value === "..") {
-    return "目录名不能使用点目录。";
+    return "文件夹名不能使用点文件夹。";
   }
   if (WINDOWS_INVALID_FOLDER_CHARACTERS.test(value) || containsControlCharacter(value)) {
-    return "目录名不能包含路径分隔符或系统保留字符。";
+    return "文件夹名不能包含路径分隔符或系统保留字符。";
   }
   if (/[ .]$/.test(value)) {
-    return "目录名不能以空格或句点结尾。";
+    return "文件夹名不能以空格或句点结尾。";
   }
 
   const windowsBaseName = value.split(".", 1)[0].replace(/[ .]+$/g, "");
   if (WINDOWS_RESERVED_FOLDER_NAME.test(windowsBaseName)) {
-    return "目录名不能使用 Windows 系统保留名称。";
+    return "文件夹名不能使用 Windows 系统保留名称。";
   }
   return "";
 };

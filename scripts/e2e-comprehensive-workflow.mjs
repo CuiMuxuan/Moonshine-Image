@@ -2237,6 +2237,136 @@ async function testBackendTerminalRefresh(page) {
     "Single image batch completion should use singular user-facing copy."
   );
 
+  const pollingSummary = await page.evaluate(() => {
+    const bridge = window.__MOONSHINE_BACKEND_MANAGER_TEST__;
+    bridge.clearTerminal();
+    bridge.addTerminalLog(
+      'INFO: 127.0.0.1:53001 - "GET /api/v1/moonshine/models/tasks/task-alpha HTTP/1.1" 200 OK'
+    );
+    bridge.addTerminalLog(
+      'INFO: 127.0.0.1:53001 - "GET /api/v1/moonshine/models/tasks/task-alpha HTTP/1.1" 200 OK'
+    );
+    bridge.addTerminalLog(
+      'INFO: 127.0.0.1:53001 - "GET /api/v1/moonshine/models/tasks/task-beta HTTP/1.1" 200 OK'
+    );
+    bridge.addTerminalLog(
+      'INFO: 127.0.0.1:53001 - "GET /api/v1/moonshine/models/tasks/task-beta HTTP/1.1" 500 Internal Server Error',
+      "error"
+    );
+    return {
+      summary: bridge.getModelTaskPollSummary(),
+      lines: bridge.getTerminalLines(),
+    };
+  });
+  assert(
+    pollingSummary.summary.count === 3 && pollingSummary.summary.taskCount === 2,
+    `Successful model task polling should collapse into one live counter (received ${JSON.stringify(pollingSummary.summary)}).`
+  );
+  assert(
+    pollingSummary.lines.filter((line) => line.message.includes("模型任务状态轮询")).length === 1,
+    "Repeated model task polling should update one stable terminal row."
+  );
+  assert(
+    pollingSummary.lines.some(
+      (line) => line.type === "error" && line.message.includes("500 Internal Server Error")
+    ),
+    "Failed model task polling must remain visible as an error log."
+  );
+
+  const stoppedControls = await page.evaluate(() => ({
+    start: Boolean(document.querySelector('[data-testid="backend-start-service-button"]')),
+    stop: Boolean(document.querySelector('[data-testid="backend-stop-service-button"]')),
+    restart: Boolean(document.querySelector('[data-testid="backend-restart-service-button"]')),
+  }));
+  assert(
+    stoppedControls.start && !stoppedControls.stop && !stoppedControls.restart,
+    "Stopped service state should show only the lower Start Service button."
+  );
+  const runningControls = await page.evaluate(async () => {
+    const bridge = window.__MOONSHINE_BACKEND_MANAGER_TEST__;
+    await bridge.setServiceTestStatus("running");
+    const stop = document.querySelector('[data-testid="backend-stop-service-button"]');
+    const restart = document.querySelector('[data-testid="backend-restart-service-button"]');
+    const stopRect = stop?.getBoundingClientRect();
+    const restartRect = restart?.getBoundingClientRect();
+    return {
+      start: Boolean(document.querySelector('[data-testid="backend-start-service-button"]')),
+      stopWidth: stopRect?.width || 0,
+      restartWidth: restartRect?.width || 0,
+      controlsWidth: document
+        .querySelector('[data-testid="backend-service-controls"]')
+        ?.getBoundingClientRect().width,
+    };
+  });
+  assert(
+    !runningControls.start &&
+      runningControls.stopWidth > 0 &&
+      Math.abs(runningControls.stopWidth - runningControls.restartWidth) <= 1,
+    `Running service controls should be equal half widths (received ${JSON.stringify(runningControls)}).`
+  );
+  await page.evaluate(() =>
+    window.__MOONSHINE_BACKEND_MANAGER_TEST__.setServiceTestStatus("stopped")
+  );
+
+  const screenshotDir = path.join(repoRoot, "output", "playwright", "backend-manager");
+  fs.mkdirSync(screenshotDir, { recursive: true });
+  for (const viewport of [
+    { name: "narrow", width: 640, height: 720 },
+    { name: "standard", width: 1366, height: 768 },
+    { name: "maximized", width: 1920, height: 1080 },
+  ]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await page.waitForTimeout(100);
+    const metrics = await page.evaluate(() => {
+      const card = document.querySelector(".backend-manager-card");
+      const content = document.querySelector(".backend-content");
+      const control = document.querySelector(".control-panel");
+      const stepper = document.querySelector(".backend-stepper");
+      const terminal = document.querySelector(".terminal-section");
+      const terminalOutput = document.querySelector(".terminal-output");
+      const rect = (element) => {
+        const value = element?.getBoundingClientRect();
+        return value
+          ? { top: value.top, left: value.left, width: value.width, height: value.height }
+          : null;
+      };
+      return {
+        viewportWidth: window.innerWidth,
+        documentScrollWidth: document.documentElement.scrollWidth,
+        card: rect(card),
+        content: rect(content),
+        control: rect(control),
+        stepper: rect(stepper),
+        terminal: rect(terminal),
+        terminalOutput: rect(terminalOutput),
+        controlOverflowY: control ? getComputedStyle(control).overflowY : "",
+        stepperOverflowY: stepper ? getComputedStyle(stepper).overflowY : "",
+        terminalOverflowY: terminalOutput ? getComputedStyle(terminalOutput).overflowY : "",
+      };
+    });
+    assert(
+      metrics.documentScrollWidth <= metrics.viewportWidth + 1,
+      `${viewport.name} backend manager should not create horizontal page overflow.`
+    );
+    assert(
+      metrics.controlOverflowY === "hidden" && metrics.stepperOverflowY === "auto",
+      `${viewport.name} left pane should stay fixed while step content scrolls internally.`
+    );
+    assert(
+      metrics.terminalOverflowY === "auto",
+      `${viewport.name} terminal output should retain independent scrolling.`
+    );
+    assert(
+      metrics.control?.height <= metrics.content?.height + 1 &&
+        metrics.terminal?.height <= metrics.content?.height + 1,
+      `${viewport.name} backend panes should stay within the available card content height.`
+    );
+    await page.screenshot({
+      path: path.join(screenshotDir, `${viewport.name}.png`),
+      fullPage: true,
+    });
+  }
+
   await page.click('[data-testid="backend-manager-close-button"]');
   await page.waitForSelector('[data-testid="backend-terminal-output"]', {
     state: "hidden",

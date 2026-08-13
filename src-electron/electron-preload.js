@@ -75,6 +75,7 @@ contextBridge.exposeInMainWorld("electron", {
     setRuntimeChannel: (channel) => ipcRenderer.invoke("runtime-set-channel", channel),
     checkRuntime: (options = {}) => ipcRenderer.invoke("runtime-check", options),
     ensureRuntime: (options = {}) => ipcRenderer.invoke("runtime-ensure", options),
+    cancelRuntime: () => ipcRenderer.invoke("runtime-cancel"),
     rollbackRuntime: () => ipcRenderer.invoke("runtime-rollback"),
     getRuntimeBackendSpec: () => ipcRenderer.invoke("runtime-get-backend-spec"),
     getEnvironmentState: () => ipcRenderer.invoke("environment-get-state"),
@@ -84,8 +85,16 @@ contextBridge.exposeInMainWorld("electron", {
       ipcRenderer.invoke("environment-check", options),
     ensureEnvironment: (options = {}) =>
       ipcRenderer.invoke("environment-ensure", options),
+    cancelEnvironmentPreparation: () => ipcRenderer.invoke("environment-cancel"),
     rollbackEnvironment: () => ipcRenderer.invoke("environment-rollback"),
     getEnvironmentBackendSpec: () => ipcRenderer.invoke("environment-get-backend-spec"),
+    getEnvironmentUpdateStatus: (options = {}) =>
+      ipcRenderer.invoke("environment-update-status", options),
+    getEnvironmentUpdatePlan: (options = {}) =>
+      ipcRenderer.invoke("environment-update-plan", options),
+    switchEnvironment: (options = {}) =>
+      ipcRenderer.invoke("environment-update-switch", options),
+    openEnvironmentPath: () => ipcRenderer.invoke("environment-open-path"),
     selectExternalEnvironmentDirectory: () =>
       ipcRenderer.invoke("environment-external-select-directory"),
     probeExternalEnvironment: (candidate = {}) =>

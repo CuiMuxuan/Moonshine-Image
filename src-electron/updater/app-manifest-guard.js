@@ -12,6 +12,7 @@ import {
   SOURCE_ERROR_KIND,
 } from "../runtime/release-source.js";
 import { normalizeAppUpdateChannel } from "./update-channel.js";
+import { resolveAppEdition } from "./edition.js";
 
 const DEFAULT_MANIFEST_PATH = (channel) => `manifests/${channel}/latest.json`;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -144,6 +145,13 @@ export class AppManifestGuard {
     });
     if (!result.payload.app) {
       throw new AppManifestGuardError("Signed app manifest does not contain app metadata", "APP_MANIFEST_APP_SECTION_MISSING");
+    }
+    const edition = resolveAppEdition(result.payload.appVersion);
+    if (result.payload.edition !== edition.edition || result.payload.appId !== edition.appId) {
+      throw new AppManifestGuardError(
+        "Signed app manifest identity does not match its application version",
+        "APP_MANIFEST_EDITION_MISMATCH",
+      );
     }
     this.lastVerified = { ...result, sourceId: source.id };
     this.minimumSequence = result.sequence;

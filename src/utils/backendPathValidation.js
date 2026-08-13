@@ -58,17 +58,17 @@ export const buildBackendPathSelectionBlockedMessage = (
   } = {}
 ) => {
   const lines = [buildBackendPathBlockedMessage(validationResult, { includePathList: false })];
-  lines.push(`当前后端项目路径：${normalizePathText(currentBackendProjectPath)}`);
-  lines.push(`当前模型目录路径：${normalizePathText(currentModelDir)}`);
+  lines.push(`当前服务项目路径：${normalizePathText(currentBackendProjectPath)}`);
+  lines.push(`当前模型路径：${normalizePathText(currentModelDir)}`);
 
   const selectedProject = String(selectedBackendProjectPath || "").trim();
   if (selectedProject) {
-    lines.push(`尝试选择的后端项目路径：${selectedProject}`);
+    lines.push(`尝试选择的服务项目路径：${selectedProject}`);
   }
 
   const selectedModel = String(selectedModelDir || "").trim();
   if (selectedModel) {
-    lines.push(`尝试选择的模型目录路径：${selectedModel}`);
+    lines.push(`尝试选择的模型路径：${selectedModel}`);
   }
 
   return lines.join("\n");

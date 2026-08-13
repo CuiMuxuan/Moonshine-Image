@@ -136,6 +136,7 @@ function createRuntimeHarness(options = {}) {
 
   const dependencies = {
     path,
+    environmentManager: null,
     fs: {
       existsSync() {
         return true;

@@ -79,6 +79,10 @@ import {
 import { scheduleApplicationRestart } from "./app-restart.js";
 import { RuntimeManager } from "./runtime/runtime-manager.js";
 import { EnvironmentManager } from "./runtime/environment-manager.js";
+import {
+  markEffectiveRuntimeReceiptStopped,
+  writeEffectiveRuntimeReceipt,
+} from "./runtime/effective-runtime-receipt.js";
 import { ModelManifestManager } from "./runtime/model-manifest-manager.js";
 import { getRuntimeManifestPublicKeys } from "./runtime/public-key.js";
 import {
@@ -90,6 +94,7 @@ import {
   buildAppUpdateFeedUrl,
   normalizeAppUpdateChannel,
 } from "./updater/update-channel.js";
+import { resolveAppEdition } from "./updater/edition.js";
 import { buildBackendPathCompatibilityResult } from "./backend-path-validation.js";
 import {
   createDiagnostic,
@@ -125,7 +130,8 @@ import {
   parseImportProbeResult,
 } from "./python-runtime.js";
 const execAsync = promisify(exec);
-const APP_DISPLAY_NAME = "Moonshine-Image";
+const APP_IDENTITY = resolveAppEdition(app.getVersion());
+const APP_DISPLAY_NAME = APP_IDENTITY.productName;
 const LEGACY_APP_NAME = "moonshine-client";
 
 app.setName(APP_DISPLAY_NAME);
@@ -210,6 +216,7 @@ function createSupervisorFailure(input = {}) {
 
 let mainWindow = null;
 let allowCloseWithActiveProcessingTasks = false;
+let allowCloseWithActiveEnvironmentPreparation = false;
 let sessionSecurityRegistered = false;
 let rendererFailureDialogOpen = false;
 let quitAfterBackendStop = false;
@@ -220,10 +227,33 @@ let backendStopPromise = null;
 let applicationQuitRequested = false;
 let applicationBootstrapPromise = null;
 let applicationBootstrapComplete = false;
+let installedPackageMetadata;
+
+function getInstalledPackageUpdatedAt() {
+  if (installedPackageMetadata !== undefined) return installedPackageMetadata;
+  if (!app.isPackaged) {
+    installedPackageMetadata = null;
+    return installedPackageMetadata;
+  }
+  try {
+    const { manifestPath } = getIntegrityArtifactPaths();
+    const manifest = readJsonFile(manifestPath);
+    const generatedAt = String(manifest?.generatedAt || "").trim();
+    const parsed = new Date(generatedAt);
+    installedPackageMetadata = Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  } catch {
+    installedPackageMetadata = null;
+  }
+  return installedPackageMetadata;
+}
+
 let appUpdaterService = new AppUpdaterService({
   updater: null,
   isPackaged: false,
   currentVersion: app.getVersion(),
+  currentVersionUpdatedAt: getInstalledPackageUpdatedAt(),
+  channel: APP_IDENTITY.channel,
+  edition: APP_IDENTITY.edition,
 });
 let appUpdaterInitPromise = null;
 let runtimeManager = null;
@@ -378,6 +408,17 @@ const backendSupervisor = new BackendProcessSupervisor({
   onState: (payload) => {
     sendToMainWindow("backend-service-state", payload);
     void startupLogger.info(`Backend service state changed to ${payload.state}.`, payload);
+    if (["stopped", "failed"].includes(payload.state)) {
+      void markEffectiveRuntimeReceiptStopped({
+        userData: app.getPath("userData"),
+        status: payload.state,
+      }).catch((error) => {
+        void startupLogger.warning("Effective runtime receipt could not be updated.", {
+          code: "EFFECTIVE_RUNTIME_RECEIPT_UPDATE_FAILED",
+          reason: error?.message || String(error),
+        });
+      });
+    }
   },
 });
 
@@ -450,26 +491,26 @@ const EXTERNAL_ENVIRONMENT_SELECTION_TTL_MS = 10 * 60 * 1000;
 const externalEnvironmentDirectorySelections = new Map();
 const EXTERNAL_ENVIRONMENT_RENDERER_MESSAGES = Object.freeze({
   ENVIRONMENT_DISABLED: "当前版本未启用运行环境管理。",
-  ENVIRONMENT_BUSY: "当前有任务或后端进程正在运行，暂时不能切换运行环境。",
-  EXTERNAL_ENV_REQUEST_FAILED: "已有 Python 环境操作失败，请重新选择目录后重试。",
+  ENVIRONMENT_BUSY: "当前有任务或服务进程正在运行，暂时不能切换运行环境。",
+  EXTERNAL_ENV_REQUEST_FAILED: "已有 Python 运行环境操作失败，请重新选择路径后重试。",
   EXTERNAL_ENV_UNAVAILABLE: "当前版本无法使用已有 Python 环境，请重启应用后重试。",
-  EXTERNAL_ENV_DIRECTORY_SELECTION_FAILED: "无法打开目录选择器，请稍后重试。",
-  EXTERNAL_ENV_SELECTION_INVALID: "目录选择已失效，请重新选择环境目录。",
+  EXTERNAL_ENV_DIRECTORY_SELECTION_FAILED: "无法打开路径选择器，请稍后重试。",
+  EXTERNAL_ENV_SELECTION_INVALID: "路径选择已失效，请重新选择运行环境路径。",
   EXTERNAL_ENV_CANDIDATE_INVALID: "环境校验结果已失效，请重新校验。",
-  EXTERNAL_ENV_PROBE_FAILED: "环境校验失败，请检查目录后重试。",
+  EXTERNAL_ENV_PROBE_FAILED: "运行环境校验失败，请检查路径后重试。",
   EXTERNAL_ENV_ACTIVATION_FAILED: "无法启用所选环境，请重新校验后重试。",
   EXTERNAL_ENV_FORGET_FAILED: "无法恢复应用管理的运行环境，请稍后重试。",
   EXTERNAL_ENV_REPROBE_FAILED: "已有环境发生变化，请重新选择并校验。",
   EXTERNAL_ENV_READ_ONLY: "已有 Python 环境由应用只读使用，不能执行此操作。",
-  EXTERNAL_ENV_FAILED: "已有 Python 环境操作失败，请重新选择目录后重试。",
-  EXTERNAL_ENV_DIRECTORY_INVALID: "所选目录不可用，请重新选择完整环境目录。",
-  EXTERNAL_ENV_LAYOUT_UNSUPPORTED: "所选目录不是支持的完整包 runtime、Conda 或 venv 环境。",
+  EXTERNAL_ENV_FAILED: "已有 Python 运行环境操作失败，请重新选择路径后重试。",
+  EXTERNAL_ENV_DIRECTORY_INVALID: "所选路径不可用，请重新选择完整运行环境路径。",
+  EXTERNAL_ENV_LAYOUT_UNSUPPORTED: "所选路径不是支持的完整包、Conda 或 venv 运行环境。",
   EXTERNAL_ENV_MANIFEST_INVALID: "runtime-manifest.json 无效，无法使用此环境。",
-  EXTERNAL_ENV_CONFIG_INVALID: "已有环境配置已损坏，请重新选择目录。",
-  EXTERNAL_ENV_PATH_INVALID: "环境目录包含不安全的路径配置。",
-  EXTERNAL_ENV_PATH_ESCAPE: "环境中的 Python 路径超出了所选目录。",
-  EXTERNAL_ENV_BACKEND_PATH_INVALID: "应用后端路径无效，无法校验此环境。",
-  EXTERNAL_ENV_PYTHON_MISSING: "所选目录中没有找到受支持的 Python。",
+  EXTERNAL_ENV_CONFIG_INVALID: "已有运行环境配置已损坏，请重新选择路径。",
+  EXTERNAL_ENV_PATH_INVALID: "运行环境包含不安全的路径配置。",
+  EXTERNAL_ENV_PATH_ESCAPE: "运行环境中的 Python 路径超出了所选路径。",
+  EXTERNAL_ENV_BACKEND_PATH_INVALID: "应用服务路径无效，无法校验此运行环境。",
+  EXTERNAL_ENV_PYTHON_MISSING: "所选路径中没有找到受支持的 Python。",
   EXTERNAL_ENV_PYTHON_UNAVAILABLE: "所选环境中的 Python 无法启动。",
   EXTERNAL_ENV_PYTHON_VERSION_UNSUPPORTED: "仅支持 64 位 CPython 3.12.x 环境。",
   EXTERNAL_ENV_ARCH_UNSUPPORTED: "仅支持 64 位 Python 环境。",
@@ -477,7 +518,7 @@ const EXTERNAL_ENVIRONMENT_RENDERER_MESSAGES = Object.freeze({
   EXTERNAL_ENV_CUDA_UNAVAILABLE: "所选 CUDA 环境当前无法使用 NVIDIA 加速。",
   EXTERNAL_ENV_ACCELERATOR_MISMATCH: "所选环境的加速类型与 PyTorch 配置不一致。",
   EXTERNAL_ENV_DEPENDENCIES_BROKEN: "所选环境的 Python 依赖不完整。",
-  EXTERNAL_ENV_BACKEND_IMPORT_FAILED: "所选环境无法加载当前版本的 Moonshine 后端。",
+  EXTERNAL_ENV_BACKEND_IMPORT_FAILED: "所选运行环境无法加载当前版本的 Moonshine 服务模块。",
   EXTERNAL_ENV_FFMPEG_UNAVAILABLE: "应用内置 FFmpeg 校验失败。",
   EXTERNAL_ENV_CHANGED_AFTER_PROBE: "环境在校验后发生变化，请重新校验。",
 });
@@ -541,7 +582,7 @@ function toSafeExternalEnvironmentError(error, fallbackCode = "EXTERNAL_ENV_REQU
 
 function deriveExternalEnvironmentRendererStatus(state = {}) {
   if (state.source === "external") {
-    if (state.status === "ready") return "active";
+    if (["ready", "degraded"].includes(state.status)) return "active";
     if (["failed", "needs-repair"].includes(state.status)) return "invalid";
     if (["checking", "verifying", "preparing"].includes(state.status)) return "probing";
     return "stale";
@@ -685,6 +726,15 @@ function createEnvironmentManager() {
     requirementsLockPaths: requirementsPaths,
     requirementsLockPath: requirementsPath,
     ffmpegSourcePath,
+    commandRunner: (command, args, options = {}) => runProcess(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      signal: options.signal,
+      timeout: options.timeoutMs,
+      stage: options.stage || "environment-bootstrap-command",
+      onStdout: options.onStdout,
+      onStderr: options.onStderr,
+    }),
     offlinePayloadRoots: [
       path.join(process.cwd(), "offline-payload"),
       path.join(path.dirname(process.execPath), "offline-payload"),
@@ -698,11 +748,12 @@ function createEnvironmentManager() {
     requireSignedPayload: packaged,
     pythonInstaller: async ({ signal, onProgress }) => {
       const result = await installTargetPython(
-        (message, type = "info") => sendToMainWindow("backend-output", { message, type }),
+        null,
         {
-        signal,
-        installerUrl: environmentSourceConfig.pythonInstallerUrl,
+          signal,
+          installerUrl: environmentSourceConfig.pythonInstallerUrl,
           onProgress,
+          notifyPath: false,
         }
       );
       if (!result?.success) {
@@ -762,7 +813,7 @@ modelManifestManager = createModelManifestManager();
 const runtimeManagerInitialization = Promise.resolve(runtimeManager.initialize?.());
 const environmentManagerInitialization = Promise.resolve(environmentManager.initialize?.()).then(
   async (state) => {
-    if (state?.status !== "ready" || typeof environmentManager.check !== "function") {
+    if (!["ready", "degraded"].includes(state?.status) || typeof environmentManager.check !== "function") {
       return state;
     }
     return await environmentManager.check();
@@ -1038,6 +1089,7 @@ ipcMain.handle("runtime-ensure", async (event, options = {}) => {
     onProgress: (progress) => reportEnvironmentProgress(sendLog, progress),
   });
 });
+ipcMain.handle("runtime-cancel", async () => environmentManager?.cancelPreparation?.());
 ipcMain.handle("runtime-rollback", async () => environmentManager?.rollback());
 ipcMain.handle("runtime-get-backend-spec", async () => environmentManager?.getActiveBackendSpec?.() || {});
 ipcMain.handle("environment-get-state", async () => getRuntimeState());
@@ -1050,8 +1102,52 @@ ipcMain.handle("environment-ensure", async (event, options = {}) => {
     onProgress: (progress) => reportEnvironmentProgress(sendLog, progress),
   });
 });
+ipcMain.handle("environment-cancel", async () => environmentManager?.cancelPreparation?.());
 ipcMain.handle("environment-rollback", async () => environmentManager?.rollback());
 ipcMain.handle("environment-get-backend-spec", async () => environmentManager?.getActiveBackendSpec?.() || {});
+ipcMain.handle("environment-update-status", async (_event, options = {}) => {
+  await environmentManagerInitialization.catch(() => null);
+  return environmentManager?.getUpdateStatus?.(options) || {
+    success: false,
+    available: false,
+    code: "ENVIRONMENT_UPDATE_UNAVAILABLE",
+    reason: "当前无可用运行环境。",
+    requiredAction: "请先创建或修复可用运行环境，再检查运行环境更新。",
+  };
+});
+ipcMain.handle("environment-update-plan", async (_event, options = {}) => {
+  await environmentManagerInitialization.catch(() => null);
+  return environmentManager?.getUpdatePlan?.(options) || {
+    success: false,
+    allowed: false,
+    code: "ENVIRONMENT_UPDATE_UNAVAILABLE",
+    reason: "当前无可用运行环境。",
+    requiredAction: "请先创建或修复可用运行环境，再检查运行环境更新。",
+  };
+});
+ipcMain.handle("environment-update-switch", async (event, options = {}) => {
+  await environmentManagerInitialization.catch(() => null);
+  const sendLog = createBackendOutputSender(event.sender, "environment-switch");
+  return environmentManager?.switchEnvironment?.({
+    ...options,
+    onProgress: (progress) => reportEnvironmentProgress(sendLog, progress),
+  }) || {
+    success: false,
+    code: "ENVIRONMENT_UPDATE_UNAVAILABLE",
+    reason: "当前无可用运行环境。",
+    requiredAction: "请先创建或修复可用运行环境，再检查运行环境更新。",
+  };
+});
+ipcMain.handle("environment-open-path", async () => {
+  const environmentPath = environmentManager?.getState?.().activePath;
+  if (!environmentPath || !path.isAbsolute(environmentPath)) {
+    return { success: false, code: "ENVIRONMENT_PATH_UNAVAILABLE" };
+  }
+  const error = await shell.openPath(environmentPath);
+  return error
+    ? { success: false, code: "ENVIRONMENT_PATH_OPEN_FAILED", error }
+    : { success: true, path: environmentPath };
+});
 ipcMain.handle("environment-external-select-directory", selectExternalEnvironmentDirectory);
 ipcMain.handle("environment-external-probe", probeExternalEnvironmentSelection);
 ipcMain.handle("environment-external-activate", activateExternalEnvironmentSelection);
@@ -1060,6 +1156,14 @@ ipcMain.handle("model-manifest-get-state", async () => modelManifestManager?.get
 ipcMain.handle("model-manifest-refresh", async (_event, options = {}) => modelManifestManager?.refresh(options));
 
 function getAppUpdateInstallReadiness() {
+  const environmentState = environmentManager?.getState?.() || {};
+  if (environmentState.canCancel || environmentState.status === "cancelling") {
+    return {
+      allowed: false,
+      reason: "运行环境仍在准备中，请先等待完成或取消准备。",
+      code: "ENVIRONMENT_PREPARATION_ACTIVE",
+    };
+  }
   return evaluateAppUpdateInstallReadiness({
     applicationQuitRequested,
     activeProcessingTaskCount: activeProcessingTasks.size,
@@ -1089,18 +1193,20 @@ function getAppUpdateState() {
     createDefaultUpdateState({
       enabled: false,
       currentVersion: app.getVersion(),
+      currentVersionUpdatedAt: getInstalledPackageUpdatedAt(),
+      channel: APP_IDENTITY.channel,
+      edition: APP_IDENTITY.edition,
     })
   );
 }
 
 function resolveAppUpdateChannel() {
-  return normalizeAppUpdateChannel(process.env.MOONSHINE_APP_UPDATE_CHANNEL);
+  return APP_IDENTITY.channel;
 }
 
-function configureElectronUpdaterFeed(updater, channel) {
-  const feedUrl = buildAppUpdateFeedUrl(channel, {
-    baseUrl: process.env.MOONSHINE_UPDATE_BASE_URL,
-  });
+function configureElectronUpdaterFeed(updater) {
+  const feedUrl = buildAppUpdateFeedUrl(APP_IDENTITY.channel);
+  if (updater) updater.allowPrerelease = APP_IDENTITY.edition === "test";
   if (typeof updater?.setFeedURL === "function") {
     updater.setFeedURL({ provider: "generic", url: feedUrl });
   }
@@ -1108,25 +1214,26 @@ function configureElectronUpdaterFeed(updater, channel) {
 }
 
 function synchronizeAppUpdateChannel(channel) {
-  try {
-    const normalized = normalizeAppUpdateChannel(channel);
-    const feedUrl = configureElectronUpdaterFeed(appUpdaterService?.updater, normalized);
-    appManifestGuard?.setChannel?.(normalized);
-    const result = appUpdaterService?.setChannel?.(normalized) || {
-      success: true,
-      channel: normalized,
-      state: getAppUpdateState(),
-    };
-    if (result.state) sendToMainWindow("app-update-state", result.state);
-    return { ...result, feedUrl };
-  } catch (error) {
+  const requested = String(channel ?? "").trim().toLowerCase();
+  const feedUrl = configureElectronUpdaterFeed(appUpdaterService?.updater);
+  if (requested && requested !== APP_IDENTITY.channel) {
     return {
       success: false,
-      code: "APP_UPDATE_CHANNEL_SYNC_FAILED",
-      error: error?.message || String(error),
+      code: "APP_UPDATE_CHANNEL_LOCKED",
+      error: `${APP_IDENTITY.edition} edition is locked to ${APP_IDENTITY.channel}`,
+      channel: APP_IDENTITY.channel,
+      feedUrl,
       state: getAppUpdateState(),
     };
   }
+  return {
+    success: true,
+    changed: false,
+    locked: true,
+    channel: APP_IDENTITY.channel,
+    feedUrl,
+    state: getAppUpdateState(),
+  };
 }
 
 async function initializeAppUpdater() {
@@ -1147,7 +1254,7 @@ async function initializeAppUpdater() {
     }
 
     const channel = resolveAppUpdateChannel();
-    configureElectronUpdaterFeed(updater, channel);
+    configureElectronUpdaterFeed(updater);
 
     appUpdaterService?.dispose?.();
     appManifestGuard = runtimeManager?.sourcePool
@@ -1162,7 +1269,9 @@ async function initializeAppUpdater() {
       isPackaged: Boolean(app.isPackaged),
       allowDev,
       currentVersion: app.getVersion(),
+      currentVersionUpdatedAt: getInstalledPackageUpdatedAt(),
       channel,
+      edition: APP_IDENTITY.edition,
       initialCheckDelayMs: Number(process.env.MOONSHINE_UPDATE_CHECK_DELAY_MS) || 30_000,
       send: (state) => sendToMainWindow("app-update-state", state),
       preflight: appManifestGuard?.enabled ? () => appManifestGuard.preflight() : null,
@@ -1184,6 +1293,9 @@ async function initializeAppUpdater() {
       updater: null,
       isPackaged: false,
       currentVersion: app.getVersion(),
+      currentVersionUpdatedAt: getInstalledPackageUpdatedAt(),
+      channel: APP_IDENTITY.channel,
+      edition: APP_IDENTITY.edition,
       initialError: error,
     });
     return {
@@ -1449,7 +1561,7 @@ function getAvailableDiskSpace(targetPath) {
     return {
       success: false,
       path: checkPath,
-      error: "当前运行时不支持磁盘空间检测。",
+      error: "当前运行环境不支持磁盘空间检测。",
     };
   }
   const stats = fs.statfsSync(checkPath, { bigint: false });
@@ -1477,7 +1589,7 @@ function ensureDiskSpace(targetPath, payload = {}) {
   if (info.freeBytes < totalRequiredBytes) {
     throw new Error(
       `${operation}磁盘空间不足。预计至少需要 ${formatBytes(totalRequiredBytes)}，` +
-        `当前可用 ${formatBytes(info.freeBytes)}。请清理磁盘空间或在全局设置中更换输出/临时目录后重试。`
+        `当前可用 ${formatBytes(info.freeBytes)}。请清理磁盘空间或在全局设置中更换输出/临时路径后重试。`
     );
   }
   return {
@@ -2020,7 +2132,7 @@ async function resolveAvailableBackendPort(preferredPort, options = {}) {
     success: false,
     requestedPort: basePort,
     attemptedPorts,
-    error: `后端端口 ${attemptedPorts.join(", ")} 均已被占用，请释放其中一个端口或在全局设置中指定其他端口。`,
+    error: `服务端口 ${attemptedPorts.join(", ")} 均已被占用，请释放其中一个端口或在全局设置中指定其他端口。`,
   };
 }
 
@@ -2184,7 +2296,7 @@ async function ensurePackagedBackendIntegrity(projectPath) {
     if (shouldCopy) {
       ensureDiskSpace(targetDir, {
         requiredBytes: Number(entry.size || getFileSize(sourcePath)),
-        operation: "复制后端运行资源",
+        operation: "复制服务运行资源",
       });
       fs.copyFileSync(sourcePath, targetPath);
     }
@@ -2484,7 +2596,15 @@ function reportEnvironmentProgress(sendLog, progress = {}) {
       ? `（${percent}%）`
       : "";
   const message = progress.message || `运行环境阶段：${progress.phase || "preparing"}${suffix}`;
-  sendLog(message, progress.status === "failed" ? "error" : progress.status === "complete" ? "success" : "info", {
+  const type = progress.terminalType ||
+    (progress.phase === "python-download"
+      ? "progress"
+      : progress.status === "failed"
+        ? "error"
+        : progress.status === "complete"
+          ? "success"
+          : "info");
+  sendLog(message, type, {
     stage: "environment-preparation",
     progress,
   });
@@ -2513,7 +2633,7 @@ async function ensureBundledRuntimeReady(sendLog, options = {}) {
         {
           stage: "environment-preparation",
           userMessage: result.error || "Local Python environment preparation failed.",
-          recoveryHint: "请重试，或手动创建可用环境；也可以从夸克网盘下载可用运行时，再在后端管理的“已有环境”中选择。",
+          recoveryHint: "请重试，或手动创建可用运行环境；也可以从夸克网盘下载可用运行环境，再在服务管理的“已有环境”中选择。",
         }
       );
     }
@@ -2609,9 +2729,9 @@ async function ensureBundledRuntimeReady(sendLog, options = {}) {
       if (fallbackRuntime.success) {
         const diagnosticId = relocationFailure.diagnostic?.id || "unknown";
         const recoveryHint =
-          "已验证内置运行时可用。可点击右上角“打开启动日志”查看完整重定位输出。";
+          "已验证内置运行环境可用。可点击右上角“打开启动日志”查看完整重定位输出。";
         sendLog?.(
-          `内置 Python 运行时重定位出现警告，但已通过 Python 与依赖校验，服务将继续启动。诊断编号：${diagnosticId}。可点击右上角“打开启动日志”查看完整详情。`,
+          `内置 Python 运行环境重定位出现警告，但已通过 Python 与依赖校验，服务将继续启动。诊断编号：${diagnosticId}。可点击右上角“打开启动日志”查看完整详情。`,
           "warning",
           {
             diagnosticId,
@@ -5727,14 +5847,14 @@ async function installTargetPython(sendLog, options = {}) {
         }),
       options.signal
     );
-    sendToMainWindow("python-install-path", filePath);
+    if (options.notifyPath !== false) sendToMainWindow("python-install-path", filePath);
 
     sendLog?.("Python 安装包下载完成，正在静默安装...", "info");
     reportProgress({
       phase: "python-install",
       status: "installing",
       percent: null,
-      message: "Python 安装包下载完成，正在静默安装。",
+      message: `Python 安装包下载完成，正在静默安装（临时文件：${filePath}）。`,
       temporaryPath: filePath,
     });
     try {
@@ -6166,16 +6286,20 @@ print(json.dumps(result))
   }
 }
 
-async function ensureManagedRuntimeForLaunch(sendLog, launchConfig, signal) {
+async function ensureManagedRuntimeForLaunch(sendLog, _launchConfig, signal) {
   if (!environmentManager?.getState?.().enabled) return null;
-  const accelerator = launchConfig.device === "cuda" ? "cu130" : "cpu";
-  sendLog?.(`Preparing local ${accelerator} Python environment...`, "info");
+  const state = environmentManager.getState();
+  let spec = environmentManager.getActiveBackendSpec();
+  const explicitPreference = state.preferenceExplicit === true &&
+    ["cpu", "cu130"].includes(state.preference);
   const result = await environmentManager.ensure({
-    accelerator,
+    accelerator: explicitPreference ? state.preference : spec.accelerator || state.preference || "auto",
     signal,
     onProgress: (progress) => reportEnvironmentProgress(sendLog, progress),
   });
-  if (!result.success) {
+  const preservedCapabilityFallback = result.capabilityWarning === true &&
+    result.preservedActive === true;
+  if (!result.success && !preservedCapabilityFallback) {
     return augmentStartupFailure(
       {
         success: false,
@@ -6186,11 +6310,17 @@ async function ensureManagedRuntimeForLaunch(sendLog, launchConfig, signal) {
       {
         stage: "environment-preparation",
         userMessage: result.error || "Local Python environment preparation failed.",
-        recoveryHint: "Open Application Updates, retry environment setup, or switch to CPU mode.",
+        recoveryHint: "请在服务管理中检查或修复运行环境；也可以选择已有的 Python 运行环境。",
       }
     );
   }
-  const spec = environmentManager.getActiveBackendSpec();
+  if (preservedCapabilityFallback) {
+    sendLog?.(
+      result.warning?.message || result.error || "当前 NVIDIA/cu130 能力不可用，已保留并使用现有运行环境。",
+      "warning",
+    );
+  }
+  spec = environmentManager.getActiveBackendSpec();
   if (!spec.pythonExecutable) {
     return augmentStartupFailure(
       {
@@ -6201,7 +6331,12 @@ async function ensureManagedRuntimeForLaunch(sendLog, launchConfig, signal) {
       { stage: "runtime-preparation" }
     );
   }
-  return { ...spec, success: true };
+  const effectiveDevice = spec.accelerator === "cu130" ? "cuda" : "cpu";
+  sendLog?.(
+    `当前运行环境已就绪，将使用 ${effectiveDevice === "cuda" ? "CUDA" : "CPU"} 启动服务。`,
+    "success",
+  );
+  return { ...spec, success: true, effectiveDevice };
 }
 
 async function prepareModelManifestForLaunch(sendLog, signal) {
@@ -6310,11 +6445,25 @@ async function launchBackendService(event, config, signal) {
       );
     }
 
+    const managedRuntime = await ensureManagedRuntimeForLaunch(sendLog, launchConfig, signal);
+    cancellation = getBackendStartCancellation(signal);
+    if (cancellation) return cancellation;
+    if (managedRuntime && managedRuntime.success === false) return managedRuntime;
+    const requestedDevice = launchConfig.device === "cuda" ? "cuda" : "cpu";
+    const effectiveDevice = managedRuntime?.success
+      ? managedRuntime.effectiveDevice || (managedRuntime.accelerator === "cu130" ? "cuda" : "cpu")
+      : requestedDevice;
+    if (managedRuntime?.success && requestedDevice !== effectiveDevice) {
+      sendLog(
+        `服务启动方式已根据当前运行环境从 ${requestedDevice.toUpperCase()} 调整为 ${effectiveDevice.toUpperCase()}。`,
+        "warning",
+      );
+    }
     const args = [
       "main.py",
       "start",
       `--model=${launchConfig.model}`,
-      `--device=${launchConfig.device}`,
+      `--device=${effectiveDevice}`,
       `--port=${portResolution.port}`,
     ];
     args.push(
@@ -6322,11 +6471,6 @@ async function launchBackendService(event, config, signal) {
         ? "--no-sam-release-before-processing"
         : "--sam-release-before-processing"
     );
-
-    const managedRuntime = await ensureManagedRuntimeForLaunch(sendLog, launchConfig, signal);
-    cancellation = getBackendStartCancellation(signal);
-    if (cancellation) return cancellation;
-    if (managedRuntime && managedRuntime.success === false) return managedRuntime;
     const modelManifestEnv = await prepareModelManifestForLaunch(sendLog, signal);
     cancellation = getBackendStartCancellation(signal);
     if (cancellation) return cancellation;
@@ -6397,7 +6541,7 @@ async function launchBackendService(event, config, signal) {
       }
     }
 
-    if (launchConfig.device === "cuda") {
+    if (effectiveDevice === "cuda") {
       const cudaProbe = await probePythonCudaCompatibility(backendPython, backendEnv, {
         signal,
       });
@@ -6405,7 +6549,7 @@ async function launchBackendService(event, config, signal) {
       if (cancellation) return cancellation;
       if (!cudaProbe.success) {
         sendLog(
-          `CUDA 预检失败，将继续尝试启动后端: ${cudaProbe.message || "未知错误"}`,
+          `CUDA 预检失败，将继续尝试启动服务：${cudaProbe.message || "未知错误"}`,
           "warning",
           {
             diagnostic: cudaProbe.diagnostic,
@@ -6417,7 +6561,7 @@ async function launchBackendService(event, config, signal) {
           {
             success: false,
             code: "CUDA_NOT_AVAILABLE",
-            error: "当前运行时未检测到可用 CUDA 设备，请切换为 CPU 模式后再启动后端。",
+            error: "当前运行环境未检测到可用 CUDA 设备，请切换为 CPU 模式后再启动服务。",
             cudaProbe,
           },
           { stage: "cuda-preflight" }
@@ -6431,9 +6575,9 @@ async function launchBackendService(event, config, signal) {
             success: false,
             code: "CUDA_RUNTIME_INCOMPATIBLE",
             error:
-              `当前运行时的 PyTorch (${cudaProbe.torch_version || "unknown"}, CUDA ${cudaProbe.cuda_version || "unknown"}) ` +
+              `当前运行环境的 PyTorch (${cudaProbe.torch_version || "unknown"}, CUDA ${cudaProbe.cuda_version || "unknown"}) ` +
               `不支持显卡 ${cudaProbe.device_name || ""} (${capability})。` +
-              "请将启动方式切换为 CPU，或升级运行时到支持 CUDA 12.8/13.0 的 PyTorch。",
+              "请将启动方式切换为 CPU，或升级运行环境到支持 CUDA 12.8/13.0 的 PyTorch。",
             cudaProbe,
           },
           { stage: "cuda-preflight" }
@@ -6455,8 +6599,38 @@ async function launchBackendService(event, config, signal) {
         detached: process.platform !== "win32",
       },
     });
+    if (startResult.success && startResult.pid) {
+      const effectiveRuntime = managedRuntime?.success
+        ? managedRuntime
+        : {
+          source: isBundledBackendMode(global.projectPath) ? "bundled" : "project",
+          pythonRoot: path.dirname(path.dirname(backendPython)),
+          accelerator: effectiveDevice === "cuda" ? "cu130" : "cpu",
+          specHash: null,
+        };
+      await writeEffectiveRuntimeReceipt({
+        userData: app.getPath("userData"),
+        appVersion: app.getVersion(),
+        serviceProcessId: startResult.pid,
+        serviceProjectPath: global.projectPath,
+        pythonExecutable: backendPython,
+        environmentRoot: effectiveRuntime.environmentRoot || effectiveRuntime.pythonRoot,
+        environmentSource: effectiveRuntime.source,
+        accelerator: effectiveRuntime.accelerator,
+        specHash: effectiveRuntime.specHash,
+        port: startResult.port || portResolution.port,
+        startedAt: backendSupervisor.getStatus().startedAt || new Date().toISOString(),
+      }).catch((error) => {
+        void startupLogger.warning("Effective runtime receipt could not be written.", {
+          code: "EFFECTIVE_RUNTIME_RECEIPT_WRITE_FAILED",
+          reason: error?.message || String(error),
+        });
+      });
+    }
     return {
       ...startResult,
+      effectiveDevice,
+      effectiveAccelerator: effectiveDevice === "cuda" ? "cu130" : "cpu",
       requestedPort: portResolution.requestedPort,
       portChanged: portResolution.portChanged,
       attemptedPorts: portResolution.attemptedPorts,
@@ -7481,6 +7655,33 @@ async function createWindow() {
   }
 
   windowInstance.on("close", (event) => {
+    const environmentState = environmentManager?.getState?.() || {};
+    if (
+      !allowCloseWithActiveEnvironmentPreparation &&
+      ["preparing", "cancelling"].includes(environmentState.status)
+    ) {
+      const choice = dialog.showMessageBoxSync(windowInstance, {
+        type: "warning",
+        buttons: ["继续准备", "取消准备并退出", "返回应用"],
+        defaultId: 2,
+        cancelId: 2,
+        title: "运行环境仍在准备",
+        message: "运行环境仍在准备",
+        detail: "直接退出会中止下载或安装。取消准备后，临时文件会被清理，当前可用环境不会受到影响。",
+        noLink: true,
+      });
+      if (choice !== 1) {
+        event.preventDefault();
+        if (choice === 2) {
+          windowInstance.show();
+          windowInstance.focus();
+        }
+        return;
+      }
+      allowCloseWithActiveEnvironmentPreparation = true;
+      environmentManager?.cancelPreparation?.();
+    }
+
     if (allowCloseWithActiveProcessingTasks || activeProcessingTasks.size === 0) {
       return;
     }
@@ -7671,6 +7872,10 @@ app.on("before-quit", (event) => {
 
   backendShutdownPromise = (async () => {
     try {
+      if (environmentManager?.getState?.().canCancel) {
+        environmentManager.cancelPreparation();
+      }
+      await environmentManager?.waitForPreparation?.();
       const result = await stopBackendServiceAndPendingLaunch(
         "Application quit while backend startup was in progress."
       );

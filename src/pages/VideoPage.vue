@@ -1595,7 +1595,7 @@ const currentModelMetadata = computed(() => {
     installed: true,
     requiresMask: true,
     parameters: {},
-    parameterHelp: "当前模型参数由后端自动控制，无需手动调整。",
+    parameterHelp: "当前模型参数由服务自动控制，无需手动调整。",
     corruptFiles: [],
   };
 });
@@ -1746,13 +1746,82 @@ const handleModelChange = (model) => {
 const isMaskInpaintModel = (modelId = currentModel.value) => (
   MASK_INPAINT_MODEL_IDS.includes(String(modelId || "").trim().toLowerCase())
 );
+const formatVideoModelPreparationMessage = (state = {}) => {
+  const label = state.label || state.modelId || "模型";
+  const stageLabels = {
+    checking: "正在检查",
+    downloading: "正在下载",
+    verifying: "正在校验",
+    loading: "正在加载",
+    ready: "已就绪",
+  };
+  return `${stageLabels[state.stage] || "正在准备"}${label}`;
+};
+const requestModelLicenseAcceptance = async (model) => {
+  if (!model?.license?.requiresAcceptance) return null;
+  const acceptanceId = String(model.license.acceptanceId || "").trim();
+  if (!acceptanceId) throw new Error("该模型缺少许可证确认标识，暂时不能下载。");
+  return new Promise((resolve) => {
+    $q.dialog({
+      title: "确认模型许可证",
+      message: [
+        `模型：${model.label || model.id || "当前模型"}`,
+        `许可证：${model.license.name || "待确认"}`,
+        model.license.note,
+        "继续即表示你已阅读并同意该许可证。",
+      ].filter(Boolean).join("\n\n"),
+      ok: { label: "我已阅读并同意", color: "primary", noCaps: true },
+      cancel: { label: "取消", flat: true, noCaps: true },
+      persistent: true,
+    }).onOk(() => resolve({ accepted: true, acceptanceId }))
+      .onCancel(() => resolve(null));
+  });
+};
+const prepareModelForVideoRun = async (modelId, { propagateError = false } = {}) => {
+  let overlayShown = false;
+  try {
+    const model = modelRegistryStore.models.find((item) => item.id === modelId);
+    await modelRegistryStore.ensureModelReady(modelId, {
+      requestLicenseAcceptance: () => requestModelLicenseAcceptance(model),
+      onProgress: (state) => {
+        overlayShown = true;
+        loadingControl?.show?.({
+          message: formatVideoModelPreparationMessage(state),
+          progress: Number.isFinite(state.progress) ? state.progress : null,
+        });
+      },
+    });
+    return true;
+  } catch (error) {
+    if (propagateError) throw error;
+    $q.notify({
+      type: "negative",
+      message: error?.message || "模型准备失败，请在模型管理中检查下载状态。",
+      position: "top",
+      timeout: 6500,
+      actions: [
+        {
+          label: "打开模型管理",
+          color: "white",
+          handler: () => openModelManagement(modelId),
+        },
+      ],
+    });
+    return false;
+  } finally {
+    if (overlayShown) loadingControl?.hide?.();
+  }
+};
 const ensureBackendVideoModel = async (modelId = currentModel.value) => {
   const requestedModel = String(modelId || "lama").trim().toLowerCase();
-  if (!isMaskInpaintModel(requestedModel)) return true;
+  if (!VIDEO_PROCESSING_MODEL_IDS.includes(requestedModel)) return true;
 
   try {
-    const response = await modelRegistryStore.switchModel(requestedModel);
-    const activeModel = String(response?.currentModel || requestedModel).trim().toLowerCase();
+    const modelReady = await prepareModelForVideoRun(requestedModel, {
+      propagateError: requestedModel === "mat",
+    });
+    if (!modelReady) return false;
+    const activeModel = String(modelRegistryStore.currentModel || requestedModel).trim().toLowerCase();
     if (activeModel !== requestedModel) {
       handleModelChange(activeModel);
       if (requestedModel === "mat") {
@@ -1836,7 +1905,7 @@ const checkLocalFileExists = async (filePath) => {
 };
 
 const samVideoMissingLocalPathMessage =
-  "当前视频没有后端可读取的本地文件路径。请通过“选择视频文件”重新导入本地视频，避免使用仅浏览器临时可见的 blob/会话文件后再运行 SAM 智能选区。";
+  "当前视频没有服务可读取的本地文件路径。请通过“选择视频文件”重新导入本地视频，避免使用仅浏览器临时可见的 blob/会话文件后再运行 SAM 智能选区。";
 
 const isSamVideoPromptSupportedByActiveModel = (prompt = {}) => {
   if (prompt.box) return activeSamVideoSupportsBox.value;
@@ -2121,10 +2190,10 @@ const persistSamVideoMaskAssets = async ({
     try {
       assetRoot = await buildSamVideoMaskAssetRoot({ sourcePath, trackId, runId });
     } catch (error) {
-      throw new Error(`创建 SAM 视频蒙版资产目录失败：${error.message}`);
+      throw new Error(`创建 SAM 视频蒙版资产路径失败：${error.message}`);
     }
     if (!assetRoot) {
-      throw new Error("创建 SAM 视频蒙版资产目录失败：未返回有效目录。");
+      throw new Error("创建 SAM 视频蒙版资产路径失败：未返回有效路径。");
     }
   }
 
@@ -2424,6 +2493,9 @@ const runSamVideoPropagation = async () => {
     return null;
   }
 
+  const modelReady = await prepareModelForVideoRun(modelId);
+  if (!modelReady) return null;
+
   samVideoState.running = true;
   samVideoState.progress = 0;
   samVideoState.error = "";
@@ -2554,6 +2626,9 @@ const runSamVideoTextPropagation = async () => {
     samVideoState.message = "已取消 SAM 文本视频智选。";
     return null;
   }
+
+  const modelReady = await prepareModelForVideoRun(modelId);
+  if (!modelReady) return null;
 
   const targetTrack = videoStore.createEmptySamVideoMaskTrack();
   syncTimelineRowsFromStore();
@@ -3443,7 +3518,7 @@ const validateVideoBatchResponse = async ({ batch, responseData }) => {
     const preview = missingFrameIndexes.slice(0, 8).join("、");
     const suffix = missingFrameIndexes.length > 8 ? " 等" : "";
     throw new Error(
-      `批次 ${batch.start + 1}-${batch.end} 后端返回结果不完整，缺少帧 ${preview}${suffix}。${failureSnapshotHint}`
+      `批次 ${batch.start + 1}-${batch.end} 服务返回结果不完整，缺少帧 ${preview}${suffix}。${failureSnapshotHint}`
     );
   }
 
@@ -5479,10 +5554,10 @@ const withBackendProgressHint = (
     normalizedMessage.startsWith("处理完成") ||
     normalizedMessage.startsWith("样片试跑完成")
   ) {
-    return "可点击打开目录查看视频文件";
+    return "可点击打开路径查看视频文件";
   }
   return normalizedPhase === VIDEO_PROCESSING_PHASES.BACKEND && backendRunningState?.value
-    ? `${normalizedMessage}\n可打开后端管理页面查看进度`
+    ? `${normalizedMessage}\n可打开服务管理页面查看进度`
     : normalizedMessage;
 };
 
@@ -5506,9 +5581,9 @@ const updateSamVideoGlobalLoadingOverlay = (message, progress = null) => {
   const percentText =
     typeof normalizedProgress === "number" ? `（${Math.round(normalizedProgress * 100)}%）` : "";
   const payload = {
-    message: `${message}${percentText}\n可打开后端管理页面查看进度`,
+    message: `${message}${percentText}\n可打开服务管理页面查看进度`,
     progress: normalizedProgress,
-    actionLabel: "打开后端管理",
+    actionLabel: "打开服务管理",
     onAction: () => backendEngineValue.value.openDiagnostics(),
   };
   if (loadingControl?.update) {
@@ -7606,7 +7681,7 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
               totalBatches,
               stageLabel:
                 currentBatch.batchItems.length === 0
-                  ? "当前批次无需后端处理，直接复用原视频帧"
+                  ? "当前批次无需服务处理，直接复用原视频帧"
                   : `正在使用 ${requestedModelLabel} 处理第 ${currentBatch.batchNumber}/${totalBatches} 批`,
               batchDurations,
               pipelineBatchDurations,
@@ -7893,7 +7968,7 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
     if (shouldCleanupCurrentTask && currentTaskMeta?.taskId) {
       cleanupTasks.push(
         discardVideoTask(currentTaskMeta).catch((cleanupError) => {
-          taskCleanupErrorMessage = cleanupError?.message || "清理视频临时目录失败";
+          taskCleanupErrorMessage = cleanupError?.message || "清理视频临时路径失败";
         })
       );
     } else if (tempSourcePath && window.electron && !currentTaskMeta?.taskId) {
@@ -7905,7 +7980,7 @@ const runVideoProcessingTask = async ({ previewTrialSeconds = null } = {}) => {
     if (taskCleanupErrorMessage) {
       $q.notify({
         type: "warning",
-        message: `${taskCleanupErrorMessage}，可在全局设置中手动清理旧的临时目录。`,
+        message: `${taskCleanupErrorMessage}，可在全局设置中手动清理旧的临时路径。`,
         position: "top",
         timeout: 4500,
       });
@@ -8232,7 +8307,7 @@ const createFfmpegFrameExtractor = async (file, format, fps, options = {}) => {
   const safeFps = Math.max(1, Number(fps || 1));
 
   if (!sourcePath || !framesDir || !window.electron?.ipcRenderer?.invoke) {
-    throw new Error("FFmpeg 拆帧需要源视频路径和临时帧目录");
+    throw new Error("FFmpeg 拆帧需要源视频路径和临时帧路径");
   }
 
   const probeResult = await invokeVideoFfmpegIpc("ffprobe-media", {
@@ -8727,12 +8802,12 @@ const openOutputDir = async () => {
       filePath: lastOutputPath.value,
     });
     if (!result?.success) {
-      throw new Error(result?.error || "打开目录失败");
+      throw new Error(result?.error || "打开路径失败");
     }
   } catch (error) {
     $q.notify({
       type: "negative",
-      message: `打开目录失败: ${error.message}`,
+      message: `打开路径失败：${error.message}`,
       position: "top",
       timeout: 3000,
     });

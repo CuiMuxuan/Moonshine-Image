@@ -16,7 +16,7 @@
           class="q-mr-sm text-primary"
           @click="$emit('toggle-file-explorer')"
         >
-          <q-tooltip>文件目录</q-tooltip>
+          <q-tooltip>文件路径</q-tooltip>
         </q-btn>
 
         <moonshine-file
@@ -257,7 +257,7 @@ const maskToolsAvailable = computed(
 );
 
 const smartSelectionDisabledReason = computed(() => {
-  if (!props.backendReady) return "后端服务启动成功后可用";
+  if (!props.backendReady) return "服务启动成功后可用";
   if (!props.smartSelectionAvailable) {
     return "智能选区需要先安装 SAM1/SAM2.1 点选模型或 SAM3 文本模型";
   }
@@ -345,7 +345,7 @@ const undoTooltip = computed(() => {
 });
 
 const runButtonPreparingText = computed(
-  () => props.enginePreparingLabel || props.engineRunTooltip || "正在启动后端服务"
+  () => props.enginePreparingLabel || props.engineRunTooltip || "正在启动服务"
 );
 
 const runButtonIcon = computed(() =>

@@ -13,7 +13,7 @@
           <div>
             <div class="text-h6">运行设置</div>
             <div class="text-caption text-grey-7">
-              {{ backendAvailable ? "按当前模型动态配置运行条件" : "后端启动后会恢复模型运行设置" }}
+              {{ backendAvailable ? "按当前模型动态配置运行条件" : "服务启动后会恢复模型运行设置" }}
             </div>
           </div>
         </div>
@@ -49,7 +49,7 @@
               no-caps
               color="primary"
               icon="terminal"
-              :label="backendPreparing ? '查看后端管理' : '打开后端管理'"
+              :label="backendPreparing ? '查看服务管理' : '打开服务管理'"
               class="backend-status-button"
               @click="$emit('open-backend-manager')"
             />
@@ -449,7 +449,7 @@ const backendStatusTone = computed(() => {
   return "stopped";
 });
 const backendStatusTitle = computed(() =>
-  backendPreparing.value ? "正在启动后端服务" : "未检测到后端服务"
+  backendPreparing.value ? "正在启动服务" : "未检测到服务"
 );
 const backendStatusMessage = computed(() => {
   if (backendPreparing.value) {
@@ -464,7 +464,7 @@ const backendStatusMessage = computed(() => {
     return failureMessage;
   }
 
-  return "请打开后端管理启动服务，或手动启动后端。";
+  return "请打开服务管理启动服务，或手动启动服务。";
 });
 
 const runCapabilities = computed(() => {

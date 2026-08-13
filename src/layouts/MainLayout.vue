@@ -17,7 +17,7 @@
             data-testid="open-backend-manager-button"
             @click="showBackendManager = true"
           >
-            <q-tooltip>后端管理</q-tooltip>
+            <q-tooltip>服务管理</q-tooltip>
           </q-btn>
         </template>
 
@@ -148,7 +148,7 @@
       <q-separator />
       <q-card-section class="runtime-onboarding-content">
         <div class="text-body2 runtime-onboarding-copy">
-          图片和视频处理需要本机 Python、PyTorch 与 FFmpeg 环境。你可以现在进入后端管理完成创建，也可以稍后再配置。
+          图片和视频处理需要本机 Python、PyTorch 与 FFmpeg 运行环境。你可以现在进入服务管理完成创建，也可以稍后再配置。
         </div>
         <div
           class="runtime-onboarding-status"
@@ -161,7 +161,7 @@
           <div class="runtime-onboarding-status-copy">
             <div class="text-body2 text-weight-medium">{{ updateManager.runtimeStatusLabel }}</div>
             <div class="text-caption text-grey-7">
-              {{ updateManager.runtimeState.error?.message || "完成配置前，AI 后端不会自动启动。" }}
+              {{ updateManager.runtimeState.error?.message || "完成配置前，AI 服务不会自动启动。" }}
             </div>
           </div>
         </div>
@@ -214,6 +214,7 @@ import { classifyMoonshineError } from "src/services/ErrorClassifier";
 import { useAppStateStore } from "src/stores/appState";
 import { useBackendEngineStore } from "src/stores/backendEngine";
 import { useConfigStore } from "src/stores/config";
+import { useModelRegistryStore } from "src/stores/modelRegistry";
 import { useRuntimeDiagnosticsStore } from "src/stores/runtimeDiagnostics";
 import { useUpdateManagerStore } from "src/stores/updateManager";
 import {
@@ -229,6 +230,7 @@ const router = useRouter();
 const configStore = useConfigStore();
 const appStateStore = useAppStateStore();
 const backendEngineStore = useBackendEngineStore();
+const modelRegistryStore = useModelRegistryStore();
 const runtimeDiagnosticsStore = useRuntimeDiagnosticsStore();
 const updateManager = useUpdateManagerStore();
 const globalLoadingLogo = resolvePublicAssetPath("icons/cmx-logo256.png");
@@ -397,8 +399,8 @@ const clearPageDrawer = (side, owner = null) => {
 
 const normalizeLoadingMessage = (message = "") =>
   String(message || "").replace(
-    /\s*，?\s*可打开后端管理页面查看进度/g,
-    "\n可打开后端管理页面查看进度"
+    /\s*，?\s*可打开(?:后端|服务)管理页面查看进度/g,
+    "\n可打开服务管理页面查看进度"
   );
 
 const normalizeLoadingPayload = (messageOrOptions, progressArg = null) => {
@@ -528,16 +530,23 @@ const updateSettingsBadgeColor = computed(() =>
 const updateSettingsTooltip = computed(() => {
   if (updateManager.state.status === "downloaded") return "更新已下载，打开应用更新";
   if (updateManager.state.status === "available") return "发现可用更新，打开应用更新";
-  if (["needs-create", "needs-download"].includes(updateManager.runtimeState.status)) return "运行环境尚未创建，打开后端管理准备环境";
-  if (updateManager.runtimeState.status === "needs-repair") return "运行环境需要修复，打开后端管理处理";
-  if (updateManager.runtimeState.status === "failed") return "运行环境操作失败，打开后端管理重试";
+  if (["needs-create", "needs-download"].includes(updateManager.runtimeState.status)) return "运行环境尚未创建，打开服务管理准备环境";
+  if (updateManager.runtimeState.status === "needs-repair") return "运行环境需要修复，打开服务管理处理";
+  if (updateManager.runtimeState.status === "failed") return "运行环境操作失败，打开服务管理重试";
   return "全局设置";
 });
 
 const handleSettingsButtonClick = () => {
-  openGlobalSettings({
-    tab: showUpdateSettingsBadge.value ? "updates" : "",
-  });
+  const appUpdatePending = ["available", "downloaded"].includes(updateManager.state.status);
+  if (appUpdatePending) {
+    openGlobalSettings({ tab: "updates" });
+    return;
+  }
+  if (runtimeEnvironmentNeedsAttention.value) {
+    showBackendManager.value = true;
+    return;
+  }
+  openGlobalSettings();
 };
 
 const notifyAppUpdateState = (status, version) => {
@@ -699,12 +708,12 @@ const probeBackendHealth = async () => {
     }
   );
   if (health?.status !== "ok") {
-    throw new Error("后端健康检查返回了无效响应");
+    throw new Error("服务健康检查返回了无效响应");
   }
   return health;
 };
 
-const clearBackendSession = (reason = "后端服务未启动") => {
+const clearBackendSession = (reason = "服务未启动") => {
   backendSessionStartedAt.value = 0;
   cudaDiagnosticNotificationKey.value = "";
   runtimeDiagnosticsStore.setCudaUnavailable(reason);
@@ -726,7 +735,7 @@ const handleBackendServiceState = (eventOrPayload, maybePayload) => {
 
   if (payload.state === "stopped" || payload.state === "failed") {
     clearBackendSession(
-      payload.state === "failed" ? "后端服务异常退出" : "后端服务未启动"
+      payload.state === "failed" ? "服务异常退出" : "服务未启动"
     );
   }
 };
@@ -738,7 +747,7 @@ const checkBackendStatus = async ({ notifyOnFailure = true } = {}) => {
     if (invoke) {
       processStatus = await invoke("check-backend-status");
       if (processStatus?.success === false) {
-        const statusError = new Error(processStatus.error || "无法读取后端进程状态");
+        const statusError = new Error(processStatus.error || "无法读取服务进程状态");
         Object.assign(statusError, processStatus);
         throw statusError;
       }
@@ -752,7 +761,7 @@ const checkBackendStatus = async ({ notifyOnFailure = true } = {}) => {
           processStatus.ready !== true &&
           processStatus.processRunning !== true
         ) {
-          throw new Error("后端服务未启动");
+          throw new Error("服务未启动");
         }
       }
     }
@@ -777,15 +786,15 @@ const checkBackendStatus = async ({ notifyOnFailure = true } = {}) => {
   } catch (error) {
     if (processStatus?.state === "failed") {
       backendEngineStore.setFailed(processStatus);
-      clearBackendSession("后端服务异常退出");
+      clearBackendSession("服务异常退出");
     } else if (processStatus?.processRunning) {
       backendEngineStore.setPreparing("verifying", processStatus);
     } else {
       backendEngineStore.setStopped(processStatus || {});
-      clearBackendSession("后端服务未启动");
+      clearBackendSession("服务未启动");
     }
     if (notifyOnFailure) {
-      const classifiedError = classifyMoonshineError(error, "后端服务未启动");
+      const classifiedError = classifyMoonshineError(error, "服务未启动");
       $q.notify({
         type: "warning",
         message: classifiedError.message,
@@ -793,7 +802,7 @@ const checkBackendStatus = async ({ notifyOnFailure = true } = {}) => {
         timeout: 5000,
         actions: [
           {
-            label: "启动后端",
+            label: "启动服务",
             color: "white",
             handler: openBackendDiagnostics,
           },
@@ -869,7 +878,7 @@ const syncBackendRuntimePort = async (port) => {
     return true;
   }
 
-  const result = await configStore.saveConfig({
+  const result = await configStore.persistConfig({
     ...configStore.config,
     general: {
       ...(configStore.config.general || {}),
@@ -903,7 +912,7 @@ const throwBackendFailure = (value, fallback) => {
 const startBackendService = async (options = {}) => {
   const invoke = getElectronInvoke();
   if (!invoke) {
-    const failure = normalizeBackendFailure(null, "当前环境无法启动后端服务");
+    const failure = normalizeBackendFailure(null, "当前环境无法启动服务");
     backendEngineStore.setFailed(failure);
     return failure;
   }
@@ -936,6 +945,26 @@ const startBackendService = async (options = {}) => {
       });
       return failure;
     }
+    const defaultModel = String(
+      options.model || configStore.config.general?.defaultModel || "lama"
+    ).trim();
+    if (defaultModel) {
+      void modelRegistryStore.ensureModelReady(defaultModel).catch((error) => {
+        $q.notify({
+          type: "negative",
+          message: error?.message || "默认模型准备失败，请打开模型管理检查下载状态。",
+          position: "top",
+          timeout: 6500,
+          actions: [
+            {
+              label: "打开模型管理",
+              color: "white",
+              handler: () => openGlobalSettings({ tab: "models", modelId: defaultModel }),
+            },
+          ],
+        });
+      });
+    }
     return { ...result, success: true, port: actualPort, ready: true };
   } catch (error) {
     const failure = normalizeBackendFailure(error, "AI 引擎启动失败");
@@ -949,7 +978,7 @@ const refreshBackendServiceStatus = (options = {}) => checkBackendStatus(options
 const stopBackendService = async () => {
   const invoke = getElectronInvoke();
   if (!invoke) {
-    const failure = normalizeBackendFailure(null, "当前环境无法停止后端服务");
+    const failure = normalizeBackendFailure(null, "当前环境无法停止服务");
     backendEngineStore.setFailed(failure);
     return failure;
   }
@@ -960,25 +989,25 @@ const stopBackendService = async () => {
   try {
     const result = await invoke("stop-backend-service");
     if (backendEngineStore.applyStopResult(result)) {
-      clearBackendSession("后端服务未启动");
+      clearBackendSession("服务未启动");
       return result;
     }
 
     await checkBackendStatus({ notifyOnFailure: false });
     if (backendEngineStore.status === "stopping") {
       backendEngineStore.setFailed(
-        normalizeBackendFailure(result, "停止后端服务失败")
+        normalizeBackendFailure(result, "停止服务失败")
       );
     }
-    return normalizeBackendFailure(result, "停止后端服务失败");
+    return normalizeBackendFailure(result, "停止服务失败");
   } catch (error) {
     await checkBackendStatus({ notifyOnFailure: false });
     if (backendEngineStore.status === "stopping") {
       backendEngineStore.setFailed(
-        normalizeBackendFailure(error, "停止后端服务失败")
+        normalizeBackendFailure(error, "停止服务失败")
       );
     }
-    return normalizeBackendFailure(error, "停止后端服务失败");
+    return normalizeBackendFailure(error, "停止服务失败");
   }
 };
 
@@ -1002,7 +1031,7 @@ const prepareBackendEngine = async () => {
 
   if (
     updateManager.runtimeState.enabled &&
-    updateManager.runtimeState.status !== "ready"
+    !["ready", "degraded"].includes(updateManager.runtimeState.status)
   ) {
     backendEngineStore.setStopped();
     return;
@@ -1046,20 +1075,39 @@ const prepareBackendEngine = async () => {
       configStore.config.general?.backendProjectPath || ""
     );
     if (!projectResult?.success) {
-      throwBackendFailure(projectResult, "后端项目检测失败");
+      throwBackendFailure(projectResult, "服务项目检测失败");
     }
 
-    const prepareResult = await invoke("prepare-project-python", projectResult.path);
-    if (!prepareResult?.success) {
-      throwBackendFailure(prepareResult, "运行时准备失败");
-    }
+    const usesManagedEnvironment =
+      updateManager.runtimeState.enabled && projectResult.backendMode === "bundled";
+    if (usesManagedEnvironment) {
+      const runtimeCheck = await updateManager.checkRuntime({
+        accelerator:
+          updateManager.runtimeState.preference ||
+          updateManager.runtimeState.selectedAccelerator ||
+          "auto",
+      });
+      const runtimeState = runtimeCheck?.state || updateManager.runtimeState;
+      if (
+        !runtimeCheck?.success ||
+        !["ready", "degraded"].includes(runtimeState.status)
+      ) {
+        backendEngineStore.setStopped();
+        return;
+      }
+    } else {
+      const prepareResult = await invoke("prepare-project-python", projectResult.path);
+      if (!prepareResult?.success) {
+        throwBackendFailure(prepareResult, "运行环境准备失败");
+      }
 
-    backendEngineStore.setPhase("loadingModel");
-    const depsResult = await invoke("check-dependencies");
-    if (!depsResult?.success) {
-      const installResult = await invoke("install-dependencies", projectResult.path);
-      if (!installResult?.success) {
-        throwBackendFailure(installResult || depsResult, "依赖准备失败");
+      backendEngineStore.setPhase("loadingModel");
+      const depsResult = await invoke("check-dependencies");
+      if (!depsResult?.success) {
+        const installResult = await invoke("install-dependencies", projectResult.path);
+        if (!installResult?.success) {
+          throwBackendFailure(installResult || depsResult, "依赖准备失败");
+        }
       }
     }
 
@@ -1070,6 +1118,8 @@ const prepareBackendEngine = async () => {
       device: generalConfig.launchMode || "cuda",
       model: generalConfig.defaultModel || "lama",
       modelDir: generalConfig.modelDir || "",
+      samReleaseBeforeProcessing:
+        configStore.config.masking?.samReleaseBeforeProcessing !== false,
     });
     if (!startResult?.success) {
       throwBackendFailure(startResult, "AI 引擎启动失败");

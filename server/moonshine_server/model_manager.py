@@ -11,14 +11,11 @@ from moonshine_server.model.utils import torch_gc
 from moonshine_server.schema import InpaintRequest, ModelInfo, ModelType
 
 
-MAT_CUDA_FALLBACK_MESSAGE = "MAT 需要 CUDA，当前已自动切换为 LaMa。"
+MAT_CUDA_FALLBACK_MESSAGE = "MAT CPU 初始化失败，当前已自动切换为 LaMa。"
 
 
 def _mat_cuda_unavailable(name: str, device) -> bool:
-    return (
-        str(name or "").strip().lower() == "mat"
-        and ("cuda" not in str(device).lower() or not torch.cuda.is_available())
-    )
+    return False
 
 
 class ModelManager:
@@ -66,9 +63,45 @@ class ModelManager:
             raise NotImplementedError(
                 f"Unsupported model: {name}. Available models: {list(self.available_models.keys())}"
             )
+        if name == "mat" and "cuda" not in str(device).lower():
+            return self._init_mat_cpu(device, **kwargs)
         if name in models:
             return models[name](device, model_info=self.available_models[name], **kwargs)
         raise NotImplementedError(f"Unsupported model: {name}")
+
+    def _init_mat_cpu(self, device, **kwargs):
+        """Initialize MAT on CPU while keeping the upstream CUDA default intact."""
+        from moonshine_server.helper import load_model
+        from moonshine_server.model import mat as mat_module
+
+        model = mat_module.MAT.__new__(mat_module.MAT)
+        model.device = torch.device(device)
+        mat_module.set_seed(240)
+        model.torch_dtype = torch.float32
+        generator = mat_module.Generator(
+            z_dim=512,
+            c_dim=0,
+            w_dim=512,
+            img_resolution=512,
+            img_channels=3,
+            mapping_kwargs={"torch_dtype": model.torch_dtype},
+        ).to(model.torch_dtype)
+        model.model = load_model(
+            generator,
+            mat_module._resolve_mat_model_path(),
+            model.device,
+            None,
+        )
+        model.z = torch.from_numpy(np.random.randn(1, generator.z_dim)).to(
+            dtype=model.torch_dtype,
+            device=model.device,
+        )
+        model.label = torch.zeros(
+            [1, model.model.c_dim],
+            dtype=model.torch_dtype,
+            device=model.device,
+        )
+        return model
 
     @torch.inference_mode()
     def __call__(self, image, mask, config: InpaintRequest):
@@ -97,10 +130,11 @@ class ModelManager:
         return available_models
 
     def switch(self, new_name: str):
-        if new_name == self.name:
+        if new_name == self.name and self.model is not None:
             return
 
         old_name = self.name
+        reloading_current = new_name == old_name
         self.scan_models()
         if new_name not in self.available_models:
             raise RuntimeError(
@@ -121,7 +155,7 @@ class ModelManager:
             self.name = old_name
             logger.info(f"Switch model from {old_name} to {new_name} failed, rollback")
             self.release()
-            self.model = (
+            self.model = None if reloading_current else (
                 self.init_model(
                     old_name,
                     switch_mps_device(old_name, self.device),

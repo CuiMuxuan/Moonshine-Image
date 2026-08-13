@@ -248,6 +248,7 @@ class Api:
         self.add_api_route("/api/v1/moonshine/models/refresh", self.api_moonshine_models, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/models/{model_id}/verify", self.api_verify_moonshine_model, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/models/{model_id}/download", self.api_download_moonshine_model, methods=["POST"])
+        self.add_api_route("/api/v1/moonshine/models/{model_id}/prepare", self.api_prepare_moonshine_model, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/models/tasks/{task_id}", self.api_moonshine_model_task, methods=["GET"])
         self.add_api_route("/api/v1/moonshine/sam/capabilities", self.api_moonshine_sam_capabilities, methods=["GET"])
         self.add_api_route("/api/v1/moonshine/sam/predict", self.api_moonshine_sam_predict, methods=["POST"])
@@ -347,18 +348,48 @@ class Api:
     def _attach_moonshine_model_runtime_metadata(self, models, cuda_info):
         slbr_recommended = recommend_slbr_params(cuda_info)
         for model in models:
-            if model.get("id") == "slbr":
+            model_id = str(model.get("id") or "")
+            loaded = False
+            if model_id == "slbr":
                 model["parameters"] = {
                     **(model.get("parameters") or {}),
                     "recommended": slbr_recommended,
                 }
+                key = (str(self._model_dir()), str(self.config.device))
+                loaded = self._moonshine_runners.get(key, None) is not None and (
+                    self._moonshine_runners[key]._model is not None
+                )
+            elif model.get("type") == "image":
+                loaded = self.model_manager.name == model_id and self.model_manager.model is not None
+            elif model.get("type") == "mask":
+                loaded = self._get_sam_service().model_load_state(model_id)["loaded"]
+
+            verified = bool(model.get("verified", model.get("installed")))
+            compatible = bool(model.get("deviceCompatible", True))
+            ready = verified and compatible and loaded
+            model.update({
+                "loaded": loaded,
+                "loadState": "loaded" if loaded else "not_loaded",
+                "runtimeReady": ready,
+                "ready": ready,
+                "readiness": {
+                    "status": "ready" if ready else (
+                        "not_loaded" if verified and compatible else "blocked"
+                    ),
+                    "reason": None if ready else (
+                        "not_loaded" if verified and compatible else (
+                            "device_incompatible" if verified else "files_not_verified"
+                        )
+                    ),
+                },
+            })
         return models
 
     def _get_release_runtime_profile(self, cuda_info):
         runtime_flavor = str(os.getenv("MOONSHINE_RUNTIME_FLAVOR") or "external").strip().lower()
         model_bundle = str(os.getenv("MOONSHINE_MODEL_BUNDLE") or "external-models").strip().lower()
         packaged_runtime = os.getenv("MOONSHINE_PACKAGED_RUNTIME") in {"1", "true", "yes"}
-        sam3_runtime_supported = runtime_flavor in {"external", "cpu", "cu126", "cu130"}
+        sam3_runtime_supported = runtime_flavor in {"external", "cu126", "cu130"}
         return {
             "runtimeFlavor": runtime_flavor,
             "modelBundle": model_bundle,
@@ -456,6 +487,104 @@ class Api:
         if task is None:
             raise HTTPException(status_code=404, detail=f"Download task not found: {task_id}")
         return JSONResponse(content=jsonable_encoder(task.to_dict()))
+
+    def api_prepare_moonshine_model(
+        self,
+        model_id: str,
+        req: Optional[MoonshineModelRegistryRequest] = Body(default=None),
+    ):
+        """Verify an installed model and initialize its runtime without running inference."""
+        self._sync_model_dir(req.model_dir if req else "")
+        model = next(
+            (item for item in build_model_status(self._model_dir(), self._get_cuda_info()) if item.get("id") == model_id),
+            None,
+        )
+        if model is None:
+            raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
+        if not model.get("installed"):
+            reason = "files_corrupt" if model.get("corruptFiles") else "files_missing"
+            return JSONResponse(
+                status_code=422,
+                content=jsonable_encoder({
+                    "success": False,
+                    "modelId": model_id,
+                    "verified": False,
+                    "loaded": False,
+                    "loadState": "blocked",
+                    "runtimeReady": False,
+                    "ready": False,
+                    "readiness": {"status": "blocked", "reason": reason},
+                    "error": f"Model is not installed or verified: {model_id}",
+                }),
+            )
+        if not model.get("deviceCompatible", True):
+            return JSONResponse(
+                status_code=422,
+                content=jsonable_encoder({
+                    "success": False,
+                    "modelId": model_id,
+                    "verified": True,
+                    "loaded": False,
+                    "loadState": "blocked",
+                    "runtimeReady": False,
+                    "ready": False,
+                    "readiness": {
+                        "status": "blocked",
+                        "reason": "device_incompatible",
+                    },
+                    "error": f"Model is not compatible with the current device: {model_id}",
+                }),
+            )
+
+        try:
+            if model_id == "slbr":
+                self._get_slbr_runner()._load_model()
+                loaded_model = self._get_slbr_runner()._model is not None
+            elif model.get("type") == "image":
+                self.model_manager.switch(model_id)
+                loaded_model = self.model_manager.model is not None
+            elif model.get("type") == "mask":
+                preparation = self._get_sam_service().prepare_model(model_id)
+                loaded_model = bool(preparation.get("loaded"))
+            else:
+                raise ValueError(f"Unsupported model type: {model.get('type')}")
+        except Exception as error:
+            logger.exception(f"Model preparation failed: {model_id}")
+            return JSONResponse(
+                status_code=422,
+                content=jsonable_encoder({
+                    "success": False,
+                    "modelId": model_id,
+                    "verified": True,
+                    "loaded": False,
+                    "loadState": "failed",
+                    "runtimeReady": False,
+                    "ready": False,
+                    "readiness": {"status": "failed", "reason": "load_failed"},
+                    "error": str(error),
+                }),
+            )
+
+        ready = bool(loaded_model)
+
+        return JSONResponse(
+            content=jsonable_encoder(
+                {
+                    "success": True,
+                    "modelId": model_id,
+                    "currentModel": self.model_manager.name,
+                    "loaded": loaded_model,
+                    "verified": True,
+                    "loadState": "loaded" if ready else "failed",
+                    "runtimeReady": ready,
+                    "ready": ready,
+                    "readiness": {
+                        "status": "ready" if ready else "failed",
+                        "reason": None if ready else "load_failed",
+                    },
+                }
+            )
+        )
 
     def api_moonshine_sam_capabilities(self):
         """Return SAM smart-selection capability state without loading predictor weights."""
@@ -834,7 +963,7 @@ class Api:
                     if not cuda_info["cuda_compatible"]:
                         cuda_info["message"] = (
                             f"当前显卡算力为 sm_{device_arch}，但当前 PyTorch 仅支持到 "
-                            f"sm_{max_supported_arch}。请升级到支持 CUDA 12.8/13.0 的运行时，"
+                            f"sm_{max_supported_arch}。请升级到支持 CUDA 12.8/13.0 的运行环境，"
                             "或切换为 CPU 模式。"
                         )
                 elif cuda_info["device_capability"]:
@@ -858,7 +987,7 @@ class Api:
                 cuda_info["cuda_compatible"] = False
         else:
             cuda_info["cuda_compatible"] = False
-            cuda_info["message"] = "当前运行时未检测到可用 CUDA 设备。"
+            cuda_info["message"] = "当前运行环境未检测到可用 CUDA 设备。"
 
         if torch_package == "cpu":
             cuda_info["diagnostic_code"] = "torch_cpu_package"

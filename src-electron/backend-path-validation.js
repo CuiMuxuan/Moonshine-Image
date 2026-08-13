@@ -13,7 +13,7 @@ export function buildBackendPathCompatibilityResult(paths = {}) {
   if (paths.backendProjectPath && containsCjkCharacter(paths.backendProjectPath)) {
     warningPaths.push({
       field: "backendProjectPath",
-      label: "后端项目路径",
+      label: "服务项目路径",
       path: paths.backendProjectPath,
     });
   }
@@ -21,7 +21,7 @@ export function buildBackendPathCompatibilityResult(paths = {}) {
   if (paths.modelDir && containsCjkCharacter(paths.modelDir)) {
     warningPaths.push({
       field: "modelDir",
-      label: "模型目录路径",
+      label: "模型路径",
       path: paths.modelDir,
     });
   }
@@ -29,7 +29,7 @@ export function buildBackendPathCompatibilityResult(paths = {}) {
   if (paths.bundledMode && containsCjkCharacter(paths.effectiveModelDir)) {
     warningPaths.push({
       field: "effectiveModelDir",
-      label: "内置模型目录路径",
+      label: "内置模型路径",
       path: paths.effectiveModelDir,
     });
   }

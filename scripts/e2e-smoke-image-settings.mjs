@@ -254,8 +254,8 @@ async function runSmokeTest() {
     const backendSettingPanelCount = await backendPanel
       .locator('[data-testid^="settings-panel-"]')
       .count();
-    if (backendSettingPanelCount !== 5) {
-      throw new Error(`Expected 5 backend setting panels, got ${backendSettingPanelCount}`);
+    if (backendSettingPanelCount !== 6) {
+      throw new Error(`Expected 6 backend setting panels, got ${backendSettingPanelCount}`);
     }
 
     await page.click('[data-testid="global-settings-tab-files"]');
@@ -275,7 +275,7 @@ async function runSmokeTest() {
       timeout: 20000,
     });
 
-    await page.click('[data-testid="global-settings-tab-advanced"]');
+    await page.click('[data-testid="global-settings-tab-image"]');
     const processingHelp = page.locator('[data-testid="settings-help-image-processing-method"]');
     await processingHelp.waitFor({ state: "visible", timeout: 10000 });
     const processingHelpText = (await processingHelp.textContent())?.trim() || "";
@@ -290,6 +290,28 @@ async function runSmokeTest() {
     }
 
     await page.setViewportSize({ width: 700, height: 900 });
+    await page.waitForTimeout(500);
+    const narrowGrid = await page.locator('.settings-panel-grid:visible').first().evaluate(
+      (element) => {
+        const content = element.closest('.settings-content-section');
+        const contentRect = content?.getBoundingClientRect();
+        const childRects = [...element.children].map((child) => child.getBoundingClientRect());
+        return {
+          columns: getComputedStyle(element).gridTemplateColumns,
+          contentLeft: contentRect?.left,
+          contentRight: contentRect?.right,
+          childBounds: childRects.map((rect) => ({ left: rect.left, right: rect.right })),
+        };
+      }
+    );
+    if (narrowGrid.columns.trim().split(/\s+/).length !== 1) {
+      throw new Error(`Settings grid should use one column at 700px: ${JSON.stringify(narrowGrid)}`);
+    }
+    if (narrowGrid.childBounds.some((rect) => (
+      rect.left < narrowGrid.contentLeft - 1 || rect.right > narrowGrid.contentRight + 1
+    ))) {
+      throw new Error(`Settings panels should stay inside the narrow content area: ${JSON.stringify(narrowGrid)}`);
+    }
     const narrowOverflow = await page.locator('[data-testid="global-settings-card"]').evaluate(
       (element) => ({
         clientWidth: element.clientWidth,

@@ -24,8 +24,8 @@ export function evaluateAppUpdateInstallReadiness(options = {}) {
   if (BACKEND_TRANSITION_STATES.has(backendState)) {
     reasons.push(
       backendState === "starting"
-        ? "后端服务正在启动，请等待启动完成后重试。"
-        : "后端服务正在停止，请等待停止完成后重试。",
+        ? "服务正在启动，请等待启动完成后重试。"
+        : "服务正在停止，请等待停止完成后重试。",
     );
   }
 
@@ -48,7 +48,7 @@ function blockedAfterBackendStop(readiness, failure) {
     failure?.error ||
     failure?.message ||
     failure?.recoveryHint ||
-    "后端服务停止失败，暂不能安装更新。";
+    "服务停止失败，暂不能安装更新。";
   return {
     ...readiness,
     allowed: false,
@@ -88,7 +88,7 @@ export async function prepareAppUpdateInstall(options = {}) {
     return {
       ...finalReadiness,
       allowed: false,
-      reason: "后端服务未能完全停止，暂不能安装更新。",
+      reason: "服务未能完全停止，暂不能安装更新。",
       code: "APP_UPDATE_BACKEND_STILL_RUNNING",
     };
   }

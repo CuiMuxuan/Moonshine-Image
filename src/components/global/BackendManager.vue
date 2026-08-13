@@ -20,6 +20,7 @@
         <q-splitter
           v-model="splitterModel"
           :limits="[20, 80]"
+          :horizontal="$q.screen.lt.md"
           class="full-height"
         >
           <!-- 左侧控制面板 -->
@@ -31,7 +32,7 @@
                 color="primary"
                 animated
                 header-nav
-                class="bg-transparent"
+                class="backend-stepper bg-transparent"
               >
                 <!-- 环境检测步骤 -->
                 <q-step
@@ -48,7 +49,7 @@
                     class="q-pb-md"
                     data-testid="backend-python-environment-source-panel"
                   >
-                    <div class="text-subtitle2 text-weight-medium q-mb-sm">Python 环境来源</div>
+                    <div class="text-subtitle2 text-weight-medium q-mb-sm">Python 运行环境来源</div>
                     <q-btn-toggle
                       :model-value="pythonEnvironmentSource"
                       :options="pythonEnvironmentSourceOptions"
@@ -72,8 +73,8 @@
                         outlined
                         dense
                         readonly
-                        label="完整 Python 环境目录"
-                        placeholder="尚未选择目录"
+                        label="完整 Python 运行环境路径"
+                        placeholder="尚未选择路径"
                         :hint="externalEnvironmentLayoutLabel"
                         data-testid="backend-external-environment-path"
                       >
@@ -83,13 +84,13 @@
                             round
                             dense
                             icon="folder_open"
-                            aria-label="选择已有 Python 环境目录"
+                            aria-label="选择已有 Python 运行环境路径"
                             :loading="updateManager.pendingExternalAction === 'select'"
                             :disable="updateManager.isExternalEnvironmentActionPending"
                             data-testid="backend-external-environment-select"
                             @click="handleSelectExternalEnvironment"
                           >
-                            <q-tooltip>选择目录</q-tooltip>
+                            <q-tooltip>选择路径</q-tooltip>
                           </q-btn>
                         </template>
                       </q-input>
@@ -101,11 +102,11 @@
                           dense
                           icon="help_outline"
                           :color="externalEnvironmentHelpColor"
-                          aria-label="查看已有 Python 环境目录说明"
+                          aria-label="查看已有 Python 运行环境路径说明"
                           data-testid="backend-external-environment-help"
                           @click="externalEnvironmentHelpVisible = true"
                         >
-                          <q-tooltip>查看目录选择说明</q-tooltip>
+                          <q-tooltip>查看路径选择说明</q-tooltip>
                         </q-btn>
                         <span class="text-caption text-grey-7">环境状态</span>
                         <q-space />
@@ -167,7 +168,7 @@
                           no-caps
                           color="grey-8"
                           icon="delete_outline"
-                          label="忘记此目录"
+                          label="忘记此路径"
                           :disable="updateManager.isExternalEnvironmentActionPending"
                           data-testid="backend-external-environment-forget"
                           @click="handleForgetExternalEnvironment"
@@ -203,14 +204,14 @@
                     <q-dialog v-model="externalEnvironmentHelpVisible">
                       <q-card style="max-width: 560px">
                         <q-card-section class="row items-center q-pb-none">
-                          <div class="text-subtitle1 text-weight-medium">已有 Python 环境目录说明</div>
+                          <div class="text-subtitle1 text-weight-medium">已有 Python 运行环境路径说明</div>
                           <q-space />
                           <q-btn flat round dense icon="close" aria-label="关闭说明" v-close-popup />
                         </q-card-section>
                         <q-card-section class="text-body2 text-grey-8">
-                          请选择完整的 Python 环境目录，不要选择 python.exe 或其他 EXE 文件。完整包请选择包含
-                          runtime-manifest.json 的目录；Conda 环境请选择根目录（其中包含 python.exe）；venv
-                          环境请选择包含 pyvenv.cfg 和 Scripts/python.exe 的目录。应用只会原地引用并校验该目录，不会复制或修改它。
+                          请选择完整的 Python 运行环境路径，不要选择 python.exe 或其他 EXE 文件。完整包请选择包含
+                          runtime-manifest.json 的路径；Conda 环境请选择根路径（其中包含 python.exe）；venv
+                          运行环境请选择包含 pyvenv.cfg 和 Scripts/python.exe 的路径。应用只会原地引用并校验该路径，不会复制或修改它。
                         </q-card-section>
                       </q-card>
                     </q-dialog>
@@ -222,8 +223,8 @@
                     >
                       <div class="row items-center">
                         <div>
-                          <div class="text-subtitle2 text-weight-medium">自动管理环境</div>
-                          <div class="text-caption text-grey-7">应用会在本机创建并校验所需环境</div>
+                          <div class="text-subtitle2 text-weight-medium">自动管理运行环境</div>
+                          <div class="text-caption text-grey-7">应用会在本机创建并校验所需运行环境</div>
                         </div>
                         <q-space />
                         <q-badge :color="managedEnvironmentStatusMeta.color" data-testid="backend-managed-environment-status">
@@ -255,6 +256,18 @@
                       <div v-if="managedEnvironmentProgress?.message" class="text-caption text-grey-7 q-mt-sm">
                         {{ managedEnvironmentProgress.message }}
                       </div>
+                      <div
+                        v-if="updateManager.runtimeState.activePath || updateManager.runtimeState.targetPath"
+                        class="runtime-path-feedback q-mt-sm"
+                        data-testid="backend-managed-environment-path"
+                      >
+                        <q-icon name="folder_open" size="16px" color="primary" />
+                        <span class="text-caption text-grey-7">运行环境路径：</span>
+                        <span class="text-caption runtime-path-feedback__value">
+                          {{ updateManager.runtimeState.activePath || updateManager.runtimeState.targetPath }}
+                        </span>
+                        <q-tooltip>{{ updateManager.runtimeState.activePath || updateManager.runtimeState.targetPath }}</q-tooltip>
+                      </div>
                       <q-banner
                         v-if="managedEnvironmentError"
                         rounded
@@ -262,7 +275,7 @@
                         data-testid="backend-managed-environment-error"
                       >
                         <div>{{ managedEnvironmentError }}</div>
-                        <div class="q-mt-xs">请重试，或手动创建可用环境；也可以从夸克网盘下载可用运行时，再在“已有环境”中选择。</div>
+                        <div class="q-mt-xs">请重试，或手动创建可用运行环境；也可以从夸克网盘下载可用运行环境，再在“已有环境”中选择。</div>
                       </q-banner>
                       <q-banner
                         v-if="updateManager.runtimeState.restartRequired"
@@ -284,15 +297,13 @@
                           />
                         </template>
                       </q-banner>
-                      <div class="row justify-center q-gutter-sm q-mt-md">
+                      <div v-if="!managedEnvironmentBusy" class="row justify-center q-gutter-sm q-mt-md">
                         <q-btn
                           outline
                           no-caps
                           color="primary"
                           icon="refresh"
                           label="检查环境"
-                          :loading="managedEnvironmentBusy"
-                          :disable="managedEnvironmentBusy"
                           data-testid="backend-managed-environment-check"
                           @click="checkEnvironment"
                         />
@@ -301,11 +312,24 @@
                           no-caps
                           icon="build"
                           label="创建或修复环境"
-                          :loading="managedEnvironmentBusy"
-                          :disable="managedEnvironmentBusy"
                           data-testid="backend-managed-environment-ensure"
                           @click="setupEnvironment"
                         />
+                      </div>
+                      <div v-else-if="updateManager.runtimeCanCancel || updateManager.runtimeState.status === 'cancelling'" class="row justify-center q-mt-md">
+                        <q-btn
+                          v-if="updateManager.runtimeCanCancel"
+                          outline
+                          no-caps
+                          color="negative"
+                          icon="stop_circle"
+                          label="取消准备"
+                          data-testid="backend-managed-environment-cancel"
+                          @click="handleCancelManagedEnvironment"
+                        />
+                        <div v-else class="text-caption text-grey-7" data-testid="backend-managed-environment-cancelling">
+                          正在取消并清理临时文件…
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -347,12 +371,12 @@
                       </q-item-section>
                       <q-item-section>
                         <q-item-label class="text-weight-medium"
-                          >后端项目</q-item-label
+                          >服务项目</q-item-label
                         >
                         <q-item-label data-testid="backend-environment-project-status" caption class="text-grey-6">{{
                           getEnvironmentItemLabel(
                             'project',
-                            projectPath || '已检测到后端项目',
+                            projectPath || '已检测到服务项目',
                             '未找到'
                           )
                         }}</q-item-label>
@@ -383,19 +407,14 @@
                   </q-list>
                 </div>
 
-                <q-stepper-navigation>
+                <q-stepper-navigation v-if="!managedEnvironmentBusy" class="row justify-center">
                   <q-btn
                     @click="checkEnvironment"
                     color="primary"
                     label="重新检测"
-                    :loading="checking"
                     unelevated
                     class="q-mb-sm"
-                  >
-                    <template #loading>
-                      <q-spinner :color="$q.dark.isActive ? 'dark' : 'white'" />
-                    </template>
-                  </q-btn>
+                  />
                   <div class="q-gutter-sm">
                     <q-btn
                       v-if="
@@ -489,7 +508,7 @@
                   />
                 </div>
 
-                <q-stepper-navigation>
+                <q-stepper-navigation v-if="!managedEnvironmentBusy" class="row justify-center">
                   <q-btn
                     @click="setupEnvironment"
                     color="primary"
@@ -515,12 +534,10 @@
                   :disable="!canUseServiceManagementStep"
                   header-class="text-primary"
                 >
-                <div class="q-mb-md">
-                  <q-card flat bordered class="q-mb-md">
-                    <q-card-section class="q-pa-md">
-                      <div class="text-subtitle2 q-mb-sm text-grey-8">
-                        服务状态
-                      </div>
+                <div class="service-management-panel">
+                  <section class="service-overview" aria-label="服务状态">
+                    <div class="service-overview__header">
+                      <div class="text-subtitle2 text-weight-medium">服务状态</div>
                       <q-chip
                         :color="
                           serviceStatus === 'running'
@@ -537,37 +554,18 @@
                             ? 'stop'
                             : 'pending'
                         "
-                        class="q-mb-sm"
+                        class="service-status-chip"
                       >
                         {{ serviceStatusText }}
                       </q-chip>
+                    </div>
 
-                      <div class="q-mt-sm text-body2">
-                        <div class="text-grey-7 q-mb-xs">
-                          端口:
-                          <span class="text-primary text-weight-medium">{{
-                            backendConfig.port
-                          }}</span>
-                        </div>
-                        <div class="text-grey-7 q-mb-xs">
-                          设备:
-                          <span class="text-primary text-weight-medium">{{
-                            backendConfig.device
-                          }}</span>
-                        </div>
-                        <div class="text-grey-7 q-mb-xs">
-                          模型:
-                          <span class="text-primary text-weight-medium">{{
-                            backendConfig.model
-                          }}</span>
-                        </div>
-                        <div v-if="backendModelLocation" class="text-grey-7">
-                          模型目录:
-                          <span class="text-primary text-weight-medium">{{
-                            backendModelLocation
-                          }}</span>
-                        </div>
-                      </div>
+                    <dl class="service-info-grid">
+                      <div class="service-info-item"><dt>端口</dt><dd>{{ backendConfig.port }}</dd></div>
+                      <div class="service-info-item"><dt>设备</dt><dd>{{ backendConfig.device }}</dd></div>
+                      <div class="service-info-item"><dt>当前模型</dt><dd>{{ backendConfig.model }}</dd></div>
+                      <div class="service-info-item"><dt>模型路径</dt><dd :title="backendModelLocation">{{ backendModelLocation || "未配置" }}</dd></div>
+                    </dl>
 
                       <q-banner
                         v-if="backendEngineStore.error || activeDiagnostic"
@@ -579,7 +577,7 @@
                           <q-icon name="error_outline" color="negative" />
                         </template>
                         <div class="text-weight-medium">
-                          {{ backendEngineStore.error || activeDiagnostic?.reason || '后端启动失败' }}
+                          {{ backendEngineStore.error || activeDiagnostic?.reason || '服务启动失败' }}
                         </div>
                         <div
                           v-if="backendEngineStore.recoveryHint"
@@ -611,15 +609,11 @@
                           >{{ activeDiagnostic.stdoutTail }}</pre>
                         </q-expansion-item>
                       </q-banner>
-                    </q-card-section>
-                  </q-card>
+                  </section>
 
-                  <q-card flat bordered>
-                    <q-card-section class="q-pa-md">
-                      <div class="text-subtitle2 q-mb-sm text-grey-8">
-                        启动配置
-                      </div>
-                      <q-form class="q-gutter-sm">
+                  <section class="service-configuration" aria-label="启动配置">
+                      <div class="text-subtitle2 text-weight-medium q-mb-sm">启动配置</div>
+                      <q-form class="service-config-grid">
                         <q-input
                           v-model.number="backendConfig.port"
                           label="端口"
@@ -654,19 +648,30 @@
                           v-if="isBundledBackendMode"
                           dense
                           rounded
-                          class="bg-blue-1 text-primary"
+                          class="model-management-notice"
                         >
-                          当前使用应用内置后端，模型将直接从安装包内的模型目录读取。
+                          <div class="model-management-notice__content">
+                            <span>请打开模型管理页下载所需模型</span>
+                            <q-btn
+                              flat
+                              dense
+                              no-caps
+                              color="primary"
+                              icon="model_training"
+                              label="打开模型管理"
+                              @click="openModelManagement"
+                            />
+                          </div>
                         </q-banner>
                         <q-input
                           v-else
                           v-model="backendConfig.modelDir"
-                          label="模型目录"
+                          label="模型路径"
                           dense
                           outlined
                           color="primary"
-                          placeholder="可选：指定模型文件存储目录"
-                          hint="留空则使用默认目录"
+                          placeholder="可选：指定模型文件存储路径"
+                          hint="留空则使用默认路径"
                         >
                           <template v-slot:append>
                             <q-btn
@@ -680,54 +685,54 @@
                           </template>
                         </q-input>
                       </q-form>
-                    </q-card-section>
-                  </q-card>
+                      <div
+                        :class="[
+                          'service-controls',
+                          { 'service-controls--single': serviceStatus !== 'running' },
+                        ]"
+                        aria-label="服务操作"
+                        data-testid="backend-service-controls"
+                      >
+                        <q-btn
+                          v-if="serviceStatus !== 'running'"
+                          @click="startService"
+                          color="positive"
+                          icon="play_arrow"
+                          :label="serviceStartButtonLabel"
+                          :loading="serviceLoading || serviceStatus === 'starting'"
+                          :disable="!['stopped', 'failed'].includes(serviceStatus)"
+                          class="service-control-button"
+                          data-testid="backend-start-service-button"
+                          unelevated
+                          no-caps
+                        />
+                        <q-btn
+                          v-if="serviceStatus === 'running'"
+                          @click="stopService"
+                          color="negative"
+                          icon="stop"
+                          label="停止服务"
+                          :loading="serviceLoading"
+                          class="service-control-button"
+                          data-testid="backend-stop-service-button"
+                          unelevated
+                          no-caps
+                        />
+                        <q-btn
+                          v-if="serviceStatus === 'running'"
+                          @click="restartService"
+                          color="orange"
+                          icon="refresh"
+                          label="重启服务"
+                          :loading="serviceLoading"
+                          class="service-control-button"
+                          data-testid="backend-restart-service-button"
+                          outline
+                          no-caps
+                        />
+                      </div>
+                  </section>
                 </div>
-
-                <q-stepper-navigation>
-                  <div class="q-gutter-sm">
-                    <q-btn
-                      v-if="serviceStatus !== 'running'"
-                      @click="startService"
-                      color="positive"
-                      icon="play_arrow"
-                      :label="serviceStartButtonLabel"
-                      :loading="serviceLoading || serviceStatus === 'starting'"
-                      :disable="!['stopped', 'failed'].includes(serviceStatus)"
-                      unelevated
-                    >
-                      <template #loading>
-                        <q-spinner color="white" />
-                      </template>
-                    </q-btn>
-                    <q-btn
-                      v-if="serviceStatus === 'running'"
-                      @click="stopService"
-                      color="negative"
-                      icon="stop"
-                      label="停止服务"
-                      :loading="serviceLoading"
-                      unelevated
-                    >
-                      <template #loading>
-                        <q-spinner color="white" />
-                      </template>
-                    </q-btn>
-                    <q-btn
-                      v-if="serviceStatus === 'running'"
-                      @click="restartService"
-                      color="orange"
-                      icon="refresh"
-                      label="重启服务"
-                      :loading="serviceLoading"
-                      outline
-                    >
-                      <template #loading>
-                        <q-spinner color="orange" />
-                      </template>
-                    </q-btn>
-                  </div>
-                </q-stepper-navigation>
               </q-step>
             </q-stepper>
           </div>
@@ -831,6 +836,7 @@ import { computed, inject, ref, reactive, onMounted, onUnmounted, nextTick, watc
 import { copyToClipboard, useQuasar } from "quasar";
 import { useConfigStore } from "src/stores/config";
 import { useBackendEngineStore } from "src/stores/backendEngine";
+import { useModelRegistryStore } from "src/stores/modelRegistry";
 import { useUpdateManagerStore } from "src/stores/updateManager";
 import { api } from "src/boot/axios";
 import {
@@ -857,16 +863,22 @@ const splitterModel = ref(35);
 
 const configStore = useConfigStore();
 const backendEngineStore = useBackendEngineStore();
+const modelRegistryStore = useModelRegistryStore();
 const updateManager = useUpdateManagerStore();
 const $q = useQuasar();
 // Emits
 const emit = defineEmits(["update:modelValue"]);
 
 const backendEngineActions = inject("backendEngine", ref({}));
+const globalSettings = inject("globalSettings", null);
 const readInjectedValue = (value) => value?.value ?? value;
 const getBackendEngineAction = (name) => {
   const actions = readInjectedValue(backendEngineActions) || {};
   return typeof actions[name] === "function" ? actions[name] : null;
+};
+const openModelManagement = () => {
+  globalSettings?.open?.({ tab: "models", modelId: backendConfig.model || "" });
+  showDialog.value = false;
 };
 const observedBackendRunning = computed(() => backendEngineStore.isRunning);
 const isBackendPreparing = computed(() => backendEngineStore.isPreparing);
@@ -874,7 +886,7 @@ const isBackendPreparing = computed(() => backendEngineStore.isPreparing);
 const backendMode = ref("external");
 const isBundledBackendMode = computed(() => backendMode.value === "bundled");
 const backendManagerTitle = computed(() =>
-  isBundledBackendMode.value ? "后端管理" : "Python 后端管理"
+  isBundledBackendMode.value ? "服务管理" : "Python 服务管理"
 );
 const pythonSectionLabel = computed(() =>
   isBundledBackendMode.value ? "本地运行环境" : "Python 环境"
@@ -951,9 +963,9 @@ const externalEnvironmentHelpColor = computed(() =>
   externalEnvironmentStatus.value === "invalid" ? "negative" : "info"
 );
 const externalEnvironmentLayoutLabel = computed(() => ({
-  "runtime-manifest": "完整包 runtime",
-  conda: "Conda 环境",
-  venv: "venv 环境",
+  "runtime-manifest": "完整包运行环境",
+  conda: "Conda 运行环境",
+  venv: "venv 运行环境",
 }[externalEnvironment.value.layout] || externalEnvironment.value.layout || ""));
 const externalEnvironmentError = computed(() => {
   const error = externalEnvironment.value.error;
@@ -1039,7 +1051,7 @@ const externalEnvironmentCanActivate = computed(() =>
 );
 const managedAccelerator = ref(
   normalizeRuntimeAccelerator(
-    updateManager.runtimeState.selectedAccelerator || updateManager.runtimeState.accelerator
+    updateManager.runtimeState.preference || "auto"
   )
 );
 const managedAcceleratorOptions = [
@@ -1050,14 +1062,14 @@ const managedAcceleratorOptions = [
 const managedEnvironmentProgress = computed(() => updateManager.runtimeState.progress || null);
 const managedEnvironmentProgressIndeterminate = computed(() => {
   const progress = managedEnvironmentProgress.value;
-  if (!progress || progress.status === "complete" || progress.status === "failed") return false;
-  return progress.phase !== "python-download";
+  if (!progress || ["complete", "failed", "cancelled"].includes(progress.status)) return false;
+  return !Number.isFinite(Number(progress.percent));
 });
 const managedEnvironmentBusy = computed(() =>
   checking.value ||
   installing.dependencies ||
   updateManager.isRuntimeActionPending ||
-  ["preparing", "creating", "repairing", "downloading", "verifying"].includes(updateManager.runtimeState.status)
+  ["preparing", "creating", "repairing", "downloading", "verifying", "cancelling"].includes(updateManager.runtimeState.status)
 );
 const managedEnvironmentError = computed(() => {
   const error = updateManager.runtimeState.error;
@@ -1066,7 +1078,8 @@ const managedEnvironmentError = computed(() => {
 const managedEnvironmentStatusMeta = computed(() => {
   const state = updateManager.runtimeState;
   const phase = String(state.progress?.phase || "");
-  if (["preparing", "creating", "repairing", "downloading", "verifying"].includes(state.status)) {
+  if (["preparing", "creating", "repairing", "downloading", "verifying", "cancelling"].includes(state.status)) {
+    if (state.status === "cancelling") return { label: "正在取消", color: "warning" };
     if (phase === "python-download") return { label: "正在下载 Python", color: "primary" };
     if (["python-install", "python-verify", "python-discovery", "python-ready"].includes(phase)) {
       return { label: "正在自动安装", color: "primary" };
@@ -1074,9 +1087,10 @@ const managedEnvironmentStatusMeta = computed(() => {
     return { label: "正在准备环境", color: "primary" };
   }
   if (["needs-create", "needs-download", "idle"].includes(state.status)) {
-    return { label: "未检测到运行时", color: "grey-7" };
+    return { label: "未检测到运行环境", color: "grey-7" };
   }
   if (["failed", "needs-repair"].includes(state.status)) return { label: "需要修复", color: "negative" };
+  if (state.status === "degraded") return { label: "环境可用，视频受限", color: "warning" };
   if (state.status === "ready") return { label: "环境就绪", color: "positive" };
   return { label: updateManager.runtimeStatusLabel || "尚未检测", color: "grey-7" };
 });
@@ -1084,7 +1098,7 @@ const handleManagedAcceleratorChange = async (value) => {
   const result = await updateManager.setRuntimeChannel(value);
   if (result?.success === false) {
     managedAccelerator.value = normalizeRuntimeAccelerator(
-      updateManager.runtimeState.selectedAccelerator || updateManager.runtimeState.accelerator
+      updateManager.runtimeState.preference || "auto"
     );
     notifyExternalEnvironmentFailure(result, "保存加速器选择失败。");
     return;
@@ -1101,6 +1115,22 @@ const handleManagedEnvironmentRestart = () => {
   }).onOk(async () => {
     const result = await updateManager.restartApplication();
     if (result?.success === false) notifyExternalEnvironmentFailure(result, "重启应用失败。");
+  });
+};
+const handleCancelManagedEnvironment = () => {
+  $q.dialog({
+    title: "取消运行环境准备",
+    message: "将停止当前下载或安装并清理临时文件。已经启用的运行环境不会受到影响。",
+    cancel: { flat: true, label: "继续准备" },
+    ok: { color: "negative", label: "取消准备" },
+    persistent: true,
+  }).onOk(async () => {
+    const result = await updateManager.cancelEnvironmentPreparation();
+    if (result?.success === false) {
+      notifyExternalEnvironmentFailure(result, "取消运行环境准备失败。");
+      return;
+    }
+    addTerminalLog("正在取消运行环境准备并清理临时文件。", "warning");
   });
 };
 const notifyExternalEnvironmentFailure = (result, fallbackMessage) => {
@@ -1120,7 +1150,7 @@ const handleProbeExternalEnvironment = async () => {
   });
   if (notifyExternalEnvironmentFailure(result, "已有 Python 环境校验失败。")) return result;
   if (result?.valid === false || externalEnvironmentStatus.value === "invalid") {
-    $q.notify({ type: "warning", message: "该目录未通过完整环境校验。", position: "top" });
+    $q.notify({ type: "warning", message: "该路径未通过完整环境校验。", position: "top" });
     return result;
   }
   $q.notify({ type: "positive", message: "环境校验通过，可以使用。", position: "top" });
@@ -1130,11 +1160,11 @@ const handleSelectExternalEnvironment = async () => {
   pythonEnvironmentSource.value = "external";
   const result = await updateManager.selectExternalEnvironmentDirectory();
   if (result?.cancelled || result?.canceled) return;
-  if (notifyExternalEnvironmentFailure(result, "选择 Python 环境目录失败。")) return;
+  if (notifyExternalEnvironmentFailure(result, "选择 Python 运行环境路径失败。")) return;
   if (!externalEnvironment.value.candidateId) {
     $q.notify({
       type: "negative",
-      message: "主进程未返回可校验的环境目录，请重新选择。",
+      message: "主进程未返回可校验的运行环境路径，请重新选择。",
       position: "top",
     });
     return;
@@ -1156,8 +1186,8 @@ const performForgetExternalEnvironment = async ({ returnToManaged = false } = {}
     : await updateManager.forgetExternalEnvironment();
   if (notifyExternalEnvironmentFailure(result, "恢复自动管理失败。")) return;
   pythonEnvironmentSource.value = "managed";
-  addTerminalLog("已恢复自动管理的 Python 环境；外部目录未被修改。", "info");
-  $q.notify({ type: "positive", message: "已恢复自动管理，外部目录未被修改。", position: "top" });
+  addTerminalLog("已恢复自动管理的 Python 运行环境；外部路径未被修改。", "info");
+  $q.notify({ type: "positive", message: "已恢复自动管理，外部路径未被修改。", position: "top" });
 };
 const handleForgetExternalEnvironment = () => {
   void performForgetExternalEnvironment();
@@ -1165,7 +1195,7 @@ const handleForgetExternalEnvironment = () => {
 const handleReturnToManagedEnvironment = () => {
   $q.dialog({
     title: "停止使用已有环境",
-    message: "应用将恢复自动管理的运行环境。所选目录及其文件不会被删除或修改。",
+    message: "应用将恢复自动管理的运行环境。所选路径及其文件不会被删除或修改。",
     cancel: { flat: true, label: "取消" },
     ok: { color: "primary", label: "恢复自动管理" },
   }).onOk(() => {
@@ -1200,7 +1230,7 @@ watch(
   { immediate: true }
 );
 watch(
-  () => updateManager.runtimeState.selectedAccelerator || updateManager.runtimeState.accelerator,
+  () => updateManager.runtimeState.preference,
   (value) => {
     if (value) managedAccelerator.value = normalizeRuntimeAccelerator(value);
   }
@@ -1253,10 +1283,17 @@ const setEnvironmentItemState = (items, state) => {
 };
 const setAllEnvironmentItemStates = (state) =>
   setEnvironmentItemState(ENVIRONMENT_ITEM_KEYS, state);
-const getEnvironmentItemState = (item) =>
-  item === "runtime"
+const getEnvironmentItemState = (item) => {
+  if (item === "runtime" && isBundledBackendMode.value && pythonEnvironmentSource.value === "managed") {
+    const status = updateManager.runtimeState.status;
+    if (status === "degraded") return "blocked";
+    if (status === "ready") return "success";
+    if (["failed", "needs-repair"].includes(status)) return "failure";
+  }
+  return item === "runtime"
     ? resolveEnvironmentItemGroupState(environmentItemStates, ["python", "venv"])
     : environmentItemStates[item] || "idle";
+};
 const isEnvironmentItemChecking = (item) =>
   (item === "runtime" && pythonEnvironmentSource.value === "managed" && managedEnvironmentBusy.value) ||
   getEnvironmentItemState(item) === "checking";
@@ -1355,7 +1392,7 @@ const diagnosticRows = computed(() => {
     ["错误代码", value.code],
     ["阶段", value.stage],
     ["命令", value.commandLine],
-    ["工作目录", value.cwd],
+    ["工作路径", value.cwd],
     ["系统错误", value.osCode],
     ["退出码", value.exitCode],
     ["信号", value.signal],
@@ -1414,6 +1451,10 @@ let lastTerminalFlushAt = 0;
 let terminalLineRefreshId = 0;
 let terminalProgressHeartbeatTimerId = 0;
 let activeVideoBatchProgressContext = null;
+let modelTaskPollSummaryLine = null;
+let modelTaskPollCount = 0;
+const modelTaskPollIds = new Set();
+const completedModelDownloadTaskIds = new Set();
 
 const sanitizeTerminalText = (message) =>
   String(message ?? "")
@@ -1594,6 +1635,18 @@ const stripBackendLogEnvelope = (message = "") =>
 const normalizeBackendLogPayload = (message = "") =>
   stripBackendLogEnvelope(message).replace(/\s*\r?\n\s*/g, " ").trim();
 
+const parseModelTaskPollLog = (message = "") => {
+  const payload = normalizeBackendLogPayload(message);
+  const match = payload.match(
+    /\bGET\s+\/api\/v1\/moonshine\/models\/tasks\/([^?\s"']+)(?:\?[^\s"']*)?\s+HTTP\/\d(?:\.\d)?["']?\s+(\d{3})\b/i
+  );
+  if (!match) return null;
+  return {
+    taskId: match[1],
+    statusCode: Number(match[2]),
+  };
+};
+
 const parseVideoBatchStartLog = (message = "") => {
   const match = normalizeBackendLogPayload(message).match(
     /^\[(batch_[^\]]+)\]\s+start\s+video\s+batch:\s*(\d+)\s*frame\(s\),\s*model=([^,\s]+),\s*batch=(\d+)\/(\d+)/i
@@ -1710,6 +1763,24 @@ const createTerminalLine = (message, type = "info", options = {}) => ({
   progressInfo: options.progressInfo || null,
   refreshId: ++terminalLineRefreshId,
 });
+
+const updateModelTaskPollSummary = ({ taskId, statusCode }) => {
+  modelTaskPollCount += 1;
+  if (taskId) modelTaskPollIds.add(taskId);
+  const taskSummary = modelTaskPollIds.size > 1 ? `，${modelTaskPollIds.size} 个任务` : "";
+  const message = `模型任务状态轮询：已合并 ${modelTaskPollCount} 次 GET 请求${taskSummary}（最近状态 ${statusCode}）。`;
+  const timestamp = new Date().toLocaleTimeString();
+
+  if (modelTaskPollSummaryLine && terminalOutput.value.includes(modelTaskPollSummaryLine)) {
+    modelTaskPollSummaryLine.message = message;
+    modelTaskPollSummaryLine.timestamp = timestamp;
+    modelTaskPollSummaryLine.refreshId = ++terminalLineRefreshId;
+    return;
+  }
+
+  modelTaskPollSummaryLine = createTerminalLine(message, "info", { timestamp });
+  terminalOutput.value.push(modelTaskPollSummaryLine);
+};
 
 const getProgressLineKeyFromInfo = (progressInfo = {}) =>
   progressInfo ? `progress:${progressInfo.label || "backend"}` : "";
@@ -1871,6 +1942,9 @@ const clearTerminal = () => {
   terminalOutput.value = [];
   activeTerminalLine = null;
   activeVideoBatchProgressContext = null;
+  modelTaskPollSummaryLine = null;
+  modelTaskPollCount = 0;
+  modelTaskPollIds.clear();
   pendingTerminalLogs = [];
   lastTerminalFlushAt = Date.now();
   clearTerminalProgressHeartbeat();
@@ -1986,6 +2060,17 @@ const queueTerminalLog = (message, type = "info") => {
   pendingTerminalLogs.push({ message, type, queuedAt: Date.now() });
   scheduleTerminalLogFlush();
 };
+
+const reportCompletedModelDownload = (task = {}) => {
+  const taskId = String(task.id || "").trim();
+  if (!taskId || completedModelDownloadTaskIds.has(taskId)) return;
+  completedModelDownloadTaskIds.add(taskId);
+  const modelId = String(task.modelId || "").trim();
+  const model = modelRegistryStore.models.find((item) => item.id === modelId);
+  const displayName = String(model?.label || modelId || "模型").trim() || "模型";
+  addTerminalLog(`模型${displayName}下载成功。`, "success");
+};
+
 // IPC 监听器处理后端输出
 const handleBackendOutput = (event, data) => {
   if (typeof data === "string") {
@@ -2026,7 +2111,7 @@ const completeEnvironmentCheckForRunningService = () => {
   }
   markEnvironmentReadyForRunningProcess();
   currentStep.value = 3;
-  addTerminalLog("检测到后端服务正在运行，跳过其余环境检测", "info");
+  addTerminalLog("检测到服务正在运行，跳过其余运行环境检测", "info");
   return true;
 };
 
@@ -2138,11 +2223,36 @@ watch(
   }
 );
 
+watch(
+  () => Object.values(modelRegistryStore.tasks || {}).map((task) => ({
+    id: task?.id,
+    modelId: task?.modelId,
+    status: task?.status,
+    done: task?.done,
+  })),
+  (tasks) => {
+    tasks.forEach((task) => {
+      if (task?.status === "completed" && task.done) {
+        reportCompletedModelDownload(task);
+      }
+    });
+  },
+  { deep: true }
+);
+
 // 添加终端日志
 const addTerminalLog = (message, type = "info") => {
   const rawText = sanitizeTerminalText(message);
   const cleanText = normalizeBackendTerminalText(rawText);
   if (!cleanText) {
+    return;
+  }
+
+  const modelTaskPoll = parseModelTaskPollLog(rawText);
+  if (modelTaskPoll && modelTaskPoll.statusCode >= 200 && modelTaskPoll.statusCode < 400) {
+    updateModelTaskPollSummary(modelTaskPoll);
+    trimTerminalOutput();
+    scrollTerminalToBottom();
     return;
   }
 
@@ -2375,6 +2485,38 @@ const persistConfig = async (nextConfig) => {
   }
 };
 
+const syncEnvironmentLaunchDevice = async (accelerator, { log = false } = {}) => {
+  if (!["cpu", "cu130"].includes(accelerator)) return false;
+  const effectiveDevice = accelerator === "cu130" ? "cuda" : "cpu";
+  const changed = backendConfig.device !== effectiveDevice ||
+    configStore.config.general?.launchMode !== effectiveDevice;
+  backendConfig.device = effectiveDevice;
+  api.updateConfig({ general: { launchMode: effectiveDevice } });
+  if (!changed) return true;
+  try {
+    await persistConfig({
+      ...configStore.config,
+      general: {
+        ...(configStore.config.general || {}),
+        launchMode: effectiveDevice,
+      },
+    });
+    if (log) {
+      addTerminalLog(
+        `服务启动方式已同步为${effectiveDevice === "cuda" ? " CUDA" : " CPU"}。`,
+        "info"
+      );
+    }
+    return true;
+  } catch (error) {
+    addTerminalLog(
+      `当前运行环境可用，但服务启动方式配置同步失败：${error?.message || "未知错误"}`,
+      "warning"
+    );
+    return false;
+  }
+};
+
 const syncRuntimeBackendPort = async (port) => {
   const normalizedPort = Number(port);
   if (
@@ -2396,17 +2538,17 @@ const syncRuntimeBackendPort = async (port) => {
     return true;
   }
 
-  const result = await configStore.saveConfig({
-    ...configStore.config,
-    general: {
-      ...(configStore.config.general || {}),
-      backendPort: normalizedPort
-    }
-  });
-
-  if (!result?.success) {
+  try {
+    await persistConfig({
+      ...configStore.config,
+      general: {
+        ...(configStore.config.general || {}),
+        backendPort: normalizedPort,
+      },
+    });
+  } catch (error) {
     addTerminalLog(
-      `运行时端口已切换到 ${normalizedPort}，但当前会话配置同步失败。`,
+      `服务端口已切换到 ${normalizedPort}，但配置持久化失败：${error?.message || "未知错误"}。`,
       "warning"
     );
     return false;
@@ -2604,17 +2746,47 @@ const appendProjectPathGuidance = (result) => {
 
   if (result.defaultProjectParentPath) {
     addTerminalLog(
-      `请将 Moonshine 后端项目移动到 ${result.defaultProjectParentPath} 路径下。`,
+      `请将 Moonshine 服务项目移动到 ${result.defaultProjectParentPath} 路径下。`,
       "warning"
     );
   } else {
-    addTerminalLog("请将 Moonshine 后端项目移动到默认后端目录下。", "warning");
+    addTerminalLog("请将 Moonshine 服务项目移动到默认服务路径下。", "warning");
   }
 
   addTerminalLog(
-    "或退出后端管理页面 → 打开全局设置 → 后端设置 → 后端项目路径→ 点击图标选择路径",
+    "或退出服务管理页面 → 打开全局设置 → 服务配置 → 服务项目路径 → 点击图标选择路径",
     "warning"
   );
+};
+
+const applyManagedEnvironmentState = (result = {}) => {
+  const state = result.state || updateManager.runtimeState;
+  const ready = ["ready", "degraded"].includes(state.status);
+  environmentStatus.project = true;
+  environmentStatus.python = ready;
+  environmentStatus.venv = ready;
+  environmentStatus.dependencies = ready;
+  environmentStatus.configured = ready;
+  environmentStatus.error = ["failed", "needs-repair"].includes(state.status);
+  setEnvironmentItemState("project", "success");
+  setEnvironmentItemState(["python", "venv", "dependencies"], ready ? "success" : "failure");
+
+  pythonVersion.value = state.pythonVersion
+    ? `Python ${state.pythonVersion}`
+    : ready
+      ? "Python 环境已就绪"
+      : "";
+  venvStatus.value = ready
+    ? state.activePath || "运行环境已就绪"
+    : managedEnvironmentStatusMeta.value.label;
+  dependenciesStatus.value = ready
+    ? state.status === "degraded"
+      ? "核心依赖已就绪，视频能力受限"
+      : "依赖已就绪"
+    : "未就绪";
+  environmentCheckCompleted.value = true;
+  currentStep.value = ready ? 3 : 1;
+  return ready;
 };
 
 const appendEnvironmentRecoveryGuidance = (result) => {
@@ -2646,7 +2818,7 @@ const appendEnvironmentRecoveryGuidance = (result) => {
     }
   }
   addTerminalLog(
-    "请重试，或手动创建可用环境，也可以从夸克网盘下载可用运行时并在“已有环境”中选择。",
+    "请重试，或手动创建可用运行环境，也可以从夸克网盘下载可用运行环境并在“已有环境”中选择。",
     "warning"
   );
 };
@@ -2659,7 +2831,7 @@ const runEnvironmentCheck = async ({ syncServiceStatus = false } = {}) => {
   environmentStatus.error = false;
   resetEnvironmentStatusForCheck();
   setAllEnvironmentItemStates("checking");
-  addTerminalLog("开始检测后端环境...", "info");
+  addTerminalLog("开始检测服务环境...", "info");
   let currentEnvironmentStage = "initialization";
 
   try {
@@ -2707,7 +2879,7 @@ const runEnvironmentCheck = async ({ syncServiceStatus = false } = {}) => {
       venvStatus.value = "未创建";
       dependenciesStatus.value = "未安装";
       currentStep.value = 1;
-      addTerminalLog(`后端项目检测失败：${projectResult.error}`, "error");
+      addTerminalLog(`服务项目检测失败：${projectResult.error}`, "error");
       appendProjectPathGuidance(projectResult);
       return;
     }
@@ -2716,12 +2888,12 @@ const runEnvironmentCheck = async ({ syncServiceStatus = false } = {}) => {
     if (!checkedProjectPath) {
       const pathError = {
         code: "PROJECT_PATH_MISSING",
-        error: "后端项目检测未返回有效路径。",
+        error: "服务项目检测未返回有效路径。",
       };
       applyEnvironmentFailureState(pathError, currentEnvironmentStage);
       environmentStatus.error = true;
       currentStep.value = 1;
-      addTerminalLog(`后端项目检测失败：${pathError.error}`, "error");
+      addTerminalLog(`服务项目检测失败：${pathError.error}`, "error");
       return;
     }
 
@@ -2738,14 +2910,41 @@ const runEnvironmentCheck = async ({ syncServiceStatus = false } = {}) => {
         return;
       }
     }
-    addTerminalLog(`后端项目检测成功：${checkedProjectPath || "路径已确认"}`, "success");
+    addTerminalLog(`服务项目检测成功：${checkedProjectPath || "路径已确认"}`, "success");
 
     addTerminalLog(
       projectResult.backendMode === "bundled"
-        ? "已检测到应用内置后端模式。"
+        ? "已检测到应用内置服务模式。"
         : "Detected external backend mode.",
       "info"
     );
+
+    if (isBundledBackendMode.value && pythonEnvironmentSource.value === "managed") {
+      currentEnvironmentStage = "check-managed-environment";
+      const managedResult = await updateManager.checkRuntime({
+        accelerator: managedAccelerator.value,
+      });
+      const ready = applyManagedEnvironmentState(managedResult);
+      if (ready) {
+        await syncEnvironmentLaunchDevice(
+          managedResult?.state?.selectedAccelerator || updateManager.runtimeState.selectedAccelerator
+        );
+        addTerminalLog(
+          updateManager.runtimeState.status === "degraded"
+            ? "运行环境核心能力可用，但应用内置 FFmpeg 未通过校验，视频能力暂不可用。"
+            : `运行环境检测成功：${updateManager.runtimeState.activePath || "路径已确认"}`,
+          updateManager.runtimeState.status === "degraded" ? "warning" : "success"
+        );
+      } else {
+        addTerminalLog(
+          managedEnvironmentStatusMeta.value.label === "未检测到运行环境"
+            ? "未检测到运行环境，可点击“创建或修复环境”开始准备。"
+            : `运行环境需要处理：${managedEnvironmentStatusMeta.value.label}`,
+          updateManager.runtimeState.status === "failed" ? "error" : "warning"
+        );
+      }
+      return;
+    }
 
     currentEnvironmentStage = "prepare-project-python";
     const prepareResult = await window.electron.ipcRenderer.invoke(
@@ -2807,7 +3006,7 @@ const runEnvironmentCheck = async ({ syncServiceStatus = false } = {}) => {
 
     if (prepareResult.dependenciesVerified === true) {
       applyDependenciesStatus(true);
-      addTerminalLog("内置后端依赖已就绪。", "success");
+      addTerminalLog("内置服务依赖已就绪。", "success");
       currentStep.value = 3;
       return;
     }
@@ -2821,7 +3020,7 @@ const runEnvironmentCheck = async ({ syncServiceStatus = false } = {}) => {
       applyDependenciesStatus(true);
       addTerminalLog(
         isBundledBackendMode.value
-          ? "内置后端依赖已就绪。"
+          ? "内置服务依赖已就绪。"
           : "依赖已安装。",
         "success"
       );
@@ -2831,7 +3030,7 @@ const runEnvironmentCheck = async ({ syncServiceStatus = false } = {}) => {
       if (depsResult.error) {
         addTerminalLog(
           isBundledBackendMode.value
-            ? `Bundled dependency check failed: ${depsResult.error}`
+            ? `内置服务依赖检测失败：${depsResult.error}`
             : `依赖检测失败：${depsResult.error}`,
           "warning"
         );
@@ -2891,7 +3090,7 @@ const installPython = async () => {
 const selectProjectPath = async () => {
   try {
     const result = await window.electron.ipcRenderer.invoke("select-folder", {
-      title: "选择 Python 后端项目路径",
+      title: "选择 Python 服务项目路径",
     });
 
     if (!result.canceled && result.filePaths.length > 0) {
@@ -2952,7 +3151,7 @@ const selectProjectPath = async () => {
 const selectModelDir = async () => {
   try {
     const result = await window.electron.ipcRenderer.invoke("select-folder", {
-      title: "选择模型目录",
+      title: "选择模型路径",
     });
 
     if (!result.canceled && result.filePaths.length > 0) {
@@ -2979,23 +3178,68 @@ const selectModelDir = async () => {
       newConfig.general.modelDir = selectedPath;
       await persistConfig(newConfig);
 
-      addTerminalLog(`模型目录设置成功: ${selectedPath}`, "success");
+      addTerminalLog(`模型路径设置成功：${selectedPath}`, "success");
     }
   } catch (error) {
-    addTerminalLog(`选择模型目录失败: ${error.message}`, "error");
+    addTerminalLog(`选择模型路径失败：${error.message}`, "error");
   }
 };
 // 配置环境
 const setupEnvironment = async () => {
   installing.dependencies = true;
   installProgress.value = 0;
+
+  if (isBundledBackendMode.value && pythonEnvironmentSource.value === "managed") {
+    addTerminalLog("开始创建或修复运行环境。", "info");
+    try {
+      const result = await updateManager.ensureRuntime({
+        accelerator: managedAccelerator.value,
+        force: ["failed", "needs-repair"].includes(updateManager.runtimeState.status),
+      });
+      if (result?.cancelled || result?.code === "ENVIRONMENT_PREPARATION_CANCELLED") {
+        addTerminalLog("运行环境准备已取消，已启用的环境未受影响。", "warning");
+        return result;
+      }
+      if (result?.success === false) {
+        applyManagedEnvironmentState(result);
+        if (result.capabilityWarning) {
+          addTerminalLog(
+            result.warning?.message || result.error || "当前显卡或驱动不满足所选运行环境要求，已保留现有可用环境。",
+            "warning"
+          );
+          return result;
+        }
+        appendEnvironmentRecoveryGuidance(result);
+        throw new Error(result?.error?.message || result?.message || result?.error || "运行环境准备失败。");
+      }
+      applyManagedEnvironmentState(result);
+      await syncEnvironmentLaunchDevice(
+        result?.state?.selectedAccelerator || updateManager.runtimeState.selectedAccelerator,
+        { log: true }
+      );
+      addTerminalLog(
+        updateManager.runtimeState.status === "degraded"
+          ? "运行环境核心能力已就绪；应用内置 FFmpeg 未通过校验，视频能力暂不可用。"
+          : `运行环境已就绪：${updateManager.runtimeState.activePath || "路径已确认"}`,
+        updateManager.runtimeState.status === "degraded" ? "warning" : "success"
+      );
+      addTerminalLog("请点击左方启动服务按钮，以启动服务。", "success");
+      return result;
+    } catch (error) {
+      addTerminalLog(`运行环境准备失败：${error.message}`, "error");
+      return { success: false, error: error.message };
+    } finally {
+      installing.dependencies = false;
+    }
+  }
+
   addTerminalLog(
     isBundledBackendMode.value
-      ? "正在准备本地后端环境..."
-      : "Preparing backend environment...",
+      ? "正在准备本地运行环境..."
+      : "Preparing Python environment...",
     "info"
   );
-  addTerminalLog("开始配置后端环境...", "info");
+  addTerminalLog("开始配置运行环境...", "info");
 
   try {
     const prepareResult = await window.electron.ipcRenderer.invoke(
@@ -3047,7 +3291,7 @@ const setupEnvironment = async () => {
     );
     addTerminalLog(
       isBundledBackendMode.value
-        ? "正在校验内置后端依赖..."
+        ? "正在校验内置服务依赖..."
         : "Installing dependencies...",
       "info"
     );
@@ -3061,7 +3305,7 @@ const setupEnvironment = async () => {
       applyDependenciesStatus(true);
       addTerminalLog(
         isBundledBackendMode.value
-          ? "内置后端依赖已就绪。"
+          ? "内置服务依赖已就绪。"
           : "依赖安装成功。",
         "success"
       );
@@ -3087,13 +3331,13 @@ const startService = async () => {
   });
   if (!pathsValid) {
     backendEngineStore.setStopped();
-    return { success: false, error: "后端路径配置无效" };
+    return { success: false, error: "服务路径配置无效" };
   }
 
   serviceLoading.value = true;
   backendEngineStore.setPreparing("startingEngine");
   addTerminalLog(
-    `启动后端服务... 端口: ${backendConfig.port}, 设备: ${backendConfig.device}, 模型: ${backendConfig.model}`,
+    `启动服务... 端口：${backendConfig.port}，设备：${backendConfig.device}，模型：${backendConfig.model}`,
     "info"
   );
 
@@ -3112,6 +3356,9 @@ const startService = async () => {
 
     if (result.success) {
       const actualPort = Number(result.port || backendConfig.port);
+      if (result.effectiveAccelerator) {
+        await syncEnvironmentLaunchDevice(result.effectiveAccelerator, { log: true });
+      }
       await syncRuntimeBackendPort(actualPort);
       if (!startAction) {
         backendEngineStore.setRunning({
@@ -3122,7 +3369,7 @@ const startService = async () => {
         });
       }
       addTerminalLog(
-        `后端服务启动成功，端口: ${actualPort}`,
+        `服务启动成功，端口：${actualPort}`,
         "success"
       );
       addTerminalLog(
@@ -3130,21 +3377,21 @@ const startService = async () => {
         "success"
       );
       addTerminalLog(
-        "后端健康检查已通过，可以开始使用。",
+        "服务健康检查已通过，可以开始使用。",
         "success"
       );
     } else {
       backendEngineStore.setFailed(result);
-      addTerminalLog(`后端服务启动失败: ${result.error}`, "error");
+      addTerminalLog(`服务启动失败：${result.error}`, "error");
       if (result.recoveryHint) {
         addTerminalLog(result.recoveryHint, "warning");
       }
     }
     return result;
   } catch (error) {
-    backendEngineStore.setFailed(error?.message || "后端服务启动失败");
-    addTerminalLog(`后端服务启动失败: ${error.message}`, "error");
-    return { success: false, error: error?.message || "后端服务启动失败" };
+    backendEngineStore.setFailed(error?.message || "服务启动失败");
+    addTerminalLog(`服务启动失败：${error.message}`, "error");
+    return { success: false, error: error?.message || "服务启动失败" };
   } finally {
     serviceLoading.value = false;
   }
@@ -3156,7 +3403,7 @@ const stopService = async () => {
   backendEngineStore.setStopping({
     processRunning: backendEngineStore.processRunning,
   });
-  addTerminalLog("停止后端服务...", "info");
+  addTerminalLog("停止服务...", "info");
 
   try {
     const stopAction = getBackendEngineAction("stop");
@@ -3166,11 +3413,11 @@ const stopService = async () => {
 
     if (backendEngineStore.applyStopResult(result)) {
       addTerminalLog(
-        result?.cancelled ? "已取消正在进行的后端启动" : "后端服务已停止",
+        result?.cancelled ? "已取消正在进行的服务启动" : "服务已停止",
         "success"
       );
     } else {
-      addTerminalLog(`停止后端服务失败: ${result?.error || "未知错误"}`, "error");
+      addTerminalLog(`停止服务失败：${result?.error || "未知错误"}`, "error");
       await checkServiceStatus();
       if (backendEngineStore.status === "stopping") {
         backendEngineStore.setFailed(result);
@@ -3178,12 +3425,12 @@ const stopService = async () => {
     }
     return result;
   } catch (error) {
-    addTerminalLog(`停止后端服务失败: ${error.message}`, "error");
+      addTerminalLog(`停止服务失败：${error.message}`, "error");
     await checkServiceStatus();
     if (backendEngineStore.status === "stopping") {
-      backendEngineStore.setFailed(error?.message || "停止后端服务失败");
+      backendEngineStore.setFailed(error?.message || "停止服务失败");
     }
-    return { success: false, error: error?.message || "停止后端服务失败" };
+    return { success: false, error: error?.message || "停止服务失败" };
   } finally {
     serviceLoading.value = false;
   }
@@ -3202,7 +3449,7 @@ const restartService = async () => {
   }
 
   serviceLoading.value = true;
-  addTerminalLog("重启后端服务...", "info");
+  addTerminalLog("重启服务...", "info");
   try {
     const result = await restartAction({
       port: backendConfig.port,
@@ -3212,7 +3459,7 @@ const restartService = async () => {
       samReleaseBeforeProcessing: backendConfig.samReleaseBeforeProcessing,
     });
     addTerminalLog(
-      result?.success ? "后端服务重启成功" : `后端服务重启失败: ${result?.error}`,
+      result?.success ? "服务重启成功" : `服务重启失败：${result?.error}`,
       result?.success ? "success" : "error"
     );
     return result;
@@ -3280,6 +3527,11 @@ onMounted(() => {
           className: getTerminalLineClass(line),
         })),
       getPendingTerminalCount: () => pendingTerminalLogs.length,
+      getModelTaskPollSummary: () => ({
+        count: modelTaskPollCount,
+        taskCount: modelTaskPollIds.size,
+        message: modelTaskPollSummaryLine?.message || "",
+      }),
       getFlushIntervalMs: () => TERMINAL_PROGRESS_SYNC_MAX_MS,
       getFlushIntervalRangeMs: () => ({
         min: TERMINAL_PROGRESS_SYNC_MIN_MS,
@@ -3293,6 +3545,15 @@ onMounted(() => {
         error: environmentStatus.error,
         itemStates: { ...environmentItemStates },
       }),
+      setServiceTestStatus: async (status = "stopped") => {
+        if (status === "running") {
+          backendEngineStore.setRunning({ processRunning: true, healthReady: true });
+        } else {
+          backendEngineStore.setStopped({ processRunning: false, healthReady: false });
+        }
+        await nextTick();
+        return serviceStatus.value;
+      },
       startEnvironmentCheck: (options = {}) => {
         void checkEnvironment(options);
         return {
@@ -3352,6 +3613,8 @@ onUnmounted(() => {
   max-height: 1000px;
   border-radius: 12px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.15);
   transition: background-color 0.2s ease, color 0.2s ease;
 }
@@ -3367,8 +3630,11 @@ onUnmounted(() => {
 }
 
 .backend-content {
+  flex: 1 1 auto;
+  min-height: 0;
   height: calc(80vh - 60px);
   max-height: calc(1000px - 60px);
+  overflow: hidden;
 }
 
 .full-height {
@@ -3376,9 +3642,24 @@ onUnmounted(() => {
 }
 
 .control-panel {
-  overflow-y: auto;
-  min-width: 300px;
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
   transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.backend-stepper {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+:deep(.backend-content .q-splitter__before),
+:deep(.backend-content .q-splitter__after) {
+  min-width: 0;
+  overflow: hidden;
 }
 
 .control-panel--light {
@@ -3391,6 +3672,181 @@ onUnmounted(() => {
   background: #1d1d1d;
   border-right: 1px solid rgba(255, 255, 255, 0.08);
   color: rgba(244, 244, 245, 0.94);
+}
+
+.runtime-path-feedback {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.runtime-path-feedback > .q-icon,
+.runtime-path-feedback > .text-grey-7 {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.runtime-path-feedback__value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: ltr;
+}
+
+.service-management-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.service-overview,
+.service-configuration {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid rgba(17, 24, 39, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.backend-manager-card--dark .service-overview,
+.backend-manager-card--dark .service-configuration {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.service-overview__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 12px;
+}
+
+.service-status-chip {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.service-info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin: 0;
+}
+
+.service-info-item {
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 6px;
+  background: rgba(125, 125, 125, 0.08);
+}
+
+.service-info-item dt {
+  margin-bottom: 2px;
+  color: rgba(75, 85, 99, 0.8);
+  font-size: 12px;
+}
+
+.backend-manager-card--dark .service-info-item dt {
+  color: rgba(229, 231, 235, 0.68);
+}
+
+.service-info-item dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--q-primary);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.service-config-grid > :nth-child(3),
+.service-config-grid > .model-management-notice,
+.service-config-grid > .q-field:last-child {
+  grid-column: 1 / -1;
+}
+
+.model-management-notice {
+  border: 1px solid rgba(25, 118, 210, 0.2);
+  background: rgba(25, 118, 210, 0.08);
+  color: var(--q-primary);
+}
+
+.model-management-notice__content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.model-management-notice__content > span {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.service-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: min(100%, 480px);
+  margin: 16px auto 0;
+}
+
+.service-controls--single {
+  grid-template-columns: minmax(0, 320px);
+  justify-content: center;
+}
+
+.service-control-button {
+  width: 100%;
+  min-width: 0;
+}
+
+.service-control-button :deep(.q-btn__content) {
+  min-width: 0;
+  white-space: normal;
+}
+
+@media (max-width: 900px) {
+  .service-management-panel {
+    gap: 10px;
+  }
+
+  .service-overview,
+  .service-configuration {
+    padding: 10px;
+  }
+}
+
+@media (max-width: 640px) {
+  .service-info-grid,
+  .service-config-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .service-config-grid > :nth-child(3),
+  .service-config-grid > .model-management-notice,
+  .service-config-grid > .q-field:last-child {
+    grid-column: auto;
+  }
+
+  .model-management-notice__content {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .service-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .control-panel::-webkit-scrollbar {
@@ -3415,7 +3871,8 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   color: white;
-  min-width: 400px;
+  min-width: 0;
+  min-height: 0;
 }
 
 .terminal-header {
@@ -3429,7 +3886,10 @@ onUnmounted(() => {
 }
 
 .terminal-output {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   padding: 16px;
   font-family: "Courier New", "Monaco", "Menlo", monospace;
@@ -3582,12 +4042,36 @@ onUnmounted(() => {
 }
 
 @media (max-width: 768px) {
-  .control-panel {
-    min-width: 250px;
+  .backend-dialog .q-dialog__inner {
+    padding: 1vh 1vw;
   }
 
-  .terminal-section {
-    min-width: 300px;
+  .backend-manager-card {
+    width: 98vw;
+    height: 98vh;
+  }
+
+  .backend-content {
+    height: calc(98vh - 60px);
+  }
+
+  .control-panel {
+    padding: 8px;
+  }
+
+  :deep(.backend-content .q-splitter__before),
+  :deep(.backend-content .q-splitter__after) {
+    min-height: 0;
+  }
+
+  .terminal-header,
+  .terminal-input {
+    padding: 10px;
+  }
+
+  .terminal-output {
+    margin: 6px;
+    padding: 10px;
   }
 }
 </style>

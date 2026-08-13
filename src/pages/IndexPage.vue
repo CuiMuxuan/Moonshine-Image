@@ -1196,7 +1196,7 @@ const setMaskMode = (value, { persist = true, notifyUnavailable = true } = {}) =
     if (notifyUnavailable) {
       const unavailableMessage = backendEngineValue.value.isRunning
         ? "请先在模型管理中安装 SAM1/SAM2.1 点选模型或 SAM3 文本模型"
-        : "后端服务启动成功后可用";
+        : "服务启动成功后可用";
       $q.notify({
         type: "warning",
         message: unavailableMessage,
@@ -1560,7 +1560,7 @@ const cleanupTempRunDirectory = async (directoryPath, label = "临时输入") =>
       directoryPath,
     });
     if (result?.success) return true;
-    throw new Error(result?.error || "临时目录清理失败");
+    throw new Error(result?.error || "临时路径清理失败");
   } catch (error) {
     console.warn(`${label}清理失败:`, directoryPath, error);
     $q.notify({
@@ -2209,13 +2209,85 @@ const isMaskInpaintModel = (modelId = currentModel.value) => (
   MASK_INPAINT_MODEL_IDS.includes(String(modelId || "").trim().toLowerCase())
 );
 
+const formatModelPreparationMessage = (state = {}) => {
+  const label = state.label || currentProcessingModelLabel.value || state.modelId || "模型";
+  const stageLabels = {
+    checking: "正在检查",
+    downloading: "正在下载",
+    verifying: "正在校验",
+    loading: "正在加载",
+    ready: "已就绪",
+  };
+  return `${stageLabels[state.stage] || "正在准备"}${label}`;
+};
+
+const requestModelLicenseAcceptance = async (model) => {
+  if (!model?.license?.requiresAcceptance) return null;
+  const acceptanceId = String(model.license.acceptanceId || "").trim();
+  if (!acceptanceId) throw new Error("该模型缺少许可证确认标识，暂时不能下载。");
+  return new Promise((resolve) => {
+    $q.dialog({
+      title: "确认模型许可证",
+      message: [
+        `模型：${model.label || model.id || "当前模型"}`,
+        `许可证：${model.license.name || "待确认"}`,
+        model.license.note,
+        "继续即表示你已阅读并同意该许可证。",
+      ].filter(Boolean).join("\n\n"),
+      ok: { label: "我已阅读并同意", color: "primary", noCaps: true },
+      cancel: { label: "取消", flat: true, noCaps: true },
+      persistent: true,
+    }).onOk(() => resolve({ accepted: true, acceptanceId }))
+      .onCancel(() => resolve(null));
+  });
+};
+
+const prepareModelForImageRun = async (modelId, { propagateError = false } = {}) => {
+  let overlayShown = false;
+  try {
+    const model = modelRegistryStore.models.find((item) => item.id === modelId);
+    await modelRegistryStore.ensureModelReady(modelId, {
+      requestLicenseAcceptance: () => requestModelLicenseAcceptance(model),
+      onProgress: (state) => {
+        overlayShown = true;
+        loadingControl?.show?.({
+          message: formatModelPreparationMessage(state),
+          progress: Number.isFinite(state.progress) ? state.progress : null,
+        });
+      },
+    });
+    return true;
+  } catch (error) {
+    if (propagateError) throw error;
+    $q.notify({
+      type: "negative",
+      message: error?.message || "模型准备失败，请在模型管理中检查下载状态。",
+      position: "top",
+      timeout: 6500,
+      actions: [
+        {
+          label: "打开模型管理",
+          color: "white",
+          handler: () => openModelManagement(modelId),
+        },
+      ],
+    });
+    return false;
+  } finally {
+    if (overlayShown) loadingControl?.hide?.();
+  }
+};
+
 const ensureBackendInpaintModel = async () => {
   const requestedModel = String(currentModel.value || "lama").trim().toLowerCase();
   if (!isMaskInpaintModel(requestedModel)) return true;
 
   try {
-    const response = await modelRegistryStore.switchModel(requestedModel);
-    const activeModel = String(response?.currentModel || requestedModel).trim().toLowerCase();
+    const modelReady = await prepareModelForImageRun(requestedModel, {
+      propagateError: requestedModel === "mat",
+    });
+    if (!modelReady) return false;
+    const activeModel = String(modelRegistryStore.currentModel || requestedModel).trim().toLowerCase();
     if (activeModel !== requestedModel) {
       handleModelChange(activeModel, { notify: false });
       if (requestedModel === "mat") {
@@ -2348,6 +2420,9 @@ const requestSlbrMissingMaskDecision = ({ totalCount, validFiles, missingFiles }
   });
 
 const runSlbrModel = async () => {
+  const modelReady = await prepareModelForImageRun("slbr");
+  if (!modelReady) return;
+
   let filesToProcess = [];
 
   if (actionScope.value.value === "folder") {
@@ -2927,7 +3002,7 @@ const downloadProcessedImages = async () => {
   if (!effectiveSavePath.value) {
     $q.notify({
       type: "warning",
-      message: "请先设置图片输出目录",
+      message: "请先设置图片输出路径",
       position: "top",
     });
     return;
@@ -2990,7 +3065,7 @@ const openCurrentSavePath = async () => {
       effectiveSavePath.value
     );
     if (!ensureResult?.success) {
-      throw new Error(ensureResult?.error || "创建保存目录失败");
+      throw new Error(ensureResult?.error || "创建保存路径失败");
     }
 
     const result = await window.electron.ipcRenderer.invoke("show-item-in-folder", {
@@ -3581,7 +3656,7 @@ const syncLayoutFooter = () => {
       "smart-selection-blocked": (message) => {
         $q.notify({
           type: "warning",
-          message: message || "后端服务启动成功后可用",
+          message: message || "服务启动成功后可用",
           position: "top",
         });
       },

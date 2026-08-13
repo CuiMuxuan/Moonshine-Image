@@ -1,9 +1,16 @@
 [CmdletBinding()]
 param(
   [switch] $MetadataOnly,
+  [switch] $FullDownload,
   [switch] $SkipOffline,
   [switch] $NoOpenExplorer,
-  [string] $OutputRoot
+  [string] $OutputRoot,
+  [string] $ApplicationInstallRoot,
+  [string] $ApplicationUserDataRoot,
+  [string] $PythonEnvironmentRoot,
+  [ValidateSet("cpu", "cu130")][string] $PythonEnvironmentFlavor,
+  [string] $ServiceProjectPath,
+  [string] $ApplicationConfigPath
 )
 
 Set-StrictMode -Version 2.0
@@ -11,7 +18,7 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
 $bundleRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$configPath = Join-Path $bundleRoot "validator-config.json"
+$validatorConfigPath = Join-Path $bundleRoot "validator-config.json"
 $nodePath = Join-Path $bundleRoot "node.exe"
 $validatorPath = Join-Path $bundleRoot "scripts\validation\run-release-validation.mjs"
 $publicKeyPath = Join-Path $bundleRoot "release-public-key.pem"
@@ -58,7 +65,69 @@ function Add-PathCandidate {
   if (-not $List.Contains($resolved)) { $List.Add($resolved) }
 }
 
+function Resolve-FullPath {
+  param([string] $Value)
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+  return [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Value.Trim().Trim('"')))
+}
+
+function Find-PythonInEnvironment {
+  param([string] $EnvironmentRoot)
+  $root = Resolve-FullPath $EnvironmentRoot
+  foreach ($candidate in @(
+    (Join-Path $root "python.exe"),
+    (Join-Path $root "Scripts\python.exe"),
+    (Join-Path $root "venv\Scripts\python.exe"),
+    (Join-Path $root "env\python.exe")
+  )) {
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+  }
+  throw "No Python executable was found in the supplied environment path: $root"
+}
+
+function Get-ValidatorIdentity {
+  param([Parameter(Mandatory = $true)][object] $Config)
+
+  $edition = [string]$Config.edition
+  $expected = switch ($edition) {
+    "test" {
+      [ordered]@{
+        productName = "Moonshine-Image-Test"
+        executableName = "Moonshine-Image-Test.exe"
+        userDataName = "Moonshine-Image-Test"
+        appId = "com.moonshine.image.test"
+        channel = "test"
+      }
+    }
+    "official" {
+      [ordered]@{
+        productName = "Moonshine-Image"
+        executableName = "Moonshine-Image.exe"
+        userDataName = "Moonshine-Image"
+        appId = "com.moonshine.image"
+        channel = "stable"
+      }
+    }
+    default { throw "Unsupported validator edition: $edition" }
+  }
+
+  foreach ($field in @("productName", "appId", "channel")) {
+    $configField = switch ($field) {
+      "productName" { "product" }
+      default { $field }
+    }
+    if ([string]$Config.$configField -ne [string]$expected.$field) {
+      throw "validator-config.json does not match the expected $edition identity ($configField)."
+    }
+  }
+  return $expected
+}
+
 function Find-MoonshineInstall {
+  param(
+    [Parameter(Mandatory = $true)][string] $ProductName,
+    [Parameter(Mandatory = $true)][string] $ExecutableName
+  )
   $roots = New-Object 'System.Collections.Generic.List[string]'
   $sources = New-Object 'System.Collections.Generic.List[string]'
 
@@ -69,7 +138,7 @@ function Find-MoonshineInstall {
   )) {
     try {
       foreach ($entry in @(Get-ItemProperty -Path $registryPath -ErrorAction SilentlyContinue)) {
-        if ([string]$entry.DisplayName -like "Moonshine-Image*") {
+        if ([string]$entry.DisplayName -like "$ProductName*") {
           Add-PathCandidate $roots ([string]$entry.InstallLocation)
           $icon = [string]$entry.DisplayIcon
           if ($icon) {
@@ -84,10 +153,10 @@ function Find-MoonshineInstall {
   }
 
   foreach ($commonRoot in @(
-    (Join-Path $env:LOCALAPPDATA "Programs\Moonshine-Image"),
-    (Join-Path $env:LOCALAPPDATA "Moonshine-Image"),
-    (Join-Path $env:ProgramFiles "Moonshine-Image"),
-    (Join-Path ${env:ProgramFiles(x86)} "Moonshine-Image")
+    (Join-Path $env:LOCALAPPDATA "Programs\$ProductName"),
+    (Join-Path $env:LOCALAPPDATA $ProductName),
+    (Join-Path $env:ProgramFiles $ProductName),
+    (Join-Path ${env:ProgramFiles(x86)} $ProductName)
   )) {
     Add-PathCandidate $roots $commonRoot
     $sources.Add("common-path")
@@ -95,11 +164,11 @@ function Find-MoonshineInstall {
 
   foreach ($root in $roots) {
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
-    $exe = Join-Path $root "Moonshine-Image.exe"
+    $exe = Join-Path $root $ExecutableName
     if (Test-Path -LiteralPath $exe -PathType Leaf) {
       return [ordered]@{ installRoot = $root; appExecutable = $exe; source = ($sources -join ",") }
     }
-    $nested = @(Get-ChildItem -LiteralPath $root -Filter "Moonshine-Image.exe" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)
+    $nested = @(Get-ChildItem -LiteralPath $root -Filter $ExecutableName -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)
     if ($nested.Count -gt 0) {
       return [ordered]@{ installRoot = $root; appExecutable = $nested[0].FullName; source = ($sources -join ",") }
     }
@@ -109,7 +178,15 @@ function Find-MoonshineInstall {
 }
 
 function Get-ActiveEnvironmentInfo {
-  $userData = Join-Path $env:APPDATA "Moonshine-Image"
+  param(
+    [AllowNull()][string] $UserDataRoot,
+    [Parameter(Mandatory = $true)][string] $DefaultUserDataName
+  )
+  $userData = if ([string]::IsNullOrWhiteSpace($UserDataRoot)) {
+    Join-Path $env:APPDATA $DefaultUserDataName
+  } else {
+    Resolve-FullPath $UserDataRoot
+  }
   $activePath = Join-Path $userData "environments\active.json"
   if (-not (Test-Path -LiteralPath $activePath -PathType Leaf)) {
     return [ordered]@{ userData = $userData; environmentRoot = $null; flavor = $null; activePointer = $null }
@@ -131,7 +208,12 @@ function Get-ActiveEnvironmentInfo {
 }
 
 function Get-StartupLogTail {
-  $logPath = Join-Path $env:APPDATA "Moonshine-Image\logs\startup.log"
+  param(
+    [AllowNull()][string] $UserDataRoot,
+    [Parameter(Mandatory = $true)][string] $DefaultUserDataName
+  )
+  $root = if ([string]::IsNullOrWhiteSpace($UserDataRoot)) { Join-Path $env:APPDATA $DefaultUserDataName } else { Resolve-FullPath $UserDataRoot }
+  $logPath = Join-Path $root "logs\startup.log"
   if (-not (Test-Path -LiteralPath $logPath -PathType Leaf)) {
     return [ordered]@{ present = $false; lines = @() }
   }
@@ -209,11 +291,12 @@ $reportDirectory = $null
 $exitCode = 1
 $zipPath = $null
 try {
-  if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { throw "Missing validator-config.json" }
+  if (-not (Test-Path -LiteralPath $validatorConfigPath -PathType Leaf)) { throw "Missing validator-config.json" }
   if (-not (Test-Path -LiteralPath $nodePath -PathType Leaf)) { throw "Missing bundled node.exe" }
   if (-not (Test-Path -LiteralPath $validatorPath -PathType Leaf)) { throw "Missing bundled validator script" }
   if (-not (Test-Path -LiteralPath $publicKeyPath -PathType Leaf)) { throw "Missing release-public-key.pem" }
-  $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+  $config = Get-Content -LiteralPath $validatorConfigPath -Raw | ConvertFrom-Json
+  $identity = Get-ValidatorIdentity -Config $config
 
   if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $desktop = [Environment]::GetFolderPath("Desktop")
@@ -233,10 +316,43 @@ try {
     Write-Host $line
   }
 
-  Write-ValidatorLog "INFO" "Starting standalone validation. Reports are local-only."
-  $install = Find-MoonshineInstall
-  $environment = Get-ActiveEnvironmentInfo
-  $startupLog = Get-StartupLogTail
+  Write-ValidatorLog "INFO" ("Starting standalone validation for " + $identity.productName + ". Reports are local-only.")
+  $install = Find-MoonshineInstall -ProductName $identity.productName -ExecutableName $identity.executableName
+  if (-not [string]::IsNullOrWhiteSpace($ApplicationInstallRoot)) {
+    $resolvedInstallRoot = Resolve-FullPath $ApplicationInstallRoot
+    if (-not (Test-Path -LiteralPath $resolvedInstallRoot -PathType Container)) { throw "Application install path does not exist: $resolvedInstallRoot" }
+    $resolvedExecutable = Join-Path $resolvedInstallRoot $identity.executableName
+    $install = [ordered]@{
+      installRoot = $resolvedInstallRoot
+      appExecutable = if (Test-Path -LiteralPath $resolvedExecutable -PathType Leaf) { $resolvedExecutable } else { $null }
+      source = "explicit-parameter"
+    }
+  }
+  $environment = Get-ActiveEnvironmentInfo -UserDataRoot $ApplicationUserDataRoot -DefaultUserDataName $identity.userDataName
+  $startupLog = Get-StartupLogTail -UserDataRoot $environment.userData -DefaultUserDataName $identity.userDataName
+  $explicitPython = $null
+  $explicitFlavor = $null
+  if (-not [string]::IsNullOrWhiteSpace($PythonEnvironmentRoot)) {
+    $resolvedEnvironmentRoot = Resolve-FullPath $PythonEnvironmentRoot
+    if (-not (Test-Path -LiteralPath $resolvedEnvironmentRoot -PathType Container)) { throw "Python environment path does not exist: $resolvedEnvironmentRoot" }
+    $explicitPython = Find-PythonInEnvironment $resolvedEnvironmentRoot
+    $explicitFlavor = [string]$PythonEnvironmentFlavor
+    if ([string]::IsNullOrWhiteSpace($explicitFlavor)) {
+      $manifestPath = Join-Path $resolvedEnvironmentRoot "runtime-manifest.json"
+      if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+        try {
+          $runtimeManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+          $explicitFlavor = [string]$runtimeManifest.accelerator
+          if ([string]::IsNullOrWhiteSpace($explicitFlavor)) { $explicitFlavor = [string]$runtimeManifest.flavor }
+        } catch {}
+      }
+      if ($explicitFlavor -notin @("cpu", "cu130")) { $explicitFlavor = if ($resolvedEnvironmentRoot -match "cu130") { "cu130" } else { "cpu" } }
+    }
+  }
+  $resolvedServiceProject = if ([string]::IsNullOrWhiteSpace($ServiceProjectPath)) { $null } else { Resolve-FullPath $ServiceProjectPath }
+  if ($resolvedServiceProject -and -not (Test-Path -LiteralPath $resolvedServiceProject -PathType Container)) { throw "Service project path does not exist: $resolvedServiceProject" }
+  $resolvedApplicationConfig = if ([string]::IsNullOrWhiteSpace($ApplicationConfigPath)) { $null } else { Resolve-FullPath $ApplicationConfigPath }
+  if ($resolvedApplicationConfig -and -not (Test-Path -LiteralPath $resolvedApplicationConfig -PathType Leaf)) { throw "Application config file does not exist: $resolvedApplicationConfig" }
   $offline = Get-PreferredOfflineBundle -Root $bundleRoot
   $system = Get-SystemInfo
   $discovery = [ordered]@{
@@ -247,6 +363,10 @@ try {
     environmentRoot = Protect-Text $environment.environmentRoot
     environmentFlavor = $environment.flavor
     activePointer = Protect-Text $environment.activePointer
+    explicitPython = Protect-Text $explicitPython
+    explicitEnvironmentFlavor = $explicitFlavor
+    explicitServiceProject = Protect-Text $resolvedServiceProject
+    explicitConfig = Protect-Text $resolvedApplicationConfig
     offlineSelected = if ($offline.selected) { [ordered]@{ path = Protect-Text $offline.selected.path; variant = $offline.selected.variant } } else { $null }
     offlineCandidates = @($offline.candidates | ForEach-Object { Protect-Text $_ })
   }
@@ -259,12 +379,22 @@ try {
     "--channel", [string]$config.channel,
     "--app-version", [string]$config.appVersion,
     "--public-key-file", $publicKeyPath,
+    "--user-data", $environment.userData,
+    "--requirements-root", (Join-Path $bundleRoot "requirements"),
     "--mode", "canary",
     "--report", $reportPath
   )
-  if ($MetadataOnly) { $validatorArgs += "--metadata-only" }
+  if ($MetadataOnly -or -not $FullDownload) {
+    $validatorArgs += "--metadata-only"
+    Write-ValidatorLog "INFO" "Using lightweight metadata and range checks; no installer or model archive will be downloaded."
+  }
   if ($install.installRoot) { $validatorArgs += @("--install-root", $install.installRoot) }
   if ($install.appExecutable) { $validatorArgs += @("--app-executable", $install.appExecutable) }
+  if ($resolvedApplicationConfig) { $validatorArgs += @("--config", $resolvedApplicationConfig) }
+  if ($resolvedServiceProject) { $validatorArgs += @("--service-project", $resolvedServiceProject) }
+  if ($explicitPython) {
+    $validatorArgs += @("--python-executable", $explicitPython, "--environment-flavor", $explicitFlavor)
+  }
   if ($environment.environmentRoot) {
     $validatorArgs += @("--environment-root", $environment.environmentRoot)
     if ($environment.flavor) { $validatorArgs += @("--environment-flavor", $environment.flavor) }
@@ -274,13 +404,12 @@ try {
     Write-ValidatorLog "INFO" ("Offline bundle selected: " + $offline.selected.variant)
   }
   Write-ValidatorLog "INFO" ("Sending validation requests to " + $config.source + " channel=" + $config.channel + " version=" + $config.appVersion)
-  $nodeOutput = @(& $nodePath @validatorArgs 2>&1)
-  $exitCode = [int]$LASTEXITCODE
-  foreach ($line in $nodeOutput) {
-    $text = Protect-Text ([string]$line)
+  & $nodePath @validatorArgs 2>&1 | ForEach-Object {
+    $text = Protect-Text ([string]$_)
     Add-Content -LiteralPath $wrapperLogPath -Value $text -Encoding UTF8
     Write-Host $text
   }
+  $exitCode = [int]$LASTEXITCODE
   if (Test-Path -LiteralPath $reportPath -PathType Leaf) {
     $rawReport = Get-Content -LiteralPath $reportPath -Raw
     [IO.File]::WriteAllText($reportPath, (Protect-Text $rawReport), (New-Object System.Text.UTF8Encoding($false)))

@@ -7,12 +7,19 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { path7za } from "7zip-bin";
+import {
+  assertEditionChannel,
+  resolveAppEdition,
+} from "../../src-electron/updater/edition.js";
+import { EMBEDDED_RELEASE_PUBLIC_KEY_PEM } from "../../src-electron/runtime/release-public-key.generated.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..", "..");
+const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
+const DEFAULT_APP_VERSION = packageJson.version;
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-const CHANNELS = new Set(["test", "beta", "stable"]);
+const CHANNELS = new Set(["test", "stable"]);
 
 function normalizeVersion(value) {
   const version = String(value ?? "").trim().replace(/^v/i, "");
@@ -21,7 +28,7 @@ function normalizeVersion(value) {
 }
 
 function normalizeChannel(value) {
-  const channel = String(value ?? "test").trim().toLowerCase();
+  const channel = String(value ?? "").trim().toLowerCase();
   if (!CHANNELS.has(channel)) throw new Error(`Unsupported channel: ${channel}`);
   return channel;
 }
@@ -93,7 +100,7 @@ function writeText(filePath, value) {
   fs.writeFileSync(filePath, `${value.replace(/\r?\n/g, "\r\n")}\r\n`, "utf8");
 }
 
-function createManifest(packageRoot, { version, channel, publicKeyPath, nodePath }) {
+function createManifest(packageRoot, { version, channel, edition, publicKeyPem, nodePath }) {
   const files = listFiles(packageRoot).map((absolute) => ({
     path: path.relative(packageRoot, absolute).replace(/\\/g, "/"),
     bytes: fs.statSync(absolute).size,
@@ -101,11 +108,13 @@ function createManifest(packageRoot, { version, channel, publicKeyPath, nodePath
   }));
   const publicKeyFingerprint = crypto
     .createHash("sha256")
-    .update(crypto.createPublicKey(fs.readFileSync(publicKeyPath)).export({ type: "spki", format: "der" }))
+    .update(crypto.createPublicKey(publicKeyPem).export({ type: "spki", format: "der" }))
     .digest("hex");
   return {
     schemaVersion: 1,
-    product: "Moonshine-Image",
+    product: edition.productName,
+    edition: edition.edition,
+    appId: edition.appId,
     appVersion: version,
     channel,
     createdAt: new Date().toISOString(),
@@ -135,16 +144,23 @@ const COPY_MAP = Object.freeze([
   ["scripts/validation/standalone/README.txt", "README.txt"],
   ["scripts/validation/run-release-validation.mjs", "scripts/validation/run-release-validation.mjs"],
   ["scripts/validation/release-validation-lib.mjs", "scripts/validation/release-validation-lib.mjs"],
+  ["scripts/validation/support-diagnostics-lib.mjs", "scripts/validation/support-diagnostics-lib.mjs"],
+  ["src/shared/appConfigSchema.js", "src/shared/appConfigSchema.js"],
+  ["src/utils/shortcutConfig.js", "src/utils/shortcutConfig.js"],
+  ["build-resources/backend/server/requirements-cpu.lock.txt", "requirements/requirements-cpu.lock.txt"],
+  ["build-resources/backend/server/requirements-cu130.lock.txt", "requirements/requirements-cu130.lock.txt"],
   ["scripts/validation/standalone/app-release-cli-shim.mjs", "scripts/release/app-release-lib.mjs"],
   ["scripts/build-offline-bundle-win.mjs", "scripts/build-offline-bundle-win.mjs"],
   ["scripts/release/manifest-signing.mjs", "scripts/release/manifest-signing.mjs"],
   ["src-electron/runtime/manifest-verifier.js", "src-electron/runtime/manifest-verifier.js"],
+  ["src-electron/updater/edition.js", "src-electron/updater/edition.js"],
+  ["src-electron/integrity/public-key.js", "src-electron/integrity/public-key.js"],
   ["src-electron/runtime/environment-spec.js", "src-electron/runtime/environment-spec.js"],
 ]);
 
 export function buildStandaloneValidator({
-  version = "1.3.0",
-  channel = "test",
+  version = DEFAULT_APP_VERSION,
+  channel,
   source = "https://download.moonshine.email",
   publicKeyFile,
   nodeExe = process.execPath,
@@ -153,13 +169,17 @@ export function buildStandaloneValidator({
   packageName,
 } = {}) {
   const normalizedVersion = normalizeVersion(version);
-  const normalizedChannel = normalizeChannel(channel);
+  const resolvedEdition = resolveAppEdition(normalizedVersion);
+  const normalizedChannel = normalizeChannel(channel || resolvedEdition.channel);
+  const edition = assertEditionChannel(normalizedVersion, normalizedChannel);
   const normalizedSource = String(source ?? "").trim().replace(/\/+$/, "");
   if (!/^https:\/\//i.test(normalizedSource)) throw new Error("source must be an HTTPS URL");
-  const publicKeyPath = requiredPath(publicKeyFile, "publicKeyFile");
+  const publicKeyPem = publicKeyFile
+    ? fs.readFileSync(requiredPath(publicKeyFile, "publicKeyFile"), "utf8")
+    : EMBEDDED_RELEASE_PUBLIC_KEY_PEM;
   const nodePath = requiredPath(nodeExe, "nodeExe");
   const outputRoot = path.resolve(outputDir);
-  const name = packageName || `Moonshine-Image-v${normalizedVersion}-win-x64-${normalizedChannel}-validator`;
+  const name = packageName || `${edition.productName}-v${normalizedVersion}-win-x64-${normalizedChannel}-validator`;
   const packageRoot = path.join(outputRoot, name);
   const archivePath = path.join(outputRoot, `${name}.zip`);
   ensureDirectory(outputRoot);
@@ -171,7 +191,7 @@ export function buildStandaloneValidator({
     copyFile(path.join(repoRoot, sourceRelative), path.join(packageRoot, targetRelative));
   }
   copyFile(nodePath, path.join(packageRoot, "node.exe"));
-  copyFile(publicKeyPath, path.join(packageRoot, "release-public-key.pem"));
+  writeText(path.join(packageRoot, "release-public-key.pem"), publicKeyPem);
   copyDirectory(path.join(repoRoot, "node_modules", "yaml"), path.join(packageRoot, "node_modules", "yaml"));
   copyDirectory(path.join(repoRoot, "node_modules", "7zip-bin"), path.join(packageRoot, "node_modules", "7zip-bin"));
 
@@ -183,7 +203,9 @@ export function buildStandaloneValidator({
   }, null, 2));
   writeText(path.join(packageRoot, "validator-config.json"), JSON.stringify({
     schemaVersion: 1,
-    product: "Moonshine-Image",
+    product: edition.productName,
+    edition: edition.edition,
+    appId: edition.appId,
     source: normalizedSource,
     channel: normalizedChannel,
     appVersion: normalizedVersion,
@@ -204,7 +226,8 @@ export function buildStandaloneValidator({
   const manifest = createManifest(packageRoot, {
     version: normalizedVersion,
     channel: normalizedChannel,
-    publicKeyPath: path.join(packageRoot, "release-public-key.pem"),
+    edition,
+    publicKeyPem,
     nodePath: path.join(packageRoot, "node.exe"),
   });
   fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
@@ -223,7 +246,7 @@ export function buildStandaloneValidator({
 }
 
 function printUsage() {
-  process.stdout.write(`Usage: node scripts/validation/build-standalone-validator.mjs [options]\n\nOptions:\n  --version <version>          expected app version (default: 1.3.0)\n  --channel <test|beta|stable> validation channel (default: test)\n  --source <https-url>         public feed base URL\n  --public-key-file <path>     Ed25519 public key PEM (required)\n  --node-exe <path>            Node executable to bundle (default: current Node)\n  --output-dir <path>          output directory (default: dist/validation)\n  --no-archive                 keep the unpacked folder only\n  --help                       show this help\n`);
+  process.stdout.write(`Usage: node scripts/validation/build-standalone-validator.mjs [options]\n\nOptions:\n  --version <version>          expected app version (default: package.json version)\n  --channel <test|stable>      validation channel (must match the app edition)\n  --source <https-url>         public feed base URL\n  --public-key-file <path>     Ed25519 public key PEM (default: embedded app-manifest key)\n  --node-exe <path>            Node executable to bundle (default: current Node)\n  --output-dir <path>          output directory (default: dist/validation)\n  --no-archive                 keep the unpacked folder only\n  --help                       show this help\n`);
 }
 
 if (process.argv[1] && path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1])) {

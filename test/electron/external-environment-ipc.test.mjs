@@ -195,3 +195,38 @@ test("renderer failures use stable safe errors instead of raw exception data", (
   assert.doesNotMatch(failureResponseSource, /error:\s*error|details:\s*error|stack:\s*error/);
   assert.match(failureResponseSource, /broadcastEnvironmentState\(/);
 });
+
+test("managed environment preparation exposes cancellation and path actions", () => {
+  assert.match(
+    mainSource,
+    /ipcMain\.handle\("runtime-cancel", async \(\) => environmentManager\?\.cancelPreparation\?\.\(\)\)/
+  );
+  assert.match(
+    mainSource,
+    /ipcMain\.handle\("environment-cancel", async \(\) => environmentManager\?\.cancelPreparation\?\.\(\)\)/
+  );
+  assert.match(
+    mainSource,
+    /ipcMain\.handle\("environment-open-path", async \(\) => \{[\s\S]*environmentManager\?\.getState\?\.\(\)\.activePath[\s\S]*shell\.openPath\(environmentPath\)/
+  );
+  assert.match(preloadSource, /cancelRuntime:\s*\(\) => ipcRenderer\.invoke\("runtime-cancel"\)/);
+  assert.match(
+    preloadSource,
+    /cancelEnvironmentPreparation:\s*\(\) => ipcRenderer\.invoke\("environment-cancel"\)/
+  );
+  assert.match(preloadSource, /openEnvironmentPath:\s*\(\) => ipcRenderer\.invoke\("environment-open-path"\)/);
+});
+
+test("window close and app quit settle active environment preparation", () => {
+  assert.match(
+    mainSource,
+    /\["preparing", "cancelling"\]\.includes\(environmentState\.status\)/
+  );
+  assert.match(mainSource, /buttons:\s*\["继续准备", "取消准备并退出", "返回应用"\]/);
+  assert.match(mainSource, /environmentManager\?\.cancelPreparation\?\.\(\)/);
+  assert.match(mainSource, /await environmentManager\?\.waitForPreparation\?\.\(\)/);
+  assert.match(
+    mainSource,
+    /environmentState\.canCancel \|\| environmentState\.status === "cancelling"/
+  );
+});

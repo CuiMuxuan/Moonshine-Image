@@ -642,8 +642,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/pages/IndexPage.vue",
-    description: "Image page switches backend mask-inpaint models and falls MAT back to LaMa with user-readable progress copy",
-    pattern: /MASK_INPAINT_MODEL_IDS = \["lama", "mat"\][\s\S]*ensureBackendInpaintModel[\s\S]*modelRegistryStore\.switchModel\(requestedModel\)[\s\S]*handleModelChange\("lama", \{ notify: false \}\)[\s\S]*MAT_CUDA_FALLBACK_MESSAGE[\s\S]*正在使用 \$\{modelLabel\} 处理图片 0\/\$\{filesToProcess\.length\}/,
+    description: "Image page prepares backend mask-inpaint models and falls MAT back to LaMa with user-readable progress copy",
+    pattern: /MASK_INPAINT_MODEL_IDS = \["lama", "mat"\][\s\S]*prepareModelForImageRun[\s\S]*modelRegistryStore\.ensureModelReady\(modelId[\s\S]*ensureBackendInpaintModel[\s\S]*handleModelChange\("lama", \{ notify: false \}\)[\s\S]*MAT_CUDA_FALLBACK_MESSAGE[\s\S]*正在使用 \$\{modelLabel\} 处理图片 0\/\$\{filesToProcess\.length\}/,
   });
   assertPattern({
     file: "server/moonshine_server/moonshine/sam_service.py",
@@ -698,7 +698,7 @@ function runAssertions() {
   assertPattern({
     file: "src/components/image/ImageProcessingToolbar.vue",
     description: "Image footer keeps smart selection visible but disables it until backend and SAM are ready",
-    pattern: /backendReady[\s\S]*smartSelectionDisabledReason = computed[\s\S]*if \(!props\.backendReady\) return "后端服务启动成功后可用"[\s\S]*if \(!props\.smartSelectionAvailable\)[\s\S]*maskModeButtonDisabledReason[\s\S]*button\.value === "smart"[\s\S]*smartSelectionDisabledReason\.value/,
+    pattern: /backendReady[\s\S]*smartSelectionDisabledReason = computed[\s\S]*if \(!props\.backendReady\) return "服务启动成功后可用"[\s\S]*if \(!props\.smartSelectionAvailable\)[\s\S]*maskModeButtonDisabledReason[\s\S]*button\.value === "smart"[\s\S]*smartSelectionDisabledReason\.value/,
   });
   assertPattern({
     file: "src/components/image/ImageProcessingToolbar.vue",
@@ -728,12 +728,12 @@ function runAssertions() {
   assertPattern({
     file: "src/pages/IndexPage.vue",
     description: "Image page can enter smart selection when SAM1/SAM2.1 point-box or SAM3 text is available",
-    pattern: /(?=[\s\S]*samPointBoxAvailable = computed\(\(\) => samPointBoxModelOptions\.value\.length > 0\))(?=[\s\S]*samTextSupportedModelIds = \["sam3_1_multiplex", "sam3"\])(?=[\s\S]*samTextSupported = computed)(?=[\s\S]*samTextAvailable = computed\(\(\) =>[\s\S]*samTextSupported\.value[\s\S]*samCapabilities\.value\?\.text\?\.enabled)(?=[\s\S]*defaultSamTextModelId = computed[\s\S]*sam3_1_multiplex)(?=[\s\S]*samSmartSelectionAvailable = computed\([\s\S]*backendEngineValue\.value\.isRunning && \(samPointBoxAvailable\.value \|\| samTextSupported\.value\))(?=[\s\S]*resolvePreferredMaskMode[\s\S]*samSmartSelectionAvailable\.value \? "smart" : "manual")(?=[\s\S]*nextMode === "smart" && !samSmartSelectionAvailable\.value)(?=[\s\S]*后端服务启动成功后可用)(?=[\s\S]*请先在模型管理中安装 SAM1\/SAM2\.1 点选模型或 SAM3 文本模型)(?=[\s\S]*const order = \["off", "manual", "smart"\])[\s\S]*/,
+    pattern: /(?=[\s\S]*samPointBoxAvailable = computed\(\(\) => samPointBoxModelOptions\.value\.length > 0\))(?=[\s\S]*samTextSupportedModelIds = \["sam3_1_multiplex", "sam3"\])(?=[\s\S]*samTextSupported = computed)(?=[\s\S]*samTextAvailable = computed\(\(\) =>[\s\S]*samTextSupported\.value[\s\S]*samCapabilities\.value\?\.text\?\.enabled)(?=[\s\S]*defaultSamTextModelId = computed[\s\S]*sam3_1_multiplex)(?=[\s\S]*samSmartSelectionAvailable = computed\([\s\S]*backendEngineValue\.value\.isRunning && \(samPointBoxAvailable\.value \|\| samTextSupported\.value\))(?=[\s\S]*resolvePreferredMaskMode[\s\S]*samSmartSelectionAvailable\.value \? "smart" : "manual")(?=[\s\S]*nextMode === "smart" && !samSmartSelectionAvailable\.value)(?=[\s\S]*服务启动成功后可用)(?=[\s\S]*请先在模型管理中安装 SAM1\/SAM2\.1 点选模型或 SAM3 文本模型)(?=[\s\S]*const order = \["off", "manual", "smart"\])[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/IndexPage.vue",
     description: "Image page passes backend readiness and blocked smart-selection feedback into footer",
-    pattern: /smartSelectionAvailable: samSmartSelectionAvailable\.value,[\s\S]*backendReady: backendEngineValue\.value\.isRunning,[\s\S]*"smart-selection-blocked": \(message\) => \{[\s\S]*message: message \|\| "后端服务启动成功后可用"/,
+    pattern: /smartSelectionAvailable: samSmartSelectionAvailable\.value,[\s\S]*backendReady: backendEngineValue\.value\.isRunning,[\s\S]*"smart-selection-blocked": \(message\) => \{[\s\S]*message: message \|\| "服务启动成功后可用"/,
   });
   assertPattern({
     file: "src/pages/IndexPage.vue",
@@ -853,7 +853,7 @@ function runAssertions() {
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
     description: "Image masker explains how to switch SAM CPU execution to CUDA from the settings popup",
-    pattern: /(?=[\s\S]*samCudaUsageHint)(?=[\s\S]*performance\.device[\s\S]*toLowerCase\(\) !== "cpu")(?=[\s\S]*全局设置或后端管理中将启动设备改为 CUDA)(?=[\s\S]*确认 CUDA 版运行时与 PyTorch 可用)(?=[\s\S]*class="sam-cuda-usage-hint")(?=[\s\S]*\.sam-cuda-usage-hint)[\s\S]*/,
+    pattern: /(?=[\s\S]*samCudaUsageHint)(?=[\s\S]*performance\.device[\s\S]*toLowerCase\(\) !== "cpu")(?=[\s\S]*全局设置或服务管理中将启动设备改为 CUDA)(?=[\s\S]*确认 CUDA 版运行环境与 PyTorch 可用)(?=[\s\S]*class="sam-cuda-usage-hint")(?=[\s\S]*\.sam-cuda-usage-hint)[\s\S]*/,
   });
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
@@ -1000,7 +1000,7 @@ function runAssertions() {
   assertPattern({
     file: "src-electron/electron-main.js",
     description: "Bundled runtime relocation persists raw stderr but emits only one concise terminal warning after a successful recheck",
-    pattern: /(?=[\s\S]*const logRelocationStderr = \(text\) => \{[\s\S]*startupLogger\.warning\(message,[\s\S]*BUNDLED_RUNTIME_RELOCATION_STDERR)(?=[\s\S]*onStderr: logRelocationStderr)(?=[\s\S]*内置 Python 运行时重定位出现警告[\s\S]*诊断编号：\$\{diagnosticId\}[\s\S]*打开启动日志)[\s\S]*/,
+    pattern: /(?=[\s\S]*const logRelocationStderr = \(text\) => \{[\s\S]*startupLogger\.warning\(message,[\s\S]*BUNDLED_RUNTIME_RELOCATION_STDERR)(?=[\s\S]*onStderr: logRelocationStderr)(?=[\s\S]*内置 Python 运行环境重定位出现警告[\s\S]*诊断编号：\$\{diagnosticId\}[\s\S]*打开启动日志)[\s\S]*/,
   });
   assertAbsentPattern({
     file: "src-electron/electron-main.js",
