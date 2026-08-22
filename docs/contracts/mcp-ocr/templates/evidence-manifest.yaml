@@ -1,0 +1,12 @@
+manifest_version: 1
+task_id: M0-ARCH-001
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+candidate_ref: worktree:M0-ARCH-001
+generated_at: 2026-08-16T00:00:00Z
+evidence_level: E1
+files: []
+tests: []
+environment:
+  os: windows
+  node: local
+  notes: Template only; actual evidence belongs under docs/evidence/M0.

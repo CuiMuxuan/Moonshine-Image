@@ -45,17 +45,144 @@ const getExternalEnvironmentCandidateId = (value) =>
     value && typeof value === "object" ? value.candidateId || "" : value || ""
   ).trim();
 
+const ALLOWED_INVOKE_CHANNELS = new Set([
+  "abort-file-write-stream",
+  "app-restart",
+  "app-update-check",
+  "app-update-download",
+  "app-update-get-install-readiness",
+  "app-update-get-state",
+  "app-update-install",
+  "app-update-set-channel",
+  "cancel-ffmpeg-task",
+  "check-app-state-exists",
+  "check-backend-status",
+  "check-dependencies",
+  "check-disk-space",
+  "check-ffmpeg-runtime",
+  "check-project",
+  "check-python",
+  "check-venv",
+  "cleanup-app-temp-files",
+  "cleanup-temp-directory",
+  "cleanup-temp-file",
+  "cleanup-temp-files",
+  "cleanup-video-processing-temp",
+  "clear-app-state",
+  "close-file-write-stream",
+  "compute-video-file-fingerprint",
+  "copy-file",
+  "create-venv",
+  "delete-file",
+  "ensure-directory",
+  "ensure-disk-space",
+  "environment-cancel",
+  "environment-check",
+  "environment-ensure",
+  "environment-external-activate",
+  "environment-external-forget",
+  "environment-external-probe",
+  "environment-external-select-directory",
+  "environment-get-backend-spec",
+  "environment-get-state",
+  "environment-open-path",
+  "environment-rollback",
+  "environment-set-accelerator",
+  "environment-update-plan",
+  "environment-update-status",
+  "environment-update-switch",
+  "ffmpeg-concat-segments",
+  "ffmpeg-encode-frame-sequence",
+  "ffmpeg-extract-frame-sequence",
+  "ffmpeg-mux-audio",
+  "ffprobe-media",
+  "get-app-config",
+  "get-file-stats",
+  "get-files-stats",
+  "get-resources-path",
+  "get-sam3-lexicon",
+  "get-video-processing-registry-path",
+  "install-dependencies",
+  "install-python",
+  "list-image-files",
+  "load-app-state",
+  "mcp-get-activity",
+  "mcp-get-config",
+  "mcp-get-state",
+  "mcp-save-config",
+  "mcp-select-root",
+  "mcp-start",
+  "mcp-stop",
+  "model-manifest-get-state",
+  "model-manifest-refresh",
+  "open-external-link",
+  "open-file-write-stream",
+  "open-startup-log",
+  "prepare-project-python",
+  "read-file",
+  "read-file-with-progress",
+  "remove-directory-recursive",
+  "runtime-cancel",
+  "runtime-check",
+  "runtime-ensure",
+  "runtime-get-backend-spec",
+  "runtime-get-state",
+  "runtime-rollback",
+  "runtime-set-channel",
+  "save-app-config",
+  "save-app-state",
+  "save-file",
+  "save-sam3-lexicon",
+  "save-temp-video",
+  "saveFile",
+  "select-directory",
+  "select-file",
+  "select-folder",
+  "set-project-path",
+  "show-item-in-folder",
+  "start-backend-service",
+  "stop-backend-service",
+  "tray-get-state",
+  "validate-backend-paths",
+  "write-file-stream-chunk",
+]);
+
+const ALLOWED_SEND_CHANNELS = new Set(["set-active-processing-task", "show-missing-files"]);
+const ALLOWED_EVENT_CHANNELS = new Set([
+  "app-update-state",
+  "backend-output",
+  "config-reset",
+  "config-updated",
+  "environment-state",
+  "file-read-progress",
+  "model-manifest-state",
+  "python-install-path",
+  "runtime-state",
+  "state-cleared",
+  "tray-navigate",
+  "tray-state",
+]);
+
+const assertAllowedChannel = (channel, allowedChannels) => {
+  if (typeof channel !== "string" || !allowedChannels.has(channel)) {
+    throw new Error("IPC channel is not allowlisted.");
+  }
+  return channel;
+};
+
 // 暴露 Electron API 给渲染进程
 contextBridge.exposeInMainWorld("electron", {
   ipcRenderer: {
-    invoke: (channel, ...args) => ipcRenderer.invoke(channel, ...args),
-    send: (channel, ...args) => ipcRenderer.send(channel, ...args),
+    invoke: (channel, ...args) =>
+      ipcRenderer.invoke(assertAllowedChannel(channel, ALLOWED_INVOKE_CHANNELS), ...args),
+    send: (channel, ...args) =>
+      ipcRenderer.send(assertAllowedChannel(channel, ALLOWED_SEND_CHANNELS), ...args),
     on: (channel, listener) => {
-      ipcRenderer.on(channel, listener);
+      ipcRenderer.on(assertAllowedChannel(channel, ALLOWED_EVENT_CHANNELS), listener);
       return () => ipcRenderer.removeListener(channel, listener);
     },
     removeListener: (channel, listener) =>
-      ipcRenderer.removeListener(channel, listener),
+      ipcRenderer.removeListener(assertAllowedChannel(channel, ALLOWED_EVENT_CHANNELS), listener),
     // 保存应用配置
     saveAppConfig: (configData) =>
       ipcRenderer.invoke("save-app-config", configData),
@@ -160,6 +287,26 @@ contextBridge.exposeInMainWorld("electron", {
         active = false;
         ipcRenderer.removeListener("app-update-state", handler);
       };
+    },
+    getTrayState: () => ipcRenderer.invoke("tray-get-state"),
+    getMcpState: () => ipcRenderer.invoke("mcp-get-state"),
+    getMcpActivity: (after = 0) => ipcRenderer.invoke("mcp-get-activity", after),
+    startMcp: () => ipcRenderer.invoke("mcp-start"),
+    stopMcp: () => ipcRenderer.invoke("mcp-stop"),
+    getMcpConfig: () => ipcRenderer.invoke("mcp-get-config"),
+    saveMcpConfig: (config) => ipcRenderer.invoke("mcp-save-config", config),
+    selectMcpRoot: () => ipcRenderer.invoke("mcp-select-root"),
+    onTrayState: (listener) => {
+      if (typeof listener !== "function") return () => {};
+      const handler = (_event, state) => listener(state);
+      ipcRenderer.on("tray-state", handler);
+      return () => ipcRenderer.removeListener("tray-state", handler);
+    },
+    onTrayNavigation: (listener) => {
+      if (typeof listener !== "function") return () => {};
+      const handler = (_event, request) => listener(request);
+      ipcRenderer.on("tray-navigate", handler);
+      return () => ipcRenderer.removeListener("tray-navigate", handler);
     },
     // SAM3 中文词表配置
     getSam3Lexicon: () => ipcRenderer.invoke("get-sam3-lexicon"),

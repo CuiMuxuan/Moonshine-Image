@@ -186,6 +186,20 @@
             </q-btn>
 
             <q-btn
+              :color="ocrAvailable ? 'primary' : 'grey-6'"
+              text-color="white"
+              icon="text_fields"
+              :loading="ocrBusy"
+              :disable="ocrBusy || samProcessingState.running || !ocrAvailable || !props.samImage"
+              :size="toolbarButtonSize"
+              class="sam-control-button"
+              data-testid="ocr-smart-selection-button"
+              @click="emit('ocr-request')"
+            >
+              <q-tooltip :class="toolbarTooltipContentClass">{{ ocrAvailable ? 'OCR 文本智能选区' : ocrStatusMessage }}</q-tooltip>
+            </q-btn>
+
+            <q-btn
               :color="samToolMode === SAM_TOOL_MODES.ERASE ? 'negative' : 'primary'"
               text-color="white"
               :icon="samToolToggleIcon"
@@ -220,7 +234,7 @@
               >
                 <div ref="samSettingsPanelRef" class="sam-settings-panel q-pa-md">
                   <div class="sam-popup-header">
-                    <div class="sam-settings-title">SAM 模型</div>
+                    <div class="sam-settings-title">智能选区模型设置</div>
                     <q-btn
                       flat
                       dense
@@ -249,6 +263,56 @@
                   />
                   <div v-else class="sam-empty-state">
                     请先在模型管理中安装支持图片点选/框选或文本智选的 SAM 模型。
+                  </div>
+                  <div class="sam-settings-section ocr-settings-section">
+                    <div class="sam-settings-title">OCR 文本智能选区</div>
+                    <div v-if="ocrAvailable" class="sam-settings-hint">RapidOCR 已就绪</div>
+                    <div class="ocr-threshold-row">
+                      <q-input
+                        :model-value="ocrThresholdHigh"
+                        type="number"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        dense
+                        outlined
+                        label="直接选中阈值"
+                        :disable="ocrBusy"
+                        @update:model-value="updateOcrSettings({ thresholdHigh: $event })"
+                      />
+                      <q-input
+                        :model-value="ocrThresholdLow"
+                        type="number"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        dense
+                        outlined
+                        label="候选阈值"
+                        :disable="ocrBusy"
+                        @update:model-value="updateOcrSettings({ thresholdLow: $event })"
+                      />
+                    </div>
+                    <q-toggle
+                      :model-value="ocrSamEnhance"
+                      label="使用 SAM 增强文本蒙版"
+                      :disable="ocrBusy || !ocrAvailable || !ocrSamModelOptions.length"
+                      @update:model-value="updateOcrSettings({ samEnhance: $event })"
+                    />
+                    <q-select
+                      v-if="ocrSamModelOptions.length"
+                      :model-value="ocrSamModelId"
+                      :options="ocrSamModelOptions"
+                      dense
+                      outlined
+                      emit-value
+                      map-options
+                      options-dense
+                      label="SAM 框选模型"
+                      :disable="ocrBusy || !ocrSamEnhance"
+                      @update:model-value="updateOcrSettings({ samModelId: $event })"
+                    />
+                    <div v-else class="sam-settings-hint">未安装支持框选的 SAM 模型，OCR 将使用四边形蒙版。</div>
                   </div>
                   <div class="sam-settings-hint">{{ samStatusText }}</div>
                   <div v-if="samAutoExpandNotice" class="sam-auto-expand-notice">
@@ -735,6 +799,42 @@ const props = defineProps({
       cancelled: false,
     }),
   },
+  ocrAvailable: {
+    type: Boolean,
+    default: false,
+  },
+  ocrBusy: {
+    type: Boolean,
+    default: false,
+  },
+  ocrStatusMessage: {
+    type: String,
+    default: "OCR 组件或模型尚未就绪",
+  },
+  ocrModelId: {
+    type: String,
+    default: "ocr_rapid_onnx_mobile",
+  },
+  ocrThresholdHigh: {
+    type: Number,
+    default: 0.9,
+  },
+  ocrThresholdLow: {
+    type: Number,
+    default: 0.8,
+  },
+  ocrSamEnhance: {
+    type: Boolean,
+    default: false,
+  },
+  ocrSamModelId: {
+    type: String,
+    default: "",
+  },
+  ocrSamModelOptions: {
+    type: Array,
+    default: () => [],
+  },
 });
 
 const emit = defineEmits([
@@ -745,6 +845,8 @@ const emit = defineEmits([
   "sam-processing-state",
   "sam-text-batch-request",
   "sam-text-batch-cancel",
+  "ocr-request",
+  "update:ocr-settings",
 ]);
 
 const store = useEditorStore();
@@ -784,6 +886,12 @@ const samCandidateMenuOpen = ref(false);
 
 const drawingModeActive = computed(() => Boolean(props.drawingMode));
 const smartSelectionMode = computed(() => Boolean(props.smartSelectionMode));
+const ocrAvailable = computed(() => Boolean(props.ocrAvailable));
+const ocrBusy = computed(() => Boolean(props.ocrBusy));
+const ocrStatusMessage = computed(() => String(props.ocrStatusMessage || "OCR 组件或模型尚未就绪"));
+const updateOcrSettings = (patch = {}) => {
+  emit("update:ocr-settings", patch);
+};
 const effectiveDrawingEnabled = computed(
   () => Boolean(props.show) && (drawingModeActive.value || smartSelectionMode.value)
 );
@@ -2654,10 +2762,10 @@ const appendExternalSamTextResult = async ({
       hydrateSamCandidateExpandPx({
         ...candidate,
         localId: `${Date.now()}-${previousOperationIndex}-batch-text-${index}`,
-        label: `文本候选 ${previousCandidates.length + index + 1}`,
-        enabled: index === 0,
-        source: "text",
-        modelId: modelId || getTextModelId(),
+        label: candidate.label || `智能选区候选 ${previousCandidates.length + index + 1}`,
+        enabled: candidate.enabled == null ? index === 0 : Boolean(candidate.enabled),
+        source: candidate.source || "text",
+        modelId: candidate.modelId || modelId || getTextModelId(),
         prompt: candidate.prompt || result.prompt || { type: "text", text: prompt },
         createdAt: new Date().toISOString(),
       })
@@ -3887,6 +3995,19 @@ defineExpose({
   min-width: 0;
   border-radius: 999px;
   overflow: hidden;
+}
+
+.ocr-settings-section {
+  border-top: 1px solid rgba(17, 24, 39, 0.1);
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.ocr-threshold-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 8px 0;
 }
 
 .sam-control-button {

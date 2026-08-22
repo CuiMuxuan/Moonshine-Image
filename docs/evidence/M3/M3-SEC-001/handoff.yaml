@@ -1,0 +1,33 @@
+handoff_version: 1
+task_id: M3-SEC-001
+status: ready
+owner: m3-security-spike-owner
+reviewer: m3-security-reviewer
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+changed_paths:
+  - docs/decisions/mcp-ocr/ADR-0005-mcp-sdk-packaging-spike.md
+  - docs/evidence/M3/M3-SEC-001/task.yaml
+  - docs/evidence/M3/M3-SEC-001/handoff.yaml
+  - docs/evidence/M3/M3-SEC-001/manifest.yaml
+  - test/mcp/mcp-sdk-packaging-spike.test.mjs
+contract_versions:
+  - governance-v1
+decisions:
+  - docs/decisions/mcp-ocr/ADR-0005-mcp-sdk-packaging-spike.md
+tests:
+  - command: node --test test/mcp/mcp-sdk-packaging-spike.test.mjs
+    result: pass
+    evidence_id: EVID-M3-SEC-001
+  - command: npm run test:contracts:mcp-ocr
+    result: pass
+    evidence_id: EVID-M0-CONTRACT-001
+evidence_manifest: docs/evidence/M3/M3-SEC-001/manifest.yaml
+unknowns:
+  - id: U-001
+    state: spike
+    owner: SEC
+    review_trigger: before-M3
+rollback:
+  runbook: Delete only the M3-SEC-001 ADR, evidence directory, and focused test, then restore U-001 to its prior empty-evidence spike entry. The test child exits at completion; no production adapter, package metadata, Electron IPC, backend, release object, pointer, or user data needs restoration.
+  verified: false
+next_action: Independent SEC/RED reviewer reruns the focused test and contract validation before selecting a production SDK or adapter package.

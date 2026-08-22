@@ -18,3 +18,5 @@ loguru
 yacs
 Pillow>=9.5.0
 rembg[cpu]
+rapidocr==3.9.2
+onnxruntime==1.28.0

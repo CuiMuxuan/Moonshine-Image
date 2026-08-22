@@ -30,3 +30,8 @@ ftfy==6.1.1
 pycocotools==2.0.11
 psutil==7.2.2
 antlr4-python3-runtime==4.9.3
+rapidocr==3.9.2
+onnxruntime==1.28.0
+pyclipper==1.4.0
+Shapely==2.1.2
+colorlog==6.12.0

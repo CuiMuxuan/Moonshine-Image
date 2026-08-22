@@ -1,0 +1,39 @@
+handoff_version: 1
+task_id: M1-APP-002
+status: ready
+owner: root
+reviewer: evidence-reviewer
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+changed_paths:
+  - docs/decisions/mcp-ocr/ADR-0003-sqlite-jobstore-crash-recovery-spike.md
+  - docs/evidence/M1/M1-APP-002/.gitattributes
+  - docs/evidence/M1/M1-APP-002/task.yaml
+  - docs/evidence/M1/M1-APP-002/handoff.yaml
+  - docs/evidence/M1/M1-APP-002/manifest.yaml
+  - test/contracts/m1-jobstore/sqlite_jobstore_spike.py
+  - test/contracts/m1-jobstore/test_sqlite_jobstore_spike.py
+contract_versions:
+  - core-v2
+  - governance-v1
+decisions:
+  - docs/decisions/mcp-ocr/ADR-0003-sqlite-jobstore-crash-recovery-spike.md
+tests:
+  - command: python test/contracts/m1-jobstore/test_sqlite_jobstore_spike.py
+    result: pass
+    evidence_id: EVID-M1-SQLITE-SPIKE-002
+  - command: node --test test/contracts/m1-jobstore/jobstore-spike.test.mjs
+    result: pass
+    evidence_id: EVID-M1-APP-SPIKE-001
+  - command: npm run test:contracts:mcp-ocr
+    result: pass
+    evidence_id: EVID-M0-CONTRACT-001
+evidence_manifest: docs/evidence/M1/M1-APP-002/manifest.yaml
+unknowns:
+  - id: U-003
+    state: spike
+    owner: APP
+    review_trigger: before-M1-APP-002-gate
+rollback:
+  runbook: Delete only the M1-APP-002 ADR, evidence directory, and two Python spike files, then restore the three planning records. Tests use TemporaryDirectory, so no product database, userData migration, IPC, release object, pointer, or user data requires restoration.
+  verified: false
+next_action: Obtain independent evidence review. Do not add production JobStore, recovery worker, facade wiring, or IPC from local Python 3.13.9 and SQLite 3.51.0 evidence alone.

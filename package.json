@@ -1,6 +1,6 @@
 {
   "name": "moonshine-image",
-  "version": "1.3.3-test.2",
+  "version": "1.3.3-test.3",
   "description": "moonshine's image handle client",
   "productName": "Moonshine-Image",
   "author": "CuiMuxuan <cjh020715@163.com>",
@@ -15,6 +15,7 @@
     "test:settings": "node --test test/settings-*.test.mjs",
     "test:path-compat": "python -m unittest discover -s server/tests -p test_unicode_path_io.py -v",
     "test:model-manifest": "node scripts/run-model-manifest-tests.mjs",
+    "test:contracts:mcp-ocr": "node --test test/contracts/*.test.mjs",
     "test:regression:p0": "node scripts/p0-regression-gate.mjs",
     "test:regression:p0:assertions": "node scripts/p0-regression-assertions.mjs",
     "test:regression:release-runtime": "node scripts/release-runtime-regression-assertions.mjs",
@@ -64,6 +65,7 @@
     "postinstall": "quasar prepare"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@quasar/extras": "^1.18.0",
     "@vueuse/core": "^12.8.2",
     "@webav/av-canvas": "^1.1.17",
@@ -86,6 +88,7 @@
     "@eslint/js": "^9.14.0",
     "@quasar/app-vite": "^2.6.0",
     "7zip-bin": "^5.2.0",
+    "ajv": "^8.20.0",
     "autoprefixer": "^10.4.2",
     "electron": "^35.7.5",
     "electron-builder": "^26.15.3",

@@ -1,0 +1,94 @@
+manifest_version: 1
+task_id: M0-ARCH-001
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+candidate_ref: worktree:M0-ARCH-001
+generated_at: 2026-08-15T17:58:18Z
+evidence_level: E2
+files:
+  - path: .gitattributes
+    sha256: e1d4efbba113f0a2e36bd50ae152e23d7a53f93dee7eb9f49e7f5a06d5a1d22f
+    size_bytes: 353
+    kind: contract
+  - path: docs/contracts/mcp-ocr/README.md
+    sha256: a89968bcd6482b7ac10c586d913303633fb53ec48ec8554ade9f6dd34462d108
+    size_bytes: 3256
+    kind: contract
+  - path: docs/contracts/mcp-ocr/threat-model.md
+    sha256: 5883a6943382164eb9a6d9a8777125ad3d6443e0b8a459f67eb8e7e5b58d6e00
+    size_bytes: 2634
+    kind: threat_model
+  - path: docs/contracts/mcp-ocr/golden-set-manifest.yaml
+    sha256: 164f61606db103d0479b628559f89a7c5a76760705d35d23783a5d120f198c45
+    size_bytes: 438
+    kind: contract
+  - path: docs/contracts/mcp-ocr/schemas/core-v2.schema.yaml
+    sha256: 8fb405316e48523ef8dd282e816e7550de09a436ddcbc928000310e285be0b25
+    size_bytes: 13344
+    kind: contract
+  - path: docs/contracts/mcp-ocr/schemas/governance-v1.schema.yaml
+    sha256: 171861eaee461d3033f684999da1a52ac61678e4fdf63eab8f43acd68cc0c210
+    size_bytes: 13130
+    kind: contract
+  - path: docs/contracts/mcp-ocr/templates/task-declaration.yaml
+    sha256: a2b4451d067e03687067711a31c7656027a7dadcf7ecc8fbfd1373636274ab67
+    size_bytes: 829
+    kind: contract
+  - path: docs/contracts/mcp-ocr/templates/handoff.yaml
+    sha256: 6432af202df048376978af72a62850c54dea5991bc33b510dd45869a96a7744c
+    size_bytes: 665
+    kind: contract
+  - path: docs/contracts/mcp-ocr/templates/evidence-manifest.yaml
+    sha256: de6e6f67af300f5a8ab0e170d34eb9eab0ce4d0aa1243a3be5df4a2f07b64464
+    size_bytes: 319
+    kind: contract
+  - path: docs/contracts/mcp-ocr/templates/gate-record.yaml
+    sha256: c65be79ad35450aa769078168dfd761163abf7404e882c7561718b1218bcee50
+    size_bytes: 321
+    kind: contract
+  - path: docs/decisions/mcp-ocr/ADR-0001-contract-format-and-boundary.md
+    sha256: 6091d80566587c6c109a6ac9b29cec9b8e30c2995460e45c3d5da54dcc3b30b9
+    size_bytes: 2003
+    kind: decision
+  - path: test/contracts/fixtures/core-v2.yaml
+    sha256: a641a3a03dc8fe7c74373f91b9575ea384dc25c2b33d116429f8c62d6f9934d3
+    size_bytes: 9443
+    kind: fixture
+  - path: test/contracts/fixtures/governance-v1.yaml
+    sha256: 7158a19571c0f8f6d50f6eeb926b50082ffabc313ee6d19a6aefe7fa9d2c84ba
+    size_bytes: 8228
+    kind: fixture
+  - path: test/contracts/fixtures/evidence-placeholder.txt
+    sha256: 73cb3858a687a8494ca3323053016282f3dad39d42cf62ca4e79dda2aac7d9ac
+    size_bytes: 2
+    kind: fixture
+  - path: test/contracts/mcp-ocr-contracts.test.mjs
+    sha256: eb951ec040a7db3756aafb0b52a34f1a4040ddb2c9c1c360e6d28f22212fcaea
+    size_bytes: 6603
+    kind: fixture
+  - path: package.json
+    sha256: eb39c18438c50fe173fecf6432bd5e00387a3fd3567ff5575fe4153c3d8920e6
+    size_bytes: 6634
+    kind: contract
+  - path: package-lock.json
+    sha256: 562966e69e88d980a621b4c92e2df208cefbf2c88cb74f647425ca5500c8a5b8
+    size_bytes: 510158
+    kind: contract
+  - path: docs/evidence/M0/M0-ARCH-001/task.yaml
+    sha256: b30c28e358e3891d7fc6a15d4be0a1ffb252d314ba681d44cfdeebac3b4f17e4
+    size_bytes: 878
+    kind: task
+  - path: docs/evidence/M0/M0-ARCH-001/handoff.yaml
+    sha256: b6787d44e22c5ce607ab28625eaeffcd6f3e2ddd4d435f914801d6850ae31cc2
+    size_bytes: 2245
+    kind: handoff
+tests:
+  - command: npm run test:contracts:mcp-ocr
+    result: pass
+    evidence_id: EVID-M0-ARCH-CONTRACTS-001
+  - command: npm run test:regression:p0
+    result: pass
+    evidence_id: EVID-M0-ARCH-REGRESSION-001
+environment:
+  os: Microsoft Windows NT 10.0.26200.0
+  node: v24.14.0
+  notes: Local E2 only. Contract tests passed 6/6; the P0 regression gate passed and covered lint, build, and comprehensive E2E. No external-machine, release, or canary evidence is claimed. core-v2 and governance-v1 remain target contracts; current code has not implemented the planned MCP, OCR, JobStore, TrayManager, or WindowLifecycleController services.

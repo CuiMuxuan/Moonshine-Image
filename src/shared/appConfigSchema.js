@@ -3,7 +3,7 @@ import {
   normalizeShortcutConfig,
 } from "../utils/shortcutConfig.js";
 
-export const CONFIG_SCHEMA_VERSION = 14;
+export const CONFIG_SCHEMA_VERSION = 15;
 
 export const DEFAULT_THEME_MODE = "light";
 export const DEFAULT_UI_BUTTON_SIZE = "sm";
@@ -46,6 +46,16 @@ export const IMAGE_OUTPUT_FORMAT_OPTIONS = Object.freeze([
   "webp",
 ]);
 export const DEFAULT_IMAGE_OUTPUT_QUALITY = 95;
+export const DEFAULT_MCP_PROFILE_ID = "desktop-default";
+export const MCP_ALLOWED_TOOL_OPTIONS = Object.freeze([
+  "moonshine.capabilities",
+  "moonshine.image.process_batch",
+  "moonshine.jobs.get",
+  "moonshine.jobs.result",
+  "moonshine.jobs.cancel",
+]);
+export const MAX_MCP_ALLOWED_ROOTS = 16;
+export const MAX_MCP_ALLOWED_ROOT_LENGTH = 1024;
 
 export const APP_CONFIG_INTEGER_LIMITS = Object.freeze({
   imageHistoryLimit: Object.freeze({ min: 1, max: 100 }),
@@ -175,7 +185,113 @@ export const DEFAULT_MASKING_CONFIG = Object.freeze({
   samRenderCachePreloadVisibleList: true,
   samRenderCacheNeighborPreloadCount: 4,
   samReleaseBeforeProcessing: true,
+  ocrConfidenceHigh: 0.9,
+  ocrConfidenceLow: 0.8,
+  ocrSamEnhance: false,
+  ocrSamModelId: "",
 });
+
+export const DEFAULT_MCP_CONFIG = Object.freeze({
+  enabled: false,
+  profileId: DEFAULT_MCP_PROFILE_ID,
+  allowedTools: Object.freeze([]),
+  allowedRoots: Object.freeze([]),
+  confirmationRequired: true,
+});
+export const MCP_CONFIG_FIELD_NAMES = Object.freeze([
+  "enabled",
+  "profileId",
+  "allowedTools",
+  "allowedRoots",
+  "confirmationRequired",
+]);
+
+const MCP_PROFILE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const MCP_TOKEN_MATERIAL_KEY_FRAGMENTS = Object.freeze([
+  "token",
+  "authorization",
+  "secret",
+  "apikey",
+  "password",
+  "credential",
+]);
+const WINDOWS_UNSAFE_MCP_ROOT = /^(?:\\\\[?.]|\\\\\.|\\\\|\/\/)/;
+const MCP_ABSOLUTE_ROOT = /^(?:[A-Za-z]:[\\/]|\/(?!\/))/;
+
+const hasControlCharacter = (value) =>
+  Array.from(value).some((character) => character.charCodeAt(0) <= 31);
+
+const normalizeMcpTokenKey = (value) =>
+  String(value || "").replace(/[^A-Za-z0-9]/g, "").toLowerCase();
+
+const isMcpTokenMaterialKey = (value) => {
+  const normalized = normalizeMcpTokenKey(value);
+  return MCP_TOKEN_MATERIAL_KEY_FRAGMENTS.some(
+    (fragment) =>
+      normalized === fragment || normalized.startsWith(fragment) || normalized.endsWith(fragment)
+  );
+};
+
+export const isValidMcpProfileId = (value) =>
+  typeof value === "string" && MCP_PROFILE_ID_PATTERN.test(value.trim());
+
+export const normalizeMcpProfileId = (value) => {
+  const profileId = typeof value === "string" ? value.trim() : "";
+  return isValidMcpProfileId(profileId) ? profileId : DEFAULT_MCP_PROFILE_ID;
+};
+
+export const isSafeMcpAllowedRoot = (value) => {
+  if (typeof value !== "string") return false;
+  const root = value.trim();
+  if (!root || root.length > MAX_MCP_ALLOWED_ROOT_LENGTH || hasControlCharacter(root)) return false;
+  if (WINDOWS_UNSAFE_MCP_ROOT.test(root) || !MCP_ABSOLUTE_ROOT.test(root)) return false;
+  return !/(?:^|[\\/])\.{1,2}(?:[\\/]|$)/.test(root);
+};
+
+export const normalizeMcpAllowedRoots = (value) => {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  const roots = [];
+  for (const candidate of value) {
+    const root = typeof candidate === "string" ? candidate.trim() : "";
+    if (!isSafeMcpAllowedRoot(root)) continue;
+    const key = /^[A-Za-z]:/.test(root) ? root.replaceAll("\\", "/").toLowerCase() : root;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    roots.push(root);
+    if (roots.length === MAX_MCP_ALLOWED_ROOTS) break;
+  }
+  return roots;
+};
+
+export const normalizeMcpAllowedTools = (value) => {
+  const requested = new Set(Array.isArray(value) ? value.filter((tool) => typeof tool === "string") : []);
+  return MCP_ALLOWED_TOOL_OPTIONS.filter((tool) => requested.has(tool));
+};
+
+export const containsMcpTokenMaterial = (value, seen = new Set()) => {
+  if (!value || typeof value !== "object") return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) return value.some((item) => containsMcpTokenMaterial(item, seen));
+  return Object.entries(value).some(([key, item]) =>
+    isMcpTokenMaterialKey(key) || containsMcpTokenMaterial(item, seen)
+  );
+};
+
+export const normalizeMcpConfigMetadata = (value = {}) => {
+  const config = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    enabled: typeof config.enabled === "boolean" ? config.enabled : DEFAULT_MCP_CONFIG.enabled,
+    profileId: normalizeMcpProfileId(config.profileId),
+    allowedTools: normalizeMcpAllowedTools(config.allowedTools),
+    allowedRoots: normalizeMcpAllowedRoots(config.allowedRoots),
+    confirmationRequired:
+      typeof config.confirmationRequired === "boolean"
+        ? config.confirmationRequired
+        : DEFAULT_MCP_CONFIG.confirmationRequired,
+  };
+};
 
 export const createDefaultAppConfig = () => ({
   schemaVersion: CONFIG_SCHEMA_VERSION,
@@ -187,6 +303,8 @@ export const createDefaultAppConfig = () => ({
     defaultModel: "lama",
     autoStart: true,
     language: "zh-CN",
+    closeBehavior: "tray",
+    confirmBeforeQuit: true,
   },
   fileManagement: {
     downloadPath: "",
@@ -213,6 +331,11 @@ export const createDefaultAppConfig = () => ({
   },
   masking: {
     ...DEFAULT_MASKING_CONFIG,
+  },
+  mcp: {
+    ...DEFAULT_MCP_CONFIG,
+    allowedTools: [...DEFAULT_MCP_CONFIG.allowedTools],
+    allowedRoots: [...DEFAULT_MCP_CONFIG.allowedRoots],
   },
   ui: {
     theme: DEFAULT_THEME_MODE,
@@ -312,6 +435,30 @@ export const migrateLegacyConfigShape = (rawConfig = {}) => {
       migrated.general.modelDir = legacyModelPath;
     }
     delete migrated.general.modelPath;
+
+    const hasCloseBehavior = Object.prototype.hasOwnProperty.call(
+      migrated.general,
+      "closeBehavior"
+    );
+    if (!hasCloseBehavior) {
+      // Existing configurations closed the application. Keep that behavior for
+      // migrated installs while new installs receive the tray default.
+      const hasLegacyExitPreference =
+        isPlainObject(migrated.ui) &&
+        typeof migrated.ui.confirmBeforeExit === "boolean";
+      migrated.general.closeBehavior =
+        (Number.isFinite(legacySchemaVersion) && legacySchemaVersion > 0 && legacySchemaVersion < 15) ||
+        hasLegacyExitPreference
+          ? "quit"
+          : "tray";
+    }
+    if (
+      !Object.prototype.hasOwnProperty.call(migrated.general, "confirmBeforeQuit") &&
+      isPlainObject(migrated.ui) &&
+      typeof migrated.ui.confirmBeforeExit === "boolean"
+    ) {
+      migrated.general.confirmBeforeQuit = migrated.ui.confirmBeforeExit;
+    }
   }
 
   if (isPlainObject(migrated.fileManagement)) {
@@ -396,6 +543,7 @@ export const normalizeConfigToCurrentSchema = (rawConfig = {}) => {
       aligned.masking.defaultSam2Model ||
       DEFAULT_MASKING_CONFIG.videoSmartSelectionDefaultModel;
   }
+  aligned.mcp = normalizeMcpConfigMetadata(aligned.mcp);
   aligned.shortcuts = normalizeShortcutConfig(aligned.shortcuts);
   return aligned;
 };

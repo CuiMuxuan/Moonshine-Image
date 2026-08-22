@@ -1,0 +1,58 @@
+handoff_version: 1
+task_id: M0-ARCH-001
+status: ready
+owner: root
+reviewer: qa-red-reviewer
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+changed_paths:
+  - .gitattributes
+  - docs/contracts/mcp-ocr/README.md
+  - docs/contracts/mcp-ocr/threat-model.md
+  - docs/contracts/mcp-ocr/unknown-register.yaml
+  - docs/contracts/mcp-ocr/golden-set-manifest.yaml
+  - docs/contracts/mcp-ocr/schemas/core-v2.schema.yaml
+  - docs/contracts/mcp-ocr/schemas/governance-v1.schema.yaml
+  - docs/contracts/mcp-ocr/templates/task-declaration.yaml
+  - docs/contracts/mcp-ocr/templates/handoff.yaml
+  - docs/contracts/mcp-ocr/templates/evidence-manifest.yaml
+  - docs/contracts/mcp-ocr/templates/gate-record.yaml
+  - docs/decisions/mcp-ocr/ADR-0001-contract-format-and-boundary.md
+  - docs/evidence/M0/M0-ARCH-001/task.yaml
+  - docs/evidence/M0/M0-ARCH-001/handoff.yaml
+  - docs/evidence/M0/M0-ARCH-001/manifest.yaml
+  - docs/evidence/M0/M0-ARCH-001/gate.yaml
+  - test/contracts/fixtures/core-v2.yaml
+  - test/contracts/fixtures/evidence-placeholder.txt
+  - test/contracts/fixtures/governance-v1.yaml
+  - test/contracts/mcp-ocr-contracts.test.mjs
+  - package.json
+  - package-lock.json
+  - task_plan.md
+  - findings.md
+  - progress.md
+contract_versions:
+  - core-v2
+  - governance-v1
+decisions:
+  - docs/decisions/mcp-ocr/ADR-0001-contract-format-and-boundary.md
+tests:
+  - command: npm run test:contracts:mcp-ocr
+    result: pass
+    evidence_id: EVID-M0-ARCH-CONTRACTS-001
+  - command: npm run test:regression:p0
+    result: pass
+    evidence_id: EVID-M0-ARCH-REGRESSION-001
+evidence_manifest: docs/evidence/M0/M0-ARCH-001/manifest.yaml
+unknowns:
+  - id: U-001
+    state: spike
+    owner: SEC
+    review_trigger: before-M3
+  - id: U-002
+    state: spike
+    owner: SEC
+    review_trigger: before-M3
+rollback:
+  runbook: Remove only M0-ARCH-001 contract, fixture, test, decision, evidence, and exact LF attribute changes by path; restore package metadata and planning records to the baseline ref. No user data, release object, or channel pointer is in scope.
+  verified: false
+next_action: Carry the accepted local E2 contract baseline into M1 planning. The target contracts do not assert that runtime MCP, OCR, JobStore, or tray lifecycle services exist.

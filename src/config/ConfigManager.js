@@ -12,6 +12,9 @@ import {
   DEFAULT_IMAGE_BRUSH,
   DEFAULT_IMAGE_OUTPUT_QUALITY,
   DEFAULT_MANAGED_FOLDER_NAMES,
+  MAX_MCP_ALLOWED_ROOTS,
+  MCP_CONFIG_FIELD_NAMES,
+  MCP_ALLOWED_TOOL_OPTIONS,
   DEFAULT_MASKING_CONFIG,
   DEFAULT_TEMP_CLEANUP,
   DEFAULT_THEME_MODE,
@@ -23,7 +26,10 @@ import {
   IMAGE_OUTPUT_NAMING_MODES,
   SLBR_LOCAL_INFERENCE_STRATEGY_OPTIONS,
   getManagedFolderNameValidationError,
+  containsMcpTokenMaterial,
   isFiniteIntegerInRange,
+  isSafeMcpAllowedRoot,
+  isValidMcpProfileId,
   isPlainObject,
   isTypeCompatible,
   migrateLegacyConfigShape,
@@ -317,11 +323,41 @@ export class ConfigManager {
       "samLazyRenderDisabledCandidates",
       "samRenderCachePreloadVisibleList",
       "samReleaseBeforeProcessing",
+      "ocrSamEnhance",
     ].forEach((key) => {
       if (config.masking?.[key] !== undefined && typeof config.masking[key] !== "boolean") {
         errors.push("SAM 开关配置必须是布尔值。");
       }
     });
+
+    const ocrConfidenceHigh = config.masking?.ocrConfidenceHigh;
+    const ocrConfidenceLow = config.masking?.ocrConfidenceLow;
+    [
+      { value: ocrConfidenceHigh, name: "OCR 直接选中阈值" },
+      { value: ocrConfidenceLow, name: "OCR 候选阈值" },
+    ].forEach((field) => {
+      if (
+        typeof field.value !== "number" ||
+        !Number.isFinite(field.value) ||
+        field.value < 0 ||
+        field.value > 1
+      ) {
+        errors.push(`${field.name}必须是 0-1 范围内的数字。`);
+      }
+    });
+    if (
+      Number.isFinite(ocrConfidenceHigh) &&
+      Number.isFinite(ocrConfidenceLow) &&
+      ocrConfidenceLow > ocrConfidenceHigh
+    ) {
+      errors.push("OCR 候选阈值不能高于直接选中阈值。");
+    }
+    if (
+      config.masking?.ocrSamModelId !== undefined &&
+      typeof config.masking.ocrSamModelId !== "string"
+    ) {
+      errors.push("OCR SAM 模型必须是字符串。");
+    }
 
     if (
       config.advanced?.imageProcessingMethod &&
@@ -565,6 +601,22 @@ export class ConfigManager {
       }
     });
 
+    const mcp = config.mcp || {};
+    if (
+      containsMcpTokenMaterial(mcp) ||
+      Object.keys(mcp).some((key) => !MCP_CONFIG_FIELD_NAMES.includes(key)) ||
+      typeof mcp.enabled !== "boolean" ||
+      !isValidMcpProfileId(mcp.profileId) ||
+      !Array.isArray(mcp.allowedTools) ||
+      mcp.allowedTools.some((tool) => !MCP_ALLOWED_TOOL_OPTIONS.includes(tool)) ||
+      !Array.isArray(mcp.allowedRoots) ||
+      mcp.allowedRoots.length > MAX_MCP_ALLOWED_ROOTS ||
+      mcp.allowedRoots.some((root) => !isSafeMcpAllowedRoot(root)) ||
+      typeof mcp.confirmationRequired !== "boolean"
+    ) {
+      errors.push("MCP 配置无效或包含不允许的凭据字段。");
+    }
+
     errors.push(...validateShortcutConfig(config.shortcuts));
 
     return errors;
@@ -800,7 +852,27 @@ export class ConfigManager {
         0,
         10
       ),
+      ocrConfidenceHigh: normalizeFloat(
+        merged.masking?.ocrConfidenceHigh,
+        DEFAULT_MASKING_CONFIG.ocrConfidenceHigh,
+        0,
+        1
+      ),
+      ocrConfidenceLow: normalizeFloat(
+        merged.masking?.ocrConfidenceLow,
+        DEFAULT_MASKING_CONFIG.ocrConfidenceLow,
+        0,
+        1
+      ),
+      ocrSamEnhance: normalizeBoolean(
+        merged.masking?.ocrSamEnhance,
+        DEFAULT_MASKING_CONFIG.ocrSamEnhance
+      ),
+      ocrSamModelId: String(merged.masking?.ocrSamModelId || "").trim(),
     };
+    if (merged.masking.ocrConfidenceLow > merged.masking.ocrConfidenceHigh) {
+      merged.masking.ocrConfidenceLow = merged.masking.ocrConfidenceHigh;
+    }
 
     merged.video = {
       ...merged.video,
@@ -878,6 +950,12 @@ export class ConfigManager {
       merged.masking = {
         ...merged.masking,
         ...userConfig.masking,
+      };
+    }
+    if (this.isPlainObject(userConfig?.mcp)) {
+      merged.mcp = {
+        ...merged.mcp,
+        ...userConfig.mcp,
       };
     }
     return merged;

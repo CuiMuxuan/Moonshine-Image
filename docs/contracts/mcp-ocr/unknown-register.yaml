@@ -1,0 +1,71 @@
+register_version: 1
+updated_at: 2026-08-16T00:00:00Z
+items:
+  - id: U-001
+    statement: Select a production MCP SDK without a second backend or JSON-RPC stdout pollution; @modelcontextprotocol/sdk@1.30.0 is selected with a fixed temporary-lockfile identity.
+    quadrant: unknown_reversible
+    state: converted_to_decision
+    owner: SEC
+    timebox: 2d
+    evidence_ids:
+      - EVID-M3-SEC-001
+      - EVID-M3-SEC-003
+    review_trigger: before-M3-production
+    stop_condition: Stop before production if the project lockfile identity differs from the approved tarball/integrity, stdout is not JSON-RPC-only, the transcript cannot reproduce, or a second backend is required.
+  - id: U-002
+    statement: Use loopback-only 127.0.0.1 with an OS-assigned endpoint and a token/profile handshake; production still needs token storage, revocation, policy, and same-user threat validation.
+    quadrant: unknown_reversible
+    state: converted_to_decision
+    owner: SEC
+    timebox: 2d
+    evidence_ids:
+      - EVID-M3-SEC-002
+    review_trigger: before-M3-production
+    stop_condition: Stop on arbitrary IPC reachability or token disclosure.
+  - id: U-003
+    statement: Prove SQLite single-writer JobStore crash, cancellation, migration, and duplicate-request recovery.
+    quadrant: unknown_reversible
+    state: converted_to_fact
+    owner: APP
+    timebox: 3d
+    evidence_ids:
+      - EVID-M1-PRODUCTION-PYTHON-001
+      - EVID-M1-PRODUCTION-CONTRACT-001
+    review_trigger: before-M3-bridge
+    stop_condition: Stop on duplicate publication, future state, orphan artifact, or non-reversible migration.
+  - id: U-004
+    statement: Verify the default RapidOCR/ONNX component license, Windows CPU behavior, model provenance, and package footprint.
+    quadrant: unknown_nonreversible
+    state: decision_required
+    owner: OCR
+    timebox: 3d
+    evidence_ids: []
+    review_trigger: before-default-OCR-decision
+    stop_condition: No default distribution without REL license approval and reproducible component identity.
+  - id: U-005
+    statement: Build a 30-50 image OCR golden set with reusable rights and no restricted user content.
+    quadrant: unknown_nonreversible
+    state: decision_required
+    owner: QA
+    timebox: 5d
+    evidence_ids: []
+    review_trigger: before-M5-quality-gate
+    stop_condition: Do not add any sample without source and license evidence.
+  - id: U-006
+    statement: Inventory which current image, video, WebAV, Canvas, and SAM tasks require a live renderer.
+    quadrant: unknown_reversible
+    state: spike
+    owner: LIFE
+    timebox: 2d
+    evidence_ids: []
+    review_trigger: before-M2-design
+    stop_condition: Do not describe hidden renderer work as headless processing.
+  - id: U-007
+    statement: Freeze the first-release OCR language scope and optional engine admission criteria.
+    quadrant: unknown_nonreversible
+    state: decision_required
+    owner: OCR
+    timebox: 2d
+    evidence_ids: []
+    review_trigger: before-M5-implementation
+    stop_condition: Do not ship unlicensed weights or claim unsupported languages.

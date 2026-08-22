@@ -1,0 +1,36 @@
+manifest_version: 1
+task_id: M3-SEC-002
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+candidate_ref: worktree:M3-SEC-002
+generated_at: 2026-08-16T00:00:00Z
+evidence_level: E2
+files:
+  - path: docs/decisions/mcp-ocr/ADR-0006-mcp-bridge-handshake-spike.md
+    sha256: 4731bbfdf857b1a0a211a75dbf883c44e388d222f901687032f61bcac70a7e24
+    size_bytes: 3134
+    kind: decision
+  - path: test/mcp/mcp-bridge-handshake-spike.test.mjs
+    sha256: 3db9a8897c0075579b22002e30b48015e81325afd7a2f69d06d502c61582a7ca
+    size_bytes: 8321
+    kind: test_log
+  - path: docs/evidence/M3/M3-SEC-002/task.yaml
+    sha256: e689882815736063e147680c245bd7eaee7bda951b32d34b47446ffe8d0e219f
+    size_bytes: 905
+    kind: task
+  - path: docs/evidence/M3/M3-SEC-002/handoff.yaml
+    sha256: 66459d5f5a56fd27609d9806d2c135cb9c2638fc26f03453dcba0f0ac3d9a8a0
+    size_bytes: 1418
+    kind: handoff
+tests:
+  - command: node --test test/mcp/mcp-bridge-handshake-spike.test.mjs
+    result: pass
+    evidence_id: EVID-M3-SEC-002
+    summary: 1/1 passed using a temporary loopback bridge with negative handshake and token-redaction checks.
+  - command: npm run test:contracts:mcp-ocr
+    result: pass
+    evidence_id: EVID-M0-CONTRACT-001
+    summary: Contract, governance, and evidence metadata validated locally.
+environment:
+  os: windows
+  node: local
+  notes: Local Windows evidence only. The loopback child is terminated after the test; no production bridge, Electron IPC, token store, or user data was used.

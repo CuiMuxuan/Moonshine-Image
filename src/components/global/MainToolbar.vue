@@ -135,7 +135,7 @@ const currentRoute = ref("image");
 watch(
   () => route.path,
   (newPath) => {
-    currentRoute.value = newPath.includes("/video") ? "video" : "image";
+    currentRoute.value = newPath.includes("/video") ? "video" : newPath.includes("/image") ? "image" : "";
   },
   { immediate: true }
 );
@@ -196,7 +196,7 @@ const openNovelLink = () => openExternalLink("https://www.jjwxc.net/oneauthor.ph
   outline-offset: 2px;
 }
 
-:global(body.body--dark) .nav-btn {
+:global(body.body--dark .nav-btn) {
   --toolbar-nav-active-background: #2f2f32;
   --toolbar-nav-active-foreground: rgba(255, 255, 255, 0.92);
   --toolbar-nav-active-outline: rgba(255, 255, 255, 0.14);

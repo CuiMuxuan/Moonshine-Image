@@ -1,0 +1,43 @@
+task_id: M1-APP-002
+milestone: M1
+role: APP
+owner: root
+reviewer: evidence-reviewer
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+scope_paths:
+  - docs/decisions/mcp-ocr/ADR-0003-sqlite-jobstore-crash-recovery-spike.md
+  - docs/evidence/M1/M1-APP-002/**
+  - test/contracts/m1-jobstore/sqlite_jobstore_spike.py
+  - test/contracts/m1-jobstore/test_sqlite_jobstore_spike.py
+  - task_plan.md
+  - findings.md
+  - progress.md
+contract_refs:
+  - core-v2
+  - governance-v1
+dependencies:
+  - M1-APP-GATE
+risk_class: medium
+four_quadrant: unknown_reversible
+allowed_actions:
+  - edit_docs
+  - edit_test
+  - local_test
+  - spawn_test_process
+forbidden_actions:
+  - production_code
+  - user_data_migration
+  - ipc_change
+  - publish
+  - pointer_write
+  - user_data_delete
+stop_conditions:
+  - concurrent_double_write
+  - partial_commit_survives
+  - migration_partial_apply
+  - event_sequence_gap
+  - replay_without_confirmation
+  - database_integrity_failure
+  - scope_path_violation
+evidence_required:
+  - E2

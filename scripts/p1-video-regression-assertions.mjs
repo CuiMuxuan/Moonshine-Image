@@ -451,8 +451,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/shared/appConfigSchema.js",
-    description: "Video intermediate, encoding quality and color stabilization strategies default safely in schema v14",
-    pattern: /CONFIG_SCHEMA_VERSION = 14[\s\S]*VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS = Object\.freeze\(\[[\s\S]*"performance"[\s\S]*"balanced"[\s\S]*"quality"[\s\S]*VIDEO_ENCODING_QUALITY_PRESET_OPTIONS = Object\.freeze\(\[[\s\S]*"performance"[\s\S]*"balanced"[\s\S]*"stable"[\s\S]*"highStable"[\s\S]*"nearLossless"[\s\S]*VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS = Object\.freeze\(\[[\s\S]*"off"[\s\S]*"auto"[\s\S]*"enhanced"[\s\S]*videoProcessingEngine:\s*"auto"[\s\S]*intermediateFrameStrategy:\s*"performance"[\s\S]*encodingQualityPreset:\s*"performance"[\s\S]*inpaintColorStabilization:\s*"auto"[\s\S]*frameExtractionFormat:\s*"jpg"[\s\S]*legacySchemaVersion[\s\S]*migrated\.video\.intermediateFrameStrategy = "performance"[\s\S]*migrated\.video\.encodingQualityPreset = "performance"[\s\S]*migrated\.video\.inpaintColorStabilization = "auto"/,
+    description: "Video intermediate, encoding quality and color stabilization strategies default safely in schema v15",
+    pattern: /CONFIG_SCHEMA_VERSION = 15[\s\S]*VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS = Object\.freeze\(\[[\s\S]*"performance"[\s\S]*"balanced"[\s\S]*"quality"[\s\S]*VIDEO_ENCODING_QUALITY_PRESET_OPTIONS = Object\.freeze\(\[[\s\S]*"performance"[\s\S]*"balanced"[\s\S]*"stable"[\s\S]*"highStable"[\s\S]*"nearLossless"[\s\S]*VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS = Object\.freeze\(\[[\s\S]*"off"[\s\S]*"auto"[\s\S]*"enhanced"[\s\S]*videoProcessingEngine:\s*"auto"[\s\S]*intermediateFrameStrategy:\s*"performance"[\s\S]*encodingQualityPreset:\s*"performance"[\s\S]*inpaintColorStabilization:\s*"auto"[\s\S]*frameExtractionFormat:\s*"jpg"[\s\S]*legacySchemaVersion[\s\S]*migrated\.video\.intermediateFrameStrategy = "performance"[\s\S]*migrated\.video\.encodingQualityPreset = "performance"[\s\S]*migrated\.video\.inpaintColorStabilization = "auto"/,
   });
   assertPattern({
     file: "src/components/global/GlobalSettings.vue",
@@ -722,7 +722,7 @@ function runAssertions() {
   assertPattern({
     file: "scripts/verify_video_temporal_enhancement_3s.py",
     description: "3-second real-video temporal verification compares enhancement off/on and precise object-cache effectiveness",
-    pattern: /(?=[\s\S]*DEFAULT_VIDEO_PATH = Path\(r"C:\\Users\\cjh02\\Downloads\\生成看板娘呼吸动画视频 \(5\)\.mp4"\))(?=[\s\S]*duration_seconds=args\.duration)(?=[\s\S]*run_task\(frames, video_info, work_dir \/ "off", False, "off"\))(?=[\s\S]*run_task\(frames, video_info, work_dir \/ "on", True, "on"\))(?=[\s\S]*enabled_minus_disabled_ms)(?=[\s\S]*precise_object_cache_effective)(?=[\s\S]*video-temporal-object-cache-3s-report\.md)[\s\S]*/,
+    pattern: /(?=[\s\S]*parser\.add_argument\("--video", required=True)(?=[\s\S]*duration_seconds=args\.duration)(?=[\s\S]*run_task\(frames, video_info, work_dir \/ "off", False, "off"\))(?=[\s\S]*run_task\(frames, video_info, work_dir \/ "on", True, "on"\))(?=[\s\S]*enabled_minus_disabled_ms)(?=[\s\S]*precise_object_cache_effective)(?=[\s\S]*video-temporal-object-cache-3s-report\.md)[\s\S]*/,
   });
   assertPattern({
     file: "server/moonshine_server/moonshine/sam_service.py",

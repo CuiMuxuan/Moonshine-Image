@@ -51,7 +51,7 @@ const props = defineProps({
   fileUrls: {
     type: Object,
     default: () => ({})
-  }
+  },
 })
 
 const emit = defineEmits([

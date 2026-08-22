@@ -24,6 +24,18 @@ const electronMainSource = fs.readFileSync(
   path.join(repoRoot, "src-electron/electron-main.js"),
   "utf8"
 );
+const startupOverlaySource = fs.readFileSync(
+  path.join(repoRoot, "src/components/global/StartupOverlay.vue"),
+  "utf8"
+);
+const externalWorkflowSource = backendManagerSource.slice(
+  backendManagerSource.indexOf("const handleProbeExternalEnvironment"),
+  backendManagerSource.indexOf("const handlePythonEnvironmentSourceChange")
+);
+const environmentCheckSource = backendManagerSource.slice(
+  backendManagerSource.indexOf("const runEnvironmentCheck"),
+  backendManagerSource.indexOf("const checkEnvironment")
+);
 
 test("update actions only retry the phase reported by the main process", () => {
   setActivePinia(createPinia());
@@ -370,6 +382,69 @@ test("the update store routes external environment actions through IPC fallbacks
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;
   }
+});
+
+test("external recheck probes a pending candidate and only rechecks active configuration", () => {
+  assert.match(
+    backendManagerSource,
+    /const checkSelectedExternalEnvironment = async \(\) => \{[\s\S]*?if \(candidateId\) \{\s*return updateManager\.probeExternalEnvironment\(\{ candidateId \}\);[\s\S]*?if \(updateManager\.runtimeState\.source === "external"\) \{[\s\S]*?return updateManager\.checkRuntime\(/
+  );
+  assert.match(environmentCheckSource, /const externalResult = await checkSelectedExternalEnvironment\(\)/);
+  assert.match(environmentCheckSource, /const ready = applyExternalEnvironmentState\(externalResult\)/);
+  assert.match(environmentCheckSource, /currentEnvironmentStage = "check-external-environment"/);
+  assert.doesNotMatch(externalWorkflowSource, /execute-command/);
+});
+
+test("general settings place close behavior before shortcut configuration", () => {
+  const generalPanelStart = settingsSource.indexOf('<q-tab-panel name="general"');
+  const generalPanelEnd = settingsSource.indexOf('name="backend"', generalPanelStart);
+  const generalPanelSource = settingsSource.slice(generalPanelStart, generalPanelEnd);
+
+  assert.ok(generalPanelStart >= 0 && generalPanelEnd > generalPanelStart);
+  assert.ok(
+    generalPanelSource.indexOf('data-testid="global-settings-close-behavior"') <
+      generalPanelSource.indexOf('>快捷键配置<')
+  );
+  assert.match(generalPanelSource, /v-model="localConfig\.general\.closeBehavior"/);
+  assert.match(generalPanelSource, /v-model="localConfig\.general\.confirmBeforeQuit"/);
+});
+
+test("external environment actions stay centered with the primary environment controls", () => {
+  const externalPanelStart = backendManagerSource.indexOf(
+    'data-testid="backend-external-environment-panel"'
+  );
+  const externalPanelEnd = backendManagerSource.indexOf("<q-dialog", externalPanelStart);
+  const externalPanelSource = backendManagerSource.slice(externalPanelStart, externalPanelEnd);
+
+  assert.ok(externalPanelStart >= 0 && externalPanelEnd > externalPanelStart);
+  assert.match(
+    externalPanelSource,
+    /<div class="row justify-center q-gutter-sm q-mt-md">[\s\S]*?label="重新校验"[\s\S]*?label="忘记此路径"/
+  );
+  assert.match(
+    externalPanelSource,
+    /<div v-else class="row justify-center q-mt-sm">[\s\S]*?label="停止使用"/
+  );
+});
+
+test("startup overlay waits for a decoded first frame before playback", () => {
+  assert.match(startupOverlaySource, /preload="auto"/);
+  assert.match(startupOverlaySource, /@loadeddata="handleVideoReady"/);
+  assert.match(startupOverlaySource, /@canplay="handleVideoReady"/);
+  assert.match(
+    startupOverlaySource,
+    /const handleVideoReady = \(\) => \{[\s\S]*?videoReady\.value = true;[\s\S]*?void schedulePlayback\(\);/
+  );
+  assert.match(startupOverlaySource, /await waitForFirstFramePaint\(\);/);
+  assert.match(
+    startupOverlaySource,
+    /const retryPlayback = \(\) => \{[\s\S]*?playbackRetryTimer = window\.setTimeout\([\s\S]*?void schedulePlayback\(\);/
+  );
+  assert.doesNotMatch(
+    startupOverlaySource,
+    /video\.play\?\.\(\)\.catch\(\(\) => \{\s*finish\(\);/
+  );
+  assert.match(startupOverlaySource, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
 test("service manager offers a read-only external Python environment workflow", () => {

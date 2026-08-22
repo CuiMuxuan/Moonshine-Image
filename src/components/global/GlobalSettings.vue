@@ -52,6 +52,9 @@
             <q-tab name="updates" icon="system_update_alt" label="应用更新" data-testid="global-settings-tab-updates">
               <q-tooltip>应用更新</q-tooltip>
             </q-tab>
+            <q-tab name="mcp" icon="hub" label="MCP" data-testid="global-settings-tab-mcp">
+              <q-tooltip>MCP</q-tooltip>
+            </q-tab>
           </q-tabs>
         </nav>
         <q-separator vertical />
@@ -61,6 +64,30 @@
           <q-tab-panels v-model="activeTab" animated class="bg-transparent">
             <q-tab-panel name="general" class="q-px-none">
               <div class="section">
+                <div class="settings-panel-grid q-mb-lg" data-testid="global-settings-close-behavior">
+                  <SettingsPanel v-bind="settingsHelp.closeBehavior" @request-help="openSettingsHelp">
+                    <q-select
+                      v-model="localConfig.general.closeBehavior"
+                      label="关闭窗口行为"
+                      emit-value
+                      map-options
+                      outlined
+                      dense
+                      :options="closeBehaviorOptions"
+                    />
+                  </SettingsPanel>
+                  <SettingsPanel v-bind="settingsHelp.confirmBeforeQuit" @request-help="openSettingsHelp">
+                    <div class="settings-toggle-control">
+                      <span>{{ localConfig.general.confirmBeforeQuit ? "已启用" : "已关闭" }}</span>
+                      <q-toggle
+                        v-model="localConfig.general.confirmBeforeQuit"
+                        color="primary"
+                        aria-label="退出前确认"
+                      />
+                    </div>
+                  </SettingsPanel>
+                </div>
+
                 <div class="row items-center q-mb-md settings-section-heading">
                   <div>
                     <div class="text-subtitle1 text-weight-medium">快捷键配置</div>
@@ -1257,6 +1284,9 @@
                 </div>
               </div>
             </q-tab-panel>
+            <q-tab-panel name="mcp" class="q-px-none" data-testid="global-settings-mcp-panel">
+              <McpSettingsPanel />
+            </q-tab-panel>
           </q-tab-panels>
           </q-scroll-area>
         </div>
@@ -1333,6 +1363,7 @@
 import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
 import { copyToClipboard, useQuasar } from "quasar";
 import ModelManagementPanel from "src/components/global/ModelManagementPanel.vue";
+import McpSettingsPanel from "src/components/global/McpSettingsPanel.vue";
 import SettingsPanel from "src/components/global/SettingsPanel.vue";
 import { ConfigManager, DEFAULT_BRAND_COLORS, DEFAULT_IMAGE_BRUSH, DEFAULT_MASKING_CONFIG, DEFAULT_TEMP_CLEANUP, DEFAULT_UI_BUTTON_SIZE, DEFAULT_VIDEO_BRUSH, DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT, SLBR_LOCAL_INFERENCE_STRATEGY_OPTIONS, UI_BUTTON_SIZE_OPTIONS, VIDEO_ENCODING_QUALITY_PRESET_OPTIONS, VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS, VIDEO_INTERMEDIATE_FRAME_STRATEGY_OPTIONS, VIDEO_PROCESSING_ENGINE_OPTIONS, VIDEO_TEMPORAL_ENHANCEMENT_MODES } from "src/config/ConfigManager";
 import { createDefaultShortcuts, formatShortcutKeys, getShortcutDefinition, getShortcutTokenFromKeyboardEvent, getShortcutsByGroup, normalizeShortcutKeys, SHORTCUT_GROUP_META, SHORTCUT_GROUPS, validateShortcutConfig } from "src/utils/shortcutConfig";
@@ -1363,6 +1394,10 @@ const updateChannelLabel = computed(() => ({
 const updateEditionLabel = computed(() => (updateManager.state.edition === "test" ? "测试版" : "正式版"));
 
 const launchModeOptions = [{ label: "CUDA 加速", value: "cuda" }, { label: "CPU 模式", value: "cpu" }];
+const closeBehaviorOptions = [
+  { label: "最小化到托盘（推荐）", value: "tray" },
+  { label: "退出程序", value: "quit" },
+];
 const MAT_CUDA_FALLBACK_MESSAGE = "MAT 需要 CUDA，当前已自动切换为 LaMa。";
 const imageProcessingOptions = [
   {
@@ -1551,6 +1586,16 @@ const settingsHelp = Object.freeze({
       "单键、双键和三键动作必须保持规定的按键数量。",
       "同一作用域内的重复组合会阻止保存，输入框获得焦点时不会触发页面快捷键。",
     ]
+  ),
+  closeBehavior: createSettingsHelp(
+    "close-behavior",
+    "关闭窗口行为",
+    "最小化到托盘会保留当前窗口和任务；选择退出程序时会进入退出确认与停止流程。"
+  ),
+  confirmBeforeQuit: createSettingsHelp(
+    "confirm-before-quit",
+    "退出前确认",
+    "退出前会确认正在处理的任务和运行环境准备操作。"
   ),
   backendPort: createSettingsHelp("backend-port", "服务端口", "本地服务监听的端口，修改后会重新加载页面以应用。"),
   launchMode: createSettingsHelp("launch-mode", "启动方式", "CUDA 模式优先使用显卡；CPU 模式兼容性更高，但处理速度通常较慢。"),
@@ -2351,7 +2396,7 @@ const confirmAction = () => { showConfirmDialog.value = false; if (pendingAction
 const applyInitialTarget = () => {
   if (props.initialTab) {
     const requestedTab = props.initialTab === "advanced" ? "image" : props.initialTab;
-    const validTabs = ["general", "backend", "models", "files", "appearance", "image", "video", "updates"];
+    const validTabs = ["general", "backend", "models", "files", "appearance", "image", "video", "updates", "mcp"];
     activeTab.value = validTabs.includes(requestedTab) ? requestedTab : "general";
   }
   if (props.initialModelId) selectedModelId.value = props.initialModelId;

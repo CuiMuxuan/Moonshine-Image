@@ -1,0 +1,19 @@
+manifest_version: 1
+status: planned
+required_sample_count: 30
+target_sample_count: 50
+updated_at: 2026-08-16T00:00:00Z
+coverage:
+  languages:
+    - zh-Hans
+    - en
+  scenarios:
+    - rotated
+    - low_contrast
+    - transparent_background
+    - common_watermark
+    - perspective
+samples: []
+license_gate:
+  owner: REL
+  rule: Every sample requires a source, license, redistribution decision, and SHA-256 before status can become ready.

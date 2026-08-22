@@ -1,0 +1,36 @@
+manifest_version: 1
+task_id: M3-SEC-001
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+candidate_ref: worktree:M3-SEC-001
+generated_at: 2026-08-16T00:00:00Z
+evidence_level: E2
+files:
+  - path: docs/decisions/mcp-ocr/ADR-0005-mcp-sdk-packaging-spike.md
+    sha256: d010eba9e7590d889aaaae65937552b2b09e39e1235f82ac8b3d1edd22b5f22b
+    size_bytes: 2962
+    kind: decision
+  - path: test/mcp/mcp-sdk-packaging-spike.test.mjs
+    sha256: ad073874633e2aa95c7f5e979eb14cb4ab1915879cfd1b835e8f89ed29af1c6c
+    size_bytes: 4415
+    kind: test_log
+  - path: docs/evidence/M3/M3-SEC-001/task.yaml
+    sha256: 7c521aaa19e3f8f47c45000212c3e9b172894e2ef822b8e99222c8a903cbf96c
+    size_bytes: 898
+    kind: task
+  - path: docs/evidence/M3/M3-SEC-001/handoff.yaml
+    sha256: adb918845af09308f6a195ab2fb5ed326d657149cae0c2f5525964cf9123c80f
+    size_bytes: 1378
+    kind: handoff
+tests:
+  - command: node --test test/mcp/mcp-sdk-packaging-spike.test.mjs
+    result: pass
+    evidence_id: EVID-M3-SEC-001
+    summary: 1/1 passed using a short-lived Node child with JSON-RPC-only stdout and zero backend/listener counters.
+  - command: npm run test:contracts:mcp-ocr
+    result: pass
+    evidence_id: EVID-M0-CONTRACT-001
+    summary: Contract, governance, and evidence metadata validated locally.
+environment:
+  os: windows
+  node: local
+  notes: Local Windows evidence only. No SDK package, lockfile, production adapter, Electron process, backend, or user data was used.

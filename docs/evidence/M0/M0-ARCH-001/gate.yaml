@@ -1,0 +1,13 @@
+gate_id: M0-ARCH-GATE
+milestone: M0
+status: accepted
+reviewer: qa-red-reviewer
+evidence_ids:
+  - EVID-M0-ARCH-CONTRACTS-001
+  - EVID-M0-ARCH-REGRESSION-001
+failed_samples: []
+decision: >-
+  Accepted on independent local E2 evidence. QA/RED reran npm run test:contracts:mcp-ocr with 6/6 tests passing, npm run test:regression:p0 with the complete P0 gate passing (including lint, build, static assertions, and comprehensive E2E), and npm run lint with exit 0. The harness now requires every referenced artifact to exist and checks the artifact_exists negative fixture. QA/RED recomputed all 20 manifest entries, including package.json, package-lock.json, and the exact LF .gitattributes rule: every path is workspace-relative, every file exists with a positive recorded size, every SHA-256 matches, and manifest.yaml is excluded from its own list. Schema/fixture negatives, templates, unique unknown IDs, scope declarations, rollback boundaries, and current-versus-target wording passed. Evidence is local E2 only; no external-machine, release, or canary result is claimed. Target MCP, OCR, JobStore, TrayManager, and WindowLifecycleController services remain unimplemented.
+rollback: Remove only the M0-ARCH-001 contract, fixture, decision, evidence, package metadata, and planning changes by the declared scope paths and restore baseline e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d; this review changed no production code, release pointer, immutable release object, or user data.
+next_action: Preserve core-v2 and governance-v1 contract IDs and carry this local E2 evidence into M1 planning. The approved ignored docs are explicitly staged without changing .gitignore; obtain external-machine, release, or canary evidence only after those environments are actually exercised.
+timestamp: 2026-08-15T18:50:47Z

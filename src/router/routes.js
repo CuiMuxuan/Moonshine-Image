@@ -17,6 +17,10 @@ const routes = [
         component: () => import("pages/VideoPage.vue"),
         props: true,
       },
+      {
+        path: "activity/mcp",
+        component: () => import("pages/McpActivityPage.vue"),
+      },
     ],
   },
 

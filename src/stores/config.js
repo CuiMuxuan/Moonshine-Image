@@ -8,7 +8,8 @@ export const useConfigStore = defineStore("config", () => {
 
   const loadConfig = async () => {
     if (!window.electron) {
-      config.value = ConfigManager.mergeWithDefault({});
+      // Browser-hosted sessions have no durable IPC store; preserve the in-memory
+      // config when route transitions ask for a reload.
       return;
     }
 

@@ -39,6 +39,15 @@
         :sam-runtime-device="samRuntimeDevice"
         :sam-text-batch-target-count="samTextBatchTargetCount"
         :sam-text-batch-state="samTextBatchState"
+        :ocr-available="ocrAvailable"
+        :ocr-busy="ocrBusy"
+        :ocr-status-message="ocrStatusMessage"
+        :ocr-model-id="ocrModelId"
+        :ocr-threshold-high="ocrThresholdHigh"
+        :ocr-threshold-low="ocrThresholdLow"
+        :ocr-sam-enhance="ocrSamEnhance"
+        :ocr-sam-model-id="ocrSamModelId"
+        :ocr-sam-model-options="ocrSamModelOptions"
         :sam-image="samImage"
         :sam-image-type="samImageType"
         :sam-context-id="samContextId"
@@ -53,6 +62,8 @@
         @sam-processing-state="$emit('sam-processing-state', $event)"
         @sam-text-batch-request="$emit('sam-text-batch-request', $event)"
         @sam-text-batch-cancel="$emit('sam-text-batch-cancel')"
+        @ocr-request="$emit('ocr-request', $event)"
+        @update:ocr-settings="$emit('update:ocr-settings', $event)"
       />
     </div>
   </div>
@@ -148,6 +159,42 @@ const props = defineProps({
     type: Object,
     default: () => ({}),
   },
+  ocrAvailable: {
+    type: Boolean,
+    default: false,
+  },
+  ocrBusy: {
+    type: Boolean,
+    default: false,
+  },
+  ocrStatusMessage: {
+    type: String,
+    default: "OCR 组件或模型尚未就绪",
+  },
+  ocrModelId: {
+    type: String,
+    default: "ocr_rapid_onnx_mobile",
+  },
+  ocrThresholdHigh: {
+    type: Number,
+    default: 0.9,
+  },
+  ocrThresholdLow: {
+    type: Number,
+    default: 0.8,
+  },
+  ocrSamEnhance: {
+    type: Boolean,
+    default: false,
+  },
+  ocrSamModelId: {
+    type: String,
+    default: "",
+  },
+  ocrSamModelOptions: {
+    type: Array,
+    default: () => [],
+  },
   samImage: {
     type: String,
     default: "",
@@ -191,6 +238,8 @@ const emit = defineEmits([
   "sam-processing-state",
   "sam-text-batch-request",
   "sam-text-batch-cancel",
+  "ocr-request",
+  "update:ocr-settings",
 ]);
 const imageUrl = computed(() => {
   if (props.imageUrl) {

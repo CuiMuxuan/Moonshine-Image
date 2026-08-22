@@ -1,0 +1,9 @@
+/.gitattributes text eol=lf
+/package.json text eol=lf
+/package-lock.json text eol=lf
+/docs/contracts/mcp-ocr/** text eol=lf
+/docs/decisions/mcp-ocr/** text eol=lf
+/docs/evidence/M0/M0-ARCH-001/** text eol=lf
+/docs/decisions/mcp-ocr/ADR-0002-jobstore-facade-spike.md text eol=lf
+/docs/evidence/M1/M1-APP-001/** text eol=lf
+/test/contracts/** text eol=lf

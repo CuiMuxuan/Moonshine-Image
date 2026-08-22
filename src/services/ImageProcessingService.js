@@ -126,7 +126,6 @@ const performBatchInpainting = async (requestData) => {
       );
     }
     validateRequestData(payload);
-    console.log('发送批量处理请求:', payload);
 
     const response = await api.post('/api/v1/batch_inpaint', payload, {
       headers: {

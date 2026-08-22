@@ -54,8 +54,9 @@ const runtimeEnvName =
 const targetPythonVersion = "3.12.10";
 const torchVersion = "2.11.0";
 const torchvisionVersion = "0.26.0";
-const defaultCu126TorchWheelPath =
-  "C:\\code\\torch\\torch-2.11.0+cu126-cp312-cp312-win_amd64.whl";
+// CUDA 12.6 builds may use a locally downloaded wheel, but the path must be
+// supplied by the build environment rather than tied to a developer machine.
+const defaultCu126TorchWheelPath = "";
 const condaPackPythonWarnings = [
   process.env.PYTHONWARNINGS,
   "ignore:pkg_resources is deprecated as an API:UserWarning",

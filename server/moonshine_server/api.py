@@ -1,13 +1,15 @@
 import json
+import hashlib
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Any, Optional, Dict, List, Callable
 import base64 
 import io
 from tqdm import tqdm
@@ -27,13 +29,14 @@ except:
 
 import uvicorn
 from PIL import Image
-from fastapi import APIRouter, Body, FastAPI, Query, Request, UploadFile
+from fastapi import APIRouter, Body, FastAPI, Header, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
+from pydantic import ValidationError
 from socketio import AsyncServer
 
 from moonshine_server.file_manager import FileManager
@@ -67,6 +70,19 @@ from moonshine_server.inpaint_color_stabilization import (
 )
 from moonshine_server.model.utils import torch_gc
 from moonshine_server.model_manager import ModelManager
+from moonshine_server.application_facade import (
+    ApplicationFacade,
+    JobCancellationRequested,
+    JobInProgressError,
+    JobProcessingError,
+    JobResultUnavailableError,
+)
+from moonshine_server.jobs import (
+    IdempotencyConflictError,
+    JobNotFoundError,
+    SqliteJobStore,
+    safe_error,
+)
 from moonshine_server.video_temporal_enhancement import (
     VideoTemporalEnhancer,
     is_temporal_enhancement_enabled,
@@ -88,6 +104,7 @@ from moonshine_server.schema import (
     ModelInfo,
     RealESRGANModel,
     BatchInpaintRequest, 
+    McpImageSubmitRequest,
     BatchInpaintByFolderRequest,
     MoonshineImageProcessRequest,
     MoonshineImageFolderInspectRequest,
@@ -134,6 +151,8 @@ from moonshine_server.moonshine.model_registry import (
 )
 from moonshine_server.moonshine.sam_service import SamService, SamServiceError
 from moonshine_server.moonshine.sam_video_tasks import sam_video_task_manager
+from moonshine_server.ocr_api import OcrApi, OcrApiError, OcrRecognizeRequest
+from moonshine_server.ocr_adapter import build_local_rapidocr_adapter
 
 CURRENT_DIR = Path(__file__).parent.absolute().resolve()
 WEB_APP_DIR = CURRENT_DIR / "web_app"
@@ -211,8 +230,18 @@ global_sio: AsyncServer = None
 
 
 
+def _normalize_query_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def _normalize_client_scope(value: Any) -> str:
+    return value.strip() if isinstance(value, str) and value.strip() else "legacy-v1"
+
+
 class Api:
-    def __init__(self, app: FastAPI, config: ApiConfig):
+    def __init__(self, app: FastAPI, config: ApiConfig, ocr_adapter_factory: Callable[[], Any] | None = None):
         self.app = app
         self.config = config
         self.router = APIRouter()
@@ -224,6 +253,14 @@ class Api:
         self.model_manager = self._build_model_manager()
         self._moonshine_runners = {}
         self._sam_services = {}
+        self.job_store = self._build_job_store()
+        self.application_facade = ApplicationFacade(self.job_store)
+        self.workspace_registry = self._build_workspace_registry()
+        self._mcp_policy_snapshot_id: str | None = None
+        self._mcp_artifact_root = self._build_mcp_artifact_root()
+        # Prefer the explicit caller factory; otherwise use the local, hash-
+        # checked development bundle and remain unavailable when it is absent.
+        self.ocr_api = OcrApi(adapter_factory=ocr_adapter_factory or build_local_rapidocr_adapter)
 
         # fmt: off
         self.add_api_route("/api/v1/gen-info", self.api_geninfo, methods=["POST"], response_model=GenInfoResponse)
@@ -240,6 +277,13 @@ class Api:
         self.add_api_route("/api/v1/adjust_mask", self.api_adjust_mask, methods=["POST"])
         self.add_api_route("/api/v1/save_image", self.api_save_image, methods=["POST"])
         self.add_api_route("/api/v1/batch_inpaint", self.api_batch_inpaint, methods=["POST"])
+        self.add_api_route("/api/v1/jobs/image-batch-inpaint", self.api_mcp_image_submit, methods=["POST"])
+        self.add_api_route("/api/v1/jobs/{job_id}", self.api_job, methods=["GET"])
+        self.add_api_route("/api/v1/jobs/{job_id}/events", self.api_job_events, methods=["GET"])
+        self.add_api_route("/api/v1/jobs/{job_id}/artifacts", self.api_job_artifacts, methods=["GET"])
+        self.add_api_route("/api/v1/jobs/{job_id}/cleanup", self.api_job_cleanup, methods=["GET"])
+        self.add_api_route("/api/v1/jobs/{job_id}/observability", self.api_job_observability, methods=["GET"])
+        self.add_api_route("/api/v1/jobs/{job_id}/cancel", self.api_job_cancel, methods=["POST"])
         self.add_api_route("/api/v1/health", self.api_health, methods=["GET"])
         self.add_api_route("/api/v1/check_cuda", self.api_check_cuda_fixed, methods=["GET"])
         self.add_api_route("/api/v1/batch_inpaint_by_folder", self.api_batch_inpaint_by_folder, methods=["POST"])
@@ -252,6 +296,8 @@ class Api:
         self.add_api_route("/api/v1/moonshine/models/tasks/{task_id}", self.api_moonshine_model_task, methods=["GET"])
         self.add_api_route("/api/v1/moonshine/sam/capabilities", self.api_moonshine_sam_capabilities, methods=["GET"])
         self.add_api_route("/api/v1/moonshine/sam/predict", self.api_moonshine_sam_predict, methods=["POST"])
+        self.add_api_route("/api/v1/moonshine/ocr/capabilities", self.api_moonshine_ocr_capabilities, methods=["GET"])
+        self.add_api_route("/api/v1/moonshine/ocr/recognize", self.api_moonshine_ocr_recognize, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/sam/video/propagate", self.api_moonshine_sam_video_propagate, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/sam/video/propagate/jobs", self.api_moonshine_sam_video_propagate_job_create, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/sam/video/propagate/jobs/{task_id}", self.api_moonshine_sam_video_propagate_job, methods=["GET"])
@@ -273,6 +319,185 @@ class Api:
 
     def add_api_route(self, path: str, endpoint, **kwargs):
         return self.app.add_api_route(path, endpoint, **kwargs)
+
+    @staticmethod
+    def _build_job_store() -> SqliteJobStore | None:
+        user_data = str(os.environ.get("MOONSHINE_USER_DATA_DIR") or "").strip()
+        enabled = os.environ.get("MOONSHINE_PERSISTENT_JOBS_ENABLED") == "1"
+        if enabled and user_data:
+            database_path = Path(user_data).expanduser().resolve() / "jobs" / "jobs.sqlite3"
+            return SqliteJobStore(database_path)
+        # The facade owns a process-local in-memory store for CLI/tests. The
+        # disabled path must not create a filesystem database.
+        return None
+
+    @staticmethod
+    def _build_workspace_registry() -> dict[str, Path]:
+        """Load opaque workspace ids from application-owned configuration.
+
+        The MCP request never carries these roots. They are injected by the
+        application process through a bounded JSON map and canonicalized again
+        before any input file is opened.
+        """
+        raw = str(os.environ.get("MOONSHINE_WORKSPACE_ROOTS_JSON") or "").strip()
+        if not raw:
+            return {}
+        try:
+            values = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(values, dict):
+            return {}
+        registry: dict[str, Path] = {}
+        for workspace_id, root in values.items():
+            if not isinstance(workspace_id, str) or not re.fullmatch(r"^ws_[a-z0-9]{8,64}$", workspace_id):
+                continue
+            if not isinstance(root, str) or not root.strip():
+                continue
+            try:
+                canonical = Path(root).expanduser().resolve(strict=True)
+            except OSError:
+                continue
+            if canonical.is_dir():
+                registry[workspace_id] = canonical
+        return registry
+
+    def _build_mcp_artifact_root(self) -> Path:
+        user_data = str(os.environ.get("MOONSHINE_USER_DATA_DIR") or "").strip()
+        if user_data:
+            return Path(user_data).expanduser().resolve() / "jobs" / "artifacts"
+        return Path.cwd() / ".moonshine-mcp-artifacts"
+
+    @staticmethod
+    def _normalize_mcp_relative_path(value: Any) -> str | None:
+        if not isinstance(value, str) or not value.strip() or len(value) > 240:
+            return None
+        normalized = value.strip().replace("\\", "/")
+        if (
+            normalized.startswith("/")
+            or normalized.startswith("//")
+            or re.match(r"^[A-Za-z]:/", normalized)
+            or "://" in normalized
+        ):
+            return None
+        parts = normalized.split("/")
+        if any(not part or part in {".", ".."} for part in parts):
+            return None
+        return normalized
+
+    def _resolve_mcp_workspace_file(self, workspace_id: str, relative_path: str) -> Path:
+        root = self.workspace_registry.get(workspace_id)
+        normalized = self._normalize_mcp_relative_path(relative_path)
+        if root is None or normalized is None:
+            raise ValueError("workspace path is invalid")
+        candidate = (root / Path(*normalized.split("/"))).resolve(strict=True)
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("workspace path escapes its root") from exc
+        if not candidate.is_file():
+            raise ValueError("workspace asset is not a file")
+        return candidate
+
+    def _build_mcp_batch_request(self, req: McpImageSubmitRequest, job_id: str) -> BatchInpaintRequest:
+        items = []
+        for item in req.items:
+            image_path = self._resolve_mcp_workspace_file(req.workspace_id, item.input_path)
+            mask_path = self._resolve_mcp_workspace_file(req.workspace_id, item.mask_path)
+            items.append({"id": item.id, "image": str(image_path), "mask": str(mask_path)})
+        return BatchInpaintRequest(
+            data=items,
+            image_type="path",
+            mask_type="path",
+            response_type="path",
+            temp_path=str(self._mcp_artifact_root / job_id),
+            output_format="auto",
+            output_quality=95,
+        )
+
+    @staticmethod
+    def _mcp_request_summary(req: McpImageSubmitRequest) -> dict[str, Any]:
+        assets = []
+        item_ids = []
+        for item in req.items:
+            item_ids.append(item.id)
+            for kind, value in (("image", item.input_path), ("mask", item.mask_path)):
+                digest = hashlib.sha256(f"{kind}:{req.workspace_id}:{value}".encode("utf-8")).hexdigest()
+                assets.append(
+                    {
+                        "schema_version": "asset-ref/v2",
+                        "asset_id": f"ast_{digest[:24]}",
+                        "kind": kind,
+                        "locator": {
+                            "scheme": "workspace",
+                            "workspace_id": req.workspace_id,
+                            "relative_path": value,
+                        },
+                        "media_type": "image/png",
+                        "sha256": digest,
+                        "size_bytes": 0,
+                    }
+                )
+        return {
+            "operation": "image_batch_inpaint",
+            "item_count": len(req.items),
+            "item_ids": item_ids,
+            "input_assets": assets,
+        }
+
+    def api_job(self, job_id: str):
+        try:
+            return self.application_facade.get_job(job_id)
+        except JobNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Job not found") from exc
+
+    def api_job_events(self, job_id: str, after: int = Query(-1, ge=-1), limit: int = Query(100, ge=1, le=500)):
+        after = _normalize_query_int(after, -1, -1, 2**31 - 1)
+        limit = _normalize_query_int(limit, 100, 1, 500)
+        try:
+            return {
+                "job_id": job_id,
+                "events": self.application_facade.get_events(
+                    job_id,
+                    after_sequence=after,
+                    limit=limit,
+                ),
+            }
+        except JobNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Job not found") from exc
+
+    def api_job_artifacts(self, job_id: str):
+        try:
+            return {
+                "job_id": job_id,
+                "artifacts": self.application_facade.get_artifacts(job_id),
+            }
+        except JobNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Job not found") from exc
+
+    def api_job_cleanup(self, job_id: str):
+        try:
+            return {
+                "job_id": job_id,
+                "cleanup": self.application_facade.get_cleanup_ledger(job_id),
+            }
+        except JobNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Job not found") from exc
+
+    def api_job_observability(self, job_id: str):
+        try:
+            return {
+                "job_id": job_id,
+                "observability": self.application_facade.get_observability_summary(job_id),
+            }
+        except JobNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Job not found") from exc
+
+    def api_job_cancel(self, job_id: str):
+        try:
+            return self.application_facade.cancel(job_id)
+        except JobNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Job not found") from exc
 
     def api_save_image(self, file: UploadFile):
         # Sanitize filename to prevent path traversal
@@ -589,6 +814,32 @@ class Api:
     def api_moonshine_sam_capabilities(self):
         """Return SAM smart-selection capability state without loading predictor weights."""
         return JSONResponse(content=jsonable_encoder(self._get_sam_service().capabilities()))
+
+    def api_moonshine_ocr_capabilities(self):
+        """Return a safe OCR capability projection without loading a runtime."""
+        return JSONResponse(content=jsonable_encoder(self.ocr_api.capabilities()))
+
+    def api_moonshine_ocr_recognize(self, raw_request: Any = Body(default=None)):
+        """Recognize bounded in-memory image bytes through the injected OCR adapter."""
+        try:
+            req = OcrRecognizeRequest.model_validate(raw_request)
+        except ValidationError:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "OCR_INPUT_INVALID", "message": "OCR input is invalid"}},
+            )
+        try:
+            result = self.ocr_api.recognize(
+                req.encoded_image,
+                regions=req.regions,
+                options=req.options,
+            )
+        except OcrApiError as error:
+            return JSONResponse(
+                status_code=error.status_code,
+                content={"error": {"code": error.code, "message": error.message}},
+            )
+        return JSONResponse(content=jsonable_encoder(result))
 
     def api_moonshine_sam_predict(self, req: MoonshineSamPredictRequest):
         """Run SAM1/SAM2 point/box prediction using manually installed model files."""
@@ -1291,9 +1542,26 @@ class Api:
         item_id: str,
         temp_path: Optional[str],
         extension: str = ".png",
+        execution_context=None,
     ):
         output_extension = extension if str(extension or "").startswith(".") else f".{extension}"
         output_name = f"result_{item_id}{output_extension}"
+        if execution_context is not None and temp_path:
+            mime_type = {
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".webp": "image/webp",
+                ".png": "image/png",
+            }.get(output_extension.lower(), "application/octet-stream")
+            artifact = execution_context.publish_bytes(
+                root=temp_path,
+                relative_path=output_name,
+                payload=result_bytes,
+                mime_type=mime_type,
+            )
+            # Keep the legacy response path shape; the Job/Artifact contract
+            # exposes only the artifact locator and never the absolute path.
+            return os.path.join(str(temp_path), output_name)
         if temp_path:
             os.makedirs(temp_path, exist_ok=True)
             output_path = os.path.join(temp_path, output_name)
@@ -1443,8 +1711,147 @@ class Api:
             )
         )
 
-    def api_batch_inpaint(self, req: BatchInpaintRequest):
-        """Process a batch of image and mask pairs in one request."""
+    def api_mcp_image_submit(
+        self,
+        raw_request: dict[str, Any] = Body(...),
+        idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
+        client_id: Optional[str] = Header(None, alias="X-Moonshine-Client"),
+        request_id: Optional[str] = Header(None, alias="X-Moonshine-Request-Id"),
+        policy_snapshot_id: Optional[str] = Header(None, alias="X-Moonshine-Policy-Snapshot"),
+    ):
+        """Queue the contract-v1 MCP batch without changing legacy v1 semantics."""
+        try:
+            req = McpImageSubmitRequest.model_validate(raw_request)
+        except ValidationError as exc:
+            raise HTTPException(status_code=400, detail={"code": "INVALID_SUBMIT_REQUEST"}) from exc
+        if (
+            not isinstance(idempotency_key, str)
+            or not idempotency_key
+            or len(idempotency_key) > 160
+            or not isinstance(client_id, str)
+            or not re.fullmatch(r"^[A-Za-z0-9._-]{1,128}$", client_id)
+            or not isinstance(request_id, str)
+            or not re.fullmatch(r"^req_[a-z0-9]{8,64}$", request_id)
+            or not isinstance(policy_snapshot_id, str)
+            or req.confirmation.policy_snapshot_id != policy_snapshot_id
+        ):
+            raise HTTPException(status_code=400, detail={"code": "INVALID_SUBMIT_REQUEST"})
+        if req.workspace_id not in self.workspace_registry:
+            raise HTTPException(status_code=400, detail={"code": "INVALID_WORKSPACE_OR_PATH"})
+        if any(item.model_id is not None for item in req.items):
+            # Model selection is intentionally unavailable until the worker can
+            # bind an allowlisted model snapshot to the durable request.
+            raise HTTPException(status_code=400, detail={"code": "UNSUPPORTED_TOOL_OR_MODEL"})
+        if req.confirmation.mode == "confirmed" and not req.confirmation.confirmation_id:
+            raise HTTPException(status_code=409, detail={"code": "CONFIRMATION_REQUIRED"})
+        try:
+            # Resolve every input before creating a job. This keeps validation
+            # failures side-effect free and prevents jobs with missing masks.
+            for item in req.items:
+                self._resolve_mcp_workspace_file(req.workspace_id, item.input_path)
+                self._resolve_mcp_workspace_file(req.workspace_id, item.mask_path)
+            request_fingerprint_payload = {
+                "workspace_id": req.workspace_id,
+                "items": [
+                    {
+                        "id": item.id,
+                        "input_path": item.input_path,
+                        "mask_path": item.mask_path,
+                        **({"model_id": item.model_id} if item.model_id is not None else {}),
+                    }
+                    for item in req.items
+                ],
+                "client_id": client_id,
+                "policy_snapshot_id": policy_snapshot_id,
+                "options": {"operation": "image_batch_inpaint"},
+            }
+            initial_request = dict(request_fingerprint_payload)
+            request_summary = self._mcp_request_summary(req)
+            request_summary.update({
+                "request_id": request_id,
+                "client_id": client_id,
+                "policy_snapshot_id": policy_snapshot_id,
+                "workspace_id": req.workspace_id,
+            })
+            # Build once after the job id is known; path checks are repeated by
+            # the worker before opening files to cover workspace changes.
+            self._mcp_policy_snapshot_id = policy_snapshot_id
+            record, _ = self.application_facade.enqueue_batch_inpaint(
+                initial_request,
+                lambda context: self._process_batch_inpaint(
+                    self._build_mcp_batch_request(req, context.job_id),
+                    context,
+                ),
+                client_scope=client_id,
+                idempotency_key=idempotency_key,
+                policy_snapshot_id=policy_snapshot_id,
+                request_summary=request_summary,
+                policy_validator=lambda: self._mcp_policy_snapshot_id == policy_snapshot_id,
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(status_code=409, detail={"code": "IDEMPOTENCY_CONFLICT"}) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"code": "INVALID_WORKSPACE_OR_PATH"}) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail={"code": "QUEUE_UNAVAILABLE"}) from exc
+        return JSONResponse(
+            status_code=202,
+            content={
+                "schema_version": "batch-submit-response/v1",
+                "job_id": record.job_id,
+                "request_id": request_id,
+                "status": "queued",
+            },
+            headers={"X-Moonshine-Job-Id": record.job_id},
+        )
+
+    def api_batch_inpaint(
+        self,
+        req: BatchInpaintRequest,
+        idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
+        client_id: Optional[str] = Header(None, alias="X-Moonshine-Client"),
+    ):
+        """Keep the v1 response shape while routing execution through the facade."""
+        try:
+            record, payload, _ = self.application_facade.submit_batch_inpaint(
+                req,
+                lambda context: self._process_batch_inpaint(req, context),
+                client_scope=_normalize_client_scope(client_id),
+                idempotency_key=idempotency_key if isinstance(idempotency_key, str) else None,
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(status_code=409, detail="Idempotency key conflicts with an existing job") from exc
+        except JobInProgressError as exc:
+            raise HTTPException(status_code=409, detail="A job with this idempotency key is already running") from exc
+        except JobCancellationRequested as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=safe_error(
+                    "job_cancelled",
+                    stage="cancel",
+                    retryable=False,
+                    message_key="job.cancelled",
+                ),
+            ) from exc
+        except JobProcessingError as exc:
+            raise HTTPException(status_code=500, detail=exc.safe_error) from exc
+        except JobResultUnavailableError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=safe_error(
+                    "resource_exhausted",
+                    stage="queue",
+                    retryable=True,
+                    message_key="job.result_unavailable_after_restart",
+                ),
+            ) from exc
+        return JSONResponse(
+            content=jsonable_encoder(payload),
+            headers={"X-Moonshine-Job-Id": record.job_id},
+        )
+
+    def _process_batch_inpaint(self, req: BatchInpaintRequest, execution_context):
+        """Process a batch of image and mask pairs in one facade-owned job."""
         if len(req.data) == 0:
             raise HTTPException(
                 status_code=400,
@@ -1464,6 +1871,7 @@ class Api:
         ):
             item_id = item.id or f"item_{i}"
             try:
+                execution_context.raise_if_cancelled()
                 image, alpha_channel, infos, source_format = self._decode_item_image(
                     item.image, req.image_type
                 )
@@ -1525,6 +1933,7 @@ class Api:
                         item_id,
                         req.temp_path,
                         output_spec["extension"],
+                        execution_context=execution_context,
                     )
                 else:
                     result_data = self._build_result_payload(res_img_bytes, output_spec)
@@ -1540,6 +1949,8 @@ class Api:
                 )
 
             except Exception as e:
+                if isinstance(e, JobCancellationRequested):
+                    raise
                 if isinstance(e, DiskSpaceError):
                     raise
                 logger.error(f"Error processing item {item_id}: {str(e)}")
@@ -1547,7 +1958,13 @@ class Api:
                     {
                         "id": item_id,
                         "index": i,
-                        "error": str(e),
+                        "error": safe_error(
+                            "internal_error",
+                            stage="model",
+                            retryable=False,
+                            message_key="image.item_processing_failed",
+                            safe_details={"item_index": i},
+                        ),
                         "success": False,
                     }
                 )
@@ -1559,18 +1976,12 @@ class Api:
             f"Batch processing completed in {total_time:.2f}s for {len(req.data)} images"
         )
 
-        return JSONResponse(
-            content=jsonable_encoder(
-                {
-                    "results": results,
-                    "total_time": total_time,
-                    "processed_count": len(results),
-                    "success_count": sum(
-                        1 for result in results if result.get("success", False)
-                    ),
-                }
-            )
-        )
+        return {
+            "results": results,
+            "total_time": total_time,
+            "processed_count": len(results),
+            "success_count": sum(1 for result in results if result.get("success", False)),
+        }
 
     def api_batch_inpaint_by_folder(self, req: BatchInpaintByFolderRequest):
         """Process images from an image folder and masks from a mask folder.

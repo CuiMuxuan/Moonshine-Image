@@ -1,0 +1,42 @@
+handoff_version: 1
+task_id: M1-APP-003
+status: ready
+owner: root
+reviewer: artifact-reviewer
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+changed_paths:
+  - docs/decisions/mcp-ocr/ADR-0004-artifact-staging-atomic-publish-spike.md
+  - docs/evidence/M1/M1-APP-003/.gitattributes
+  - docs/evidence/M1/M1-APP-003/task.yaml
+  - docs/evidence/M1/M1-APP-003/handoff.yaml
+  - docs/evidence/M1/M1-APP-003/manifest.yaml
+  - test/contracts/m1-jobstore/artifact_staging_spike.py
+  - test/contracts/m1-jobstore/test_artifact_staging_spike.py
+contract_versions:
+  - core-v2
+  - governance-v1
+decisions:
+  - docs/decisions/mcp-ocr/ADR-0004-artifact-staging-atomic-publish-spike.md
+tests:
+  - command: python test/contracts/m1-jobstore/test_artifact_staging_spike.py
+    result: pass
+    evidence_id: EVID-M1-ARTIFACT-SPIKE-003
+  - command: python test/contracts/m1-jobstore/test_sqlite_jobstore_spike.py
+    result: pass
+    evidence_id: EVID-M1-SQLITE-SPIKE-002
+  - command: node --test test/contracts/m1-jobstore/jobstore-spike.test.mjs
+    result: pass
+    evidence_id: EVID-M1-APP-SPIKE-001
+  - command: npm run test:contracts:mcp-ocr
+    result: pass
+    evidence_id: EVID-M0-CONTRACT-001
+evidence_manifest: docs/evidence/M1/M1-APP-003/manifest.yaml
+unknowns:
+  - id: U-003
+    state: spike
+    owner: APP
+    review_trigger: before-M1-APP-003-gate
+rollback:
+  runbook: Delete only the M1-APP-003 ADR, evidence directory, and two artifact spike files, then restore the three planning records. Tests use TemporaryDirectory, so no production artifact, database, user file, release object, immutable asset, pointer, or user data requires restoration.
+  verified: false
+next_action: Obtain independent artifact review. Do not add a production publisher, JobStore, facade, or IPC from local same-volume Windows evidence alone.

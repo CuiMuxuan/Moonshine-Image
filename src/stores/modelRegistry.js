@@ -43,6 +43,8 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
   const installedMaskModels = computed(() =>
     maskModels.value.filter((model) => model.installed)
   );
+  const ocrModels = computed(() => models.value.filter((model) => model.type === "ocr"));
+  const installedOcrModels = computed(() => ocrModels.value.filter((model) => model.installed));
 
   const setRegistryPayload = (payload = {}) => {
     models.value = Array.isArray(payload.models) ? payload.models : [];
@@ -386,6 +388,8 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
     installedImageModels,
     maskModels,
     installedMaskModels,
+    ocrModels,
+    installedOcrModels,
     loadModels,
     refreshModels,
     verifyModel,

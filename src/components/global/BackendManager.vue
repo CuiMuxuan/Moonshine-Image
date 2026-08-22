@@ -149,7 +149,7 @@
                         </q-item>
                       </q-list>
 
-                      <div class="row justify-end q-gutter-sm q-mt-md">
+                      <div class="row justify-center q-gutter-sm q-mt-md">
                         <q-btn
                           v-if="externalEnvironmentPath"
                           flat
@@ -186,7 +186,7 @@
                           @click="handleActivateExternalEnvironment"
                         />
                       </div>
-                      <div v-else class="row justify-end q-mt-sm">
+                      <div v-else class="row justify-center q-mt-sm">
                         <q-btn
                           outline
                           no-caps
@@ -275,7 +275,7 @@
                         data-testid="backend-managed-environment-error"
                       >
                         <div>{{ managedEnvironmentError }}</div>
-                        <div class="q-mt-xs">请重试，或手动创建可用运行环境；也可以从夸克网盘下载可用运行环境，再在“已有环境”中选择。</div>
+                        <div class="q-mt-xs">请重试，或手动创建可用运行环境；也可以从夸克网盘下载可用运行环境，再在"已有环境"中选择。</div>
                       </q-banner>
                       <q-banner
                         v-if="updateManager.runtimeState.restartRequired"
@@ -1284,11 +1284,19 @@ const setEnvironmentItemState = (items, state) => {
 const setAllEnvironmentItemStates = (state) =>
   setEnvironmentItemState(ENVIRONMENT_ITEM_KEYS, state);
 const getEnvironmentItemState = (item) => {
-  if (item === "runtime" && isBundledBackendMode.value && pythonEnvironmentSource.value === "managed") {
-    const status = updateManager.runtimeState.status;
-    if (status === "degraded") return "blocked";
-    if (status === "ready") return "success";
-    if (["failed", "needs-repair"].includes(status)) return "failure";
+  if (item === "runtime" && isBundledBackendMode.value) {
+    if (pythonEnvironmentSource.value === "managed") {
+      const status = updateManager.runtimeState.status;
+      if (status === "degraded") return "blocked";
+      if (status === "ready") return "success";
+      if (["failed", "needs-repair"].includes(status)) return "failure";
+    }
+    if (pythonEnvironmentSource.value === "external") {
+      const status = updateManager.runtimeState.status;
+      if (status === "degraded") return "blocked";
+      if (status === "ready") return "success";
+      if (["failed", "needs-repair"].includes(status)) return "failure";
+    }
   }
   return item === "runtime"
     ? resolveEnvironmentItemGroupState(environmentItemStates, ["python", "venv"])
@@ -1312,8 +1320,13 @@ const getEnvironmentItemColor = (item) => {
   return "grey-6";
 };
 const getEnvironmentItemLabel = (item, successLabel, failureLabel) => {
-  if (item === "runtime" && isBundledBackendMode.value && pythonEnvironmentSource.value === "managed") {
-    return managedEnvironmentStatusMeta.value.label;
+  if (item === "runtime" && isBundledBackendMode.value) {
+    if (pythonEnvironmentSource.value === "managed") {
+      return managedEnvironmentStatusMeta.value.label;
+    }
+    if (pythonEnvironmentSource.value === "external") {
+      return externalEnvironmentStatusMeta.value.label;
+    }
   }
   const state = getEnvironmentItemState(item);
   if (state === "checking") return "正在检测";
@@ -2762,12 +2775,13 @@ const appendProjectPathGuidance = (result) => {
 const applyManagedEnvironmentState = (result = {}) => {
   const state = result.state || updateManager.runtimeState;
   const ready = ["ready", "degraded"].includes(state.status);
+  const failed = ["failed", "needs-repair"].includes(state.status);
   environmentStatus.project = true;
   environmentStatus.python = ready;
   environmentStatus.venv = ready;
   environmentStatus.dependencies = ready;
   environmentStatus.configured = ready;
-  environmentStatus.error = ["failed", "needs-repair"].includes(state.status);
+  environmentStatus.error = failed;
   setEnvironmentItemState("project", "success");
   setEnvironmentItemState(["python", "venv", "dependencies"], ready ? "success" : "failure");
 
@@ -2783,10 +2797,71 @@ const applyManagedEnvironmentState = (result = {}) => {
     ? state.status === "degraded"
       ? "核心依赖已就绪，视频能力受限"
       : "依赖已就绪"
+    : failed
+      ? managedEnvironmentStatusMeta.value.label
+      : "未就绪";
+  environmentCheckCompleted.value = true;
+  currentStep.value = ready ? 3 : 1;
+  return ready;
+};
+
+const applyExternalEnvironmentState = (result = {}) => {
+  const state = result.state || updateManager.runtimeState;
+  const external = result.external || updateManager.runtimeState.external || {};
+  const diagnostics = external.diagnostics || result.diagnostics || {};
+  const status = externalEnvironmentStatus.value;
+  const ready =
+    result.success !== false &&
+    result.valid !== false &&
+    ["valid", "active"].includes(status);
+  const degraded = diagnostics.degraded === true || state.status === "degraded";
+  const resolvedPythonVersion = diagnostics.python?.version || state.pythonVersion || "";
+
+  environmentStatus.project = true;
+  environmentStatus.python = ready;
+  environmentStatus.venv = ready;
+  environmentStatus.dependencies = ready;
+  environmentStatus.configured = ready;
+  environmentStatus.error = !ready;
+  setEnvironmentItemState("project", "success");
+  setEnvironmentItemState(["python", "venv", "dependencies"], ready ? "success" : "failure");
+
+  pythonVersion.value = resolvedPythonVersion
+    ? `Python ${resolvedPythonVersion}`
+    : ready
+      ? "Python 环境已就绪"
+      : "";
+  venvStatus.value = ready
+    ? external.selectedPath || external.normalizedPath || state.activePath || "已有运行环境已就绪"
+    : externalEnvironmentStatusMeta.value.label;
+  dependenciesStatus.value = ready
+    ? degraded
+      ? "核心依赖已就绪，视频能力受限"
+      : "依赖已就绪"
     : "未就绪";
   environmentCheckCompleted.value = true;
   currentStep.value = ready ? 3 : 1;
   return ready;
+};
+
+const checkSelectedExternalEnvironment = async () => {
+  const candidateId = externalEnvironment.value.candidateId;
+  if (candidateId) {
+    return updateManager.probeExternalEnvironment({ candidateId });
+  }
+  if (updateManager.runtimeState.source === "external") {
+    return updateManager.checkRuntime({ accelerator: managedAccelerator.value });
+  }
+  return {
+    success: false,
+    valid: false,
+    code: "EXTERNAL_ENV_SELECTION_INVALID",
+    error: {
+      code: "EXTERNAL_ENV_SELECTION_INVALID",
+      message: "请先选择并校验已有 Python 环境。",
+    },
+    state: updateManager.runtimeState,
+  };
 };
 
 const appendEnvironmentRecoveryGuidance = (result) => {
@@ -2818,7 +2893,7 @@ const appendEnvironmentRecoveryGuidance = (result) => {
     }
   }
   addTerminalLog(
-    "请重试，或手动创建可用运行环境，也可以从夸克网盘下载可用运行环境并在“已有环境”中选择。",
+    '请重试，或手动创建可用运行环境，也可以从夸克网盘下载可用运行环境并在"已有环境"中选择。',
     "warning"
   );
 };
@@ -2938,9 +3013,32 @@ const runEnvironmentCheck = async ({ syncServiceStatus = false } = {}) => {
       } else {
         addTerminalLog(
           managedEnvironmentStatusMeta.value.label === "未检测到运行环境"
-            ? "未检测到运行环境，可点击“创建或修复环境”开始准备。"
+            ? '未检测到运行环境，可点击"创建或修复环境"开始准备。'
             : `运行环境需要处理：${managedEnvironmentStatusMeta.value.label}`,
           updateManager.runtimeState.status === "failed" ? "error" : "warning"
+        );
+      }
+      return;
+    }
+
+    if (pythonEnvironmentSource.value === "external") {
+      currentEnvironmentStage = "check-external-environment";
+      const externalResult = await checkSelectedExternalEnvironment();
+      const ready = applyExternalEnvironmentState(externalResult);
+      if (ready) {
+        await syncEnvironmentLaunchDevice(
+          externalResult?.state?.selectedAccelerator || updateManager.runtimeState.selectedAccelerator
+        );
+        addTerminalLog(
+          updateManager.runtimeState.status === "degraded"
+            ? "已有环境核心能力可用，但 FFmpeg 未通过校验，视频能力暂不可用。"
+            : `已有环境检测成功：${updateManager.runtimeState.activePath || externalEnvironmentPath.value}`,
+          updateManager.runtimeState.status === "degraded" ? "warning" : "success"
+        );
+      } else {
+        addTerminalLog(
+          `已有环境需要处理：${externalEnvironmentStatusMeta.value.label}`,
+          externalResult?.success === false ? "error" : "warning"
         );
       }
       return;

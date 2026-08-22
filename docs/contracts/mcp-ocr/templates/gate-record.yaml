@@ -1,0 +1,10 @@
+gate_id: M0-ARCH-GATE
+milestone: M0
+status: deferred
+reviewer: qa-red-reviewer
+evidence_ids: []
+failed_samples: []
+decision: Await executable fixtures and independent review.
+rollback: Remove the M0 candidate files and restore package metadata.
+next_action: Complete M0-ARCH-001 evidence.
+timestamp: 2026-08-16T00:00:00Z

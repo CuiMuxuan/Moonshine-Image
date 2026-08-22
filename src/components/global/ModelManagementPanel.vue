@@ -165,6 +165,7 @@
 
                 <div class="model-action-row">
                   <q-btn
+                    v-if="model.type !== 'ocr'"
                     outline
                     no-caps
                     color="primary"
@@ -823,7 +824,7 @@ const createModelLeafNode = (model) => ({
           .filter(Boolean)
           .join(" / ")
       : model.label || model.id,
-  icon: model.type === "mask" ? "center_focus_strong" : "image",
+  icon: model.type === "mask" ? "center_focus_strong" : model.type === "ocr" ? "text_fields" : "image",
   modelId: model.id,
   model,
 });
@@ -840,6 +841,7 @@ const modelTreeNodes = computed(() => {
   const sam1Models = modelRegistry.models.filter((model) => model.family === "sam");
   const sam2Models = modelRegistry.models.filter((model) => model.family === "sam2");
   const sam3Models = modelRegistry.models.filter((model) => model.family === "sam3");
+  const ocrModels = modelRegistry.models.filter((model) => model.type === "ocr");
 
   return [
     {
@@ -899,6 +901,12 @@ const modelTreeNodes = computed(() => {
           label: "SAM3",
           icon: "filter_3",
           models: sam3Models,
+        }),
+        createModelGroupNode({
+          id: "rapidocr",
+          label: "RapidOCR",
+          icon: "text_fields",
+          models: ocrModels,
         }),
       ].filter((node) => node.children.length > 0),
     },
@@ -1418,13 +1426,14 @@ const getStatusColor = (model) => {
 };
 
 const getTypeLabel = (model) => {
+  if (model.type === "ocr") return "OCR";
   if (model.category === "text_smart_selection") return "文本智能选区";
   if (model.category === "mask_generator") return "蒙版生成";
   if (model.type === "mask") return "蒙版模型";
   return "图片处理";
 };
 
-const getTypeColor = (model) => (model.type === "mask" ? "secondary" : "primary");
+const getTypeColor = (model) => (model.type === "mask" ? "secondary" : model.type === "ocr" ? "accent" : "primary");
 
 const getFileLabel = (file) => {
   if (!file.exists) return "缺失";

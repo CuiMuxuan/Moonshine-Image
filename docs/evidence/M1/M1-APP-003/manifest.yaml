@@ -1,0 +1,48 @@
+manifest_version: 1
+task_id: M1-APP-003
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+candidate_ref: worktree:M1-APP-003
+generated_at: 2026-08-16T03:45:00Z
+evidence_level: E2
+files:
+  - path: docs/evidence/M1/M1-APP-003/.gitattributes
+    sha256: a79691a93b46e49ce460c26ef22afcc03d6eca1e63bf2edbc20e96159510f6c9
+    size_bytes: 14
+    kind: contract
+  - path: docs/decisions/mcp-ocr/ADR-0004-artifact-staging-atomic-publish-spike.md
+    sha256: 7f1e6350651244d98294b6326c995ca4f2f29d66f2aa2b00b251bc7e05a6f56f
+    size_bytes: 3125
+    kind: decision
+  - path: test/contracts/m1-jobstore/artifact_staging_spike.py
+    sha256: f4c5cbb4f65c29a5120eebbead4646d03f3599139e9c66b7a92d37966dbe4bfb
+    size_bytes: 8866
+    kind: fixture
+  - path: test/contracts/m1-jobstore/test_artifact_staging_spike.py
+    sha256: 33f089ec7c10ec7a3fc369a5d92fed54bab08760e4ca69b63488f18e17fc3a73
+    size_bytes: 7205
+    kind: test_log
+  - path: docs/evidence/M1/M1-APP-003/task.yaml
+    sha256: aaefdcf7bafdc5640467faa1eeb42731b553490789353a838ca84ec73fdd59c9
+    size_bytes: 1039
+    kind: task
+  - path: docs/evidence/M1/M1-APP-003/handoff.yaml
+    sha256: 71fd031927bbedc943f1d01507b5e135d851331a6d42d65401bbb5f560f97d6a
+    size_bytes: 1822
+    kind: handoff
+tests:
+  - command: python test/contracts/m1-jobstore/test_artifact_staging_spike.py
+    result: pass
+    evidence_id: EVID-M1-ARTIFACT-SPIKE-003
+  - command: python test/contracts/m1-jobstore/test_sqlite_jobstore_spike.py
+    result: pass
+    evidence_id: EVID-M1-SQLITE-SPIKE-002
+  - command: node --test test/contracts/m1-jobstore/jobstore-spike.test.mjs
+    result: pass
+    evidence_id: EVID-M1-APP-SPIKE-001
+  - command: npm run test:contracts:mcp-ocr
+    result: pass
+    evidence_id: EVID-M0-CONTRACT-001
+environment:
+  os: windows-11
+  node: Python 3.13.9; Node 24.14.0; writable local temp
+  notes: Local E2 same-volume spike only. Tests used TemporaryDirectory and short-lived Python subprocesses. No parent-directory power-loss durability, cross-volume or network filesystem, antivirus interference, packaged Python 3.12, production publisher, JobStore, facade, IPC, userData, external-machine, release, or canary claim is included.

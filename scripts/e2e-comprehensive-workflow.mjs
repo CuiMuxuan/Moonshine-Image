@@ -569,6 +569,13 @@ async function installElectronMock(context) {
 }
 
 async function installApiMocks(page) {
+  await page.route("**/api/v1/health**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ status: "ok" }),
+    });
+  });
   await page.route("**/api/v1/check_cuda**", async (route) => {
     await route.fulfill({
       status: 200,
@@ -640,6 +647,18 @@ async function installApiMocks(page) {
           modelIds: [],
           unavailableReason: "E2E workflow does not start the SAM backend.",
         },
+      }),
+    });
+  });
+  await page.route("**/api/v1/moonshine/ocr/capabilities**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        available: false,
+        ready: false,
+        engine: "rapidocr",
+        reason: "E2E workflow does not start the OCR backend.",
       }),
     });
   });

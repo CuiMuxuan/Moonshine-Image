@@ -1,0 +1,33 @@
+handoff_version: 1
+task_id: M1-APP-001
+status: ready
+owner: root
+reviewer: qa-red-reviewer
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+changed_paths:
+  - .gitattributes
+  - docs/decisions/mcp-ocr/ADR-0002-jobstore-facade-spike.md
+  - docs/evidence/M1/M1-APP-001/task.yaml
+  - docs/evidence/M1/M1-APP-001/handoff.yaml
+  - docs/evidence/M1/M1-APP-001/manifest.yaml
+  - test/contracts/m1-jobstore/jobstore-spike.yaml
+  - test/contracts/m1-jobstore/jobstore-spike.test.mjs
+contract_versions:
+  - core-v2
+  - governance-v1
+decisions:
+  - docs/decisions/mcp-ocr/ADR-0002-jobstore-facade-spike.md
+tests:
+  - command: node --test test/contracts/m1-jobstore/*.test.mjs
+    result: pass
+    evidence_id: EVID-M1-APP-SPIKE-001
+evidence_manifest: docs/evidence/M1/M1-APP-001/manifest.yaml
+unknowns:
+  - id: U-003
+    state: spike
+    owner: APP
+    review_trigger: before-M1-gate
+rollback:
+  runbook: Remove only the M1-APP-001 ADR, evidence, fixture, test, and exact LF attribute changes; restore planning records. No production, database, IPC, release, pointer, or user-data changes are in scope.
+  verified: false
+next_action: Obtain independent QA/RED review. Do not implement SQLite or facade production wiring from this spike alone.

@@ -1317,6 +1317,53 @@ def build_model_status(model_dir: Path, cuda_info: Optional[dict] = None) -> lis
             "capabilities": _normalize_capabilities(manifest_item.get("capabilities")),
         }
         models.append(item)
+
+    # RapidOCR is shipped as a local ONNX triplet rather than a downloadable
+    # manifest item. Keep it as one aggregate smart-selection model card while
+    # preserving per-file status for diagnostics in model management.
+    ocr_files = [
+        {"path": "ocr/PP-OCRv6_det_small.onnx", "label": "检测模型（det）"},
+        {"path": "ocr/PP-OCRv6_rec_small.onnx", "label": "识别模型（rec）"},
+        {"path": "ocr/ch_ppocr_mobile_v2.0_cls_mobile.onnx", "label": "方向分类模型（cls）"},
+    ]
+    ocr_file_statuses = [_file_status(model_dir, file_spec) for file_spec in ocr_files]
+    ocr_missing_files = [file_status["path"] for file_status in ocr_file_statuses if not file_status["exists"]]
+    ocr_corrupt_files = [
+        file_status["path"]
+        for file_status in ocr_file_statuses
+        if file_status["exists"] and not file_status["valid"]
+    ]
+    ocr_verified = not ocr_missing_files and not ocr_corrupt_files
+    models.append({
+        "id": "ocr_rapid_onnx_mobile",
+        "label": "RapidOCR",
+        "description": "RapidOCR det/rec/cls ONNX 文本识别模型。",
+        "type": "ocr",
+        "family": "rapidocr",
+        "category": "ocr",
+        "installed": ocr_verified,
+        "verified": ocr_verified,
+        "available": ocr_verified,
+        "downloadable": False,
+        "requiresMask": False,
+        "files": ocr_file_statuses,
+        "missingFiles": ocr_missing_files,
+        "corruptFiles": ocr_corrupt_files,
+        "fileStatus": "verified" if ocr_verified else ("corrupt" if ocr_corrupt_files else "missing"),
+        "loadState": "not_loaded",
+        "loaded": False,
+        "runtimeReady": ocr_verified,
+        "ready": ocr_verified,
+        "readiness": {
+            "status": "ready" if ocr_verified else "blocked",
+            "reason": None if ocr_verified else ("files_corrupt" if ocr_corrupt_files else "files_missing"),
+        },
+        "deviceCompatible": True,
+        "capabilities": {
+            "imageText": True,
+            "imagePolygon": True,
+        },
+    })
     return models
 
 

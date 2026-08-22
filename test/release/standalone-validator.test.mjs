@@ -10,7 +10,65 @@ import { EMBEDDED_RELEASE_PUBLIC_KEY_PEM } from "../../src-electron/runtime/rele
 import {
   defaultUserDataRoot,
   resolveValidationEdition,
+  run,
 } from "../../scripts/validation/run-release-validation.mjs";
+
+function guardValidatorEntrySideEffects(t) {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moonshine-validator-entry-"));
+  const sentinelPath = path.join(temporaryRoot, "sentinel.txt");
+  fs.writeFileSync(sentinelPath, "unchanged");
+
+  const originalFetch = globalThis.fetch;
+  const originalCwd = process.cwd;
+  const originalAppData = process.env.APPDATA;
+  const originalStdoutWrite = process.stdout.write;
+  let fetchCalls = 0;
+  let stdout = "";
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error("validator entry must not fetch before argument validation");
+  };
+  process.cwd = () => temporaryRoot;
+  process.env.APPDATA = temporaryRoot;
+  process.stdout.write = (chunk) => {
+    stdout += String(chunk);
+    return true;
+  };
+
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    process.cwd = originalCwd;
+    if (originalAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = originalAppData;
+    process.stdout.write = originalStdoutWrite;
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  });
+
+  return {
+    assertNoSideEffects() {
+      assert.equal(fetchCalls, 0);
+      assert.deepEqual(fs.readdirSync(temporaryRoot).sort(), ["sentinel.txt"]);
+      assert.equal(fs.readFileSync(sentinelPath, "utf8"), "unchanged");
+    },
+    stdout: () => stdout,
+  };
+}
+
+test("standalone validator help returns zero without network or filesystem changes", { concurrency: false }, async (t) => {
+  const guard = guardValidatorEntrySideEffects(t);
+
+  assert.equal(await run(["--help"]), 0);
+  assert.match(guard.stdout(), /^Usage: node scripts\/validation\/run-release-validation\.mjs/m);
+  guard.assertNoSideEffects();
+});
+
+test("standalone validator rejects a missing source before network or filesystem changes", { concurrency: false }, async (t) => {
+  const guard = guardValidatorEntrySideEffects(t);
+
+  await assert.rejects(run([]), /--source is required/);
+  assert.equal(guard.stdout(), "");
+  guard.assertNoSideEffects();
+});
 
 test("standalone validator builder creates a self-contained validation folder", () => {
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moonshine-validator-test-"));

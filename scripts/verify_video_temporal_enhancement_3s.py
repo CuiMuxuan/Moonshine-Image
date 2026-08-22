@@ -13,7 +13,6 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SERVER_ROOT = REPO_ROOT / "server"
 REPORT_PATH = REPO_ROOT / "docs" / "video-temporal-object-cache-3s-report.md"
-DEFAULT_VIDEO_PATH = Path(r"C:\Users\cjh02\Downloads\生成看板娘呼吸动画视频 (5).mp4")
 
 sys.path.insert(0, str(SERVER_ROOT))
 
@@ -271,7 +270,7 @@ def append_report(summary: dict) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--video", default=str(DEFAULT_VIDEO_PATH))
+    parser.add_argument("--video", required=True, help="Path to the source video")
     parser.add_argument("--label", default="manual")
     parser.add_argument("--duration", type=float, default=3.0)
     parser.add_argument("--fps", type=float, default=12.0)

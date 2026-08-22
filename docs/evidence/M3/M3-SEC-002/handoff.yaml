@@ -1,0 +1,33 @@
+handoff_version: 1
+task_id: M3-SEC-002
+status: ready
+owner: m3-security-spike-owner
+reviewer: m3-security-reviewer
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+changed_paths:
+  - docs/decisions/mcp-ocr/ADR-0006-mcp-bridge-handshake-spike.md
+  - docs/evidence/M3/M3-SEC-002/task.yaml
+  - docs/evidence/M3/M3-SEC-002/handoff.yaml
+  - docs/evidence/M3/M3-SEC-002/manifest.yaml
+  - test/mcp/mcp-bridge-handshake-spike.test.mjs
+contract_versions:
+  - governance-v1
+decisions:
+  - docs/decisions/mcp-ocr/ADR-0006-mcp-bridge-handshake-spike.md
+tests:
+  - command: node --test test/mcp/mcp-bridge-handshake-spike.test.mjs
+    result: pass
+    evidence_id: EVID-M3-SEC-002
+  - command: npm run test:contracts:mcp-ocr
+    result: pass
+    evidence_id: EVID-M0-CONTRACT-001
+evidence_manifest: docs/evidence/M3/M3-SEC-002/manifest.yaml
+unknowns:
+  - id: U-002
+    state: spike
+    owner: SEC
+    review_trigger: before-M3
+rollback:
+  runbook: Delete only the M3-SEC-002 ADR, evidence directory, and focused test, then restore U-002 to its prior empty-evidence spike entry. The loopback test child is terminated after the test; no production bridge, Electron/preload IPC, release object, pointer, or user data needs restoration.
+  verified: false
+next_action: Independent SEC/RED reviewer reruns the focused test and contract validation before production bridge, token storage, renderer IPC, or activity-log work begins.

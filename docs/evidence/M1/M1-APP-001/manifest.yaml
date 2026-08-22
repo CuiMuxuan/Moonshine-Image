@@ -1,0 +1,39 @@
+manifest_version: 1
+task_id: M1-APP-001
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+candidate_ref: worktree:M1-APP-001
+generated_at: 2026-08-16T00:00:00Z
+evidence_level: E2
+files:
+  - path: .gitattributes
+    sha256: e1d4efbba113f0a2e36bd50ae152e23d7a53f93dee7eb9f49e7f5a06d5a1d22f
+    size_bytes: 353
+    kind: contract
+  - path: docs/decisions/mcp-ocr/ADR-0002-jobstore-facade-spike.md
+    sha256: 0254b3875a6d1ec685f97ce3941ea04b95888d3320a105d2a71f1aa9133522ff
+    size_bytes: 3129
+    kind: decision
+  - path: test/contracts/m1-jobstore/jobstore-spike.yaml
+    sha256: fa12fbc3ce298ba58d56b5d34cef43168052c59ee7a887fcbf58f81dbda22d6b
+    size_bytes: 1863
+    kind: fixture
+  - path: test/contracts/m1-jobstore/jobstore-spike.test.mjs
+    sha256: 83f850798a73ee61f0025943326b939fc0a130527ca90c5ca101ac7e31d04b93
+    size_bytes: 3136
+    kind: test_log
+  - path: docs/evidence/M1/M1-APP-001/task.yaml
+    sha256: 0b3ff17cc7d6da0b2bbd817324bd3014e51d00386fdf00f3887079f9503d9d73
+    size_bytes: 844
+    kind: task
+  - path: docs/evidence/M1/M1-APP-001/handoff.yaml
+    sha256: c1ad7d0151c43e91324be93dabc2a72375b124bbfc9d7a32e5a4cd1f8357d466
+    size_bytes: 1238
+    kind: handoff
+tests:
+  - command: node --test test/contracts/m1-jobstore/*.test.mjs
+    result: pass
+    evidence_id: EVID-M1-APP-SPIKE-001
+environment:
+  os: windows
+  node: local
+  notes: Spike only; no production JobStore, SQLite, facade, Electron, IPC, Python backend, or user data was touched.

@@ -39,6 +39,15 @@
             :sam-runtime-device="samRuntimeDevice"
             :sam-text-batch-target-count="selectedSamTextBatchFiles.length"
             :sam-text-batch-state="samTextBatchState"
+            :ocr-available="ocrAvailable"
+            :ocr-busy="ocrBusy"
+            :ocr-status-message="ocrStatusMessage"
+            :ocr-model-id="OCR_MODEL_ID"
+            :ocr-threshold-high="ocrThresholdHigh"
+            :ocr-threshold-low="ocrThresholdLow"
+            :ocr-sam-enhance="ocrSamEnhance"
+            :ocr-sam-model-id="ocrSamModelId"
+            :ocr-sam-model-options="samPointBoxModelOptions"
             :sam-image="samImagePayload.image"
             :sam-image-type="samImagePayload.imageType"
             :sam-context-id="currentFile.id"
@@ -53,6 +62,8 @@
             @sam-processing-state="handleSamProcessingState"
             @sam-text-batch-request="runSamTextBatchPrediction"
             @sam-text-batch-cancel="cancelSamTextBatchPrediction"
+            @ocr-request="requestOcr"
+            @update:ocr-settings="updateOcrSettings"
           />
         </workspace>
       </div>
@@ -120,6 +131,7 @@ import {
   nextTick
 } from "vue";
 import { useQuasar } from "quasar";
+import { api } from "src/boot/axios";
 import { useConfigStore } from "src/stores/config";
 import { useAppStateStore } from "src/stores/appState";
 import { useFileManagerStore } from "src/stores/fileManager";
@@ -154,8 +166,14 @@ import {
 } from "src/utils/backendPathValidation";
 import {
   getSamCapabilities,
+  predictSamMask,
   predictSamText,
 } from "src/services/SamPredictionService";
+import {
+  buildOcrCandidates,
+  createOcrService,
+  normalizeBase64,
+} from "src/services/OcrService";
 import { deleteSamImageSessions, getSamImageSessionStore } from "src/services/SamImageSessionStore";
 import {
   clearSamRenderCacheContext,
@@ -178,6 +196,7 @@ const fileManagerStore = useFileManagerStore();
 const runtimeUiStore = useRuntimeUiStore();
 const runtimeDiagnosticsStore = useRuntimeDiagnosticsStore();
 const modelRegistryStore = useModelRegistryStore();
+const ocrService = createOcrService(api);
 const MASK_INPAINT_MODEL_IDS = ["lama", "mat"];
 const MAT_CUDA_FALLBACK_MESSAGE = "MAT 需要 CUDA，当前已自动切换为 LaMa。";
 let samVisiblePreloadTimer = 0;
@@ -396,6 +415,26 @@ const imagePageLeftDrawerOwner = Symbol("image-page-left-drawer");
 const imagePageRightDrawerOwner = Symbol("image-page-right-drawer");
 const currentFile = computed(() => fileManagerStore.currentFile);
 const selectedFiles = computed(() => fileManagerStore.selectedFiles);
+const OCR_MODEL_ID = "ocr_rapid_onnx_mobile";
+const ocrCapabilities = ref({
+  status: "missing",
+  enabled: false,
+  engine_id: OCR_MODEL_ID,
+  message: "OCR 组件或模型尚未就绪",
+});
+const ocrBusy = ref(false);
+const ocrThresholdHigh = ref(configStore.config.masking?.ocrConfidenceHigh ?? 0.9);
+const ocrThresholdLow = ref(configStore.config.masking?.ocrConfidenceLow ?? 0.8);
+const ocrSamEnhance = ref(configStore.config.masking?.ocrSamEnhance ?? false);
+const ocrSamModelId = ref(configStore.config.masking?.ocrSamModelId || "");
+const ocrAvailable = computed(
+  () => ocrCapabilities.value.status === "ready" && ocrCapabilities.value.enabled === true
+);
+const ocrStatusMessage = computed(() => {
+  if (ocrBusy.value) return "正在生成文本区域蒙版，请稍候。";
+  if (ocrAvailable.value) return "识别结果会回到中央画布供审阅和编辑。";
+  return ocrCapabilities.value.message || "OCR 组件或模型尚未就绪";
+});
 const samCapabilities = ref(null);
 const samCapabilitiesLoadFailed = ref(false);
 const samTextBatchState = ref({
@@ -408,6 +447,9 @@ const samTextBatchState = ref({
   cancelled: false,
 });
 const samTextBatchCancelRequested = ref(false);
+const samSelectionBusy = computed(
+  () => Boolean(samSmartSelectionProcessingState.value.running || samTextBatchState.value.running)
+);
 const backendEngineValue = computed(() => {
   const value = backendEngine?.value || {};
   const engineIsRunning = Boolean(value.isRunning?.value ?? value.isRunning);
@@ -567,6 +609,17 @@ const samPointBoxModelOptions = computed(() =>
     }))
 );
 const samPointBoxAvailable = computed(() => samPointBoxModelOptions.value.length > 0);
+watch(
+  samPointBoxModelOptions,
+  (options) => {
+    if (!ocrSamModelId.value && options.length) {
+      ocrSamModelId.value = options[0].value;
+    } else if (ocrSamModelId.value && !options.some((option) => option.value === ocrSamModelId.value)) {
+      ocrSamModelId.value = options[0]?.value || "";
+    }
+  },
+  { immediate: true }
+);
 const buildSamTextModelOption = (modelId) => {
   const textModel = modelRegistryStore.maskModels.find((model) => model.id === modelId);
   return {
@@ -638,7 +691,7 @@ const samModelOptions = computed(() => {
   return Array.from(byId.values());
 });
 const samSmartSelectionAvailable = computed(
-  () => backendEngineValue.value.isRunning && (samPointBoxAvailable.value || samTextSupported.value)
+  () => backendEngineValue.value.isRunning && (samPointBoxAvailable.value || samTextSupported.value || ocrAvailable.value)
 );
 const defaultSamModelId = computed(() => {
   const configured = configuredImageSamModelId.value;
@@ -915,6 +968,142 @@ const loadSamCapabilities = async () => {
     samCapabilitiesLoadFailed.value = true;
     console.warn("读取 SAM 能力失败，已回退到本地模型注册状态:", error);
   }
+};
+
+const loadOcrCapabilities = async () => {
+  ocrCapabilities.value = await ocrService.getCapabilities();
+};
+
+const syncOcrSettingsFromConfig = (config = configStore.config) => {
+  const masking = config?.masking || {};
+  const high = Number(masking.ocrConfidenceHigh);
+  const low = Number(masking.ocrConfidenceLow);
+  const normalizedHigh = Number.isFinite(high) ? Math.max(0, Math.min(1, high)) : 0.9;
+  const normalizedLow = Number.isFinite(low)
+    ? Math.min(normalizedHigh, Math.max(0, Math.min(1, low)))
+    : Math.min(normalizedHigh, 0.8);
+  ocrThresholdHigh.value = normalizedHigh;
+  ocrThresholdLow.value = normalizedLow;
+  ocrSamEnhance.value = Boolean(masking.ocrSamEnhance);
+  ocrSamModelId.value = String(masking.ocrSamModelId || "").trim();
+};
+
+const persistOcrSettings = () => {
+  const nextConfig = {
+    ...configStore.config,
+    masking: {
+      ...(configStore.config.masking || {}),
+      ocrConfidenceHigh: ocrThresholdHigh.value,
+      ocrConfidenceLow: ocrThresholdLow.value,
+      ocrSamEnhance: ocrSamEnhance.value,
+      ocrSamModelId: ocrSamModelId.value,
+    },
+  };
+  void configStore.persistConfig(nextConfig);
+};
+
+const updateOcrSettings = (patch = {}) => {
+  if (Object.prototype.hasOwnProperty.call(patch, "thresholdHigh")) {
+    const nextHigh = Number(patch.thresholdHigh);
+    if (Number.isFinite(nextHigh)) {
+      ocrThresholdHigh.value = Math.max(ocrThresholdLow.value, Math.max(0, Math.min(1, nextHigh)));
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "thresholdLow")) {
+    const nextLow = Number(patch.thresholdLow);
+    if (Number.isFinite(nextLow)) {
+      ocrThresholdLow.value = Math.min(ocrThresholdHigh.value, Math.max(0, Math.min(1, nextLow)));
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "samEnhance")) {
+    ocrSamEnhance.value = Boolean(patch.samEnhance);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "samModelId")) {
+    const nextModelId = String(patch.samModelId || "").trim();
+    ocrSamModelId.value = nextModelId;
+  }
+  persistOcrSettings();
+};
+
+const getOcrImageBase64 = async (file) => {
+  const latestImage = file?.history?.[file.history.length - 1];
+  if (!latestImage) throw new Error("OCR 图片不可用");
+
+  if (latestImage.type === "base64") {
+    return normalizeBase64(latestImage.data || latestImage.displayUrl);
+  }
+
+  const imageSource = {
+    ...(file.originalFile || {}),
+    name: file.name,
+    type: file.type,
+    path: latestImage.data,
+  };
+  return normalizeBase64(await fileManagerStore.fileToBase64(imageSource));
+};
+
+const getPolygonBoundingBox = (polygon = []) => {
+  const points = polygon.filter((point) => Array.isArray(point) && point.length === 2);
+  if (!points.length) return null;
+  const xs = points.map((point) => Number(point[0]));
+  const ys = points.map((point) => Number(point[1]));
+  const left = Math.min(...xs);
+  const top = Math.min(...ys);
+  const right = Math.max(...xs);
+  const bottom = Math.max(...ys);
+  return {
+    x: left,
+    y: top,
+    width: Math.max(1, right - left),
+    height: Math.max(1, bottom - top),
+  };
+};
+
+const recognizeOcrFile = async (file, options = {}) => {
+  const [dimensions, imageBase64] = await Promise.all([
+    getImageDimensions(file),
+    getOcrImageBase64(file),
+  ]);
+  const result = await ocrService.recognize({ imageBase64 });
+  const candidates = buildOcrCandidates({
+    width: dimensions.width,
+    height: dimensions.height,
+    regions: result.regions,
+    highThreshold: options.highThreshold ?? ocrThresholdHigh.value,
+    lowThreshold: options.lowThreshold ?? ocrThresholdLow.value,
+  });
+  if (options.samEnhance && options.samModelId && candidates.length) {
+    for (const candidate of candidates) {
+      const box = getPolygonBoundingBox(candidate.polygon);
+      if (!box) continue;
+      try {
+        const samResult = await predictSamMask({
+          image: imageBase64,
+          imageType: "base64",
+          modelId: options.samModelId,
+          box,
+          multimaskOutput: false,
+        });
+        const samCandidate = samResult?.candidates?.[0];
+        if (samCandidate?.mask) {
+          candidate.mask = samCandidate.mask;
+          candidate.source = "ocr-sam";
+          candidate.modelId = options.samModelId;
+          candidate.prompt = { box, polygon: candidate.polygon };
+          candidate.samScore = samCandidate.score;
+        }
+      } catch (error) {
+        console.warn("OCR SAM 增强失败，回退四边形蒙版:", error?.message || error);
+      }
+    }
+  }
+  return {
+    width: dimensions.width,
+    height: dimensions.height,
+    candidates,
+    engineId: result.engine_id,
+    regionCount: candidates.length,
+  };
 };
 
 const resetSamTextBatchState = (patch = {}) => {
@@ -2014,6 +2203,66 @@ const resizeMaskForFile = async (targetFile, sourceMaskUrl) => {
   } catch (error) {
     console.error("调整蒙版大小失败:", error);
     throw error;
+  }
+};
+
+const requestOcr = async () => {
+  if (!ocrAvailable.value || ocrBusy.value || samSelectionBusy.value) return;
+  const file = currentFile.value;
+  if (!file?.id || !file.originalFile?.type?.startsWith("image/")) {
+    $q.notify({ type: "warning", message: "请先选择图片", position: "top" });
+    return;
+  }
+
+  ocrBusy.value = true;
+  isPageDisabled.value = true;
+  loadingControl?.show?.({
+    message: ocrSamEnhance.value ? "正在识别文本并生成 SAM 智能选区蒙版" : "正在识别文本并生成智能选区蒙版",
+    progress: null,
+  });
+  try {
+    const result = await recognizeOcrFile(file, {
+      highThreshold: ocrThresholdHigh.value,
+      lowThreshold: ocrThresholdLow.value,
+      samEnhance: ocrSamEnhance.value,
+      samModelId: ocrSamModelId.value || samPointBoxModelOptions.value[0]?.value || "",
+    });
+    if (!result.candidates.length) {
+      throw new Error("OCR 未返回高于候选阈值的文本区域");
+    }
+    const applied = await editorRef.value?.appendExternalSamTextResult?.({
+      contextId: file.id,
+      modelId: OCR_MODEL_ID,
+      result: {
+        width: result.width,
+        height: result.height,
+        candidates: result.candidates,
+        performance: { source: "ocr", engineId: result.engineId },
+      },
+      prompt: { type: "ocr" },
+      baseMask: getFileCurrentMaskDataUrl(file),
+    });
+    if (!applied?.candidates?.length) {
+      throw new Error("OCR 蒙版结果不可用");
+    }
+    if (applied.mask) {
+      fileManagerStore.updateFileMask(file.id, applied.mask);
+    }
+    $q.notify({
+      type: "positive",
+      message: `OCR 已生成 ${applied.candidates.length} 个智能选区候选，请审阅后确认`,
+      position: "top",
+    });
+  } catch (error) {
+    $q.notify({
+      type: "negative",
+      message: error?.message || "OCR 识别失败，请稍后重试",
+      position: "top",
+    });
+  } finally {
+    ocrBusy.value = false;
+    loadingControl?.hide?.();
+    isPageDisabled.value = false;
   }
 };
 
@@ -4085,9 +4334,7 @@ const savePageState = async () => {
 
     // 持久化到磁盘
     const result = await appStateStore.saveState();
-    if (result.success) {
-      console.log("页面状态已保存");
-    } else {
+    if (!result.success) {
       console.error("保存页面状态失败:", result.error);
     }
   } catch (error) {
@@ -4165,6 +4412,7 @@ const restorePageState = async () => {
 onMounted(async () => {
   // 1. 首先加载配置
   await configStore.loadConfig();
+  syncOcrSettingsFromConfig();
   if (configStore.config.fileManagement) {
     syncManagedImageOutputPath(configStore.config.fileManagement);
   }
@@ -4176,6 +4424,7 @@ onMounted(async () => {
   // 3. 恢复页面状态
   await restorePageState();
   await loadImageModelOptions();
+  void loadOcrCapabilities();
 
   // 4. 应用配置到UI状态已在挂载早期完成，避免右侧栏先渲染空保存路径。
 
@@ -4196,6 +4445,9 @@ onMounted(async () => {
     window.electron.ipcRenderer.on("config-updated", (event, config) => {
       if (config.fileManagement) {
         syncManagedImageOutputPath(config.fileManagement);
+      }
+      if (config.masking) {
+        syncOcrSettingsFromConfig(config);
       }
     });
   }
@@ -4289,6 +4541,7 @@ watch(
   async (isRunning, wasRunning) => {
     if (isRunning && !wasRunning) {
       await loadImageModelOptions({ preferredModel: currentModel.value });
+      await loadOcrCapabilities();
     }
   },
   {

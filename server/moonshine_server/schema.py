@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, List, Literal, Optional
 
 from loguru import logger
-from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
 
 class ModelType(str, Enum):
@@ -259,16 +259,55 @@ class BatchInpaintRequest(BaseModel):
         return values
 
     @model_validator(mode="after")
-    def validate_field(cls, values: "BatchInpaintRequest"):
-        if len(values.data) == 0:
+    def validate_field(self):
+        if len(self.data) == 0:
             raise ValueError("Data list cannot be empty")
-        item_ids = [item.id for item in values.data]
+        item_ids = [item.id for item in self.data]
         if len(item_ids) != len(set(item_ids)):
             raise ValueError("All item IDs must be unique")
-        if values.output_format == "jpeg":
-            values.output_format = "jpg"
-        return values
+        if self.output_format == "jpeg":
+            self.output_format = "jpg"
+        return self
 
+
+class McpImageSubmitItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(..., min_length=8, max_length=72, pattern=r"^itm_[a-z0-9]{8,64}$")
+    input_path: str = Field(..., min_length=1, max_length=240)
+    mask_path: str = Field(..., min_length=1, max_length=240)
+    model_id: Optional[str] = Field(None, max_length=64, pattern=r"^[a-z][a-z0-9._-]{0,63}$")
+
+
+class McpImageSubmitConfirmation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    policy_snapshot_id: str = Field(..., min_length=12, max_length=72, pattern=r"^pol_[a-z0-9_]{8,64}$")
+    mode: Literal["not_required", "confirmed"]
+    confirmation_id: Optional[str] = Field(None, max_length=72, pattern=r"^cnf_[a-z0-9]{8,64}$")
+
+    @model_validator(mode="after")
+    def validate_confirmation_id(self):
+        if self.mode == "confirmed" and not self.confirmation_id:
+            raise ValueError("confirmation_id is required when confirmation is confirmed")
+        if self.mode == "not_required" and self.confirmation_id:
+            raise ValueError("confirmation_id is not allowed when confirmation is not_required")
+        return self
+
+
+class McpImageSubmitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str = Field(..., min_length=11, max_length=68, pattern=r"^ws_[a-z0-9]{8,64}$")
+    items: List[McpImageSubmitItem] = Field(..., min_length=1, max_length=100)
+    confirmation: McpImageSubmitConfirmation
+
+    @model_validator(mode="after")
+    def validate_item_ids(self):
+        item_ids = [item.id for item in self.items]
+        if len(item_ids) != len(set(item_ids)):
+            raise ValueError("All item IDs must be unique")
+        return self
 
 class BatchInpaintByFolderRequest(BaseModel):
     device: str

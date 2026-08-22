@@ -5,6 +5,7 @@ import {
   dialog,
   session,
   Menu,
+  Tray,
   shell,
   protocol,
   net,
@@ -43,6 +44,7 @@ import {
   DEFAULT_IMAGE_BRUSH,
   DEFAULT_IMAGE_OUTPUT_QUALITY,
   DEFAULT_MANAGED_FOLDER_NAMES,
+  DEFAULT_MCP_CONFIG,
   DEFAULT_MASKING_CONFIG,
   DEFAULT_TEMP_CLEANUP,
   DEFAULT_VIDEO_BRUSH,
@@ -56,6 +58,12 @@ import {
   isFiniteIntegerInRange,
   isValidManagedFolderName,
   isPlainObject,
+  containsMcpTokenMaterial,
+  isSafeMcpAllowedRoot,
+  isValidMcpProfileId,
+  MCP_ALLOWED_TOOL_OPTIONS,
+  MAX_MCP_ALLOWED_ROOTS,
+  MCP_CONFIG_FIELD_NAMES,
   migrateLegacyConfigShape,
   needsConfigMigration,
   normalizeIntegerInRange,
@@ -120,6 +128,19 @@ import {
   resolveStrictTempSubdirectory,
 } from "./config-safety.js";
 import { VIDEO_TASK_DIRECTORY_PREFIX } from "../src/utils/videoProcessingResume.js";
+import { WindowLifecycleController } from "./window-lifecycle-controller.js";
+import { TrayManager } from "./tray-manager.js";
+import { createMcpBridge, registerMcpIpc } from "./mcp-ipc.js";
+import { createMcpApplicationDispatcher } from "./mcp-application-dispatcher.js";
+import { workspaceIdForRoot } from "./mcp-bridge.js";
+import { McpProcessManager } from "./mcp-process-manager.js";
+import {
+  McpConfigError,
+  canonicalizeMcpConfig,
+  registerMcpConfigIpc,
+  resolveTrustedMcpDirectory,
+  resolveTrustedMcpPath,
+} from "./mcp-config.js";
 import {
   BACKEND_RUNTIME_IMPORT_TIMEOUT_MS,
   buildImportProbeScript,
@@ -136,6 +157,7 @@ const LEGACY_APP_NAME = "moonshine-client";
 
 app.setName(APP_DISPLAY_NAME);
 app.setPath("userData", path.join(app.getPath("appData"), APP_DISPLAY_NAME));
+const singleInstanceLockAcquired = app.requestSingleInstanceLock();
 const STARTUP_LOG_PATH = path.join(app.getPath("userData"), "logs", "startup.log");
 const startupLogger = createStartupLogger({ logPath: STARTUP_LOG_PATH });
 const LEGACY_CONDA_IPC_CODE = "LEGACY_CONDA_IPC";
@@ -228,6 +250,18 @@ let applicationQuitRequested = false;
 let applicationBootstrapPromise = null;
 let applicationBootstrapComplete = false;
 let installedPackageMetadata;
+let windowLifecycleController = null;
+let trayManager = null;
+const mcpApplicationDispatcher = createMcpApplicationDispatcher({ request: requestMcpBackend });
+const mcpBridge = createMcpBridge({
+  dispatch: (request) => mcpApplicationDispatcher.dispatch(request),
+  resolvePath: resolveMcpTrustedPath,
+});
+const mcpProcessManager = new McpProcessManager({
+  bridge: mcpBridge,
+  adapterScript: fileURLToPath(new URL("./mcp-stdio-server.mjs", import.meta.url)),
+  tempRoot: path.join(app.getPath("userData"), "mcp"),
+});
 
 function getInstalledPackageUpdatedAt() {
   if (installedPackageMetadata !== undefined) return installedPackageMetadata;
@@ -293,6 +327,181 @@ function sendToMainWindow(channel, payload) {
   }
   mainWindow.webContents.send(channel, payload);
   return true;
+}
+
+async function requestMcpBackend({ method, path: requestPath, body = undefined, headers = undefined }) {
+  const port = Number(globalConfig?.general?.backendPort);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535 || !/^\/api\/v1\/[A-Za-z0-9_./{}-]+$/.test(requestPath)) {
+    return { ok: false, status: 503, body: null };
+  }
+  try {
+    const allowlistedHeaders = {};
+    if (headers && typeof headers === "object") {
+      for (const name of [
+        "Idempotency-Key",
+        "X-Moonshine-Client",
+        "X-Moonshine-Request-Id",
+        "X-Moonshine-Policy-Snapshot",
+      ]) {
+        const value = headers[name];
+        if (typeof value === "string" && value.length <= 160) allowlistedHeaders[name] = value;
+      }
+    }
+    const hasBody = body !== undefined;
+    const response = await net.fetch(`http://${BACKEND_PORT_HOST}:${port}${requestPath}`, {
+      method,
+      headers: hasBody ? { "Content-Type": "application/json", ...allowlistedHeaders } : allowlistedHeaders,
+      body: hasBody ? JSON.stringify(body) : undefined,
+    });
+    let responseBody = null;
+    try {
+      responseBody = await response.json();
+    } catch {
+      responseBody = null;
+    }
+    return {
+      ok: response.ok,
+      status: response.status,
+      body: responseBody,
+      headers: {
+        "x-moonshine-job-id": response.headers.get("x-moonshine-job-id") || "",
+      },
+    };
+  } catch {
+    return { ok: false, status: 503, body: null };
+  }
+}
+
+async function resolveMcpTrustedPath(candidate) {
+  return resolveTrustedMcpPath(candidate);
+}
+
+async function resolveMcpTrustedDirectory(candidate) {
+  return resolveTrustedMcpDirectory(candidate);
+}
+
+function sameMcpPolicy(left, right) {
+  const normalize = (value) => ({
+    enabled: value?.enabled === true,
+    profileId: String(value?.profileId || ""),
+    allowedTools: Array.isArray(value?.allowedTools) ? value.allowedTools : [],
+    allowedRoots: Array.isArray(value?.allowedRoots) ? value.allowedRoots : [],
+    confirmationRequired: value?.confirmationRequired !== false,
+  });
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
+}
+
+async function synchronizeMcpLifecycle(nextConfig, previousConfig = globalConfig?.mcp || DEFAULT_MCP_CONFIG) {
+  if (sameMcpPolicy(nextConfig, previousConfig) && mcpProcessManager.getState().status === "running") {
+    return mcpProcessManager.getState();
+  }
+  try {
+    return await mcpProcessManager.sync(nextConfig);
+  } catch (lifecycleError) {
+    await mcpProcessManager.sync(previousConfig).catch(() => null);
+    throw new McpConfigError(
+      "MCP adapter lifecycle could not be synchronized.",
+      lifecycleError?.code || "MCP_START_FAILED",
+    );
+  }
+}
+
+registerMcpIpc({ ipcMain, bridge: mcpBridge, manager: mcpProcessManager });
+
+registerMcpConfigIpc({
+  ipcMain,
+  getConfig: () => globalConfig?.mcp || DEFAULT_MCP_CONFIG,
+  saveConfig: async (value) => {
+    const mcpConfig = await canonicalizeMcpConfig(value, resolveMcpTrustedDirectory);
+    const sanitizedConfig = sanitizeAppConfig({ ...globalConfig, mcp: mcpConfig });
+    if (!validateConfig(sanitizedConfig)) {
+      throw new McpConfigError("MCP configuration is invalid.", "MCP_CONFIG_INVALID");
+    }
+    const previousMcpConfig = globalConfig?.mcp || DEFAULT_MCP_CONFIG;
+    await synchronizeMcpLifecycle(mcpConfig, previousMcpConfig);
+    const configPath = getConfigPath();
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(sanitizedConfig, null, 2));
+      globalConfig = sanitizedConfig;
+      global.appConfig = {
+        ...globalConfig,
+        api: {
+          port: globalConfig.general.backendPort,
+          baseURL: `http://localhost:${globalConfig.general.backendPort}`,
+        },
+      };
+      global.projectPath = globalConfig.general.backendProjectPath || "";
+      return sanitizedConfig.mcp;
+    } catch {
+      await mcpProcessManager.sync(previousMcpConfig).catch(() => null);
+      throw new McpConfigError("MCP configuration could not be saved.", "MCP_CONFIG_SAVE_FAILED");
+    }
+  },
+  selectRoot: async () => {
+    const result = await dialog.showOpenDialog(mainWindow || undefined, {
+      properties: ["openDirectory"],
+    });
+    if (result.canceled) return null;
+    const selectedPath = result.filePaths?.[0];
+    const resolved = await resolveMcpTrustedDirectory(selectedPath);
+    if (!resolved || resolved.is_directory !== true || resolved.is_unc || resolved.is_symlink || resolved.is_junction || resolved.is_device) {
+      throw new McpConfigError("MCP allowed root is not a trusted directory.", "MCP_ROOT_INVALID");
+    }
+    return resolved.canonical_path;
+  },
+});
+
+function getConfiguredCloseBehavior() {
+  return globalConfig?.general?.closeBehavior === "quit" ? "quit" : "tray";
+}
+
+function getWindowLifecycleController() {
+  if (windowLifecycleController) return windowLifecycleController;
+  windowLifecycleController = new WindowLifecycleController({
+    getCloseBehavior: getConfiguredCloseBehavior,
+    getTaskSummary: getActiveProcessingTaskSummary,
+    onState: (state) => {
+      trayManager?.refresh(state);
+      sendToMainWindow("tray-state", state);
+    },
+    onNavigationRequest: (request) => {
+      sendToMainWindow("tray-navigate", request);
+    },
+    requestWindowClose: () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.close();
+        return;
+      }
+      app.quit();
+    },
+  });
+  return windowLifecycleController;
+}
+
+function ensureTrayManager() {
+  const lifecycle = getWindowLifecycleController();
+  if (!trayManager) {
+    trayManager = new TrayManager({
+      Tray,
+      Menu,
+      icon: path.resolve(currentDir, "icons/icon.png"),
+      tooltip: APP_DISPLAY_NAME,
+      lifecycle,
+    });
+  }
+  trayManager.create();
+  trayManager.refresh();
+  return trayManager;
+}
+
+async function restoreMainWindow(options = {}) {
+  if (!applicationBootstrapPromise) return false;
+  await applicationBootstrapPromise;
+  if (!applicationBootstrapComplete || applicationQuitRequested) return false;
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    await createWindow();
+  }
+  return getWindowLifecycleController().restoreWindow(options);
 }
 
 function createBackendOutputPayload(message, type = "info", metadata = {}) {
@@ -1412,6 +1621,12 @@ function mergeConfigForStrictValidation(config = {}) {
     merged.masking = {
       ...merged.masking,
       ...config.masking,
+    };
+  }
+  if (isPlainObject(config?.mcp)) {
+    merged.mcp = {
+      ...merged.mcp,
+      ...config.mcp,
     };
   }
   return merged;
@@ -3625,6 +3840,7 @@ function validateConfig(config) {
       !config.fileManagement ||
       !config.advanced ||
       !config.masking ||
+      !config.mcp ||
       !config.ui ||
       !config.shortcuts ||
       !config.video
@@ -3852,6 +4068,22 @@ function validateConfig(config) {
       return false;
     }
 
+    const mcp = config.mcp;
+    if (
+      containsMcpTokenMaterial(mcp) ||
+      Object.keys(mcp).some((key) => !MCP_CONFIG_FIELD_NAMES.includes(key)) ||
+      typeof mcp.enabled !== "boolean" ||
+      !isValidMcpProfileId(mcp.profileId) ||
+      !Array.isArray(mcp.allowedTools) ||
+      mcp.allowedTools.some((tool) => !MCP_ALLOWED_TOOL_OPTIONS.includes(tool)) ||
+      !Array.isArray(mcp.allowedRoots) ||
+      mcp.allowedRoots.length > MAX_MCP_ALLOWED_ROOTS ||
+      mcp.allowedRoots.some((root) => !isSafeMcpAllowedRoot(root)) ||
+      typeof mcp.confirmationRequired !== "boolean"
+    ) {
+      return false;
+    }
+
     if (!validateShortcutConfig(config.shortcuts)) {
       return false;
     }
@@ -3902,13 +4134,11 @@ function loadAppConfig() {
         ) {
           fs.writeFileSync(configPath, JSON.stringify(sanitizedConfig, null, 2));
         }
-        console.log("Configuration file loaded successfully");
       } else {
         console.warn("Configuration file format is invalid, falling back to defaults");
         createDefaultConfig();
       }
     } else {
-      console.log("Configuration file does not exist. Creating default configuration");
       createDefaultConfig();
     }
 
@@ -3945,7 +4175,6 @@ function createDefaultConfig() {
       }
     });
 
-    console.log("Default configuration file created successfully");
   } catch (error) {
     console.error("Failed to create default configuration:", error);
   }
@@ -3959,18 +4188,7 @@ function runStartupTempCleanup() {
 
   try {
     const result = cleanupAppTempFiles(cleanupOptions);
-    if (result?.success) {
-      const data = result.data || {};
-      console.log(
-        [
-          "Startup temp cleanup completed:",
-          `files=${Number(data.removedFileCount || 0)}`,
-          `directories=${Number(data.removedDirectoryCount || 0)}`,
-          `videoTasks=${Number(data.removedTaskCount || 0)}`,
-          `bytes=${Number(data.removedBytes || 0)}`,
-        ].join(" ")
-      );
-    } else {
+    if (!result?.success) {
       console.warn("Startup temp cleanup failed:", result?.error || "unknown error");
     }
   } catch (error) {
@@ -4005,16 +4223,20 @@ ipcMain.handle("save-sam3-lexicon", async (event, payload) => {
 ipcMain.handle("save-app-config", async (event, newConfig) => {
   try {
     if (!newConfig || typeof newConfig !== "object") {
-      console.error("Invalid configuration payload:", newConfig);
+      console.error("Invalid configuration payload: non-object");
       return { success: false, error: "Invalid configuration payload" };
     }
     if (!validateConfig(mergeConfigForStrictValidation(newConfig))) {
-      console.error("Configuration validation failed before sanitization:", newConfig);
+      console.error("Configuration validation failed before sanitization: INVALID_CONFIGURATION");
       return { success: false, error: "Invalid configuration payload" };
     }
-    const sanitizedConfig = sanitizeAppConfig(newConfig);
+    const canonicalMcpConfig = await canonicalizeMcpConfig(newConfig.mcp, resolveMcpTrustedDirectory);
+    const sanitizedConfig = sanitizeAppConfig({
+      ...newConfig,
+      mcp: canonicalMcpConfig,
+    });
     if (!validateConfig(sanitizedConfig)) {
-      console.error("Configuration validation failed:", newConfig);
+      console.error("Configuration validation failed: INVALID_CONFIGURATION");
       return { success: false, error: "Invalid configuration payload" };
     }
 
@@ -4031,26 +4253,37 @@ ipcMain.handle("save-app-config", async (event, newConfig) => {
       };
     }
 
+    const previousMcpConfig = globalConfig?.mcp || DEFAULT_MCP_CONFIG;
+    await synchronizeMcpLifecycle(canonicalMcpConfig, previousMcpConfig);
     const configPath = getConfigPath();
-    console.log("Saving configuration to:", configPath);
-    fs.writeFileSync(configPath, JSON.stringify(sanitizedConfig, null, 2));
-    // Refresh global runtime configuration
-    globalConfig = sanitizedConfig;
-    global.appConfig = {
-      ...globalConfig,
-      api: {
-        port: globalConfig.general.backendPort,
-        baseURL: `http://localhost:${globalConfig.general.backendPort}`,
-      },
-    };
-    global.projectPath = globalConfig.general.backendProjectPath || "";
-    console.log("Configuration saved successfully");
-    return { success: true };
+    try {
+      fs.writeFileSync(configPath, JSON.stringify(sanitizedConfig, null, 2));
+      // Refresh global runtime configuration
+      globalConfig = sanitizedConfig;
+      global.appConfig = {
+        ...globalConfig,
+        api: {
+          port: globalConfig.general.backendPort,
+          baseURL: `http://localhost:${globalConfig.general.backendPort}`,
+        },
+      };
+      global.projectPath = globalConfig.general.backendProjectPath || "";
+      return { success: true };
+    } catch {
+      await mcpProcessManager.sync(previousMcpConfig).catch(() => null);
+      throw new McpConfigError("MCP configuration could not be saved.", "MCP_CONFIG_SAVE_FAILED");
+    }
   } catch (error) {
     console.error("Failed to save configuration:", error);
-    return { success: false, error: error.message };
+    return {
+      success: false,
+      code: error?.code || "INVALID_CONFIGURATION",
+      error: error?.message || "Invalid configuration payload",
+    };
   }
 });
+
+ipcMain.handle("tray-get-state", async () => getWindowLifecycleController().getState());
 
 // IPC handler - save app state
 ipcMain.handle("save-app-state", async (event, stateData) => {
@@ -5141,7 +5374,6 @@ ipcMain.handle("copy-file", async (event, payload = {}) => {
       conflictPolicy === "error" ? fs.constants.COPYFILE_EXCL : 0
     );
 
-    console.log(`File copied successfully: ${source} -> ${finalTarget}`);
     return { success: true, targetPath: finalTarget };
   } catch (error) {
     console.error("Failed to copy file:", error);
@@ -6541,6 +6773,19 @@ async function launchBackendService(event, config, signal) {
       }
     }
 
+    backendEnv = getUtf8ProcessEnv({
+      ...backendEnv,
+      MOONSHINE_USER_DATA_DIR: app.getPath("userData"),
+      MOONSHINE_PERSISTENT_JOBS_ENABLED: "1",
+      MOONSHINE_WORKSPACE_ROOTS_JSON: JSON.stringify(
+        Object.fromEntries(
+          (Array.isArray(globalConfig?.mcp?.allowedRoots) ? globalConfig.mcp.allowedRoots : [])
+            .filter((root) => typeof root === "string" && root.trim())
+            .map((root) => [workspaceIdForRoot(root), root]),
+        ),
+      ),
+    });
+
     if (effectiveDevice === "cuda") {
       const cudaProbe = await probePythonCudaCompatibility(backendPython, backendEnv, {
         signal,
@@ -7310,6 +7555,12 @@ function getActiveProcessingTaskSummary() {
     imageCount,
     videoCount,
     labels,
+    tasks: tasks.slice(0, 20).map((task) => ({
+      taskId: task.taskId,
+      type: task.type,
+      label: task.label,
+      progress: Number.isFinite(task.progress) ? task.progress : null,
+    })),
   };
 }
 
@@ -7375,15 +7626,19 @@ ipcMain.on("set-active-processing-task", (event, payload = {}) => {
 
   if (payload.active === false) {
     activeProcessingTasks.delete(taskId);
+    windowLifecycleController?.refreshTaskSummary();
     return;
   }
 
+  const rawProgress = Number(payload.progress);
   activeProcessingTasks.set(taskId, {
     taskId,
     type: String(payload.type || "task"),
     label: String(payload.label || "处理中任务"),
+    progress: Number.isFinite(rawProgress) ? Math.max(0, Math.min(1, rawProgress)) : null,
     updatedAt: Date.now(),
   });
+  windowLifecycleController?.refreshTaskSummary();
 });
 ipcMain.handle("remove-directory-recursive", async (event, dirPath) => {
   try {
@@ -7505,6 +7760,7 @@ async function createWindow() {
     },
   });
   const windowInstance = mainWindow;
+  getWindowLifecycleController().attachWindow(windowInstance);
   let initialLoadComplete = false;
   let initialLoadDiagnostic = null;
   let initialLoadDiagnosticPromise = null;
@@ -7591,7 +7847,7 @@ async function createWindow() {
           {
             label: "Exit",
             accelerator: process.platform === "darwin" ? "Cmd+Q" : "Ctrl+Q",
-            click: () => app.quit(),
+            click: () => getWindowLifecycleController().requestQuit(),
           },
         ],
       },
@@ -7655,23 +7911,28 @@ async function createWindow() {
   }
 
   windowInstance.on("close", (event) => {
+    if (event.defaultPrevented) return;
+    const confirmBeforeQuit = globalConfig.general?.confirmBeforeQuit !== false;
     const environmentState = environmentManager?.getState?.() || {};
     if (
       !allowCloseWithActiveEnvironmentPreparation &&
       ["preparing", "cancelling"].includes(environmentState.status)
     ) {
-      const choice = dialog.showMessageBoxSync(windowInstance, {
-        type: "warning",
-        buttons: ["继续准备", "取消准备并退出", "返回应用"],
-        defaultId: 2,
-        cancelId: 2,
-        title: "运行环境仍在准备",
-        message: "运行环境仍在准备",
-        detail: "直接退出会中止下载或安装。取消准备后，临时文件会被清理，当前可用环境不会受到影响。",
-        noLink: true,
-      });
+      const choice = confirmBeforeQuit
+        ? dialog.showMessageBoxSync(windowInstance, {
+            type: "warning",
+            buttons: ["继续准备", "取消准备并退出", "返回应用"],
+            defaultId: 2,
+            cancelId: 2,
+            title: "运行环境仍在准备",
+            message: "运行环境仍在准备",
+            detail: "直接退出会中止下载或安装。取消准备后，临时文件会被清理，当前可用环境不会受到影响。",
+            noLink: true,
+          })
+        : 1;
       if (choice !== 1) {
         event.preventDefault();
+        windowLifecycleController?.cancelQuit();
         if (choice === 2) {
           windowInstance.show();
           windowInstance.focus();
@@ -7682,7 +7943,11 @@ async function createWindow() {
       environmentManager?.cancelPreparation?.();
     }
 
-    if (allowCloseWithActiveProcessingTasks || activeProcessingTasks.size === 0) {
+    if (
+      allowCloseWithActiveProcessingTasks ||
+      activeProcessingTasks.size === 0 ||
+      !confirmBeforeQuit
+    ) {
       return;
     }
 
@@ -7699,6 +7964,7 @@ async function createWindow() {
 
     if (choice !== 1) {
       event.preventDefault();
+      windowLifecycleController?.cancelQuit();
       if (applicationQuitRequested) {
         applicationQuitRequested = false;
         quitAfterBackendStop = false;
@@ -7712,8 +7978,12 @@ async function createWindow() {
 
   windowInstance.on("closed", () => {
     if (mainWindow !== windowInstance) return;
-    activeProcessingTasks.clear();
     mainWindow = null;
+    trayManager?.refresh();
+    if (windowLifecycleController?.shouldRequestAppQuitAfterWindowClosed()) {
+      windowLifecycleController.markAppQuitRequested();
+      app.quit();
+    }
   });
 }
 
@@ -7813,6 +8083,14 @@ const handleFatalStartupError = createFatalStartupHandler(async (error) => {
       await startupLogger.error("Backend shutdown failed while handling a fatal error.", {
         reason: stopError?.message || String(stopError),
       });
+    } finally {
+      try {
+        await mcpProcessManager.stop({ preservePolicy: true });
+      } catch (mcpStopError) {
+        await startupLogger.error("MCP adapter shutdown failed while handling a fatal error.", {
+          reason: mcpStopError?.code || mcpStopError?.message || String(mcpStopError),
+        });
+      }
     }
     await startupLogger.flush();
 
@@ -7842,29 +8120,42 @@ process.on("unhandledRejection", (reason) => {
   void handleFatalStartupError(reason instanceof Error ? reason : new Error(String(reason)));
 });
 
-applicationBootstrapPromise = app
-  .whenReady()
-  .then(() =>
-    bootstrapApplication({
-      verifyIntegrity: verifyPackagedResourcesIntegrity,
-      registerProtocol: registerApplicationInfrastructure,
-      loadConfig: async () => loadAppConfig(),
-      cleanupTemporaryFiles: async () => runStartupTempCleanup(),
-      createWindow,
+if (!singleInstanceLockAcquired) {
+  app.quit();
+  applicationBootstrapPromise = Promise.resolve(null);
+} else {
+  applicationBootstrapPromise = app
+    .whenReady()
+    .then(() =>
+      bootstrapApplication({
+        verifyIntegrity: verifyPackagedResourcesIntegrity,
+        registerProtocol: registerApplicationInfrastructure,
+        loadConfig: async () => loadAppConfig(),
+        cleanupTemporaryFiles: async () => runStartupTempCleanup(),
+        createWindow,
+      })
+    )
+    .then(async (result) => {
+      applicationBootstrapComplete = true;
+      ensureTrayManager();
+      try {
+        await synchronizeMcpLifecycle(globalConfig?.mcp || DEFAULT_MCP_CONFIG);
+      } catch (error) {
+        console.warn("MCP adapter startup failed:", error?.code || "MCP_START_FAILED");
+      }
+      void ensureAppUpdaterInitialized();
+      return result;
     })
-  )
-  .then((result) => {
-    applicationBootstrapComplete = true;
-    void ensureAppUpdaterInitialized();
-    return result;
-  })
-  .catch(handleFatalStartupError);
+    .catch(handleFatalStartupError);
+}
 
 app.on("will-quit", () => {
+  trayManager?.dispose();
   appUpdaterService?.dispose?.();
 });
 
 app.on("before-quit", (event) => {
+  windowLifecycleController?.markAppQuitRequested();
   if (quitAfterBackendStop) return;
   event.preventDefault();
   applicationQuitRequested = true;
@@ -7872,6 +8163,7 @@ app.on("before-quit", (event) => {
 
   backendShutdownPromise = (async () => {
     try {
+      await mcpProcessManager.stop({ preservePolicy: true });
       if (environmentManager?.getState?.().canCancel) {
         environmentManager.cancelPreparation();
       }
@@ -7905,16 +8197,10 @@ app.on("window-all-closed", () => {
   if (platform !== "darwin") app.quit();
 });
 
+app.on("second-instance", () => {
+  void restoreMainWindow().catch(handleFatalStartupError);
+});
+
 app.on("activate", () => {
-  void (async () => {
-    await applicationBootstrapPromise;
-    if (
-      !applicationBootstrapComplete ||
-      applicationQuitRequested ||
-      BrowserWindow.getAllWindows().length > 0
-    ) {
-      return;
-    }
-    await createWindow();
-  })().catch(handleFatalStartupError);
+  void restoreMainWindow().catch(handleFatalStartupError);
 });

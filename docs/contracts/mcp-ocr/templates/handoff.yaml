@@ -1,0 +1,23 @@
+handoff_version: 1
+task_id: M0-ARCH-001
+status: evidence_pending
+owner: root
+reviewer: qa-red-reviewer
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+changed_paths: []
+contract_versions:
+  - core-v2
+  - governance-v1
+decisions:
+  - docs/decisions/mcp-ocr/ADR-0001-contract-format-and-boundary.md
+tests: []
+evidence_manifest: docs/evidence/M0/M0-ARCH-001/manifest.yaml
+unknowns:
+  - id: U-001
+    state: spike
+    owner: SEC
+    review_trigger: before-M3
+rollback:
+  runbook: Remove M0-added contract, fixture, evidence, and test files; restore package metadata and planning logs.
+  verified: false
+next_action: Run contract fixtures and independent review.

@@ -1,0 +1,251 @@
+contract: governance-v1
+valid:
+  - id: unknown_register
+    target: unknownRegister
+    value:
+      register_version: 1
+      updated_at: 2026-08-16T00:00:00Z
+      items:
+        - id: U-001
+          statement: Verify the component package license before distribution.
+          quadrant: unknown_nonreversible
+          state: spike
+          owner: SEC
+          timebox: 2d
+          evidence_ids: [EVID-M0-0001]
+          review_trigger: before-M3
+          stop_condition: Do not distribute a component before license approval.
+  - id: task_declaration
+    target: taskDeclaration
+    value:
+      task_id: M0-ARCH-001
+      milestone: M0
+      role: ARCH
+      owner: architecture-owner
+      reviewer: qa-red-reviewer
+      baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+      scope_paths: [test/contracts/**]
+      contract_refs: [core-v2, governance-v1]
+      dependencies: []
+      risk_class: medium
+      four_quadrant: known_reversible
+      allowed_actions: [edit_test]
+      forbidden_actions: [publish]
+      stop_conditions: [contract_failure]
+      evidence_required: [E1, E2]
+  - id: handoff
+    target: handoff
+    value:
+      handoff_version: 1
+      task_id: M0-ARCH-001
+      status: ready
+      owner: architecture-owner
+      reviewer: qa-red-reviewer
+      baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+      changed_paths: [test/contracts/mcp-ocr-contracts.test.mjs]
+      contract_versions: [core-v2, governance-v1]
+      decisions: [docs/decisions/mcp-ocr/ADR-0001-contract-format-and-boundary.md]
+      tests:
+        - command: npm run test:contracts:mcp-ocr
+          result: pass
+          evidence_id: EVID-M0-0001
+          summary: Contract fixtures passed locally.
+      evidence_manifest: docs/evidence/M0/M0-ARCH-001/manifest.yaml
+      unknowns:
+        - id: U-001
+          state: spike
+          owner: SEC
+          review_trigger: before-M3
+      rollback:
+        runbook: Remove the M0 test artifacts and restore the baseline state.
+        verified: true
+      next_action: Request independent review.
+  - id: evidence_manifest
+    target: evidenceManifest
+    value:
+      manifest_version: 1
+      task_id: M0-ARCH-001
+      baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+      candidate_ref: worktree:M0-ARCH-001
+      generated_at: 2026-08-16T00:00:00Z
+      evidence_level: E1
+      files:
+        - path: test/contracts/fixtures/evidence-placeholder.txt
+          sha256: 73cb3858a687a8494ca3323053016282f3dad39d42cf62ca4e79dda2aac7d9ac
+          size_bytes: 2
+          kind: contract
+      tests:
+        - command: npm run test:contracts:mcp-ocr
+          result: pass
+          evidence_id: EVID-M0-0001
+      environment:
+        os: windows
+        node: v22
+        notes: Fixture-only evidence manifest.
+  - id: gate_record
+    target: gateRecord
+    value:
+      gate_id: M0-ARCH-GATE
+      milestone: M0
+      status: accepted
+      reviewer: qa-red-reviewer
+      evidence_ids: [EVID-M0-0001]
+      failed_samples: []
+      decision: Contract fixtures and governance templates are accepted.
+      rollback: Remove the M0 candidate files and restore package metadata.
+      next_action: Continue with M1 planning.
+      timestamp: 2026-08-16T00:00:00Z
+  - id: golden_set_manifest
+    target: goldenSetManifest
+    value:
+      manifest_version: 1
+      status: planned
+      required_sample_count: 30
+      target_sample_count: 50
+      updated_at: 2026-08-16T00:00:00Z
+      coverage:
+        languages: [en, zh]
+        scenarios: [rotated, dense_text]
+      samples: []
+      license_gate:
+        owner: REL
+        rule: Each sample requires source and redistribution evidence.
+invalid:
+  - id: task_declaration_forbids_same_qa_owner_and_reviewer
+    target: taskDeclaration
+    expected_keyword: not
+    value:
+      task_id: M0-ARCH-001
+      milestone: M0
+      role: ARCH
+      owner: qa-red-reviewer
+      reviewer: qa-red-reviewer
+      baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+      scope_paths: [test/contracts/**]
+      contract_refs: [core-v2]
+      dependencies: []
+      risk_class: medium
+      four_quadrant: known_reversible
+      allowed_actions: [edit_test]
+      forbidden_actions: [publish]
+      stop_conditions: [contract_failure]
+      evidence_required: [E1]
+  - id: unknown_entry_requires_a_valid_quadrant
+    target: unknownRegister
+    expected_keyword: enum
+    value:
+      register_version: 1
+      updated_at: 2026-08-16T00:00:00Z
+      items:
+        - id: U-001
+          statement: Verify the component package license before distribution.
+          quadrant: unknown
+          state: spike
+          owner: SEC
+          timebox: 2d
+          evidence_ids: []
+          review_trigger: before-M3
+          stop_condition: Do not distribute a component before license approval.
+  - id: evidence_manifest_requires_workspace_relative_path
+    target: evidenceManifest
+    expected_keyword: workspace_relative_path
+    value:
+      manifest_version: 1
+      task_id: M0-ARCH-001
+      baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+      candidate_ref: worktree:M0-ARCH-001
+      generated_at: 2026-08-16T00:00:00Z
+      evidence_level: E1
+      files:
+        - path: C:\\outside\\manifest.yaml
+          sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          size_bytes: 1
+          kind: contract
+      tests: []
+      environment:
+        os: windows
+        node: v22
+        notes: Fixture-only evidence manifest.
+  - id: evidence_manifest_requires_positive_size
+    target: evidenceManifest
+    expected_keyword: positive_integer
+    value:
+      manifest_version: 1
+      task_id: M0-ARCH-001
+      baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+      candidate_ref: worktree:M0-ARCH-001
+      generated_at: 2026-08-16T00:00:00Z
+      evidence_level: E1
+      files:
+        - path: docs/contracts/mcp-ocr/schemas/core-v2.schema.yaml
+          sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          size_bytes: 0
+          kind: contract
+      tests: []
+      environment:
+        os: windows
+        node: v22
+        notes: Fixture-only evidence manifest.
+  - id: evidence_manifest_requires_existing_artifact
+    target: evidenceManifest
+    expected_keyword: artifact_exists
+    value:
+      manifest_version: 1
+      task_id: M0-ARCH-001
+      baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+      candidate_ref: worktree:M0-ARCH-001
+      generated_at: 2026-08-16T00:00:00Z
+      evidence_level: E1
+      files:
+        - path: test/contracts/fixtures/missing-artifact.txt
+          sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          size_bytes: 1
+          kind: contract
+      tests: []
+      environment:
+        os: windows
+        node: v22
+        notes: Fixture-only evidence manifest.
+  - id: golden_sample_rejects_absolute_path
+    target: goldenSetManifest
+    expected_keyword: pattern
+    value:
+      manifest_version: 1
+      status: planned
+      required_sample_count: 30
+      target_sample_count: 30
+      updated_at: 2026-08-16T00:00:00Z
+      coverage:
+        languages: [en]
+        scenarios: [dense_text]
+      samples:
+        - sample_id: OCR-GOLD-001
+          relative_path: C:\\outside\\sample.png
+          sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          source: Example source record
+          license: CC0
+          redistribution: allowed
+          language: en
+          scenarios: [dense_text]
+          expected_detection: exact
+          expected_recognition: exact
+          expected_coordinates: polygon_exact
+      license_gate:
+        owner: REL
+        rule: Each sample requires source and redistribution evidence.
+  - id: ready_golden_set_requires_thirty_samples
+    target: goldenSetManifest
+    expected_keyword: minItems
+    value:
+      manifest_version: 1
+      status: ready
+      required_sample_count: 30
+      target_sample_count: 30
+      updated_at: 2026-08-16T00:00:00Z
+      coverage:
+        languages: [en]
+        scenarios: [dense_text]
+      samples: []
+      license_gate:
+        owner: REL
+        rule: Each sample requires source and redistribution evidence.

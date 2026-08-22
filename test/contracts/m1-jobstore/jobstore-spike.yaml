@@ -1,0 +1,70 @@
+fixture_version: 1
+task_id: M1-APP-001
+contract_refs:
+  - core-v2
+  - governance-v1
+valid_submissions:
+  - id: first_submission_creates_job
+    scope: image-ui
+    idempotency_key: image-job-0001
+    fingerprint: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    expected: created
+  - id: same_submission_reuses_job
+    scope: image-ui
+    idempotency_key: image-job-0001
+    fingerprint: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    expected: reused
+valid_transitions:
+  - id: queue_to_running
+    from: queued
+    to: running
+  - id: running_to_success
+    from: running
+    to: succeeded
+  - id: running_to_cancel
+    from: running
+    to: cancelling
+  - id: cancel_after_cleanup
+    from: cancelling
+    to: cancelled
+  - id: cancel_worker_failure
+    from: cancelling
+    to: failed
+valid_events:
+  - id: first_event
+    previous_sequence: null
+    sequence: 0
+  - id: next_event
+    previous_sequence: 0
+    sequence: 1
+invalid:
+  - id: terminal_success_cannot_transition
+    kind: transition
+    from: succeeded
+    to: running
+    expected_error: invalid_transition
+  - id: queued_cannot_cancel_directly
+    kind: transition
+    from: queued
+    to: cancelled
+    expected_error: invalid_transition
+  - id: idempotency_fingerprint_conflict
+    kind: submission
+    scope: image-ui
+    idempotency_key: image-job-0001
+    fingerprint: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    expected_error: idempotency_conflict
+  - id: event_sequence_gap
+    kind: event
+    previous_sequence: 0
+    sequence: 2
+    expected_error: event_sequence
+  - id: event_sequence_rewind
+    kind: event
+    previous_sequence: 1
+    sequence: 1
+    expected_error: event_sequence
+  - id: started_write_cannot_replay
+    kind: recovery
+    staging_state: started
+    expected_error: replay_requires_confirmation

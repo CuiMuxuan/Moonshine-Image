@@ -1,0 +1,38 @@
+task_id: M3-SEC-002
+milestone: M3
+role: SEC
+owner: m3-security-spike-owner
+reviewer: m3-security-reviewer
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+scope_paths:
+  - docs/decisions/mcp-ocr/ADR-0006-mcp-bridge-handshake-spike.md
+  - docs/evidence/M3/M3-SEC-002/**
+  - test/mcp/mcp-bridge-handshake-spike.test.mjs
+  - docs/contracts/mcp-ocr/unknown-register.yaml
+contract_refs:
+  - governance-v1
+dependencies:
+  - M0-ARCH-GATE
+  - M1-APP-GATE
+risk_class: high
+four_quadrant: unknown_reversible
+allowed_actions:
+  - edit_docs
+  - edit_test
+  - local_test
+forbidden_actions:
+  - production_mcp_bridge
+  - package_or_lockfile_change
+  - electron_or_preload_ipc_change
+  - public_listener
+  - publish
+  - pointer_write
+  - user_data_write
+  - secret_output
+stop_conditions:
+  - arbitrary_ipc_reachability
+  - token_disclosure
+  - non_loopback_bind
+  - scope_path_violation
+evidence_required:
+  - E2

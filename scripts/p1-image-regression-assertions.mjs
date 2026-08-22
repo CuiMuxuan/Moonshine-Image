@@ -200,7 +200,8 @@ function runAssertions() {
   assertPattern({
     file: "src-electron/electron-main.js",
     description: "Electron save-app-config validates raw payload before sanitizing",
-    pattern: /validateConfig\(mergeConfigForStrictValidation\(newConfig\)\)[\s\S]*const sanitizedConfig = sanitizeAppConfig\(newConfig\)/,
+    pattern:
+      /ipcMain\.handle\("save-app-config"[\s\S]*?validateConfig\(mergeConfigForStrictValidation\(newConfig\)\)[\s\S]*?const sanitizedConfig = sanitizeAppConfig\(/,
   });
   assertPattern({
     file: "src/config/ConfigManager.js",
@@ -245,7 +246,7 @@ function runAssertions() {
   assertPattern({
     file: "src/shared/appConfigSchema.js",
     description: "Shared config schema keeps version and page-level default SAM model settings",
-    pattern: /CONFIG_SCHEMA_VERSION = 14[\s\S]*SLBR_LOCAL_INFERENCE_STRATEGY_OPTIONS[\s\S]*VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*defaultSamModel:\s*"sam_vit_b"[\s\S]*defaultSam2Model:\s*"sam2_1_hiera_large"[\s\S]*defaultSam3Model:\s*"sam3_1_multiplex"[\s\S]*imageSmartSelectionDefaultModel:\s*"sam_vit_b"[\s\S]*videoSmartSelectionDefaultModel:\s*"sam2_1_hiera_large"[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4[\s\S]*advanced:\s*\{[\s\S]*slbrLocalInferenceStrategy:\s*"auto"[\s\S]*slbrLocalBBoxEmptyRatioThreshold:\s*50[\s\S]*slbrLocalEdgeFeatherPx:\s*2[\s\S]*masking:\s*\{[\s\S]*DEFAULT_MASKING_CONFIG/,
+    pattern: /CONFIG_SCHEMA_VERSION = 15[\s\S]*SLBR_LOCAL_INFERENCE_STRATEGY_OPTIONS[\s\S]*VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*defaultSamModel:\s*"sam_vit_b"[\s\S]*defaultSam2Model:\s*"sam2_1_hiera_large"[\s\S]*defaultSam3Model:\s*"sam3_1_multiplex"[\s\S]*imageSmartSelectionDefaultModel:\s*"sam_vit_b"[\s\S]*videoSmartSelectionDefaultModel:\s*"sam2_1_hiera_large"[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4[\s\S]*advanced:\s*\{[\s\S]*slbrLocalInferenceStrategy:\s*"auto"[\s\S]*slbrLocalBBoxEmptyRatioThreshold:\s*50[\s\S]*slbrLocalEdgeFeatherPx:\s*2[\s\S]*masking:\s*\{[\s\S]*DEFAULT_MASKING_CONFIG/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",
@@ -1082,7 +1083,7 @@ function runAssertions() {
   assertPattern({
     file: "src/components/common/MoonshineFile.vue",
     description: "Uploader only shows the floating file indicator when there are files to show and keeps the button content on one line",
-    pattern: /v-if="shouldShowFileIndicator"[\s\S]*const shouldShowFileIndicator = computed\(\(\) => floatingListFiles\.value\.length > 0\)[\s\S]*\.file-select-btn \:deep\(\.q-btn__content\) \{[\s\S]*flex-wrap: nowrap;[\s\S]*white-space: nowrap;/,
+    pattern: /v-if="shouldShowFileIndicator"[\s\S]*const shouldShowFileIndicator = computed\(\(\) => floatingListFiles\.value\.length > 0\)[\s\S]*\.file-select-btn :deep\(\.q-btn__content\) \{[\s\S]*flex-wrap: nowrap;[\s\S]*white-space: nowrap;/,
   });
   assertPattern({
     file: "src/components/common/MaskBrushControls.vue",

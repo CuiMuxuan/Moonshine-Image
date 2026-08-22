@@ -1,0 +1,12 @@
+gate_id: M1-APP-GATE
+milestone: M1
+status: accepted
+reviewer: qa-red-reviewer
+evidence_ids:
+  - EVID-M1-APP-SPIKE-001
+failed_samples: []
+decision: >-
+  Accepted on independent local E2 evidence for the bounded reversible spike only. QA/RED passed node --test test/contracts/m1-jobstore/*.test.mjs (4/4), npm run test:contracts:mcp-ocr (6/6), and authoritative governance validation of gate.yaml, task.yaml, handoff.yaml, and manifest.yaml (4/4) using docs/contracts/mcp-ocr/schemas/governance-v1.schema.yaml. The M1 manifest passed 6/6 path, existence, positive size, lowercase SHA-256, and self-exclusion checks. Staged-scope review found eight M1 files and zero src/electron/preload/router/renderer production paths; worktree and staged git diff --check passed. This gate does not claim a persistent JobStore, ApplicationFacade, production IPC, recovery worker, database migration, or runtime wiring exists. Evidence is local E2 only; no external-machine, release, or canary result is claimed.
+rollback: Remove only the M1-APP-001 ADR, evidence, fixture, test, and exact LF attribute changes, then restore baseline e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d. No production code, database, IPC channel, release pointer, immutable release object, or user data was changed by this review.
+next_action: Preserve this result as spike evidence and open a separately scoped, owned, and reviewed implementation task before adding persistent JobStore, ApplicationFacade, database, recovery-worker, or IPC runtime code. External-machine, release, or canary evidence must be recorded only after those environments are exercised.
+timestamp: 2026-08-16T02:04:43Z

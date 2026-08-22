@@ -1,0 +1,44 @@
+task_id: M1-APP-003
+milestone: M1
+role: APP
+owner: root
+reviewer: artifact-reviewer
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+scope_paths:
+  - docs/decisions/mcp-ocr/ADR-0004-artifact-staging-atomic-publish-spike.md
+  - docs/evidence/M1/M1-APP-003/**
+  - test/contracts/m1-jobstore/artifact_staging_spike.py
+  - test/contracts/m1-jobstore/test_artifact_staging_spike.py
+  - task_plan.md
+  - findings.md
+  - progress.md
+contract_refs:
+  - core-v2
+  - governance-v1
+dependencies:
+  - M1-SQLITE-GATE
+risk_class: medium
+four_quadrant: unknown_reversible
+allowed_actions:
+  - edit_docs
+  - edit_test
+  - local_test
+  - spawn_test_process
+forbidden_actions:
+  - production_code
+  - user_file_write
+  - user_data_migration
+  - ipc_change
+  - publish
+  - pointer_write
+  - user_data_delete
+stop_conditions:
+  - partial_final_visible
+  - existing_artifact_overwrite
+  - integrity_mismatch_published
+  - ambiguous_crash_recovery
+  - automatic_republish
+  - path_outside_temporary_root
+  - scope_path_violation
+evidence_required:
+  - E2

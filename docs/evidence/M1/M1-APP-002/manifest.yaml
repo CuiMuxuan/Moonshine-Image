@@ -1,0 +1,45 @@
+manifest_version: 1
+task_id: M1-APP-002
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+candidate_ref: worktree:M1-APP-002
+generated_at: 2026-08-16T02:20:00Z
+evidence_level: E2
+files:
+  - path: docs/evidence/M1/M1-APP-002/.gitattributes
+    sha256: a79691a93b46e49ce460c26ef22afcc03d6eca1e63bf2edbc20e96159510f6c9
+    size_bytes: 14
+    kind: contract
+  - path: docs/decisions/mcp-ocr/ADR-0003-sqlite-jobstore-crash-recovery-spike.md
+    sha256: ec34db72ccbe07e9fb7e713c014335d8a4f5d574daaad637e74e6553be35202b
+    size_bytes: 3013
+    kind: decision
+  - path: test/contracts/m1-jobstore/sqlite_jobstore_spike.py
+    sha256: b889266ecab2eda0d222ffb1a4c101a20b8a4249633f9cb3f1c5a9b5c86e0b46
+    size_bytes: 10208
+    kind: fixture
+  - path: test/contracts/m1-jobstore/test_sqlite_jobstore_spike.py
+    sha256: 36ea9f73047dc79df44b4ac0f0f3da9ecc6aa13b57b5837f5e9508b3b75c00e2
+    size_bytes: 6507
+    kind: test_log
+  - path: docs/evidence/M1/M1-APP-002/task.yaml
+    sha256: 0d26bed39abcbc934d4cd41211c87f76aff27a07feb19fa4ec313584fe60557d
+    size_bytes: 1007
+    kind: task
+  - path: docs/evidence/M1/M1-APP-002/handoff.yaml
+    sha256: 7d51f6ebedc4951be0d7e3204cd7c96fe443e40338b8646b0dac871c1453503d
+    size_bytes: 1684
+    kind: handoff
+tests:
+  - command: python test/contracts/m1-jobstore/test_sqlite_jobstore_spike.py
+    result: pass
+    evidence_id: EVID-M1-SQLITE-SPIKE-002
+  - command: node --test test/contracts/m1-jobstore/jobstore-spike.test.mjs
+    result: pass
+    evidence_id: EVID-M1-APP-SPIKE-001
+  - command: npm run test:contracts:mcp-ocr
+    result: pass
+    evidence_id: EVID-M0-CONTRACT-001
+environment:
+  os: windows
+  node: Python 3.13.9; SQLite 3.51.0; Node 24.14.0
+  notes: Local E2 spike only. Tests used TemporaryDirectory and short-lived Python subprocesses. No packaged Python 3.12, power-loss durability, artifact fsync/rename, production JobStore, facade, IPC, userData, external machine, release, or canary claim is included.

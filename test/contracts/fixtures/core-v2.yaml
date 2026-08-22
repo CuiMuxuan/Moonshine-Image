@@ -1,0 +1,314 @@
+contract: core-v2
+valid:
+  - id: asset_ref_workspace
+    target: assetRef
+    value:
+      schema_version: asset-ref/v2
+      asset_id: ast_source01
+      kind: image
+      locator:
+        scheme: workspace
+        workspace_id: ws_abc12345
+        relative_path: fixtures/source.png
+      media_type: image/png
+      sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      size_bytes: 1024
+      width: 640
+      height: 480
+  - id: asset_ref_artifact
+    target: assetRef
+    value:
+      schema_version: asset-ref/v2
+      asset_id: ast_sidecar1
+      kind: ocr_sidecar
+      locator:
+        scheme: artifact
+        artifact_id: art_parent01
+      media_type: application/json
+      sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      size_bytes: 128
+  - id: mask_ref
+    target: maskRef
+    value:
+      schema_version: mask-ref/v2
+      mask_id: msk_mask0001
+      mask_asset:
+        schema_version: asset-ref/v2
+        asset_id: ast_mask0001
+        kind: mask
+        locator:
+          scheme: workspace
+          workspace_id: ws_abc12345
+          relative_path: artifacts/mask.png
+        media_type: image/png
+        sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+        size_bytes: 256
+        width: 640
+        height: 480
+      source_asset_id: ast_source01
+      coordinate_space: source_pixels
+      encoding: binary_png
+      width: 640
+      height: 480
+      provenance:
+        operation_id: op_mask0001
+        producer: sam
+        source_artifact_ids: [art_source01]
+        model_revision: sam3-test
+        created_at: 2026-08-16T00:00:00Z
+  - id: safe_error
+    target: safeError
+    value:
+      schema_version: error/v2
+      code: component_not_ready
+      stage: model
+      retryable: true
+      message_key: error.component_not_ready
+      safe_details:
+        diagnostic_id: diag_model001
+        retry_after_ms: 1000
+        required_component: ocr.engine
+        field: component_id
+        item_index: 0
+  - id: artifact
+    target: artifact
+    value:
+      schema_version: artifact/v2
+      artifact_id: art_result01
+      job_id: job_ocr00001
+      artifact_type: ocr_sidecar
+      asset:
+        schema_version: asset-ref/v2
+        asset_id: ast_sidecar1
+        kind: ocr_sidecar
+        locator:
+          scheme: artifact
+          artifact_id: art_parent01
+        media_type: application/json
+        sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        size_bytes: 128
+      retention:
+        class: result
+        expires_at: null
+      created_at: 2026-08-16T00:00:00Z
+  - id: job
+    target: job
+    value:
+      schema_version: job/v2
+      job_id: job_ocr00001
+      kind: ocr_detect
+      status: queued
+      idempotency_key: ocr-test-0001
+      request_fingerprint: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+      policy_snapshot_id: pol_policy01
+      renderer_required: false
+      engine_revision: ocr-engine-test
+      input_assets:
+        - schema_version: asset-ref/v2
+          asset_id: ast_source01
+          kind: image
+          locator:
+            scheme: workspace
+            workspace_id: ws_abc12345
+            relative_path: fixtures/source.png
+          media_type: image/png
+          sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          size_bytes: 1024
+      artifact_ids: [art_result01]
+      error: null
+      created_at: 2026-08-16T00:00:00Z
+      updated_at: 2026-08-16T00:00:00Z
+  - id: job_event
+    target: jobEvent
+    value:
+      schema_version: job-event/v2
+      event_id: evt_event0001
+      job_id: job_ocr00001
+      sequence: 1
+      event_type: progress
+      timestamp: 2026-08-16T00:00:00Z
+      payload:
+        progress: 0.5
+        completed_items: 1
+        total_items: 2
+        artifact_ids: [art_result01]
+        diagnostic_id: diag_model001
+  - id: text_region
+    target: textRegion
+    value:
+      schema_version: text-region/v2
+      region_id: txt_region01
+      polygon: [[0, 0], [100, 0], [100, 20], [0, 20]]
+      bbox:
+        x: 0
+        y: 0
+        width: 100
+        height: 20
+      text: test
+      language: en
+      orientation_degrees: 0
+      detection_confidence: 0.99
+      recognition_confidence: 0.98
+      engine_revision: ocr-engine-test
+  - id: ocr_sidecar
+    target: ocrSidecar
+    value:
+      schema_version: ocr-sidecar/v2
+      sidecar_id: ocr_sidecar1
+      source_asset:
+        schema_version: asset-ref/v2
+        asset_id: ast_source01
+        kind: image
+        locator:
+          scheme: workspace
+          workspace_id: ws_abc12345
+          relative_path: fixtures/source.png
+        media_type: image/png
+        sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        size_bytes: 1024
+      coordinate_space: source_pixels
+      source_orientation: 1
+      transform_to_source: [1, 0, 0, 0, 1, 0, 0, 0, 1]
+      engine:
+        engine_id: moonshine.ocr
+        engine_version: 1.0.0
+        model_revision: ocr-model-test
+        device: cpu
+      regions:
+        - schema_version: text-region/v2
+          region_id: txt_region01
+          polygon: [[0, 0], [100, 0], [100, 20], [0, 20]]
+          bbox:
+            x: 0
+            y: 0
+            width: 100
+            height: 20
+          language: en
+          orientation_degrees: 0
+          detection_confidence: 0.99
+          recognition_confidence: 0.98
+          engine_revision: ocr-engine-test
+      created_at: 2026-08-16T00:00:00Z
+  - id: confirmation_plan
+    target: confirmationPlan
+    value:
+      schema_version: confirmation-plan/v2
+      confirmation_id: cnf_confirm01
+      action: write_outside_default
+      request_fingerprint: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+      policy_snapshot_id: pol_policy01
+      expires_at: 2026-08-16T00:05:00Z
+      summary_key: confirmation.write_outside_default
+      scope:
+        workspace_id: ws_abc12345
+        item_count: 1
+        artifact_ids: [art_result01]
+invalid:
+  - id: asset_ref_absolute_path
+    target: assetRef
+    expected_keyword: pattern
+    value:
+      schema_version: asset-ref/v2
+      asset_id: ast_source01
+      kind: image
+      locator:
+        scheme: workspace
+        workspace_id: ws_abc12345
+        relative_path: C:\\outside\\source.png
+      media_type: image/png
+      sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      size_bytes: 1024
+  - id: asset_ref_parent_path
+    target: assetRef
+    expected_keyword: pattern
+    value:
+      schema_version: asset-ref/v2
+      asset_id: ast_source01
+      kind: image
+      locator:
+        scheme: workspace
+        workspace_id: ws_abc12345
+        relative_path: ../source.png
+      media_type: image/png
+      sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      size_bytes: 1024
+  - id: safe_error_disallows_sensitive_detail
+    target: safeError
+    expected_keyword: additionalProperties
+    value:
+      schema_version: error/v2
+      code: internal_error
+      stage: recover
+      retryable: false
+      message_key: error.internal
+      safe_details:
+        stack_trace: private data
+  - id: job_rejects_unknown_status
+    target: job
+    expected_keyword: enum
+    value:
+      schema_version: job/v2
+      job_id: job_ocr00001
+      kind: ocr_detect
+      status: pending
+      idempotency_key: ocr-test-0001
+      request_fingerprint: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+      policy_snapshot_id: pol_policy01
+      renderer_required: false
+      input_assets:
+        - schema_version: asset-ref/v2
+          asset_id: ast_source01
+          kind: image
+          locator:
+            scheme: workspace
+            workspace_id: ws_abc12345
+            relative_path: fixtures/source.png
+          media_type: image/png
+          sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          size_bytes: 1024
+      artifact_ids: []
+      created_at: 2026-08-16T00:00:00Z
+      updated_at: 2026-08-16T00:00:00Z
+  - id: job_event_disallows_text_payload
+    target: jobEvent
+    expected_keyword: additionalProperties
+    value:
+      schema_version: job-event/v2
+      event_id: evt_event0001
+      job_id: job_ocr00001
+      sequence: 1
+      event_type: progress
+      timestamp: 2026-08-16T00:00:00Z
+      payload:
+        text: OCR full text must not enter the activity event
+  - id: text_region_requires_quad
+    target: textRegion
+    expected_keyword: minItems
+    value:
+      schema_version: text-region/v2
+      region_id: txt_region01
+      polygon: [[0, 0], [100, 0], [100, 20]]
+      bbox:
+        x: 0
+        y: 0
+        width: 100
+        height: 20
+      language: en
+      orientation_degrees: 0
+      detection_confidence: 0.99
+      recognition_confidence: 0.98
+      engine_revision: ocr-engine-test
+  - id: confirmation_plan_requires_nonempty_scope
+    target: confirmationPlan
+    expected_keyword: minimum
+    value:
+      schema_version: confirmation-plan/v2
+      confirmation_id: cnf_confirm01
+      action: write_outside_default
+      request_fingerprint: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+      policy_snapshot_id: pol_policy01
+      expires_at: 2026-08-16T00:05:00Z
+      summary_key: confirmation.write_outside_default
+      scope:
+        workspace_id: ws_abc12345
+        item_count: 0

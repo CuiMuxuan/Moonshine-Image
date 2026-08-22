@@ -35,6 +35,10 @@ export const DEFAULT_OFFLINE_MODEL_PATHS = Object.freeze([
   "mat/Places_512_FullData_G.pth",
   "sam/sam_vit_b_01ec64.pth",
   "sam2/sam2.1_hiera_large.pt",
+  "ocr/PP-OCRv6_det_small.onnx",
+  "ocr/PP-OCRv6_rec_small.onnx",
+  "ocr/ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+  "ocr/manifest.json",
 ]);
 
 function requiredText(value, label) {

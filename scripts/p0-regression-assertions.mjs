@@ -394,7 +394,7 @@ function runAssertions() {
   assertPattern({
     file: "src/shared/appConfigSchema.js",
     description: "Shared config schema owns SAM render cache defaults",
-    pattern: /CONFIG_SCHEMA_VERSION = 14[\s\S]*VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS[\s\S]*DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT[\s\S]*enabled:\s*false[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4[\s\S]*samReleaseBeforeProcessing:\s*true/,
+    pattern: /CONFIG_SCHEMA_VERSION = 15[\s\S]*VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS[\s\S]*DEFAULT_VIDEO_TEMPORAL_ENHANCEMENT[\s\S]*enabled:\s*false[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4[\s\S]*samReleaseBeforeProcessing:\s*true/,
   });
   assertPattern({
     file: "src/config/ConfigManager.js",
@@ -764,7 +764,7 @@ function runAssertions() {
   assertPattern({
     file: "src/components/global/MainToolbar.vue",
     description: "Main toolbar provides a dark-mode navigation active state",
-    pattern: /nav-btn--active[\s\S]*:global\(body\.body--dark\)[\s\S]*--toolbar-nav-active-background:\s*#2f2f32/,
+    pattern: /nav-btn--active[\s\S]*:global\(body\.body--dark \.nav-btn\)[\s\S]*--toolbar-nav-active-background:\s*#2f2f32/,
   });
   assertAbsentPattern({
     file: "src/components/global/MainToolbar.vue",

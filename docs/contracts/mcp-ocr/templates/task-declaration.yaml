@@ -1,0 +1,41 @@
+task_id: M0-ARCH-001
+milestone: M0
+role: ARCH
+owner: root
+reviewer: qa-red-reviewer
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+scope_paths:
+  - .gitattributes
+  - docs/contracts/mcp-ocr/**
+  - docs/decisions/mcp-ocr/**
+  - docs/evidence/M0/M0-ARCH-001/**
+  - test/contracts/**
+  - package.json
+  - package-lock.json
+  - task_plan.md
+  - findings.md
+  - progress.md
+contract_refs:
+  - core-v2
+  - governance-v1
+dependencies: []
+risk_class: medium
+four_quadrant: known_reversible
+allowed_actions:
+  - edit_docs
+  - edit_test
+  - edit_dev_dependency
+  - local_test
+forbidden_actions:
+  - production_code
+  - publish
+  - pointer_write
+  - user_data_delete
+  - secret_output
+stop_conditions:
+  - unowned_unknown_nonreversible
+  - contract_negative_fixture_failure
+  - scope_path_violation
+evidence_required:
+  - E1
+  - E2

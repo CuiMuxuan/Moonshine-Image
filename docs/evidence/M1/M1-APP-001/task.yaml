@@ -1,0 +1,40 @@
+task_id: M1-APP-001
+milestone: M1
+role: APP
+owner: root
+reviewer: qa-red-reviewer
+baseline_ref: e97ee0ce1fc3a9088d79a0f1f1cd0cba2b16413d
+scope_paths:
+  - .gitattributes
+  - docs/decisions/mcp-ocr/ADR-0002-jobstore-facade-spike.md
+  - docs/evidence/M1/M1-APP-001/**
+  - test/contracts/m1-jobstore/**
+  - task_plan.md
+  - findings.md
+  - progress.md
+contract_refs:
+  - core-v2
+  - governance-v1
+dependencies:
+  - M0-ARCH-GATE
+risk_class: medium
+four_quadrant: known_reversible
+allowed_actions:
+  - edit_docs
+  - edit_test
+  - local_test
+forbidden_actions:
+  - production_code
+  - database_migration
+  - ipc_change
+  - publish
+  - pointer_write
+  - user_data_delete
+stop_conditions:
+  - duplicate_publication
+  - invalid_terminal_transition
+  - event_sequence_gap
+  - replay_without_confirmation
+  - scope_path_violation
+evidence_required:
+  - E2

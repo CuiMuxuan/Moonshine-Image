@@ -341,8 +341,19 @@ async function runSmokeTest() {
     if (await continueButton.isVisible()) {
       await continueButton.click();
     }
+    // Saving a changed backend port schedules a page reload; let that transition settle
+    // before asserting the next theme state.
+    await page.waitForTimeout(2500);
     await page.click('[data-testid="toggle-theme-button"]');
     await page.waitForSelector("body.body--dark", { state: "attached", timeout: 20000 });
+    await page.waitForTimeout(1000);
+    await page.waitForFunction(
+      () =>
+        window.getComputedStyle(document.querySelector('[data-testid="nav-image-button"]')).backgroundColor !==
+        "rgb(255, 255, 255)",
+      null,
+      { timeout: 5000 }
+    );
     const darkImageNavigation = await inspectNavigationButton("nav-image-button");
     if (
       !darkImageNavigation.active ||

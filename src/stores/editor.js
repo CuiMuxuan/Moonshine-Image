@@ -95,7 +95,6 @@ export const useEditorStore = defineStore('editor', {
     },
     cropImage() {
       // TODO: 实现裁剪逻辑
-      console.log('Cropping image...')
     },
 
     // 视图重置
