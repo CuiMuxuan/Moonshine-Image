@@ -201,7 +201,7 @@ function runAssertions() {
     file: "src-electron/electron-main.js",
     description: "Electron save-app-config validates raw payload before sanitizing",
     pattern:
-      /ipcMain\.handle\("save-app-config"[\s\S]*?validateConfig\(mergeConfigForStrictValidation\(newConfig\)\)[\s\S]*?const sanitizedConfig = sanitizeAppConfig\(/,
+      /ipcMain\.handle\("save-app-config"[\s\S]*?validateConfig\(mergeConfigForStrictValidation\((?:newConfig|configWithCurrentMcp)\)\)[\s\S]*?const sanitizedConfig = sanitizeAppConfig\(/,
   });
   assertPattern({
     file: "src/config/ConfigManager.js",
@@ -246,7 +246,7 @@ function runAssertions() {
   assertPattern({
     file: "src/shared/appConfigSchema.js",
     description: "Shared config schema keeps version and page-level default SAM model settings",
-    pattern: /CONFIG_SCHEMA_VERSION = 15[\s\S]*SLBR_LOCAL_INFERENCE_STRATEGY_OPTIONS[\s\S]*VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*defaultSamModel:\s*"sam_vit_b"[\s\S]*defaultSam2Model:\s*"sam2_1_hiera_large"[\s\S]*defaultSam3Model:\s*"sam3_1_multiplex"[\s\S]*imageSmartSelectionDefaultModel:\s*"sam_vit_b"[\s\S]*videoSmartSelectionDefaultModel:\s*"sam2_1_hiera_large"[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4[\s\S]*advanced:\s*\{[\s\S]*slbrLocalInferenceStrategy:\s*"auto"[\s\S]*slbrLocalBBoxEmptyRatioThreshold:\s*50[\s\S]*slbrLocalEdgeFeatherPx:\s*2[\s\S]*masking:\s*\{[\s\S]*DEFAULT_MASKING_CONFIG/,
+    pattern: /CONFIG_SCHEMA_VERSION = 16[\s\S]*SLBR_LOCAL_INFERENCE_STRATEGY_OPTIONS[\s\S]*VIDEO_INPAINT_COLOR_STABILIZATION_OPTIONS[\s\S]*DEFAULT_MASKING_CONFIG[\s\S]*defaultSamModel:\s*"sam_vit_b"[\s\S]*defaultSam2Model:\s*"sam2_1_hiera_large"[\s\S]*defaultSam3Model:\s*"sam3_1_multiplex"[\s\S]*imageSmartSelectionDefaultModel:\s*"sam_vit_b"[\s\S]*videoSmartSelectionDefaultModel:\s*"sam2_1_hiera_large"[\s\S]*samRenderCacheEnabled:\s*true[\s\S]*samRenderCacheMaxContexts:\s*12[\s\S]*samRenderCacheMaxMemoryMb:\s*192[\s\S]*samRenderCacheLargeImageLongSide:\s*4096[\s\S]*samLazyRenderDisabledCandidates:\s*true[\s\S]*samRenderCachePreloadVisibleList:\s*true[\s\S]*samRenderCacheNeighborPreloadCount:\s*4[\s\S]*advanced:\s*\{[\s\S]*slbrLocalInferenceStrategy:\s*"auto"[\s\S]*slbrLocalBBoxEmptyRatioThreshold:\s*50[\s\S]*slbrLocalEdgeFeatherPx:\s*2[\s\S]*masking:\s*\{[\s\S]*DEFAULT_MASKING_CONFIG/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",
@@ -839,7 +839,7 @@ function runAssertions() {
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
     description: "Image masker can erase SAM smart-selection candidates without modifying the manual base layer",
-    pattern: /(?=[\s\S]*SAM_TOOL_MODES = Object\.freeze\(\{[\s\S]*SELECT: "select"[\s\S]*ERASE: "erase")(?=[\s\S]*data-testid="sam-tool-toggle-button")(?=[\s\S]*:data-mode="samToolMode")(?=[\s\S]*samToolToggleIcon = computed)(?=[\s\S]*samToolToggleTooltip = computed)(?=[\s\S]*toggleSamToolMode = \(\) => \{[\s\S]*setSamToolMode\(SAM_TOOL_MODES\.ERASE\))(?=[\s\S]*smartEraseDrawingEnabled)(?=[\s\S]*setSamToolMode)(?=[\s\S]*finishSamEraseOperation)(?=[\s\S]*applySamEraseOperationToEnabledCandidates)(?=[\s\S]*candidate\.eraseMask = canvas\.toDataURL\("image\/png"\))(?=[\s\S]*subtractSamEraseMask[\s\S]*globalCompositeOperation = "destination-out")(?=[\s\S]*resolveSamCandidateMaskForRendering[\s\S]*candidate\?\.eraseMask)(?=[\s\S]*renderSamCandidates\(\{ pushHistory: changed \}\))[\s\S]*/,
+    pattern: /(?=[\s\S]*SAM_TOOL_MODES = Object\.freeze\(\{[\s\S]*SELECT: "select"[\s\S]*ERASE: "erase")(?=[\s\S]*data-testid="sam-tool-toggle-button")(?=[\s\S]*:data-mode="samToolMode")(?=[\s\S]*samToolToggleIcon = computed)(?=[\s\S]*samToolToggleTooltip = computed)(?=[\s\S]*toggleSamToolMode = \(\) => \{[\s\S]*setSamToolMode\(SAM_TOOL_MODES\.ERASE\))(?=[\s\S]*smartEraseDrawingEnabled)(?=[\s\S]*setSamToolMode)(?=[\s\S]*finishSamEraseOperation)(?=[\s\S]*applySamEraseOperationToEnabledCandidates)(?=[\s\S]*candidate\.eraseMask = canvas\.toDataURL\("image\/png"\))(?=[\s\S]*subtractSamEraseMask[\s\S]*globalCompositeOperation = "destination-out")(?=[\s\S]*resolveSamCandidateMaskForRendering[\s\S]*candidate\?\.eraseMask)(?=[\s\S]*renderSamCandidates\(\{ pushHistory: (?:changed|true) \}\))[\s\S]*/,
   });
   assertAbsentPattern({
     file: "src/components/image/ImageMasker.vue",
@@ -879,7 +879,7 @@ function runAssertions() {
   assertPattern({
     file: "src/components/image/ImageMasker.vue",
     description: "Image masker applies manual drawing to the SAM base layer before re-rendering smart candidates",
-    pattern: /(?=[\s\S]*hasSamCandidateLayer = \(\) => samCandidates\.value\.some\(\(candidate\) => candidate\.mask\))(?=[\s\S]*resolveCurrentSamBaseSnapshot[\s\S]*hasSamCandidateLayer\(\)[\s\S]*canvasContext\.getImageData\(0, 0, width, height\))(?=[\s\S]*applyRasterOperationToImageData)(?=[\s\S]*syncSamBaseSnapshotFromManualOperation[\s\S]*samBaseSnapshot\.value = nextBaseSnapshot[\s\S]*samBaseSnapshotDataUrl\.value = imageDataToDataUrl\(nextBaseSnapshot\)[\s\S]*renderSamCandidates\(\{ pushHistory: true \}\))(?=[\s\S]*finishCurrentOperation[\s\S]*await syncSamBaseSnapshotFromManualOperation\(result\))[\s\S]*/,
+    pattern: /(?=[\s\S]*hasSamCandidateLayer = \(\) =>\s*samCandidates\.value\.some\(\(candidate\) => candidate\?\.mask && candidate\?\.enabled !== false\))(?=[\s\S]*resolveCurrentSamBaseSnapshot[\s\S]*hasSamCandidateLayer\(\)[\s\S]*canvasContext\.getImageData\(0, 0, width, height\))(?=[\s\S]*applyRasterOperationToImageData)(?=[\s\S]*syncSamBaseSnapshotFromManualOperation[\s\S]*samBaseSnapshot\.value = nextBaseSnapshot[\s\S]*samBaseSnapshotDataUrl\.value = imageDataToDataUrl\(nextBaseSnapshot\)[\s\S]*renderSamCandidates\(\{ pushHistory: true \}\))(?=[\s\S]*finishCurrentOperation[\s\S]*syncSamBaseSnapshotFromManualOperation\(result\))[\s\S]*/,
   });
   assertPattern({
     file: "src/pages/IndexPage.vue",
