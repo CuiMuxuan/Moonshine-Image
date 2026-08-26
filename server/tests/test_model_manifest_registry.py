@@ -225,8 +225,10 @@ class SignedModelManifestTests(unittest.TestCase):
                 models = build_model_status(root_path / "models")
                 metadata = get_model_manifest_metadata()
 
-            self.assertEqual([model["id"] for model in models], ["remote_lama"])
+            self.assertEqual([model["id"] for model in models], ["remote_lama", "ocr_rapid_onnx_mobile"])
             self.assertTrue(models[0]["downloadable"])
+            self.assertFalse(models[1]["downloadable"])
+            self.assertEqual(models[1]["sourceLinks"], [])
             self.assertEqual(metadata["source"], "signed")
             self.assertEqual(metadata["sequence"], 3)
 

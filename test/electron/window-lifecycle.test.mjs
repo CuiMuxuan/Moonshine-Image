@@ -96,6 +96,7 @@ test("restoring a hidden window restores, focuses, and sends only the approved M
     onNavigationRequest: (request) => navigation.push(request),
   });
   lifecycle.attachWindow(windowInstance);
+  lifecycle.markRendererReady();
   lifecycle.hideWindow();
   windowInstance.minimized = true;
 
@@ -106,6 +107,54 @@ test("restoring a hidden window restores, focuses, and sends only the approved M
   assert.equal(windowInstance.focusCalls, 1);
   assert.deepEqual(navigation, [{ route: "/activity/mcp", source: "tray" }]);
   assert.equal(lifecycle.getState().state, "visible");
+});
+
+test("queues tray activity navigation until the renderer is ready and retries failed delivery", () => {
+  const windowInstance = new FakeWindow();
+  const navigation = [];
+  let shouldDeliver = false;
+  const lifecycle = new WindowLifecycleController({
+    onNavigationRequest: (request) => {
+      navigation.push(request);
+      return shouldDeliver;
+    },
+  });
+  lifecycle.attachWindow(windowInstance);
+  lifecycle.hideWindow();
+
+  assert.equal(lifecycle.restoreWindow({ route: "/activity/mcp" }), true);
+  assert.deepEqual(navigation, []);
+
+  lifecycle.markRendererReady();
+  assert.deepEqual(navigation, [{ route: "/activity/mcp", source: "tray" }]);
+
+  shouldDeliver = true;
+  lifecycle.markRendererReady();
+  assert.deepEqual(navigation, [
+    { route: "/activity/mcp", source: "tray" },
+    { route: "/activity/mcp", source: "tray" },
+  ]);
+  lifecycle.markRendererReady();
+  assert.equal(navigation.length, 2);
+});
+
+test("renderer reload invalidates readiness without discarding the next tray navigation", () => {
+  const windowInstance = new FakeWindow();
+  const navigation = [];
+  const lifecycle = new WindowLifecycleController({
+    onNavigationRequest: (request) => {
+      navigation.push(request);
+      return true;
+    },
+  });
+  lifecycle.attachWindow(windowInstance);
+  lifecycle.markRendererReady();
+  lifecycle.markRendererNotReady();
+
+  lifecycle.restoreWindow({ route: "/activity/mcp" });
+  assert.equal(navigation.length, 0);
+  lifecycle.markRendererReady();
+  assert.equal(navigation.length, 1);
 });
 
 test("quit mode enters a reversible quit intent until the existing confirmation flow accepts it", () => {
@@ -142,6 +191,10 @@ test("Electron main wires lifecycle ownership, single-instance recovery, and nam
   assert.match(mainSource, /getWindowLifecycleController\(\)\.attachWindow\(windowInstance\)/);
   assert.match(mainSource, /ensureTrayManager\(\)/);
   assert.match(mainSource, /ipcMain\.handle\("tray-get-state"/);
+  assert.match(mainSource, /ipcMain\.on\("renderer-ready"/);
+  assert.match(mainSource, /markRendererReady\(\)/);
+  assert.match(mainSource, /did-start-loading/);
+  assert.match(mainSource, /return sendToMainWindow\("tray-navigate"/);
   ["tray-show-window", "tray-hide-window", "tray-quit"].forEach((channel) => {
     assert.doesNotMatch(mainSource, new RegExp(`ipcMain\\.handle\\("${channel}"`));
   });
@@ -149,6 +202,7 @@ test("Electron main wires lifecycle ownership, single-instance recovery, and nam
   ["getTrayState", "onTrayNavigation"].forEach((name) => {
     assert.match(preloadSource, new RegExp(`${name}:`));
   });
+  assert.match(preloadSource, /"renderer-ready"/);
   ["showTrayWindow", "hideTrayWindow", "quitFromTray"].forEach((name) => {
     assert.doesNotMatch(preloadSource, new RegExp(`${name}:`));
   });

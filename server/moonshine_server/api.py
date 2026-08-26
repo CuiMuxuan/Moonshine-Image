@@ -833,6 +833,7 @@ class Api:
                 req.encoded_image,
                 regions=req.regions,
                 options=req.options,
+                model_id=req.model_id,
             )
         except OcrApiError as error:
             return JSONResponse(

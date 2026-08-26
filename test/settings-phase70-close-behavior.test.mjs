@@ -20,7 +20,7 @@ const settingsSource = fs.readFileSync(
 test("new configurations default to tray close behavior with explicit confirmation", () => {
   const config = createDefaultAppConfig();
 
-  assert.equal(CONFIG_SCHEMA_VERSION, 15);
+  assert.equal(CONFIG_SCHEMA_VERSION, 16);
   assert.equal(config.general.closeBehavior, "tray");
   assert.equal(config.general.confirmBeforeQuit, true);
 });

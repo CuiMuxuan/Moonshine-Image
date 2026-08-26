@@ -407,6 +407,7 @@ test("release configuration keeps packager compatibility and exposes an installe
   assert.match(config, /MOONSHINE_PACKAGE_LEGACY_RUNTIME/);
   const packagerResourceBlock = config.match(/packager:\s*\{[\s\S]*?extraResource:\s*\[([\s\S]*?)\n\s*\],\n\s*\},\n\s*builder:/);
   assert.ok(packagerResourceBlock, "packager extraResource block should be explicit");
+  assert.match(packagerResourceBlock[1], /build-resources\/mcp/);
   assert.match(packagerResourceBlock[1], /includeLegacyPackagedComponents/);
   assert.doesNotMatch(
     packagerResourceBlock[1],
@@ -414,6 +415,7 @@ test("release configuration keeps packager compatibility and exposes an installe
   );
   const builderResourceBlock = config.match(/builder:\s*\{[\s\S]*?extraResources:\s*\[([\s\S]*?)\n\s*\],\n\s*\/\/ Installer artifact naming/);
   assert.ok(builderResourceBlock, "builder extraResources block should be explicit");
+  assert.match(builderResourceBlock[1], /from:\s*["']build-resources\/mcp["']/);
   assert.doesNotMatch(builderResourceBlock[1], /build-resources\/(runtime|models)/);
   assert.match(builderResourceBlock[1], /build-resources\/ffmpeg/);
   assert.doesNotMatch(config, /files:\s*\[\s*["']dist\/electron/);

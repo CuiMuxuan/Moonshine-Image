@@ -84,7 +84,7 @@ def build_local_rapidocr_adapter(model_root: str | os.PathLike[str] | None = Non
         "model_revision": "PP-OCRv6-small-bundled",
         "model_sha256": det["sha256"],
         "size_bytes": det["size_bytes"],
-        "license_id": "local-model-license-review-pending",
+        "license_id": "Apache-2.0",
         "languages": ["zh-Hans", "en"],
         "runtime_flavor": "cpu",
         "supports_gpu": False,

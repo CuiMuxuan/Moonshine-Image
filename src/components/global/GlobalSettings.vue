@@ -539,21 +539,35 @@
                     <div v-for="item in brushConfigFields" :key="item.key" class="mini-block">
                       <div class="row items-center q-mb-md">
                         <div class="text-subtitle2">{{ item.label }}</div>
-                        <q-space />
-                        <span class="brush-dot" :style="{ backgroundColor: getBrushConfig(item.key).color, opacity: getBrushConfig(item.key).alpha, width: `${Math.max(12, getBrushConfig(item.key).size)}px`, height: `${Math.max(12, getBrushConfig(item.key).size)}px` }"></span>
                       </div>
-                      <div class="q-gutter-md">
+                      <div class="brush-default-preview" :aria-label="`${item.label}预览`">
+                        <span class="brush-default-preview__dot" :style="getBrushPreviewStyle(item.key)"></span>
+                      </div>
+                      <div class="brush-default-controls q-mt-md">
                         <div class="color-row">
+                          <span class="brush-control-label">画笔颜色</span>
                           <input
                             v-model="localConfig.advanced[item.key].color"
                             type="color"
                             class="native-color-input"
                             :aria-label="`${item.label}颜色选择器`"
                           />
-                          <q-input v-model="localConfig.advanced[item.key].color" dense outlined label="颜色" />
+                          <span class="brush-control-value brush-control-value--color">{{ getBrushConfig(item.key).color.toUpperCase() }}</span>
                         </div>
-                        <q-slider v-model="localConfig.advanced[item.key].size" label label-always :min="1" :max="120" :step="1" :aria-label="`${item.label}画笔大小`"><template #prepend>大小</template></q-slider>
-                        <q-slider v-model="localConfig.advanced[item.key].alpha" label label-always :min="0.05" :max="1" :step="0.05" :aria-label="`${item.label}画笔透明度`"><template #prepend>透明度</template></q-slider>
+                        <div class="brush-control-field">
+                          <div class="brush-control-header">
+                            <span>画笔大小</span>
+                            <span class="brush-control-value">{{ Math.round(getBrushConfig(item.key).size) }} px</span>
+                          </div>
+                          <q-slider v-model="localConfig.advanced[item.key].size" :min="1" :max="120" :step="1" :aria-label="`${item.label}画笔大小`" />
+                        </div>
+                        <div class="brush-control-field">
+                          <div class="brush-control-header">
+                            <span>画笔透明度</span>
+                            <span class="brush-control-value">{{ formatBrushAlpha(getBrushConfig(item.key).alpha) }}</span>
+                          </div>
+                          <q-slider v-model="localConfig.advanced[item.key].alpha" :min="0.05" :max="1" :step="0.05" :aria-label="`${item.label}画笔透明度`" />
+                        </div>
                       </div>
                       <div class="text-caption text-grey-7 q-mt-sm">{{ item.description }}</div>
                     </div>
@@ -1285,7 +1299,10 @@
               </div>
             </q-tab-panel>
             <q-tab-panel name="mcp" class="q-px-none" data-testid="global-settings-mcp-panel">
-              <McpSettingsPanel />
+              <McpSettingsPanel
+                :initial-tab="initialMcpTab"
+                :navigation-key="navigationKey"
+              />
             </q-tab-panel>
           </q-tab-panels>
           </q-scroll-area>
@@ -1717,6 +1734,8 @@ const props = defineProps({
   modelValue: { type: Boolean, default: false },
   initialTab: { type: String, default: "" },
   initialModelId: { type: String, default: "" },
+  initialMcpTab: { type: String, default: "settings" },
+  navigationKey: { type: Number, default: 0 },
   backendRunning: { type: Boolean, default: false },
 });
 const emit = defineEmits(["update:modelValue", "open-backend-manager", "model-downloaded"]);
@@ -2100,6 +2119,17 @@ const getVideoEncodingQualityPresetHint = () =>
 const getVideoInpaintColorStabilizationHint = () =>
   videoInpaintColorStabilizationOptions.find((item) => item.value === (localConfig.value.video?.inpaintColorStabilization || "auto"))?.description || "";
 const getBrushConfig = (key) => localConfig.value.advanced?.[key] || DEFAULT_IMAGE_BRUSH;
+const formatBrushAlpha = (value) => `${Math.round(Math.max(0, Math.min(1, Number(value) || 0)) * 100)}%`;
+const getBrushPreviewStyle = (key) => {
+  const brush = getBrushConfig(key);
+  const size = Math.max(10, Math.min(76, Number(brush.size) || 0));
+  return {
+    width: `${size}px`,
+    height: `${size}px`,
+    backgroundColor: brush.color,
+    opacity: Math.max(0.05, Math.min(1, Number(brush.alpha) || DEFAULT_IMAGE_BRUSH.alpha)),
+  };
+};
 const getShortcutDisplayValue = (actionId) => formatShortcutKeys(recordingShortcutId.value === actionId && recordingKeys.value.length ? recordingKeys.value : localConfig.value.shortcuts?.[actionId] || []);
 const stopShortcutRecording = () => { recordingShortcutId.value = ""; recordingKeys.value = []; };
 const resetThemeColors = () => { localConfig.value.ui.brandColors = { ...DEFAULT_BRAND_COLORS }; };
@@ -2427,7 +2457,7 @@ watch(() => props.modelValue, (opened) => {
   validatePort(localConfig.value.general.backendPort);
   applyInitialTarget();
 }, { immediate: true });
-watch(() => [props.initialTab, props.initialModelId], () => {
+watch(() => [props.initialTab, props.initialModelId, props.initialMcpTab, props.navigationKey], () => {
   if (showDialog.value) {
     applyInitialTarget();
   }
@@ -2634,11 +2664,17 @@ onUnmounted(() => {
 .cleanup-row { display: flex; align-items: center; gap: 16px; }
 .cleanup-copy { flex: 1 1 auto; min-width: 0; }
 .cleanup-button { flex: 0 0 auto; }
-.color-row { display: flex; align-items: center; gap: 12px; }
-.native-color-input { width: 52px; height: 40px; border: 0; padding: 0; background: transparent; cursor: pointer; }
-.color-row :deep(.q-field) { flex: 1 1 auto; }
+.brush-default-preview { display: flex; height: 112px; align-items: center; justify-content: center; overflow: hidden; border: 1px solid var(--settings-border); border-radius: 8px; background-color: var(--settings-toggle-surface); background-image: linear-gradient(45deg, rgba(148,163,184,.14) 25%, transparent 25%), linear-gradient(-45deg, rgba(148,163,184,.14) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, rgba(148,163,184,.14) 75%), linear-gradient(-45deg, transparent 75%, rgba(148,163,184,.14) 75%); background-size: 18px 18px; background-position: 0 0, 0 9px, 9px -9px, -9px 0; }
+.brush-default-preview__dot { display: block; flex: 0 0 auto; border-radius: 999px; border: 1px solid rgba(255,255,255,.82); box-shadow: 0 0 0 1px rgba(17,24,39,.12); }
+.brush-default-controls { display: flex; flex-direction: column; gap: 14px; }
+.color-row { display: flex; min-height: 38px; align-items: center; gap: 10px; }
+.native-color-input { width: 42px; height: 32px; flex: 0 0 auto; border: 1px solid var(--settings-border); border-radius: 8px; padding: 0; overflow: hidden; background: transparent; cursor: pointer; }
+.brush-control-label, .brush-control-header { color: var(--settings-text-secondary); font-size: 12px; line-height: 1.4; }
+.brush-control-header { display: flex; min-height: 22px; align-items: center; justify-content: space-between; gap: 12px; }
+.brush-control-field :deep(.q-slider) { margin-top: 2px; }
+.brush-control-value { color: var(--settings-text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.brush-control-value--color { margin-left: auto; }
 .settings-inline-description { margin: 10px 0 0; color: var(--settings-text-secondary); font-size: 12px; line-height: 1.55; }
-.brush-dot { display: inline-block; border-radius: 999px; border: 1px solid rgba(255,255,255,.72); box-shadow: 0 0 0 1px rgba(17,24,39,.08); }
 .startup-preferences-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .settings-toggle-control { display: flex; min-height: 44px; align-items: center; justify-content: space-between; gap: 16px; color: var(--settings-text-secondary); }
 .settings-toggle-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; align-items: center; }

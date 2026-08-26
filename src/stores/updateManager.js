@@ -291,12 +291,20 @@ export const useUpdateManagerStore = defineStore("updateManager", () => {
     }
 
     const listener = api.onAppUpdateState
-      ? api.onAppUpdateState((nextState) => applyState(nextState))
-      : api.on?.("app-update-state", (_event, nextState) => applyState(nextState));
+      ? api.onAppUpdateState((nextState) => {
+        applyState(nextState);
+      })
+      : api.on?.("app-update-state", (_event, nextState) => {
+        applyState(nextState);
+      });
     unsubscribe = typeof listener === "function" ? listener : null;
     const runtimeListener = api.onRuntimeState
-      ? api.onRuntimeState((nextState) => applyRuntimeState(nextState))
-      : api.on?.("runtime-state", (_event, nextState) => applyRuntimeState(nextState));
+      ? api.onRuntimeState((nextState) => {
+        applyRuntimeState(nextState);
+      })
+      : api.on?.("runtime-state", (_event, nextState) => {
+        applyRuntimeState(nextState);
+      });
     unsubscribeRuntime = typeof runtimeListener === "function" ? runtimeListener : null;
     return state.value;
   };

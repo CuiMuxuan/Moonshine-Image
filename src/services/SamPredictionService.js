@@ -90,11 +90,15 @@ export const predictSamMask = async (request = {}) => {
     };
 
     return await api.post("/api/v1/moonshine/sam/predict", payload, {
+      ...(request.signal ? { signal: request.signal } : {}),
       headers: {
         "Content-Type": "application/json",
       },
     });
   } catch (error) {
+    if (error?.name === "AbortError" || error?.name === "CanceledError" || error?.code === "ERR_CANCELED") {
+      throw error;
+    }
     if (error.response || error.request) {
       throw new Error(classifyMoonshineError(error, "SAM 智能选区失败").message);
     }

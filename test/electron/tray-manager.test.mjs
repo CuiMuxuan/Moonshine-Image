@@ -57,6 +57,8 @@ test("TrayManager keeps one Electron Tray and projects task status into its menu
   assert.equal(tray.tooltip, "Moonshine-Image - 2 个任务");
 
   const template = tray.menu.template;
+  assert.equal(template[0].label, "打开窗口");
+  assert.equal(template[1].label, "打开活动日志");
   assert.equal(template[2].label, "当前任务（2）");
   assert.deepEqual(
     template[2].submenu.map((item) => item.label),

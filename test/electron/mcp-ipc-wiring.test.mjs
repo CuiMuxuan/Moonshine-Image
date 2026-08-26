@@ -63,12 +63,6 @@ test("MCP IPC is named, read-only by default, and projects safe activity fields"
     activity_cursor: 0,
   });
   assert.deepEqual(await handlers.get(MCP_IPC_CHANNELS.getActivity)({}, 0), []);
-  assert.deepEqual(await handlers.get(MCP_IPC_CHANNELS.stop)({}), {
-    enabled: false,
-    running: false,
-    allowed_tools: [],
-    activity_cursor: 0,
-  });
 });
 
 test("MCP preload exposes only fixed named wrappers for this IPC slice", async () => {
@@ -80,8 +74,14 @@ test("MCP preload exposes only fixed named wrappers for this IPC slice", async (
   assert.doesNotMatch(source, /invoke:\s*\(channel, \.\.\.args\)\s*=>\s*ipcRenderer\.invoke\(channel/);
   assert.match(source, /getMcpState:\s*\(\)\s*=>\s*ipcRenderer\.invoke\("mcp-get-state"\)/);
   assert.match(source, /getMcpActivity:\s*\(after = 0\)\s*=>\s*ipcRenderer\.invoke\("mcp-get-activity", after\)/);
-  assert.match(source, /startMcp:\s*\(\)\s*=>\s*ipcRenderer\.invoke\("mcp-start"\)/);
-  assert.match(source, /stopMcp:\s*\(\)\s*=>\s*ipcRenderer\.invoke\("mcp-stop"\)/);
+  assert.match(source, /getMcpClientConfiguration:\s*\(\)\s*=>\s*ipcRenderer\.invoke\("mcp-get-client-configuration"\)/);
+  assert.match(source, /probeMcpExternalProxy:\s*\(\)\s*=>\s*ipcRenderer\.invoke\("mcp-probe-external-proxy"\)/);
+  assert.match(source, /getMcpClientSessions:\s*\(\)\s*=>\s*ipcRenderer\.invoke\("mcp-get-client-sessions"\)/);
+  assert.match(source, /disconnectMcpClient:\s*\(sessionId\)\s*=>\s*ipcRenderer\.invoke\("mcp-disconnect-client", sessionId\)/);
+  assert.match(source, /getMcpApprovals:\s*\(\)\s*=>\s*ipcRenderer\.invoke\("mcp-get-approvals"\)/);
+  assert.match(source, /resolveMcpApproval:\s*\(approvalId, decision\)/);
+  assert.match(source, /openMcpArtifactInEditor:\s*\(jobId, artifactId\)/);
+  assert.doesNotMatch(source, /startMcp|stopMcp|mcp-start|mcp-stop/);
   assert.match(source, /executeCommand:\s*\(options\)\s*=>\s*ipcRenderer\.invoke\("execute-command", options\)/);
   assert.doesNotMatch(source, /mcp-(?:configure|set-token)/);
   assert.doesNotMatch(source, /(?:showTrayWindow|hideTrayWindow|quitFromTray):/);
@@ -96,18 +96,33 @@ test("preload generic IPC methods reject unknown channels before Electron dispat
   const listener = () => {};
   api.ipcRenderer.on("backend-output", listener);
   api.ipcRenderer.removeListener("backend-output", listener);
+  api.ipcRenderer.on("backend-service-state", listener);
+  api.ipcRenderer.removeListener("backend-service-state", listener);
 
   assert.deepEqual(calls.map(({ method, channel }) => ({ method, channel })), [
     { method: "invoke", channel: "get-app-config" },
     { method: "send", channel: "set-active-processing-task" },
     { method: "on", channel: "backend-output" },
     { method: "removeListener", channel: "backend-output" },
+    { method: "on", channel: "backend-service-state" },
+    { method: "removeListener", channel: "backend-service-state" },
   ]);
   assert.throws(() => api.ipcRenderer.invoke("arbitrary-channel"), /not allowlisted/);
   assert.throws(() => api.ipcRenderer.invoke("execute-command", { command: "echo blocked" }), /not allowlisted/);
   assert.throws(() => api.ipcRenderer.send("arbitrary-channel"), /not allowlisted/);
   assert.throws(() => api.ipcRenderer.on("arbitrary-channel", listener), /not allowlisted/);
   assert.throws(() => api.ipcRenderer.removeListener("arbitrary-channel", listener), /not allowlisted/);
+  let receivedEventArgs = null;
+  api.ipcRenderer.on("backend-service-state", (...args) => {
+    receivedEventArgs = args;
+  });
+  const registeredHandler = calls
+    .filter(({ method, channel }) => method === "on" && channel === "backend-service-state")
+    .at(-1)
+    .listener;
+  const payload = { state: "running" };
+  registeredHandler({ sender: { id: "electron-only" } }, payload);
+  assert.deepEqual(receivedEventArgs, [null, payload]);
   await api.ipcRenderer.executeCommand({ command: "echo allowed" });
   assert.equal(api.ipcRenderer.showTrayWindow, undefined);
   assert.equal(api.ipcRenderer.hideTrayWindow, undefined);
@@ -117,7 +132,7 @@ test("preload generic IPC methods reject unknown channels before Electron dispat
     channel: "execute-command",
     args: [{ command: "echo allowed" }],
   });
-  assert.equal(calls.length, 5);
+  assert.equal(calls.length, 8);
 });
 
 test("MCP IPC projects hostile activity and descriptor values into bounded fields", async () => {
@@ -153,9 +168,18 @@ test("MCP IPC projects hostile activity and descriptor values into bounded field
     activity_cursor: 0,
   });
   assert.deepEqual(await handlers.get(MCP_IPC_CHANNELS.getActivity)({}, "invalid"), [{
+    approval: null,
+    artifacts: [],
+    client_name: null,
+    client_version: null,
     cursor: 0,
+    file_results: [],
+    job_group_id: null,
+    job_id: null,
     timestamp: null,
     request_id: null,
+    session_id: null,
+    status: null,
     tool: null,
     outcome: null,
     code: null,
@@ -170,11 +194,139 @@ test("MCP IPC projects hostile activity and descriptor values into bounded field
     code: "C:/private/image.png",
   }];
   assert.deepEqual(await handlers.get(MCP_IPC_CHANNELS.getActivity)({}, 0), [{
+    approval: null,
+    artifacts: [],
+    client_name: null,
+    client_version: null,
     cursor: 1,
+    file_results: [],
+    job_group_id: null,
+    job_id: null,
     timestamp: null,
     request_id: null,
+    session_id: null,
+    status: null,
     tool: "moonshine.jobs.get",
     outcome: null,
     code: null,
   }]);
+});
+
+test("MCP external IPC exposes bounded envelopes without tokens, pipe names, or trusted paths", async () => {
+  const handlers = new Map();
+  const bridge = {
+    descriptor: () => null,
+    isRunning: false,
+    nextCursor: 1,
+    getActivity: () => [],
+  };
+  const external = {
+    getClientConfiguration: () => ({
+      available: true,
+      protocolVersion: "2025-11-25",
+      command: "C:/Program Files/Moonshine Image/Moonshine-Image.exe",
+      args: ["resources/mcp/moonshine-mcp-proxy.mjs"],
+      env: { ELECTRON_RUN_AS_NODE: "1", INTERNAL_TOKEN: "must-not-project" },
+      pipeName: "\\\\.\\pipe\\private",
+      trustedRoot: "C:/private/images",
+    }),
+    probe: () => ({ listening: true, protocol_version: "moonshine-mcp-external-pipe-v1", token: "secret" }),
+    getSessions: () => [{
+      session_id: "ses_abcdefgh",
+      client_id: "codex",
+      client_version: "1.0.0",
+      connected_at: "2026-08-25T01:02:03.000Z",
+      status: "connected",
+      pipe_name: "\\\\.\\pipe\\private",
+    }],
+    disconnect: (sessionId) => sessionId === "ses_abcdefgh",
+  };
+  const dispatcher = {
+    listApprovals: () => [{
+      approval_id: "apr_abcdefgh",
+      client_id: "codex",
+      tool: "moonshine.image.process",
+      state: "pending",
+      expires_at: "2026-08-25T01:12:03.000Z",
+      input_path: "C:/private/images/a.png",
+    }],
+    resolveApproval: ({ approvalId, approved }) => ({
+      approval_id: approvalId,
+      client_id: "codex",
+      tool: "moonshine.image.process",
+      state: approved ? "approved" : "rejected",
+      expires_at: "2026-08-25T01:12:03.000Z",
+    }),
+  };
+  const opened = [];
+  registerMcpIpc({
+    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
+    bridge,
+    external,
+    dispatcher,
+    openArtifactInEditor: ({ jobId, artifactId }) => {
+      opened.push({ jobId, artifactId });
+      return true;
+    },
+  });
+
+  const configuration = await handlers.get(MCP_IPC_CHANNELS.getClientConfiguration)({});
+  assert.equal(configuration.success, true);
+  assert.equal(configuration.data.available, true);
+  assert.deepEqual(configuration.data.args, ["resources/mcp/moonshine-mcp-proxy.mjs"]);
+  assert.equal(configuration.data.jsonTemplate.includes("ELECTRON_RUN_AS_NODE"), true);
+  assert.equal(configuration.data.jsonTemplate.includes("INTERNAL_TOKEN"), false);
+
+  assert.deepEqual(await handlers.get(MCP_IPC_CHANNELS.probeExternalProxy)({}), {
+    success: true,
+    data: { available: true, code: null, protocolVersion: "moonshine-mcp-external-pipe-v1" },
+  });
+  assert.deepEqual(await handlers.get(MCP_IPC_CHANNELS.getClientSessions)({}), {
+    success: true,
+    data: [{
+      sessionId: "ses_abcdefgh",
+      clientName: "codex",
+      clientVersion: "1.0.0",
+      connectedAt: "2026-08-25T01:02:03.000Z",
+      lastSeenAt: null,
+      status: "connected",
+    }],
+  });
+  assert.deepEqual(await handlers.get(MCP_IPC_CHANNELS.getApprovals)({}), {
+    success: true,
+    data: [{
+      approvalId: "apr_abcdefgh",
+      tool: "moonshine.image.process",
+      clientName: "codex",
+      jobId: null,
+      jobGroupId: null,
+      createdAt: null,
+      expiresAt: "2026-08-25T01:12:03.000Z",
+      status: "pending",
+    }],
+  });
+  assert.deepEqual(await handlers.get(MCP_IPC_CHANNELS.disconnectClient)({}, "ses_abcdefgh"), { success: true });
+  const approval = await handlers.get(MCP_IPC_CHANNELS.resolveApproval)({}, "apr_abcdefgh", "approve");
+  assert.equal(approval.success, true);
+  assert.equal(approval.data.status, "approved");
+  assert.deepEqual(
+    await handlers.get(MCP_IPC_CHANNELS.openArtifactInEditor)({}, "job_abcdefgh", "art_abcdefgh"),
+    { success: true },
+  );
+  assert.deepEqual(opened, [{ jobId: "job_abcdefgh", artifactId: "art_abcdefgh" }]);
+
+  const projectedText = JSON.stringify({ configuration, sessions: await handlers.get(MCP_IPC_CHANNELS.getClientSessions)({}) });
+  assert.equal(projectedText.includes("must-not-project"), false);
+  assert.equal(projectedText.includes("C:/private/images"), false);
+  assert.equal(projectedText.includes("\\\\.\\pipe"), false);
+
+  external.getClientConfiguration = () => ({
+    available: true,
+    command: "Moonshine-Image.exe",
+    args: ["--pipe", "\\\\.\\pipe\\private"],
+  });
+  assert.deepEqual(await handlers.get(MCP_IPC_CHANNELS.getClientConfiguration)({}), {
+    success: true,
+    data: { available: false, protocolVersion: null, command: null, args: [], jsonTemplate: null },
+  });
 });

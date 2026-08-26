@@ -1,7 +1,11 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+
+const require = createRequire(import.meta.url);
+const { buildSync } = require(require.resolve("esbuild", { paths: [path.resolve("node_modules/@quasar/app-vite")] }));
 
 import {
   INTEGRITY_MANIFEST_FILE,
@@ -16,6 +20,7 @@ import {
 } from "../src-electron/integrity/public-key.js";
 import { prepareBackendResources } from "./prepare-backend-resources.mjs";
 import { buildPackagedWindowsRuntime } from "./build-runtime-win.mjs";
+import { buildMcpNativeBroker } from "./build-mcp-native-broker.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,6 +35,9 @@ const packagedFfmpegRoot = path.join(
   PACKAGED_FFMPEG_TARGET_DIR
 );
 const integrityRoot = path.join(buildResourcesRoot, INTEGRITY_RESOURCE_DIR);
+const mcpAdapterRoot = path.join(buildResourcesRoot, "mcp");
+const mcpAdapterEntry = path.join(repoRoot, "src-electron", "mcp-stdio-server.mjs");
+const mcpExternalProxyEntry = path.join(repoRoot, "src-electron", "mcp-external-proxy.mjs");
 const defaultPrivateKeyPath = path.join(
   repoRoot,
   "build-keys",
@@ -42,6 +50,10 @@ const protectedResourceDirs = [
   {
     rootDir: path.join(buildResourcesRoot, "backend"),
     resourcePrefix: "backend",
+  },
+  {
+    rootDir: mcpAdapterRoot,
+    resourcePrefix: "mcp",
   },
   {
     rootDir: packagedModelsRoot,
@@ -159,7 +171,6 @@ function resolveFfmpegSourceRoot() {
   const candidateRoots = [
     process.env.MOONSHINE_FFMPEG_ROOT,
     path.join(buildResourcesRoot, PACKAGED_FFMPEG_RESOURCE_DIR),
-    "C:\\code\\ffmpeg",
   ]
     .map((value) => String(value || "").trim())
     .filter(Boolean);
@@ -186,7 +197,7 @@ function resolveFfmpegSourceRoot() {
   }
 
   throw new Error(
-    "Missing FFmpeg runtime. Set MOONSHINE_FFMPEG_ROOT or place FFmpeg at C:\\code\\ffmpeg."
+    "Missing FFmpeg runtime. Set MOONSHINE_FFMPEG_ROOT or provide build-resources/ffmpeg."
   );
 }
 
@@ -309,8 +320,29 @@ function readPrivateKey() {
   return fs.readFileSync(privateKeyPath, "utf8");
 }
 
+function prepareMcpAdapterResource() {
+  resetDir(mcpAdapterRoot);
+  for (const [entryPoint, outputName] of [
+    [mcpAdapterEntry, "mcp-stdio-server.mjs"],
+    [mcpExternalProxyEntry, "moonshine-mcp-proxy.mjs"],
+  ]) {
+    buildSync({
+      entryPoints: [entryPoint],
+      outfile: path.join(mcpAdapterRoot, outputName),
+      bundle: true,
+      format: "esm",
+      platform: "node",
+      target: "node20",
+      legalComments: "none",
+      sourcemap: false,
+    });
+  }
+  buildMcpNativeBroker();
+}
+
 export function prepareElectronResources({ includeBundledComponents = false, includeFfmpeg = true } = {}) {
   prepareBackendResources();
+  prepareMcpAdapterResource();
   if (includeFfmpeg) {
     copyPackagedFfmpegRuntime();
   }

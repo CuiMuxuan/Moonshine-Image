@@ -3,7 +3,6 @@
     <div
       v-if="modelValue"
       class="startup-overlay"
-      :class="{ 'startup-overlay--ready': videoReady }"
       aria-hidden="true"
     >
       <div class="startup-overlay-backdrop"></div>
@@ -12,10 +11,9 @@
         class="startup-overlay-video"
         :src="startupVideoSrc"
         preload="auto"
+        autoplay
         muted
         playsinline
-        @loadeddata="handleVideoReady"
-        @canplay="handleVideoReady"
         @ended="finish"
         @error="handleVideoError"
       />
@@ -39,14 +37,13 @@ const emit = defineEmits(["update:modelValue", "finished"]);
 
 const startupVideoSrc = resolvePublicAssetPath("videos/start.webm");
 const videoRef = ref(null);
-const videoReady = ref(false);
-const FALLBACK_TIMEOUT_MS = 12000;
+const STARTUP_PLAYBACK_RATE = 1.5;
+const FALLBACK_TIMEOUT_MS = 8500;
 const PLAYBACK_RETRY_DELAY_MS = 160;
 const MAX_PLAYBACK_RETRIES = 1;
 let fallbackTimer = 0;
 let playbackRetryTimer = 0;
 let playbackAttempt = 0;
-let playbackScheduled = false;
 let finished = false;
 
 const clearFallbackTimer = () => {
@@ -59,45 +56,26 @@ const clearPlaybackRetryTimer = () => {
   playbackRetryTimer = 0;
 };
 
-const waitForFirstFramePaint = () =>
-  new Promise((resolve) => {
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(resolve);
-    });
-  });
-
 const finish = () => {
   if (finished) return;
   finished = true;
   clearFallbackTimer();
   clearPlaybackRetryTimer();
-  playbackScheduled = false;
   emit("update:modelValue", false);
   emit("finished");
 };
 
-const schedulePlayback = async () => {
-  if (finished || !props.modelValue || playbackScheduled) return;
-
+const startVideoPlayback = () => {
+  if (finished || !props.modelValue) return;
   const video = videoRef.value;
-  if (!video || video.readyState < 2) return;
-
-  playbackScheduled = true;
-  await nextTick();
-  await waitForFirstFramePaint();
-
-  if (finished || !props.modelValue || video !== videoRef.value) {
-    playbackScheduled = false;
-    return;
-  }
+  if (!video) return;
 
   const retryPlayback = () => {
-    playbackScheduled = false;
     if (finished || !props.modelValue || playbackAttempt >= MAX_PLAYBACK_RETRIES) return;
 
     playbackAttempt += 1;
     playbackRetryTimer = window.setTimeout(() => {
-      void schedulePlayback();
+      startVideoPlayback();
     }, PLAYBACK_RETRY_DELAY_MS);
   };
 
@@ -109,13 +87,6 @@ const schedulePlayback = async () => {
   }
 };
 
-const handleVideoReady = () => {
-  if (finished || !props.modelValue) return;
-
-  videoReady.value = true;
-  void schedulePlayback();
-};
-
 const handleVideoError = () => {
   finish();
 };
@@ -124,9 +95,7 @@ const startPlayback = async () => {
   clearFallbackTimer();
   clearPlaybackRetryTimer();
   finished = false;
-  videoReady.value = false;
   playbackAttempt = 0;
-  playbackScheduled = false;
 
   await nextTick();
 
@@ -137,8 +106,14 @@ const startPlayback = async () => {
   }
 
   fallbackTimer = window.setTimeout(finish, FALLBACK_TIMEOUT_MS);
+  video.defaultPlaybackRate = STARTUP_PLAYBACK_RATE;
+  video.playbackRate = STARTUP_PLAYBACK_RATE;
+  video.currentTime = 0;
   video.load();
-  if (video.readyState >= 2) handleVideoReady();
+  video.playbackRate = STARTUP_PLAYBACK_RATE;
+  // The video is muted and has autoplay enabled, so Chromium permits this
+  // direct playback call even when the overlay is shown from a file URL.
+  startVideoPlayback();
 };
 
 watch(
@@ -151,8 +126,6 @@ watch(
 
     clearFallbackTimer();
     clearPlaybackRetryTimer();
-    playbackScheduled = false;
-    videoReady.value = false;
   },
   {
     immediate: true,
@@ -194,17 +167,12 @@ onUnmounted(() => {
   object-fit: contain;
   object-position: center center;
   display: block;
-  opacity: 0;
-  transition: opacity 160ms cubic-bezier(0.23, 1, 0.32, 1);
-}
-
-.startup-overlay--ready .startup-overlay-video {
-  opacity: 1;
 }
 
 .startup-overlay-enter-active,
 .startup-overlay-leave-active {
-  transition: opacity 0.22s cubic-bezier(0.23, 1, 0.32, 1);
+  transition: opacity 260ms cubic-bezier(0.23, 1, 0.32, 1);
+  will-change: opacity;
 }
 
 .startup-overlay-enter-from,
@@ -213,13 +181,9 @@ onUnmounted(() => {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .startup-overlay-video {
-    transition-duration: 0ms;
-  }
-
   .startup-overlay-enter-active,
   .startup-overlay-leave-active {
-    transition-duration: 120ms;
+    transition-duration: 160ms;
   }
 }
 </style>

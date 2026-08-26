@@ -110,11 +110,13 @@ test("MCP stdio adapter proxies SDK calls through the bridge without leaking sec
     const messages = stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line));
     assert.ok(messages.every((message) => message.jsonrpc === "2.0"));
     assert.ok(messages.find((message) => message.id === 2)?.result?.tools?.some((tool) => tool.name === "moonshine.capabilities"));
-    assert.deepEqual(messages.find((message) => message.id === 3)?.result?.structuredContent, {
-      tools: MCP_TOOL_NAMES,
-    });
+    const capabilities = messages.find((message) => message.id === 3)?.result?.structuredContent;
+    assert.deepEqual(capabilities?.tools, MCP_TOOL_NAMES);
+    assert.deepEqual(capabilities?.allowed_tools, MCP_TOOL_NAMES);
+    assert.equal(capabilities?.policy?.confirmation_mode, "read_only");
+    assert.match(capabilities?.policy?.policy_snapshot_id || "", /^pol_mcp_[a-f0-9]{16}$/);
     assert.equal(messages.find((message) => message.id === 4)?.result?.isError, true);
-    assert.match(messages.find((message) => message.id === 4)?.result?.content?.[0]?.text || "", /INVALID_JOB_ID/);
+    assert.match(messages.find((message) => message.id === 4)?.result?.content?.[0]?.text || "", /Input validation error|INVALID_JOB_ID/);
     assert.equal(dispatchCount, 1);
     assert.equal(stderr, "");
     assert.doesNotMatch(stdout, new RegExp(TOKEN));

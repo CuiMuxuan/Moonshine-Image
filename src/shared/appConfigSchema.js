@@ -3,7 +3,7 @@ import {
   normalizeShortcutConfig,
 } from "../utils/shortcutConfig.js";
 
-export const CONFIG_SCHEMA_VERSION = 15;
+export const CONFIG_SCHEMA_VERSION = 16;
 
 export const DEFAULT_THEME_MODE = "light";
 export const DEFAULT_UI_BUTTON_SIZE = "sm";
@@ -47,12 +47,24 @@ export const IMAGE_OUTPUT_FORMAT_OPTIONS = Object.freeze([
 ]);
 export const DEFAULT_IMAGE_OUTPUT_QUALITY = 95;
 export const DEFAULT_MCP_PROFILE_ID = "desktop-default";
+export const MCP_CONFIRMATION_MODES = Object.freeze([
+  "read_only",
+  "auto_approve",
+  "full_access",
+]);
 export const MCP_ALLOWED_TOOL_OPTIONS = Object.freeze([
+  "moonshine.status",
   "moonshine.capabilities",
+  "moonshine.models.list",
+  "moonshine.ocr.detect",
+  "moonshine.masks.generate",
+  "moonshine.image.process",
   "moonshine.image.process_batch",
   "moonshine.jobs.get",
   "moonshine.jobs.result",
   "moonshine.jobs.cancel",
+  "moonshine.job_groups.get",
+  "moonshine.job_groups.cancel",
 ]);
 export const MAX_MCP_ALLOWED_ROOTS = 16;
 export const MAX_MCP_ALLOWED_ROOT_LENGTH = 1024;
@@ -196,13 +208,15 @@ export const DEFAULT_MCP_CONFIG = Object.freeze({
   profileId: DEFAULT_MCP_PROFILE_ID,
   allowedTools: Object.freeze([]),
   allowedRoots: Object.freeze([]),
-  confirmationRequired: true,
+  confirmationMode: "read_only",
 });
 export const MCP_CONFIG_FIELD_NAMES = Object.freeze([
   "enabled",
   "profileId",
   "allowedTools",
   "allowedRoots",
+  "confirmationMode",
+  // Accepted only as a migration input. Normalized configuration never emits it.
   "confirmationRequired",
 ]);
 
@@ -269,6 +283,14 @@ export const normalizeMcpAllowedTools = (value) => {
   return MCP_ALLOWED_TOOL_OPTIONS.filter((tool) => requested.has(tool));
 };
 
+export const normalizeMcpConfirmationMode = (value, legacyConfirmationRequired) => {
+  if (MCP_CONFIRMATION_MODES.includes(value)) return value;
+  if (typeof legacyConfirmationRequired === "boolean") {
+    return legacyConfirmationRequired ? "read_only" : "auto_approve";
+  }
+  return DEFAULT_MCP_CONFIG.confirmationMode;
+};
+
 export const containsMcpTokenMaterial = (value, seen = new Set()) => {
   if (!value || typeof value !== "object") return false;
   if (seen.has(value)) return false;
@@ -286,10 +308,10 @@ export const normalizeMcpConfigMetadata = (value = {}) => {
     profileId: normalizeMcpProfileId(config.profileId),
     allowedTools: normalizeMcpAllowedTools(config.allowedTools),
     allowedRoots: normalizeMcpAllowedRoots(config.allowedRoots),
-    confirmationRequired:
-      typeof config.confirmationRequired === "boolean"
-        ? config.confirmationRequired
-        : DEFAULT_MCP_CONFIG.confirmationRequired,
+    confirmationMode: normalizeMcpConfirmationMode(
+      config.confirmationMode,
+      config.confirmationRequired,
+    ),
   };
 };
 
@@ -427,6 +449,16 @@ export const migrateLegacyConfigShape = (rawConfig = {}) => {
 
   const migrated = cloneConfig(rawConfig);
   const legacySchemaVersion = Number(migrated.schemaVersion || 0);
+
+  if (isPlainObject(migrated.mcp)) {
+    if (!MCP_CONFIRMATION_MODES.includes(migrated.mcp.confirmationMode)) {
+      migrated.mcp.confirmationMode = normalizeMcpConfirmationMode(
+        undefined,
+        migrated.mcp.confirmationRequired,
+      );
+    }
+    delete migrated.mcp.confirmationRequired;
+  }
 
   if (isPlainObject(migrated.general)) {
     const legacyModelPath = String(migrated.general.modelPath || "").trim();

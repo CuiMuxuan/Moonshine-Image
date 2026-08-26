@@ -113,6 +113,8 @@
     v-model="showSettings"
     :initial-tab="settingsTarget.tab"
     :initial-model-id="settingsTarget.modelId"
+    :initial-mcp-tab="settingsTarget.mcpTab"
+    :navigation-key="settingsTarget.navigationKey"
     :backend-running="backendRunning"
     @open-backend-manager="showBackendManager = true"
     @model-downloaded="handleModelDownloaded"
@@ -187,7 +189,11 @@
       </q-card-actions>
     </q-card>
   </q-dialog>
-  <startup-overlay v-model="showStartupOverlay" @finished="handleStartupOverlayFinished" />
+  <startup-overlay
+    :model-value="showStartupOverlay"
+    @update:model-value="handleStartupOverlayVisibilityRequest"
+    @finished="handleStartupOverlayFinished"
+  />
 </template>
 
 <script setup>
@@ -214,6 +220,7 @@ import { classifyMoonshineError } from "src/services/ErrorClassifier";
 import { useAppStateStore } from "src/stores/appState";
 import { useBackendEngineStore } from "src/stores/backendEngine";
 import { useConfigStore } from "src/stores/config";
+import { useFileManagerStore } from "src/stores/fileManager";
 import { useModelRegistryStore } from "src/stores/modelRegistry";
 import { useRuntimeDiagnosticsStore } from "src/stores/runtimeDiagnostics";
 import { useUpdateManagerStore } from "src/stores/updateManager";
@@ -230,6 +237,7 @@ const router = useRouter();
 const configStore = useConfigStore();
 const appStateStore = useAppStateStore();
 const backendEngineStore = useBackendEngineStore();
+const fileManagerStore = useFileManagerStore();
 const modelRegistryStore = useModelRegistryStore();
 const runtimeDiagnosticsStore = useRuntimeDiagnosticsStore();
 const updateManager = useUpdateManagerStore();
@@ -240,6 +248,8 @@ const showSettings = ref(false);
 const settingsTarget = ref({
   tab: "",
   modelId: "",
+  mcpTab: "settings",
+  navigationKey: 0,
 });
 const backendRunning = computed(() => backendEngineStore.isRunning);
 const startupExperienceFinished = ref(false);
@@ -264,7 +274,13 @@ const isE2EMode = import.meta.env.VITE_MOONSHINE_E2E === "1" || runtimeE2EFlag;
 const pendingBackendPathNotice = ref(null);
 const cudaDiagnosticNotificationKey = ref("");
 const backendSessionStartedAt = ref(0);
+const startupOverlayFinished = ref(false);
+const startupFlowPending = ref(false);
+const startupFlowResult = ref(null);
+const startupFailureNotified = ref(false);
 let removeBackendServiceStateListener = null;
+let removeTrayNavigationListener = null;
+let removeMcpOpenArtifactListener = null;
 const notifiedUpdateStates = new Set();
 
 const loadingState = ref({
@@ -498,10 +514,12 @@ const refreshCudaDiagnostics = async ({ force = false, notify = true } = {}) => 
   return nextStatus;
 };
 
-const openGlobalSettings = ({ tab = "", modelId = "" } = {}) => {
+const openGlobalSettings = ({ tab = "", modelId = "", mcpTab = "settings" } = {}) => {
   settingsTarget.value = {
     tab,
     modelId,
+    mcpTab,
+    navigationKey: settingsTarget.value.navigationKey + 1,
   };
   showSettings.value = true;
 };
@@ -717,6 +735,9 @@ const clearBackendSession = (reason = "服务未启动") => {
   backendSessionStartedAt.value = 0;
   cudaDiagnosticNotificationKey.value = "";
   runtimeDiagnosticsStore.setCudaUnavailable(reason);
+  // A stopped backend cannot retain an in-memory model; force the next run to
+  // revalidate and load the selected model instead of reusing stale readiness.
+  modelRegistryStore.invalidatePreparedModels();
 };
 
 const handleBackendServiceState = (eventOrPayload, maybePayload) => {
@@ -909,6 +930,33 @@ const throwBackendFailure = (value, fallback) => {
   throw error;
 };
 
+const ensureDefaultModelReady = async (modelId = "") => {
+  const normalizedModelId = String(
+    modelId || configStore.config.general?.defaultModel || "lama"
+  ).trim();
+  if (!normalizedModelId) return { success: true };
+
+  backendEngineStore.setPhase("loadingModel");
+  try {
+    const readiness = await modelRegistryStore.ensureModelReady(normalizedModelId);
+    return {
+      success: true,
+      modelId: normalizedModelId,
+      readiness,
+    };
+  } catch (error) {
+    const failure = normalizeBackendFailure(
+      error,
+      `默认模型 ${normalizedModelId} 校验或加载失败`
+    );
+    return {
+      ...failure,
+      code: failure.code || "DEFAULT_MODEL_PREPARATION_FAILED",
+      modelId: normalizedModelId,
+    };
+  }
+};
+
 const startBackendService = async (options = {}) => {
   const invoke = getElectronInvoke();
   if (!invoke) {
@@ -945,27 +993,29 @@ const startBackendService = async (options = {}) => {
       });
       return failure;
     }
-    const defaultModel = String(
+    const modelResult = await ensureDefaultModelReady(
       options.model || configStore.config.general?.defaultModel || "lama"
-    ).trim();
-    if (defaultModel) {
-      void modelRegistryStore.ensureModelReady(defaultModel).catch((error) => {
-        $q.notify({
-          type: "negative",
-          message: error?.message || "默认模型准备失败，请打开模型管理检查下载状态。",
-          position: "top",
-          timeout: 6500,
-          actions: [
-            {
-              label: "打开模型管理",
-              color: "white",
-              handler: () => openGlobalSettings({ tab: "models", modelId: defaultModel }),
-            },
-          ],
-        });
+    );
+    if (!modelResult.success) {
+      backendEngineStore.setFailed({
+        ...modelResult,
+        processRunning: backendEngineStore.processRunning,
       });
+      return modelResult;
     }
-    return { ...result, success: true, port: actualPort, ready: true };
+    backendEngineStore.setRunning({
+      ...result,
+      port: actualPort,
+      processRunning: true,
+      ready: true,
+    });
+    return {
+      ...result,
+      success: true,
+      port: actualPort,
+      ready: true,
+      model: modelResult.modelId,
+    };
   } catch (error) {
     const failure = normalizeBackendFailure(error, "AI 引擎启动失败");
     backendEngineStore.setFailed(failure);
@@ -1021,20 +1071,21 @@ const restartBackendService = async (options = {}) => {
 
 const prepareBackendEngine = async () => {
   const invoke = getElectronInvoke();
-  if (!invoke || import.meta.env.DEV || configStore.config.general?.autoStart === false) {
+  if (!invoke) {
     const reachable = await checkBackendStatus({ notifyOnFailure: false });
-    if (!reachable) {
-      backendEngineStore.setStopped();
-    }
-    return;
+    if (!reachable) backendEngineStore.setStopped();
+    return {
+      success: reachable,
+      skipped: true,
+      code: reachable ? null : "BACKEND_IPC_UNAVAILABLE",
+      error: reachable ? null : "当前环境无法连接 AI 服务。",
+    };
   }
 
-  if (
-    updateManager.runtimeState.enabled &&
-    !["ready", "degraded"].includes(updateManager.runtimeState.status)
-  ) {
-    backendEngineStore.setStopped();
-    return;
+  if (configStore.config.general?.autoStart === false) {
+    const reachable = await checkBackendStatus({ notifyOnFailure: false });
+    if (!reachable) backendEngineStore.setStopped();
+    return { success: reachable, skipped: true };
   }
 
   backendEngineStore.setPreparing("preparing");
@@ -1044,11 +1095,17 @@ const prepareBackendEngine = async () => {
       configStore.config.general || {}
     );
     if (!backendPathValidation.valid) {
-      backendEngineStore.setFailed(
-        backendPathValidation.message || BACKEND_PATH_CJK_WARNING_MESSAGE
+      const failure = normalizeBackendFailure(
+        {
+          ...backendPathValidation,
+          code: backendPathValidation.code || "BACKEND_PATH_INVALID",
+          error: backendPathValidation.message || BACKEND_PATH_CJK_WARNING_MESSAGE,
+        },
+        "服务路径配置异常"
       );
+      backendEngineStore.setFailed(failure);
       queueBackendPathNotice(backendPathValidation);
-      return;
+      return failure;
     }
     if (backendPathValidation.warning) {
       queueBackendPathNotice(backendPathValidation);
@@ -1066,7 +1123,18 @@ const prepareBackendEngine = async () => {
       if (!reachable) {
         throw new Error("Moonshine AI 引擎进程存在，但接口未响应");
       }
-      return;
+      const modelResult = await ensureDefaultModelReady(
+        configStore.config.general?.defaultModel || "lama"
+      );
+      if (!modelResult.success) {
+        backendEngineStore.setFailed({
+          ...modelResult,
+          processRunning: backendEngineStore.processRunning,
+        });
+        return modelResult;
+      }
+      backendEngineStore.setRunning({ ...processStatus, ready: true, processRunning: true });
+      return { success: true, reused: true, model: modelResult.modelId };
     }
 
     backendEngineStore.setPhase("checkingRuntime");
@@ -1078,8 +1146,12 @@ const prepareBackendEngine = async () => {
       throwBackendFailure(projectResult, "服务项目检测失败");
     }
 
+    const runtimeState = updateManager.runtimeState;
     const usesManagedEnvironment =
-      updateManager.runtimeState.enabled && projectResult.backendMode === "bundled";
+      runtimeState.enabled &&
+      runtimeState.source !== "external";
+    const usesExternalEnvironment =
+      runtimeState.enabled && runtimeState.source === "external";
     if (usesManagedEnvironment) {
       const runtimeCheck = await updateManager.checkRuntime({
         accelerator:
@@ -1090,23 +1162,61 @@ const prepareBackendEngine = async () => {
       const runtimeState = runtimeCheck?.state || updateManager.runtimeState;
       if (
         !runtimeCheck?.success ||
-        !["ready", "degraded"].includes(runtimeState.status)
+        !["ready", "degraded"].includes(runtimeState.status) ||
+        !["ready", "degraded"].includes(updateManager.runtimeState.status)
       ) {
         backendEngineStore.setStopped();
-        return;
+        return {
+          success: false,
+          requiresEnvironmentSetup: true,
+          code: runtimeCheck?.code || "RUNTIME_NOT_READY",
+          error:
+            runtimeCheck?.error?.message ||
+            runtimeCheck?.error ||
+            runtimeCheck?.reason ||
+            "运行环境尚未就绪，请打开服务管理完成配置。",
+          state: runtimeCheck?.state || updateManager.runtimeState,
+        };
       }
     } else {
-      const prepareResult = await invoke("prepare-project-python", projectResult.path);
-      if (!prepareResult?.success) {
-        throwBackendFailure(prepareResult, "运行环境准备失败");
-      }
+      if (usesExternalEnvironment) {
+        const runtimeCheck = await updateManager.checkRuntime({
+          accelerator:
+            updateManager.runtimeState.preference ||
+            updateManager.runtimeState.selectedAccelerator ||
+            "auto",
+        });
+        const checkedRuntimeState = runtimeCheck?.state || updateManager.runtimeState;
+        if (
+          !runtimeCheck?.success ||
+          !["ready", "degraded"].includes(checkedRuntimeState.status)
+        ) {
+          backendEngineStore.setStopped();
+          return {
+            success: false,
+            requiresEnvironmentSetup: true,
+            code: runtimeCheck?.code || "EXTERNAL_ENV_NOT_READY",
+            error:
+              runtimeCheck?.error?.message ||
+              runtimeCheck?.error ||
+              runtimeCheck?.reason ||
+              "已有运行环境校验失败，请打开服务管理重新检测。",
+            state: runtimeCheck?.state || updateManager.runtimeState,
+          };
+        }
+      } else {
+        const prepareResult = await invoke("prepare-project-python", projectResult.path);
+        if (!prepareResult?.success) {
+          throwBackendFailure(prepareResult, "运行环境准备失败");
+        }
 
-      backendEngineStore.setPhase("loadingModel");
-      const depsResult = await invoke("check-dependencies");
-      if (!depsResult?.success) {
-        const installResult = await invoke("install-dependencies", projectResult.path);
-        if (!installResult?.success) {
-          throwBackendFailure(installResult || depsResult, "依赖准备失败");
+        backendEngineStore.setPhase("loadingModel");
+        const depsResult = await invoke("check-dependencies");
+        if (!depsResult?.success) {
+          const installResult = await invoke("install-dependencies", projectResult.path);
+          if (!installResult?.success) {
+            throwBackendFailure(installResult || depsResult, "依赖准备失败");
+          }
         }
       }
     }
@@ -1133,23 +1243,110 @@ const prepareBackendEngine = async () => {
         timeout: 5000,
       });
     }
+    return startResult;
   } catch (error) {
     const classified = classifyMoonshineError(error, "Moonshine AI 引擎准备失败");
-    backendEngineStore.setFailed({
+    const failure = {
       ...normalizeBackendFailure(error, classified.message),
       error: classified.message,
       processRunning: backendEngineStore.processRunning,
-    });
+    };
+    backendEngineStore.setFailed(failure);
+    return failure;
   }
 };
 
-const handleStartupOverlayFinished = () => {
+const notifyStartupFailure = (result = null) => {
+  if (startupFailureNotified.value || !result || result.success !== false) return;
+  startupFailureNotified.value = true;
+  const classified = classifyMoonshineError(
+    result,
+    result.requiresEnvironmentSetup
+      ? "运行环境尚未就绪，请打开服务管理完成配置。"
+      : "Moonshine AI 引擎启动失败"
+  );
+  const openDiagnostics = result.requiresEnvironmentSetup
+    ? openRuntimeOnboardingGuide
+    : openBackendDiagnostics;
+  $q.notify({
+    type: result.requiresEnvironmentSetup ? "warning" : "negative",
+    message: classified.message || result.error || "Moonshine AI 引擎启动失败",
+    position: "top",
+    timeout: 7500,
+    actions: [
+      {
+        label: result.requiresEnvironmentSetup ? "配置环境" : "打开诊断",
+        color: "white",
+        handler: openDiagnostics,
+      },
+    ],
+  });
+};
+
+const settleStartupExperience = () => {
+  // Let the visual overlay leave as soon as its media finishes; backend startup
+  // can continue behind the page without leaving an opaque blocking layer.
+  if (startupOverlayFinished.value) {
+    showStartupOverlay.value = false;
+  }
+  if (startupFlowPending.value || !startupOverlayFinished.value) return;
   startupExperienceFinished.value = true;
   flushPendingBackendPathNotice();
+  notifyStartupFailure(startupFlowResult.value);
+};
+
+const handleStartupOverlayVisibilityRequest = (visible) => {
+  if (visible) {
+    showStartupOverlay.value = true;
+    return;
+  }
+  startupOverlayFinished.value = true;
+  settleStartupExperience();
+};
+
+const handleStartupOverlayFinished = () => {
+  startupOverlayFinished.value = true;
+  settleStartupExperience();
 };
 
 const handleRouteChange = (value) => {
   router.push(`/${value}`);
+};
+
+const handleTrayNavigation = (request = {}) => {
+  if (request?.route !== "/activity/mcp") return;
+  runtimeOnboardingDismissed.value = true;
+  showBackendManager.value = false;
+  openGlobalSettings({ tab: "mcp", mcpTab: "activity" });
+};
+
+const handleMcpOpenArtifact = (payload = {}) => {
+  const filePath = typeof payload?.path === "string" ? payload.path.trim() : "";
+  const mimeType = typeof payload?.mimeType === "string" ? payload.mimeType.trim().toLowerCase() : "";
+  if (!filePath || filePath.length > 4096 || [...filePath].some((character) => character.charCodeAt(0) < 32) || !mimeType.startsWith("image/")) {
+    $q.notify({ type: "negative", message: "无法在编辑器中打开该结果。", position: "top" });
+    return;
+  }
+  const normalizedPath = filePath.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const descriptor = {
+    path: filePath,
+    normalizedPath,
+    name: typeof payload.name === "string" && payload.name.trim() ? payload.name.trim() : filePath.split(/[\\/]/).pop(),
+    type: mimeType,
+    size: Number.isSafeInteger(payload.size) && payload.size >= 0 ? payload.size : 0,
+    lastModified: Number.isFinite(payload.lastModified) ? payload.lastModified : Date.now(),
+  };
+  const created = fileManagerStore.addPathFiles([descriptor]);
+  const target = created[0] || fileManagerStore.files.find((file) => {
+    const candidate = file?.originalFile?.path || file?.image?.data || "";
+    return candidate.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase() === normalizedPath;
+  });
+  if (!target) {
+    $q.notify({ type: "negative", message: "无法在编辑器中导入该结果。", position: "top" });
+    return;
+  }
+  fileManagerStore.setCurrentFile(target.id);
+  void router.push("/image");
 };
 
 const applyThemeColors = (brandColors = {}) => {
@@ -1195,22 +1392,60 @@ onMounted(async () => {
       "backend-service-state",
       handleBackendServiceState
     ) || null;
+  removeTrayNavigationListener =
+    window.electron?.ipcRenderer?.onTrayNavigation?.(handleTrayNavigation) || null;
+  removeMcpOpenArtifactListener =
+    window.electron?.ipcRenderer?.onMcpOpenArtifact?.(handleMcpOpenArtifact) || null;
+  window.electron?.ipcRenderer?.send?.("renderer-ready");
   await configStore.loadConfig();
   const shouldShowStartupOverlay =
     !isE2EMode && configStore.config.ui?.showStartupAnimation !== false;
+  const shouldAutoStartService =
+    configStore.config.general?.autoStart !== false;
   showStartupOverlay.value = shouldShowStartupOverlay;
-  startupExperienceFinished.value = !shouldShowStartupOverlay;
+  startupOverlayFinished.value = !shouldShowStartupOverlay;
+  startupFlowPending.value = shouldAutoStartService;
+  startupFlowResult.value = null;
+  startupFailureNotified.value = false;
+  startupExperienceFinished.value =
+    !shouldShowStartupOverlay && !startupFlowPending.value;
   applyUiPreferences();
   api.updateConfig(configStore.config);
   await appStateStore.loadState();
   await updateInitialization;
-  void prepareBackendEngine();
+  const startupPreparation = prepareBackendEngine();
+  if (shouldAutoStartService) {
+    void startupPreparation
+      .then((result) => {
+        startupFlowResult.value = result || {
+          success: backendEngineStore.isRunning,
+        };
+      })
+      .catch((error) => {
+        startupFlowResult.value = normalizeBackendFailure(
+          error,
+          "Moonshine AI 引擎启动失败"
+        );
+      })
+      .finally(() => {
+        startupFlowPending.value = false;
+        settleStartupExperience();
+      });
+  } else {
+    startupFlowPending.value = false;
+    startupFlowResult.value = { success: true, skipped: true };
+    settleStartupExperience();
+  }
 });
 
 onUnmounted(() => {
   updateManager.dispose();
   removeBackendServiceStateListener?.();
   removeBackendServiceStateListener = null;
+  removeTrayNavigationListener?.();
+  removeTrayNavigationListener = null;
+  removeMcpOpenArtifactListener?.();
+  removeMcpOpenArtifactListener = null;
 });
 
 watch(
@@ -1240,7 +1475,7 @@ watch(showBackendManager, (newVal) => {
 });
 
 watch(showStartupOverlay, (visible) => {
-  if (!visible) {
+  if (!visible && startupExperienceFinished.value) {
     flushPendingBackendPathNotice();
   }
 });

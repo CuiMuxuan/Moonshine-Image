@@ -132,11 +132,21 @@ import { WindowLifecycleController } from "./window-lifecycle-controller.js";
 import { TrayManager } from "./tray-manager.js";
 import { createMcpBridge, registerMcpIpc } from "./mcp-ipc.js";
 import { createMcpApplicationDispatcher } from "./mcp-application-dispatcher.js";
+import { projectMcpCandidate } from "./mcp-artifacts.js";
 import { workspaceIdForRoot } from "./mcp-bridge.js";
 import { McpProcessManager } from "./mcp-process-manager.js";
 import {
+  MCP_EXTERNAL_PIPE_PROTOCOL_VERSION,
+  createMcpExternalBrokerBootstrapLine,
+  createMcpExternalClientConfiguration,
+  createMcpNamedPipeServer,
+  getMcpExternalPipeName,
+  getMcpExternalPrivatePipeName,
+} from "./mcp-external-pipe.js";
+import {
   McpConfigError,
   canonicalizeMcpConfig,
+  createSerialMutationQueue,
   registerMcpConfigIpc,
   resolveTrustedMcpDirectory,
   resolveTrustedMcpPath,
@@ -252,15 +262,44 @@ let applicationBootstrapComplete = false;
 let installedPackageMetadata;
 let windowLifecycleController = null;
 let trayManager = null;
+let mcpExternalPipeServer = null;
+let mcpExternalBrokerProcess = null;
+let mcpExternalPrivatePipeName = null;
+let mcpExternalBrokerSecret = null;
+let mcpExternalBrokerBootstrap = null;
+let mcpExternalBrokerErrorCode = null;
+let mcpExternalBrokerStopping = false;
+const mcpLocalJobs = new Map();
 const mcpApplicationDispatcher = createMcpApplicationDispatcher({ request: requestMcpBackend });
 const mcpBridge = createMcpBridge({
   dispatch: (request) => mcpApplicationDispatcher.dispatch(request),
   resolvePath: resolveMcpTrustedPath,
 });
+const mcpAdapterScript = app.isPackaged
+  ? path.join(process.resourcesPath, "mcp", "mcp-stdio-server.mjs")
+  : fileURLToPath(new URL("./mcp-stdio-server.mjs", import.meta.url));
 const mcpProcessManager = new McpProcessManager({
   bridge: mcpBridge,
-  adapterScript: fileURLToPath(new URL("./mcp-stdio-server.mjs", import.meta.url)),
+  adapterScript: mcpAdapterScript,
   tempRoot: path.join(app.getPath("userData"), "mcp"),
+});
+
+mcpApplicationDispatcher.configure({
+  taskExecutor: executeMcpTask,
+  statusProvider: getMcpBackendStatus,
+  policyValidator: validateMcpPolicy,
+  jobProvider: {
+    get: ({ jobId, clientId }) => getMcpLocalJob(jobId, clientId, false),
+    result: ({ jobId, clientId }) => getMcpLocalJob(jobId, clientId, true),
+    cancel: ({ jobId, clientId }) => cancelMcpLocalJob(jobId, clientId),
+  },
+});
+
+const mcpExternalProvider = Object.freeze({
+  getClientConfiguration: () => getMcpExternalClientConfiguration(),
+  probe: () => probeMcpExternalTransport(),
+  getSessions: () => mcpExternalPipeServer?.getSessions?.() || [],
+  disconnect: (sessionId) => mcpExternalPipeServer?.disconnect?.(sessionId) || false,
 });
 
 function getInstalledPackageUpdatedAt() {
@@ -329,7 +368,7 @@ function sendToMainWindow(channel, payload) {
   return true;
 }
 
-async function requestMcpBackend({ method, path: requestPath, body = undefined, headers = undefined }) {
+async function requestMcpBackend({ method, path: requestPath, body = undefined, headers = undefined, signal = undefined }) {
   const port = Number(globalConfig?.general?.backendPort);
   if (!Number.isInteger(port) || port < 1024 || port > 65535 || !/^\/api\/v1\/[A-Za-z0-9_./{}-]+$/.test(requestPath)) {
     return { ok: false, status: 503, body: null };
@@ -352,6 +391,7 @@ async function requestMcpBackend({ method, path: requestPath, body = undefined, 
       method,
       headers: hasBody ? { "Content-Type": "application/json", ...allowlistedHeaders } : allowlistedHeaders,
       body: hasBody ? JSON.stringify(body) : undefined,
+      signal,
     });
     let responseBody = null;
     try {
@@ -384,45 +424,982 @@ function sameMcpPolicy(left, right) {
   const normalize = (value) => ({
     enabled: value?.enabled === true,
     profileId: String(value?.profileId || ""),
-    allowedTools: Array.isArray(value?.allowedTools) ? value.allowedTools : [],
-    allowedRoots: Array.isArray(value?.allowedRoots) ? value.allowedRoots : [],
-    confirmationRequired: value?.confirmationRequired !== false,
+    allowedTools: Array.isArray(value?.allowedTools) ? [...value.allowedTools].sort() : [],
+    allowedRoots: Array.isArray(value?.allowedRoots) ? [...value.allowedRoots].sort() : [],
+    confirmationMode: ["read_only", "auto_approve", "full_access"].includes(value?.confirmationMode)
+      ? value.confirmationMode
+      : value?.confirmationRequired === false
+        ? "auto_approve"
+        : "read_only",
   });
   return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
 }
 
+const enqueueMcpConfigMutation = createSerialMutationQueue();
+
+function getMcpPolicySnapshot() {
+  const descriptor = mcpBridge?.descriptor?.();
+  if (!descriptor?.policy_snapshot_id) return null;
+  const allowedRoots = Array.isArray(globalConfig?.mcp?.allowedRoots)
+    ? globalConfig.mcp.allowedRoots.slice()
+    : [];
+  const workspaceRegistry = Object.fromEntries(
+    allowedRoots.map((root) => [workspaceIdForRoot(root), root]),
+  );
+  return {
+    id: descriptor.policy_snapshot_id,
+    profile: descriptor.profile || globalConfig?.mcp?.profileId || "default",
+    allowedRoots,
+    workspaceRegistry,
+    allowedTools: Array.isArray(descriptor.allowed_tools) ? descriptor.allowed_tools.slice() : [],
+    confirmationMode: descriptor.confirmation_mode || globalConfig?.mcp?.confirmationMode || "read_only",
+  };
+}
+
+function validateMcpPolicy(policy, tool = null) {
+  const current = getMcpPolicySnapshot();
+  if (!current || !policy || policy.id !== current.id) return false;
+  if (tool && !current.allowedTools.includes(tool)) return false;
+  return true;
+}
+
+function getMcpBackendStatus() {
+  const status = backendSupervisor?.getStatus?.() || {};
+  const processRunning = status.processRunning === true || status.state === "running" || status.state === "starting";
+  return {
+    status: processRunning ? (status.state === "starting" ? "starting" : "running") : "stopped",
+    process_running: processRunning,
+    health_ready: status.healthReady === true || status.state === "running",
+    error_code: status.errorCode || status.error_code || null,
+    port: Number.isInteger(status.port) ? status.port : Number(globalConfig?.general?.backendPort) || null,
+  };
+}
+
+function getMcpExternalResourcePath(name) {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "mcp", name)
+    : path.join(process.cwd(), "build-resources", "mcp", name);
+}
+
+function hashFileSha256(filePath) {
+  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
+function getMcpExternalClientConfiguration() {
+  const proxyPath = app.isPackaged
+    ? getMcpExternalResourcePath("moonshine-mcp-proxy.mjs")
+    : path.resolve(fileURLToPath(new URL("./mcp-external-proxy.mjs", import.meta.url)));
+  if (!fs.existsSync(proxyPath)) {
+    return { available: false, protocolVersion: MCP_EXTERNAL_PIPE_PROTOCOL_VERSION, code: "MCP_PROXY_RESOURCE_MISSING" };
+  }
+  try {
+    const configuration = createMcpExternalClientConfiguration({
+      proxyPath,
+      executablePath: process.execPath,
+    });
+    return { available: true, ...configuration };
+  } catch (error) {
+    return { available: false, protocolVersion: MCP_EXTERNAL_PIPE_PROTOCOL_VERSION, code: error?.code || "MCP_CLIENT_CONFIGURATION_INVALID" };
+  }
+}
+
+function probeMcpExternalTransport() {
+  if (!mcpExternalPipeServer) {
+    return {
+      available: false,
+      listening: false,
+      broker_error_code: mcpExternalBrokerErrorCode,
+      code: mcpExternalBrokerErrorCode || "MCP_EXTERNAL_UNAVAILABLE",
+    };
+  }
+  const state = mcpExternalPipeServer.probe?.() || mcpExternalPipeServer.getState?.() || {};
+  const brokerRunning = Boolean(mcpExternalBrokerProcess && mcpExternalBrokerProcess.exitCode === null);
+  const bootstrapConfigured = Boolean(mcpExternalPrivatePipeName && mcpExternalBrokerSecret && mcpExternalBrokerBootstrap);
+  return {
+    ...state,
+    available: state.listening === true && brokerRunning && bootstrapConfigured,
+    broker_running: brokerRunning,
+    broker_error_code: mcpExternalBrokerErrorCode,
+    code: state.listening !== true
+      ? "MCP_EXTERNAL_UNAVAILABLE"
+      : !bootstrapConfigured
+        ? "MCP_BROKER_BOOTSTRAP_UNAVAILABLE"
+        : mcpExternalBrokerErrorCode
+          ? mcpExternalBrokerErrorCode
+        : brokerRunning
+          ? null
+          : "MCP_BROKER_NOT_RUNNING",
+  };
+}
+
+function createMcpLocalJobId() {
+  return `mcp_${crypto.randomBytes(16).toString("hex")}`;
+}
+
+function createMcpArtifactId() {
+  return `art_${crypto.randomBytes(16).toString("hex")}`;
+}
+
+function publicMcpLocalJob(record, includeArtifacts = false) {
+  if (!record) return null;
+  const result = {
+    job_id: record.job_id,
+    status: record.status,
+    summary: record.summary,
+    ...(typeof record.error_code === "string" && /^[A-Z0-9_]{2,96}$/.test(record.error_code)
+      ? { error_code: record.error_code }
+      : {}),
+    ...(Array.isArray(record.candidates) && record.candidates.length
+      ? { candidates: record.candidates.map(projectMcpCandidate).filter(Boolean).slice(0, 256) }
+      : {}),
+  };
+  if (Array.isArray(record.results) && record.results.length) {
+    const results = record.results.map(projectMcpLocalResult).filter(Boolean).slice(0, 1_000);
+    if (results.length) result.results = results;
+  }
+  if (includeArtifacts && Array.isArray(record.artifacts) && record.artifacts.length) {
+    result.artifacts = record.artifacts.map(({ artifact_id, mime_type, size_bytes, sha256 }) => ({
+      artifact_id,
+      ...(mime_type ? { mime_type } : {}),
+      ...(Number.isSafeInteger(size_bytes) ? { size_bytes } : {}),
+      ...(sha256 ? { sha256 } : {}),
+    }));
+  }
+  return result;
+}
+
+function getMcpLocalJob(jobId, clientId, includeArtifacts) {
+  const record = mcpLocalJobs.get(String(jobId || ""));
+  if (!record) return null;
+  if (record.clientId !== clientId) {
+    const error = new Error("POLICY_DENIED");
+    error.code = "POLICY_DENIED";
+    throw error;
+  }
+  return publicMcpLocalJob(record, includeArtifacts);
+}
+
+function cancelMcpLocalJob(jobId, clientId) {
+  const record = mcpLocalJobs.get(String(jobId || ""));
+  if (!record) return null;
+  if (record.clientId !== clientId) {
+    const error = new Error("POLICY_DENIED");
+    error.code = "POLICY_DENIED";
+    throw error;
+  }
+  if (!["succeeded", "failed", "cancelled"].includes(record.status)) {
+    cleanupMcpLocalArtifacts(record);
+    record.status = "cancelled";
+    record.cancelRequested = true;
+    record.controller?.abort?.();
+  }
+  return publicMcpLocalJob(record, false);
+}
+
+function retainMcpLocalJob(record) {
+  mcpLocalJobs.set(record.job_id, record);
+  while (mcpLocalJobs.size > 1_000) {
+    const oldest = mcpLocalJobs.keys().next().value;
+    if (!oldest) break;
+    mcpLocalJobs.delete(oldest);
+  }
+  return record;
+}
+
+function createMcpLocalJob({ tool, clientId, clientInfo = null } = {}) {
+  const record = {
+    job_id: createMcpLocalJobId(),
+    tool,
+    clientId,
+    clientInfo: clientInfo && typeof clientInfo === "object" ? { ...clientInfo } : null,
+    status: "queued",
+    summary: {},
+    candidates: [],
+    results: [],
+    artifacts: [],
+    stagedArtifactPaths: [],
+    policySnapshot: null,
+    cancelRequested: false,
+    controller: new AbortController(),
+    createdAt: Date.now(),
+  };
+  return retainMcpLocalJob(record);
+}
+
+function projectMcpLocalResult(value) {
+  const input = value && typeof value === "object" ? value : {};
+  const result = { success: input.success === true };
+  const id = typeof input.id === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(input.id)
+    ? input.id
+    : null;
+  if (id) result.id = id;
+  const artifactId = typeof input.artifact_id === "string" && /^[A-Za-z0-9_-]{8,128}$/.test(input.artifact_id)
+    ? input.artifact_id
+    : null;
+  if (artifactId) result.artifact_id = artifactId;
+  const errorCode = typeof input.error_code === "string"
+    ? input.error_code
+    : typeof input.error === "string" ? input.error : "";
+  if (/^[A-Z0-9_]{2,96}$/.test(errorCode)) result.error_code = errorCode;
+  return result;
+}
+
+function finishMcpLocalJob(record, { status = "succeeded", summary = {}, candidates = [], results = [], artifacts = [], errorCode = null } = {}) {
+  if (!record || record.cancelRequested) {
+    if (record) {
+      cleanupMcpLocalArtifacts(record);
+      record.status = "cancelled";
+      record.summary = { ...record.summary, cancelled_count: 1 };
+      if (!record.activityCompletionRecorded) {
+        record.activityCompletionRecorded = true;
+        mcpBridge.recordActivity?.({
+          requestId: `req_${crypto.randomBytes(8).toString("hex")}`,
+          tool: record.tool,
+          clientId: record.clientId,
+          clientName: record.clientInfo?.name,
+          clientVersion: record.clientInfo?.version,
+          outcome: "cancelled",
+          status: "cancelled",
+          jobId: record.job_id,
+        });
+      }
+    }
+    return record;
+  }
+  const succeeded = status === "succeeded";
+  if (!succeeded) {
+    // A task may have written one or more artifacts before a later item
+    // failed.  Failed, cancelled, and interrupted jobs must not publish any
+    // of those partial outputs, but their bounded per-file failures remain
+    // useful to the caller.
+    cleanupMcpLocalArtifacts(record);
+  }
+  record.status = status;
+  record.summary = summary;
+  record.candidates = succeeded && Array.isArray(candidates) ? candidates.slice(0, 256) : [];
+  record.results = Array.isArray(results) ? results.slice(0, 1_000) : [];
+  record.artifacts = succeeded && Array.isArray(artifacts) ? artifacts.slice(0, 100) : [];
+  if (typeof errorCode === "string" && /^[A-Z0-9_]{2,96}$/.test(errorCode)) record.error_code = errorCode;
+  record.completedAt = Date.now();
+  if (!record.activityCompletionRecorded) {
+    record.activityCompletionRecorded = true;
+    mcpBridge.recordActivity?.({
+      requestId: `req_${crypto.randomBytes(8).toString("hex")}`,
+      tool: record.tool,
+      clientId: record.clientId,
+      clientName: record.clientInfo?.name,
+      clientVersion: record.clientInfo?.version,
+      outcome: status === "succeeded" ? "completed" : status,
+      status,
+      jobId: record.job_id,
+      artifacts: record.artifacts.map(({ artifact_id, mime_type, size_bytes, sha256 }) => ({ artifact_id, mime_type, size_bytes, sha256 })),
+    });
+  }
+  return record;
+}
+
+function resolveMcpLocalArtifact(jobId, artifactId) {
+  const record = mcpLocalJobs.get(String(jobId || ""));
+  if (!record || !Array.isArray(record.artifacts)) return null;
+  const artifact = record.artifacts.find((item) => item?.artifact_id === artifactId);
+  const internalPath = typeof artifact?.internalPath === "string" ? path.resolve(artifact.internalPath) : "";
+  if (!internalPath || !fs.existsSync(internalPath)) return null;
+  return { ...artifact, internalPath };
+}
+
+function resolveMcpTaskInputPath(inputPath, params, policy) {
+  const candidate = String(inputPath || "").trim();
+  if (!candidate) return null;
+  if (path.isAbsolute(candidate)) return path.normalize(candidate);
+  const workspaceId = String(params?.workspace_id || "");
+  const root = policy?.workspaceRegistry?.[workspaceId];
+  if (!root) return null;
+  return path.resolve(root, candidate);
+}
+
+function isMcpPathInsideRoot(candidate, root) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+async function prepareExternalMcpParams(tool, params, policy) {
+  const input = params && typeof params === "object" ? structuredClone(params) : {};
+  if (policy?.confirmationMode === "full_access") return input;
+  const roots = Array.isArray(policy?.allowedRoots) ? policy.allowedRoots : [];
+  const rejectPath = () => {
+    const error = new Error("PATH_NOT_ALLOWED");
+    error.code = "PATH_NOT_ALLOWED";
+    throw error;
+  };
+  const verifyTrustedFile = async (candidate, requiredRoot = null) => {
+    if (!candidate || typeof candidate !== "string" || !path.isAbsolute(candidate)) rejectPath();
+    const resolved = await resolveMcpTrustedPath(candidate);
+    const canonicalPath = typeof resolved?.canonical_path === "string"
+      ? resolved.canonical_path
+      : "";
+    if (
+      !canonicalPath ||
+      !path.isAbsolute(canonicalPath) ||
+      resolved?.is_file !== true ||
+      resolved?.is_directory === true ||
+      resolved?.is_symlink === true ||
+      resolved?.is_junction === true ||
+      resolved?.is_device === true ||
+      resolved?.is_unc === true ||
+      !roots.some((root) => isMcpPathInsideRoot(canonicalPath, root)) ||
+      (requiredRoot && !isMcpPathInsideRoot(canonicalPath, requiredRoot))
+    ) {
+      rejectPath();
+    }
+    return canonicalPath;
+  };
+  if (["moonshine.ocr.detect", "moonshine.masks.generate"].includes(tool)) {
+    input.input_path = await verifyTrustedFile(input.input_path);
+    return input;
+  }
+  if (["moonshine.image.process", "moonshine.image.process_batch"].includes(tool)) {
+    const workspaceRoot = policy?.workspaceRegistry?.[String(input.workspace_id || "")];
+    const workspaceIsAllowed = typeof workspaceRoot === "string" && path.isAbsolute(workspaceRoot) && roots.some((root) => (
+      isMcpPathInsideRoot(workspaceRoot, root) && isMcpPathInsideRoot(root, workspaceRoot)
+    ));
+    if (!workspaceIsAllowed) rejectPath();
+    const items = Array.isArray(input.items) ? input.items : input.item ? [input.item] : [];
+    if (!items.length) rejectPath();
+    for (const item of items) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) rejectPath();
+      const inputFile = await verifyTrustedFile(
+        resolveMcpTaskInputPath(item.input_path, input, policy),
+        workspaceRoot,
+      );
+      const maskFile = await verifyTrustedFile(
+        resolveMcpTaskInputPath(item.mask_path, input, policy),
+        workspaceRoot,
+      );
+      const relativeInput = path.relative(workspaceRoot, inputFile);
+      const relativeMask = path.relative(workspaceRoot, maskFile);
+      if (!relativeInput || !relativeMask || path.isAbsolute(relativeInput) || path.isAbsolute(relativeMask)) rejectPath();
+      item.input_path = relativeInput.replaceAll("\\", "/");
+      item.mask_path = relativeMask.replaceAll("\\", "/");
+    }
+  }
+  return input;
+}
+
+function decodeDataUrl(value) {
+  const source = String(value || "");
+  const match = source.match(/^data:[^;]+;base64,(.+)$/s);
+  return match ? Buffer.from(match[1], "base64") : null;
+}
+
+function safeMcpOutputDirectory(inputPath, { jobId = "", policy = null } = {}) {
+  const confirmationMode = ["read_only", "auto_approve", "full_access"].includes(policy?.confirmationMode)
+    ? policy.confirmationMode
+    : "read_only";
+  // Read-only jobs still need an artifact handle for polling, but must never
+  // mutate the user's input directory. Keep those artifacts in an app-owned,
+  // job-scoped directory. Write-enabled modes retain the existing local output
+  // convention for compatibility with the editor workflow.
+  const directory = confirmationMode === "read_only"
+    ? path.join(app.getPath("userData"), "mcp", "artifacts", String(jobId || "job").replace(/[^A-Za-z0-9_-]/g, "_"))
+    : path.join(path.dirname(inputPath), "Moonshine-Output");
+  fs.mkdirSync(directory, { recursive: true });
+  return directory;
+}
+
+function safeMcpOutputName(inputPath, jobId, extension = ".png", suffix = "") {
+  const source = path.basename(inputPath, path.extname(inputPath)).replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 96) || "image";
+  const normalizedSuffix = String(suffix || "").replace(/[^A-Za-z0-9_-]+/g, "").slice(0, 32);
+  return `${source}-moonshine-${jobId.slice(-8)}${normalizedSuffix ? `-${normalizedSuffix}` : ""}${extension}`;
+}
+
+function getMcpBrokerPath() {
+  return app.isPackaged
+    ? getMcpExternalResourcePath("moonshine-mcp-broker.exe")
+    : path.join(process.cwd(), "build-resources", "mcp", "moonshine-mcp-broker.exe");
+}
+
+async function stopMcpExternalTransport({ errorCode = null } = {}) {
+  const broker = mcpExternalBrokerProcess;
+  mcpExternalBrokerStopping = true;
+  mcpExternalBrokerProcess = null;
+  const server = mcpExternalPipeServer;
+  mcpExternalPipeServer = null;
+  mcpExternalPrivatePipeName = null;
+  mcpExternalBrokerSecret = null;
+  mcpExternalBrokerBootstrap = null;
+  mcpExternalBrokerErrorCode = errorCode;
+  await Promise.resolve(server?.stop?.()).catch(() => null);
+  if (broker && broker.exitCode === null && broker.signalCode === null) {
+    try { broker.stdin?.end(); } catch { /* best effort; process may already be gone */ }
+    try { broker.kill("SIGTERM"); } catch { /* process may already be gone */ }
+    await new Promise((resolve) => {
+      let settled = false;
+      const finish = () => { if (settled) return; settled = true; clearTimeout(timer); resolve(); };
+      const timer = setTimeout(() => { try { broker.kill("SIGKILL"); } catch { /* best effort */ } finish(); }, 2_000);
+      broker.once?.("exit", finish);
+      broker.once?.("error", finish);
+      broker.once?.("close", finish);
+    });
+  }
+  mcpExternalBrokerStopping = false;
+}
+
+async function synchronizeMcpExternalTransport(config) {
+  // Keep the external transport available for the lifetime of the app. The
+  // native broker/private listener is the stable stdio entry point used by
+  // external MCP clients; the pipe server reports MCP_SERVICE_DISABLED for
+  // business calls while the MCP adapter is intentionally turned off.
+  // This separates transport discovery/initialization from the user's MCP
+  // service-enabled preference without weakening the business policy gate.
+  void config;
+  if (mcpExternalPipeServer?.isListening && mcpExternalBrokerProcess?.exitCode === null) {
+    return probeMcpExternalTransport();
+  }
+  await stopMcpExternalTransport();
+  const brokerPath = getMcpBrokerPath();
+  const proxyPath = app.isPackaged
+    ? getMcpExternalResourcePath("moonshine-mcp-proxy.mjs")
+    : path.resolve(fileURLToPath(new URL("./mcp-external-proxy.mjs", import.meta.url)));
+  if (!fs.existsSync(brokerPath) || !fs.existsSync(proxyPath)) {
+    const error = new Error("MCP external broker resources are unavailable.");
+    error.code = "MCP_BROKER_RESOURCE_MISSING";
+    throw error;
+  }
+  const publicPipeName = getMcpExternalPipeName();
+  const privatePipeName = getMcpExternalPrivatePipeName();
+  const brokerSecret = crypto.randomBytes(32).toString("hex");
+  const bootstrap = createMcpExternalBrokerBootstrapLine({
+    publicPipeName,
+    privatePipeName,
+    brokerSecret,
+    expectedProxyExecutablePath: process.execPath,
+    expectedProxyExecutableSha256: hashFileSha256(process.execPath),
+    expectedProxyPath: proxyPath,
+    expectedProxySha256: hashFileSha256(proxyPath),
+  });
+  const serviceState = () => ({
+    enabled: globalConfig?.mcp?.enabled === true,
+    running: mcpProcessManager.getState().running === true,
+    status: mcpProcessManager.getState().status,
+    error_code: mcpProcessManager.getState().error_code,
+  });
+  const pipeServer = createMcpNamedPipeServer({
+    pipeName: privatePipeName,
+    brokerSecret,
+    getServiceState: serviceState,
+    onClientConnected: (clientId) => {
+      mcpApplicationDispatcher.recoverClient?.(clientId);
+    },
+    onClientDisconnected: (clientId) => {
+      mcpApplicationDispatcher.onClientDisconnected?.(clientId);
+    },
+    dispatch: async (request) => {
+      const auditRequestId = `req_${crypto.randomBytes(8).toString("hex")}`;
+      const policy = getMcpPolicySnapshot();
+      if (!policy) {
+        const error = new Error("MCP_SERVICE_DISABLED");
+        error.code = "MCP_SERVICE_DISABLED";
+        mcpBridge.recordActivity?.({ requestId: auditRequestId, tool: request?.tool, clientId: request?.clientId, clientName: request?.clientInfo?.name, clientVersion: request?.clientInfo?.version, outcome: "rejected", code: error.code });
+        throw error;
+      }
+      try {
+        const params = await prepareExternalMcpParams(request.tool, request.params, policy);
+        const result = await mcpApplicationDispatcher.dispatch({ ...request, requestId: auditRequestId, params, policy });
+        mcpBridge.recordActivity?.({
+          requestId: auditRequestId,
+          tool: request?.tool,
+          clientId: request?.clientId,
+          clientName: request?.clientInfo?.name,
+          clientVersion: request?.clientInfo?.version,
+          outcome: "accepted",
+          status: result?.status || "queued",
+          jobId: result?.job_id,
+          jobGroupId: result?.job_group_id,
+          artifacts: Array.isArray(result?.artifacts)
+            ? result.artifacts.map(({ artifact_id, mime_type, size_bytes, sha256 }) => ({ artifact_id, mime_type, size_bytes, sha256 }))
+            : [],
+        });
+        return result;
+      } catch (error) {
+        mcpBridge.recordActivity?.({ requestId: auditRequestId, tool: request?.tool, clientId: request?.clientId, clientName: request?.clientInfo?.name, clientVersion: request?.clientInfo?.version, outcome: "rejected", code: error?.code || "APP_NOT_RUNNING" });
+        throw error;
+      }
+    },
+  });
+  await pipeServer.start();
+  mcpExternalPipeServer = pipeServer;
+  mcpExternalPrivatePipeName = privatePipeName;
+  mcpExternalBrokerSecret = brokerSecret;
+  mcpExternalBrokerBootstrap = bootstrap;
+  try {
+    const child = spawn(brokerPath, [], { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
+    if (!child || !child.stdin) {
+      const error = new Error("MCP native broker could not be started.");
+      error.code = "MCP_BROKER_SPAWN_FAILED";
+      throw error;
+    }
+    mcpExternalBrokerProcess = child;
+    mcpExternalBrokerErrorCode = null;
+    const cleanupUnexpectedBrokerExit = (code) => {
+      if (mcpExternalBrokerProcess !== child || mcpExternalBrokerStopping) return;
+      void stopMcpExternalTransport({ errorCode: code });
+    };
+    child.once?.("error", () => cleanupUnexpectedBrokerExit("MCP_BROKER_PROCESS_ERROR"));
+    child.once?.("exit", (code, signal) => {
+      cleanupUnexpectedBrokerExit(code === 0 && !signal ? "MCP_BROKER_EXITED" : "MCP_BROKER_EXITED_UNEXPECTEDLY");
+    });
+    child.once?.("close", (code) => {
+      cleanupUnexpectedBrokerExit(code === 0 ? "MCP_BROKER_CLOSED" : "MCP_BROKER_CLOSED_UNEXPECTEDLY");
+    });
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error = null) => {
+        if (settled) return;
+        settled = true;
+        child.stdin.off?.("error", onError);
+        if (error) reject(error);
+        else resolve();
+      };
+      const onError = () => finish(Object.assign(new Error("MCP native broker bootstrap failed."), { code: "MCP_BROKER_BOOTSTRAP_FAILED" }));
+      child.stdin.once?.("error", onError);
+      try {
+        child.stdin.write(bootstrap, () => finish());
+      } catch (error) {
+        finish(Object.assign(new Error("MCP native broker bootstrap failed."), { code: "MCP_BROKER_BOOTSTRAP_FAILED", cause: error }));
+      }
+    });
+  } catch (cause) {
+    const code = cause?.code || "MCP_BROKER_SPAWN_FAILED";
+    await stopMcpExternalTransport({ errorCode: code });
+    const error = new Error("MCP native broker bootstrap failed.");
+    error.code = code;
+    throw error;
+  }
+  return probeMcpExternalTransport();
+}
+
+function assertMcpTaskActive(record) {
+  if (record?.cancelRequested || record?.controller?.signal?.aborted) {
+    const error = new Error("CANCELLED");
+    error.code = "CANCELLED";
+    throw error;
+  }
+}
+
+function assertMcpTaskPolicy(record, policy, tool) {
+  assertMcpTaskActive(record);
+  const snapshot = policy || record?.policySnapshot || {};
+  if (!validateMcpPolicy(snapshot, tool)) {
+    const error = new Error("POLICY_REVOKED");
+    error.code = "POLICY_REVOKED";
+    throw error;
+  }
+}
+
+function cleanupMcpLocalArtifacts(record) {
+  const paths = Array.isArray(record?.stagedArtifactPaths) ? record.stagedArtifactPaths : [];
+  for (const candidate of paths) {
+    if (typeof candidate !== "string" || !candidate) continue;
+    try {
+      if (fs.existsSync(candidate)) fs.unlinkSync(candidate);
+    } catch {
+      // Best-effort cleanup. Never remove an untracked user file.
+    }
+  }
+  if (record) record.stagedArtifactPaths = [];
+  if (record?.artifacts?.length && record.status !== "succeeded") record.artifacts = [];
+}
+
+function normalizeMcpOcrCandidate(region, index) {
+  const polygon = Array.isArray(region?.polygon) && region.polygon.length === 4
+    ? region.polygon.map((point) => [Number(point?.[0]), Number(point?.[1])])
+    : undefined;
+  const bbox = region?.bbox && typeof region.bbox === "object"
+    ? {
+        x: Number(region.bbox.x),
+        y: Number(region.bbox.y),
+        width: Number(region.bbox.width),
+        height: Number(region.bbox.height),
+      }
+    : undefined;
+  return {
+    id: region?.region_id || `ocr_candidate_${index + 1}`,
+    confidence: Number(region?.recognition_confidence ?? region?.detection_confidence ?? 0),
+    text: typeof region?.text === "string" ? region.text : "",
+    ...(polygon?.every((point) => point.every(Number.isFinite)) ? { polygon } : {}),
+    ...(bbox && Object.values(bbox).every(Number.isFinite) ? { bbox } : {}),
+  };
+}
+
+function writeMcpArtifact(inputPath, jobId, bytes, mimeType, extension, suffix, { record = null, policy = null, tool = null } = {}) {
+  if (record) assertMcpTaskPolicy(record, policy, tool);
+  const outputDirectory = safeMcpOutputDirectory(inputPath, { jobId, policy });
+  const outputPath = path.join(outputDirectory, safeMcpOutputName(inputPath, jobId, extension, suffix));
+  fs.writeFileSync(outputPath, bytes, { flag: "wx" });
+  if (record) {
+    record.stagedArtifactPaths.push(outputPath);
+    // Revalidate after the write. A policy change during publication must
+    // remove this newly-created file and fail the job closed.
+    assertMcpTaskPolicy(record, policy, tool);
+  }
+  return {
+    artifact_id: createMcpArtifactId(),
+    mime_type: mimeType,
+    size_bytes: bytes.length,
+    sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+    internalPath: outputPath,
+  };
+}
+
+async function runMcpLocalTask(record, { tool, params, policy, inputPath, inputBytes }) {
+  record.status = "running";
+  const policySnapshot = record.policySnapshot || policy || {};
+  const signal = record.controller.signal;
+  try {
+    assertMcpTaskPolicy(record, policySnapshot, tool);
+    if (tool === "moonshine.ocr.detect") {
+      const response = await requestMcpBackend({
+        method: "POST",
+        path: "/api/v1/moonshine/ocr/recognize",
+        body: {
+          image_base64: inputBytes.toString("base64"),
+          ...(params.model_id ? { model_id: params.model_id } : {}),
+          ...(params.language ? { options: { language: params.language } } : {}),
+        },
+        signal,
+      });
+      assertMcpTaskActive(record);
+      if (!response.ok) {
+        const error = new Error(response.body?.error?.code || "OCR_RUNTIME_ERROR");
+        error.code = response.body?.error?.code || (response.status === 503 ? "OCR_UNAVAILABLE" : "OCR_RUNTIME_ERROR");
+        throw error;
+      }
+      const regions = Array.isArray(response.body?.regions) ? response.body.regions : [];
+      const candidates = regions.map(normalizeMcpOcrCandidate);
+      const sidecar = Buffer.from(JSON.stringify({ schema_version: "moonshine-ocr/v1", regions: candidates }), "utf8");
+      const artifact = writeMcpArtifact(inputPath, record.job_id, sidecar, "application/json", ".ocr.json", "regions", { record, policy: policySnapshot, tool });
+      assertMcpTaskPolicy(record, policySnapshot, tool);
+      finishMcpLocalJob(record, {
+        status: "succeeded",
+        summary: { item_count: 1, processed_count: 1, success_count: 1, failed_count: 0 },
+        candidates,
+        artifacts: [artifact],
+        results: [{ id: "ocr", success: true, artifact_id: artifact.artifact_id }],
+      });
+      return;
+    }
+
+    if (tool === "moonshine.masks.generate") {
+      const mode = params.mode || "sam";
+      const prompt = params.prompt && typeof params.prompt === "object" ? params.prompt : {};
+      const polygon = Array.isArray(prompt.polygon) ? prompt.polygon : [];
+      const promptBox = prompt.box && typeof prompt.box === "object" ? prompt.box : null;
+      const boxFromPolygon = polygon.length === 4
+        ? {
+            x: Math.min(...polygon.map((point) => Number(point?.[0] || 0))),
+            y: Math.min(...polygon.map((point) => Number(point?.[1] || 0))),
+            width: Math.max(...polygon.map((point) => Number(point?.[0] || 0))) - Math.min(...polygon.map((point) => Number(point?.[0] || 0))),
+            height: Math.max(...polygon.map((point) => Number(point?.[1] || 0))) - Math.min(...polygon.map((point) => Number(point?.[1] || 0))),
+          }
+        : null;
+      const initialBox = promptBox || boxFromPolygon;
+      const requestOcr = async () => {
+        const response = await requestMcpBackend({
+          method: "POST",
+          path: "/api/v1/moonshine/ocr/recognize",
+          body: {
+            image_base64: inputBytes.toString("base64"),
+            ...(params.model_id ? { model_id: params.model_id } : {}),
+          },
+          signal,
+        });
+        if (!response.ok) {
+          const error = new Error(response.body?.error?.code || "OCR_RUNTIME_ERROR");
+          error.code = response.body?.error?.code || (response.status === 503 ? "OCR_UNAVAILABLE" : "OCR_RUNTIME_ERROR");
+          throw error;
+        }
+        return Array.isArray(response.body?.regions) ? response.body.regions : [];
+      };
+      if (mode === "ocr") {
+        const regions = await requestOcr();
+        assertMcpTaskActive(record);
+        const candidates = regions.map(normalizeMcpOcrCandidate);
+        const sidecar = Buffer.from(JSON.stringify({ schema_version: "moonshine-mask/v1", mode, candidates }), "utf8");
+        const artifact = writeMcpArtifact(inputPath, record.job_id, sidecar, "application/json", ".json", "ocr-masks", { record, policy: policySnapshot, tool });
+        assertMcpTaskPolicy(record, policySnapshot, tool);
+        finishMcpLocalJob(record, {
+          status: "succeeded",
+          summary: { item_count: 1, processed_count: 1, success_count: 1, failed_count: 0 },
+          candidates,
+          artifacts: [artifact],
+          results: [{ id: "ocr", success: true, artifact_id: artifact.artifact_id }],
+        });
+        return;
+      }
+
+      let regions = [];
+      if (mode === "ocr_sam") regions = await requestOcr();
+      const boxes = mode === "ocr_sam"
+        ? regions.slice(0, 64).map((region) => region?.bbox).filter((value) => value && Number(value.width) > 0 && Number(value.height) > 0)
+        : [initialBox];
+      if (!boxes.length || boxes.some((value) => !value || Number(value.width) <= 0 || Number(value.height) <= 0)) {
+        const error = new Error("SAM mask generation requires a valid box prompt.");
+        error.code = "SAM_UNAVAILABLE";
+        throw error;
+      }
+      const candidates = [];
+      const artifacts = [];
+      for (let boxIndex = 0; boxIndex < boxes.length; boxIndex += 1) {
+        assertMcpTaskActive(record);
+        const box = boxes[boxIndex];
+        const response = await requestMcpBackend({
+          method: "POST",
+          path: "/api/v1/moonshine/sam/predict",
+          body: {
+            image: inputBytes.toString("base64"),
+            image_type: "base64",
+            model_id: params.sam_model_id || (mode === "ocr_sam" ? "sam_vit_b" : params.model_id || "sam_vit_b"),
+            points: [],
+            box,
+            multimask_output: true,
+          },
+          signal,
+        });
+        if (!response.ok) {
+          const error = new Error(response.body?.detail || "SAM mask generation failed.");
+          error.code = response.status === 503 ? "SAM_UNAVAILABLE" : "SAM_RUNTIME_ERROR";
+          throw error;
+        }
+        const samCandidates = Array.isArray(response.body?.candidates) ? response.body.candidates : [];
+        for (let index = 0; index < samCandidates.length; index += 1) {
+          const source = samCandidates[index];
+          const maskBytes = decodeDataUrl(source?.mask);
+          const artifact = maskBytes
+            ? writeMcpArtifact(inputPath, record.job_id, maskBytes, "image/png", ".png", `mask-${boxIndex + 1}-${index + 1}`, { record, policy: policySnapshot, tool })
+            : null;
+          if (artifact) artifacts.push(artifact);
+          const sourceRegion = mode === "ocr_sam" ? regions[boxIndex] : null;
+          candidates.push({
+            id: source?.id || `sam_candidate_${boxIndex + 1}_${index + 1}`,
+            confidence: Number(source?.score || 0),
+            ...(artifact ? { artifact_id: artifact.artifact_id } : {}),
+            ...(sourceRegion?.region_id ? { source_region_id: sourceRegion.region_id } : {}),
+            ...(sourceRegion?.polygon ? { polygon: sourceRegion.polygon } : {}),
+            ...(sourceRegion?.bbox ? { bbox: sourceRegion.bbox } : {}),
+          });
+        }
+      }
+      assertMcpTaskPolicy(record, policySnapshot, tool);
+      finishMcpLocalJob(record, {
+        status: "succeeded",
+        summary: { item_count: 1, processed_count: 1, success_count: 1, failed_count: 0 },
+        candidates,
+        artifacts,
+        results: [{ id: "masks", success: true, artifact_id: artifacts[0]?.artifact_id }],
+      });
+      return;
+    }
+
+    if (tool === "moonshine.image.process" || tool === "moonshine.image.process_batch") {
+      const items = Array.isArray(params.items) ? params.items : params.item ? [params.item] : [];
+      const modelId = params.model_id || globalConfig?.general?.defaultModel || "lama";
+      const results = [];
+      const artifacts = [];
+      for (const item of items) {
+        assertMcpTaskPolicy(record, policySnapshot, tool);
+        const sourcePath = resolveMcpTaskInputPath(item?.input_path, params, policySnapshot);
+        const maskPath = resolveMcpTaskInputPath(item?.mask_path, params, policySnapshot);
+        if (!sourcePath || !maskPath || !fs.existsSync(sourcePath) || !fs.existsSync(maskPath)) {
+          results.push({ success: false, id: item?.id || null, error: "PATH_NOT_ALLOWED" });
+          continue;
+        }
+        const sourceBytes = fs.readFileSync(sourcePath);
+        const maskBytes = fs.readFileSync(maskPath);
+        const response = await requestMcpBackend({
+          method: "POST",
+          path: "/api/v1/moonshine/image/process",
+          body: {
+            model_id: modelId,
+            data: [{ id: item.id, image: sourceBytes.toString("base64"), mask: maskBytes.toString("base64"), apply_scope: "mask" }],
+            image_type: "base64",
+            mask_type: "base64",
+            apply_scope: "mask",
+            response_type: "base64",
+            output_format: "auto",
+            output_quality: 95,
+          },
+          signal,
+        });
+        const result = response.body?.results?.[0];
+        const bytes = decodeDataUrl(result?.result);
+        if (!response.ok || !result?.success || !bytes) {
+          results.push({ success: false, id: item?.id || null, error_code: "BACKEND_CAPABILITY_UNAVAILABLE" });
+          continue;
+        }
+        const artifact = writeMcpArtifact(sourcePath, record.job_id, bytes, "image/png", ".png", `result-${results.length + 1}`, { record, policy: policySnapshot, tool });
+        artifacts.push(artifact);
+        results.push({ success: true, id: item.id, artifact_id: artifact.artifact_id });
+      }
+      assertMcpTaskPolicy(record, policySnapshot, tool);
+      finishMcpLocalJob(record, {
+        status: results.some((item) => !item.success) ? "failed" : "succeeded",
+        summary: { item_count: items.length, processed_count: results.length, success_count: results.filter((item) => item.success).length, failed_count: results.filter((item) => !item.success).length },
+        results,
+        artifacts,
+      });
+      return;
+    }
+    const error = new Error("Unsupported MCP task.");
+    error.code = "UNSUPPORTED_TOOL_OR_MODEL";
+    throw error;
+  } catch (error) {
+    const code = error?.code || "BACKEND_CAPABILITY_UNAVAILABLE";
+    if (code === "CANCELLED" || record.cancelRequested) {
+      cleanupMcpLocalArtifacts(record);
+      finishMcpLocalJob(record, { status: "cancelled", summary: { cancelled_count: 1 } });
+      return;
+    }
+    cleanupMcpLocalArtifacts(record);
+    finishMcpLocalJob(record, {
+      status: "failed",
+      errorCode: code,
+      summary: { item_count: 1, processed_count: 1, success_count: 0, failed_count: 1 },
+      results: [{ id: "task", success: false, error_code: code }],
+    });
+  }
+}
+
+async function executeMcpTask({ tool, params = {}, policy = {}, clientId = "mcp-client", clientInfo = null, output = {} } = {}) {
+  void output;
+  const isImageProcessingTask = tool === "moonshine.image.process" || tool === "moonshine.image.process_batch";
+  let inputPath = null;
+  let inputBytes = null;
+  if (isImageProcessingTask) {
+    const items = Array.isArray(params.items) ? params.items : params.item ? [params.item] : [];
+    if (!items.length) {
+      const error = new Error("At least one image processing item is required.");
+      error.code = "PATH_NOT_ALLOWED";
+      throw error;
+    }
+  } else {
+    inputPath = resolveMcpTaskInputPath(params.input_path, params, policy);
+    if (!inputPath) {
+      const error = new Error("OCR or SAM input path is required.");
+      error.code = "OCR_INPUT_INVALID";
+      throw error;
+    }
+    let stats;
+    try { stats = fs.statSync(inputPath); } catch {
+      const error = new Error("MCP input file is unavailable.");
+      error.code = "OCR_INPUT_INVALID";
+      throw error;
+    }
+    if (!stats.isFile()) {
+      const error = new Error("MCP input path is not a file.");
+      error.code = "OCR_INPUT_INVALID";
+      throw error;
+    }
+    inputBytes = fs.readFileSync(inputPath);
+    if (inputBytes.length > 20 * 1024 * 1024) {
+      const error = new Error("MCP input image exceeds the supported size.");
+      error.code = "OCR_INPUT_INVALID";
+      throw error;
+    }
+  }
+  const record = createMcpLocalJob({ tool, clientId, clientInfo });
+  record.policySnapshot = structuredClone(policy || {});
+  void runMcpLocalTask(record, { tool, params: structuredClone(params), policy: record.policySnapshot, inputPath, inputBytes });
+  return publicMcpLocalJob(record, false);
+}
+
 async function synchronizeMcpLifecycle(nextConfig, previousConfig = globalConfig?.mcp || DEFAULT_MCP_CONFIG) {
-  if (sameMcpPolicy(nextConfig, previousConfig) && mcpProcessManager.getState().status === "running") {
+  if (
+    sameMcpPolicy(nextConfig, previousConfig) &&
+    mcpProcessManager.getState().status === "running" &&
+    mcpExternalPipeServer?.isListening &&
+    mcpExternalBrokerProcess?.exitCode === null
+  ) {
     return mcpProcessManager.getState();
   }
   try {
-    return await mcpProcessManager.sync(nextConfig);
+    const state = await mcpProcessManager.sync(nextConfig);
+    // The external stdio transport is an app-level entry point and remains
+    // available even when the MCP business adapter is disabled. The pipe
+    // server itself returns MCP_SERVICE_DISABLED until the policy is enabled.
+    await synchronizeMcpExternalTransport(nextConfig);
+    return state;
   } catch (lifecycleError) {
     await mcpProcessManager.sync(previousConfig).catch(() => null);
+    await stopMcpExternalTransport();
     throw new McpConfigError(
       "MCP adapter lifecycle could not be synchronized.",
       lifecycleError?.code || "MCP_START_FAILED",
+      previousConfig,
     );
   }
 }
 
-registerMcpIpc({ ipcMain, bridge: mcpBridge, manager: mcpProcessManager });
+registerMcpIpc({
+  ipcMain,
+  bridge: mcpBridge,
+  manager: mcpProcessManager,
+  external: mcpExternalProvider,
+  dispatcher: mcpApplicationDispatcher,
+  openArtifactInEditor: async ({ jobId, artifactId }) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return { success: false, code: "MCP_EDITOR_UNAVAILABLE" };
+    const artifact = resolveMcpLocalArtifact(jobId, artifactId);
+    if (!artifact) return { success: false, code: "MCP_ARTIFACT_NOT_FOUND" };
+    const mimeType = String(artifact.mime_type || "").toLowerCase();
+    if (!mimeType.startsWith("image/")) {
+      return { success: false, code: "MCP_ARTIFACT_NOT_IMAGE" };
+    }
+    let stats;
+    try {
+      stats = fs.statSync(artifact.internalPath);
+    } catch {
+      return { success: false, code: "MCP_ARTIFACT_NOT_FOUND" };
+    }
+    const sent = sendToMainWindow("mcp-open-artifact", {
+      jobId,
+      artifactId,
+      path: artifact.internalPath,
+      name: path.basename(artifact.internalPath),
+      mimeType: mimeType || null,
+      size: Number.isSafeInteger(stats.size) ? stats.size : 0,
+      lastModified: Number.isFinite(stats.mtimeMs) ? stats.mtimeMs : Date.now(),
+    });
+    return sent ? { success: true } : { success: false, code: "MCP_EDITOR_UNAVAILABLE" };
+  },
+});
 
 registerMcpConfigIpc({
   ipcMain,
   getConfig: () => globalConfig?.mcp || DEFAULT_MCP_CONFIG,
-  saveConfig: async (value) => {
+  saveConfig: (value) => enqueueMcpConfigMutation(async () => {
     const mcpConfig = await canonicalizeMcpConfig(value, resolveMcpTrustedDirectory);
-    const sanitizedConfig = sanitizeAppConfig({ ...globalConfig, mcp: mcpConfig });
-    if (!validateConfig(sanitizedConfig)) {
+    if (mcpConfig.enabled && !mcpConfig.allowedTools.length) {
+      throw new McpConfigError("MCP requires at least one allowed tool.", "MCP_ALLOWED_TOOL_REQUIRED");
+    }
+    if (mcpConfig.enabled && !mcpConfig.allowedRoots.length) {
+      throw new McpConfigError("MCP requires at least one allowed directory.", "MCP_ALLOWED_ROOT_REQUIRED");
+    }
+    const candidateConfig = sanitizeAppConfig({ ...globalConfig, mcp: mcpConfig });
+    if (!validateConfig(candidateConfig)) {
       throw new McpConfigError("MCP configuration is invalid.", "MCP_CONFIG_INVALID");
     }
     const previousMcpConfig = globalConfig?.mcp || DEFAULT_MCP_CONFIG;
     await synchronizeMcpLifecycle(mcpConfig, previousMcpConfig);
+    // Recompose after the awaited lifecycle transition so a concurrent general
+    // settings save cannot be overwritten by an older full-config snapshot.
+    const persistedConfig = sanitizeAppConfig({ ...globalConfig, mcp: mcpConfig });
+    if (!validateConfig(persistedConfig)) {
+      await mcpProcessManager.sync(previousMcpConfig).catch(() => null);
+      throw new McpConfigError("MCP configuration is invalid.", "MCP_CONFIG_INVALID", previousMcpConfig);
+    }
     const configPath = getConfigPath();
     try {
-      fs.writeFileSync(configPath, JSON.stringify(sanitizedConfig, null, 2));
-      globalConfig = sanitizedConfig;
+      fs.writeFileSync(configPath, JSON.stringify(persistedConfig, null, 2));
+      globalConfig = persistedConfig;
       global.appConfig = {
         ...globalConfig,
         api: {
@@ -431,12 +1408,17 @@ registerMcpConfigIpc({
         },
       };
       global.projectPath = globalConfig.general.backendProjectPath || "";
-      return sanitizedConfig.mcp;
+      mcpApplicationDispatcher.onPolicyChanged?.(getMcpPolicySnapshot()?.id || null);
+      return persistedConfig.mcp;
     } catch {
       await mcpProcessManager.sync(previousMcpConfig).catch(() => null);
-      throw new McpConfigError("MCP configuration could not be saved.", "MCP_CONFIG_SAVE_FAILED");
+      throw new McpConfigError(
+        "MCP configuration could not be saved.",
+        "MCP_CONFIG_SAVE_FAILED",
+        previousMcpConfig,
+      );
     }
-  },
+  }),
   selectRoot: async () => {
     const result = await dialog.showOpenDialog(mainWindow || undefined, {
       properties: ["openDirectory"],
@@ -465,7 +1447,7 @@ function getWindowLifecycleController() {
       sendToMainWindow("tray-state", state);
     },
     onNavigationRequest: (request) => {
-      sendToMainWindow("tray-navigate", request);
+      return sendToMainWindow("tray-navigate", request);
     },
     requestWindowClose: () => {
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1290,8 +2272,12 @@ ipcMain.handle("runtime-set-channel", async (_event, channel) => {
     state: getRuntimeState(),
   };
 });
-ipcMain.handle("runtime-check", async (_event, options = {}) => environmentManager?.check(options));
+ipcMain.handle("runtime-check", async (_event, options = {}) => {
+  await environmentManagerInitialization.catch(() => null);
+  return environmentManager?.check(options);
+});
 ipcMain.handle("runtime-ensure", async (event, options = {}) => {
+  await environmentManagerInitialization.catch(() => null);
   const sendLog = createBackendOutputSender(event.sender, "environment-ensure");
   return environmentManager?.ensure({
     ...options,
@@ -1300,11 +2286,21 @@ ipcMain.handle("runtime-ensure", async (event, options = {}) => {
 });
 ipcMain.handle("runtime-cancel", async () => environmentManager?.cancelPreparation?.());
 ipcMain.handle("runtime-rollback", async () => environmentManager?.rollback());
-ipcMain.handle("runtime-get-backend-spec", async () => environmentManager?.getActiveBackendSpec?.() || {});
-ipcMain.handle("environment-get-state", async () => getRuntimeState());
+ipcMain.handle("runtime-get-backend-spec", async () => {
+  await environmentManagerInitialization.catch(() => null);
+  return environmentManager?.getActiveBackendSpec?.() || {};
+});
+ipcMain.handle("environment-get-state", async () => {
+  await environmentManagerInitialization.catch(() => null);
+  return getRuntimeState();
+});
 ipcMain.handle("environment-set-accelerator", async (_event, value) => environmentManager?.setAccelerator(value));
-ipcMain.handle("environment-check", async (_event, options = {}) => environmentManager?.check(options));
+ipcMain.handle("environment-check", async (_event, options = {}) => {
+  await environmentManagerInitialization.catch(() => null);
+  return environmentManager?.check(options);
+});
 ipcMain.handle("environment-ensure", async (event, options = {}) => {
+  await environmentManagerInitialization.catch(() => null);
   const sendLog = createBackendOutputSender(event.sender, "environment-ensure");
   return environmentManager?.ensure({
     ...options,
@@ -1313,7 +2309,10 @@ ipcMain.handle("environment-ensure", async (event, options = {}) => {
 });
 ipcMain.handle("environment-cancel", async () => environmentManager?.cancelPreparation?.());
 ipcMain.handle("environment-rollback", async () => environmentManager?.rollback());
-ipcMain.handle("environment-get-backend-spec", async () => environmentManager?.getActiveBackendSpec?.() || {});
+ipcMain.handle("environment-get-backend-spec", async () => {
+  await environmentManagerInitialization.catch(() => null);
+  return environmentManager?.getActiveBackendSpec?.() || {};
+});
 ipcMain.handle("environment-update-status", async (_event, options = {}) => {
   await environmentManagerInitialization.catch(() => null);
   return environmentManager?.getUpdateStatus?.(options) || {
@@ -4079,7 +5078,7 @@ function validateConfig(config) {
       !Array.isArray(mcp.allowedRoots) ||
       mcp.allowedRoots.length > MAX_MCP_ALLOWED_ROOTS ||
       mcp.allowedRoots.some((root) => !isSafeMcpAllowedRoot(root)) ||
-      typeof mcp.confirmationRequired !== "boolean"
+      !["read_only", "auto_approve", "full_access"].includes(mcp.confirmationMode)
     ) {
       return false;
     }
@@ -4220,21 +5219,23 @@ ipcMain.handle("save-sam3-lexicon", async (event, payload) => {
 });
 
 // IPC handler - save app config
-ipcMain.handle("save-app-config", async (event, newConfig) => {
+ipcMain.handle("save-app-config", async (event, newConfig) => enqueueMcpConfigMutation(async () => {
   try {
     if (!newConfig || typeof newConfig !== "object") {
       console.error("Invalid configuration payload: non-object");
       return { success: false, error: "Invalid configuration payload" };
     }
-    if (!validateConfig(mergeConfigForStrictValidation(newConfig))) {
+    // MCP owns an independent immediate-save lifecycle. Ignore the renderer's
+    // possibly stale MCP draft when persisting the rest of global settings.
+    const configWithCurrentMcp = {
+      ...newConfig,
+      mcp: globalConfig?.mcp || DEFAULT_MCP_CONFIG,
+    };
+    if (!validateConfig(mergeConfigForStrictValidation(configWithCurrentMcp))) {
       console.error("Configuration validation failed before sanitization: INVALID_CONFIGURATION");
       return { success: false, error: "Invalid configuration payload" };
     }
-    const canonicalMcpConfig = await canonicalizeMcpConfig(newConfig.mcp, resolveMcpTrustedDirectory);
-    const sanitizedConfig = sanitizeAppConfig({
-      ...newConfig,
-      mcp: canonicalMcpConfig,
-    });
+    const sanitizedConfig = sanitizeAppConfig(configWithCurrentMcp);
     if (!validateConfig(sanitizedConfig)) {
       console.error("Configuration validation failed: INVALID_CONFIGURATION");
       return { success: false, error: "Invalid configuration payload" };
@@ -4253,8 +5254,6 @@ ipcMain.handle("save-app-config", async (event, newConfig) => {
       };
     }
 
-    const previousMcpConfig = globalConfig?.mcp || DEFAULT_MCP_CONFIG;
-    await synchronizeMcpLifecycle(canonicalMcpConfig, previousMcpConfig);
     const configPath = getConfigPath();
     try {
       fs.writeFileSync(configPath, JSON.stringify(sanitizedConfig, null, 2));
@@ -4268,9 +5267,8 @@ ipcMain.handle("save-app-config", async (event, newConfig) => {
         },
       };
       global.projectPath = globalConfig.general.backendProjectPath || "";
-      return { success: true };
+      return { success: true, config: sanitizedConfig };
     } catch {
-      await mcpProcessManager.sync(previousMcpConfig).catch(() => null);
       throw new McpConfigError("MCP configuration could not be saved.", "MCP_CONFIG_SAVE_FAILED");
     }
   } catch (error) {
@@ -4281,9 +5279,14 @@ ipcMain.handle("save-app-config", async (event, newConfig) => {
       error: error?.message || "Invalid configuration payload",
     };
   }
-});
+}));
 
 ipcMain.handle("tray-get-state", async () => getWindowLifecycleController().getState());
+
+ipcMain.on("renderer-ready", (event) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return;
+  getWindowLifecycleController().markRendererReady();
+});
 
 // IPC handler - save app state
 ipcMain.handle("save-app-state", async (event, stateData) => {
@@ -4665,7 +5668,15 @@ function getFfmpegCandidateBinRoots() {
   if (app.isPackaged) {
     roots.push(getPackagedFfmpegResourceRootPath());
   } else {
-    roots.push("C:\\code\\ffmpeg\\bin", "C:\\code\\ffmpeg");
+    const developmentResourceRoot = path.join(
+      process.cwd(),
+      "build-resources",
+      PACKAGED_FFMPEG_RESOURCE_DIR,
+    );
+    roots.push(
+      developmentResourceRoot,
+      path.join(developmentResourceRoot, PACKAGED_FFMPEG_TARGET_DIR),
+    );
   }
 
   return Array.from(new Set(roots.map((entry) => path.normalize(entry))));
@@ -6519,6 +7530,9 @@ print(json.dumps(result))
 }
 
 async function ensureManagedRuntimeForLaunch(sendLog, _launchConfig, signal) {
+  // Startup can race the persisted external-environment reprobe. Wait until
+  // the manager has loaded its saved source/path before selecting a Python.
+  await environmentManagerInitialization.catch(() => null);
   if (!environmentManager?.getState?.().enabled) return null;
   const state = environmentManager.getState();
   let spec = environmentManager.getActiveBackendSpec();
@@ -7761,6 +8775,11 @@ async function createWindow() {
   });
   const windowInstance = mainWindow;
   getWindowLifecycleController().attachWindow(windowInstance);
+  windowInstance.webContents.on("did-start-loading", () => {
+    if (mainWindow === windowInstance) {
+      getWindowLifecycleController().markRendererNotReady();
+    }
+  });
   let initialLoadComplete = false;
   let initialLoadDiagnostic = null;
   let initialLoadDiagnosticPromise = null;
@@ -8086,6 +9105,7 @@ const handleFatalStartupError = createFatalStartupHandler(async (error) => {
     } finally {
       try {
         await mcpProcessManager.stop({ preservePolicy: true });
+        await stopMcpExternalTransport();
       } catch (mcpStopError) {
         await startupLogger.error("MCP adapter shutdown failed while handling a fatal error.", {
           reason: mcpStopError?.code || mcpStopError?.message || String(mcpStopError),
@@ -8140,8 +9160,10 @@ if (!singleInstanceLockAcquired) {
       ensureTrayManager();
       try {
         await synchronizeMcpLifecycle(globalConfig?.mcp || DEFAULT_MCP_CONFIG);
+        mcpApplicationDispatcher.onPolicyChanged?.(getMcpPolicySnapshot()?.id || null);
       } catch (error) {
         console.warn("MCP adapter startup failed:", error?.code || "MCP_START_FAILED");
+        mcpApplicationDispatcher.onPolicyChanged?.(getMcpPolicySnapshot()?.id || null);
       }
       void ensureAppUpdaterInitialized();
       return result;
@@ -8164,6 +9186,7 @@ app.on("before-quit", (event) => {
   backendShutdownPromise = (async () => {
     try {
       await mcpProcessManager.stop({ preservePolicy: true });
+      await stopMcpExternalTransport();
       if (environmentManager?.getState?.().canCancel) {
         environmentManager.cancelPreparation();
       }

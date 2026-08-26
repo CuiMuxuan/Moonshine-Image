@@ -9,6 +9,7 @@ import {
   MCP_CONFIG_IPC_CHANNELS,
   McpConfigError,
   canonicalizeMcpConfig,
+  createSerialMutationQueue,
   registerMcpConfigIpc,
   resolveTrustedMcpDirectory,
   resolveTrustedMcpPath,
@@ -20,7 +21,7 @@ test("MCP config IPC exposes only named policy handlers with safe result envelop
   const handlers = new Map();
   registerMcpConfigIpc({
     ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
-    getConfig: () => ({ enabled: true, profileId: "desktop-default", allowedTools: [], allowedRoots: [], confirmationRequired: true }),
+    getConfig: () => ({ enabled: true, profileId: "desktop-default", allowedTools: [], allowedRoots: [], confirmationMode: "read_only" }),
     saveConfig: async (value) => ({ ...value, allowedRoots: [] }),
     selectRoot: async () => "C:\\trusted",
   });
@@ -33,7 +34,7 @@ test("MCP config IPC exposes only named policy handlers with safe result envelop
       profileId: "desktop-default",
       allowedTools: [],
       allowedRoots: [],
-      confirmationRequired: true,
+      confirmationMode: "read_only",
     },
   });
   assert.deepEqual(await handlers.get(MCP_CONFIG_IPC_CHANNELS.selectRoot)({}), {
@@ -65,13 +66,70 @@ test("MCP config IPC maps token failures to a stable code and never returns raw 
   });
 });
 
+test("MCP config mutation queue preserves request order", async () => {
+  const enqueue = createSerialMutationQueue();
+  const events = [];
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const first = enqueue(async () => {
+    events.push("first:start");
+    await firstGate;
+    events.push("first:end");
+    return "first";
+  });
+  const second = enqueue(async () => {
+    events.push("second:start");
+    return "second";
+  });
+  await Promise.resolve();
+  assert.deepEqual(events, ["first:start"]);
+  releaseFirst();
+  assert.equal(await first, "first");
+  assert.equal(await second, "second");
+  assert.deepEqual(events, ["first:start", "first:end", "second:start"]);
+});
+
+test("MCP config errors can return a safe persisted policy snapshot", async () => {
+  const handlers = new Map();
+  registerMcpConfigIpc({
+    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
+    getConfig: () => ({}),
+    saveConfig: async () => {
+      throw new McpConfigError("write failed", "MCP_CONFIG_SAVE_FAILED", {
+        enabled: true,
+        profileId: "desktop-default",
+        allowedTools: ["moonshine.jobs.get"],
+        allowedRoots: ["C:\\trusted"],
+        confirmationMode: "read_only",
+        token: "must-not-escape",
+      });
+    },
+    selectRoot: async () => null,
+  });
+  const result = await handlers.get(MCP_CONFIG_IPC_CHANNELS.saveConfig)({}, {});
+  assert.deepEqual(result, {
+    success: false,
+    code: "MCP_CONFIG_SAVE_FAILED",
+    error: "MCP_CONFIG_SAVE_FAILED",
+    data: {
+      enabled: true,
+      profileId: "desktop-default",
+      allowedTools: ["moonshine.jobs.get"],
+      allowedRoots: ["C:\\trusted"],
+        confirmationMode: "read_only",
+    },
+  });
+});
+
 test("MCP config IPC and preload wiring stay explicit and bridge remains start-free", async () => {
   const mainSource = await readFile(path.join(root, "src-electron", "electron-main.js"), "utf8");
   const configSource = await readFile(path.join(root, "src-electron", "mcp-config.js"), "utf8");
   const preloadSource = await readFile(path.join(root, "src-electron", "electron-preload.js"), "utf8");
   const panelSource = await readFile(path.join(root, "src/components/global/McpSettingsPanel.vue"), "utf8");
+  const settingsSource = await readFile(path.join(root, "src/components/global/GlobalSettings.vue"), "utf8");
   assert.match(mainSource, /registerMcpConfigIpc\(/);
-  assert.match(mainSource, /canonicalMcpConfig = await canonicalizeMcpConfig\(newConfig\.mcp, resolveMcpTrustedDirectory\)/);
+  assert.match(mainSource, /const configWithCurrentMcp = \{[\s\S]*mcp: globalConfig\?\.mcp \|\| DEFAULT_MCP_CONFIG/);
+  assert.match(mainSource, /MCP owns an independent immediate-save lifecycle/);
   assert.match(mainSource, /canonicalizeMcpConfig\(value, resolveMcpTrustedDirectory\)/);
   assert.match(mainSource, /Object\.keys\(mcp\)\.some\(\(key\) => !MCP_CONFIG_FIELD_NAMES\.includes\(key\)\)/);
   const saveConfigStart = mainSource.indexOf('// IPC handler - save app config');
@@ -87,7 +145,10 @@ test("MCP config IPC and preload wiring stay explicit and bridge remains start-f
   assert.match(panelSource, /getMcpConfig/);
   assert.match(panelSource, /saveMcpConfig/);
   assert.match(panelSource, /selectMcpRoot/);
-  assert.match(panelSource, /router\.push\("\/activity\/mcp"\)/);
+  assert.match(panelSource, /<McpActivityPanel \/>/);
+  assert.match(panelSource, /name="activity"/);
+  assert.doesNotMatch(settingsSource, /McpActivityPanel|showMcpActivityDialog|mcp-activity-dialog/);
+  assert.doesNotMatch(panelSource, /router\.push\("\/activity\/mcp"\)/);
   assert.match(mainSource, /resolvePath: resolveMcpTrustedPath/);
   assert.match(mainSource, /selectRoot:[\s\S]*resolveMcpTrustedDirectory\(selectedPath\)/);
 });

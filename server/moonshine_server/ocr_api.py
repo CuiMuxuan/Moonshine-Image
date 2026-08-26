@@ -84,6 +84,7 @@ class OcrRecognizeRequest(BaseModel):
     image_base64: StrictStr | None = Field(default=None, max_length=MAX_BASE64_LENGTH)
     image: StrictStr | None = Field(default=None, max_length=MAX_BASE64_LENGTH)
     image_bytes: StrictStr | None = Field(default=None, max_length=MAX_BASE64_LENGTH)
+    model_id: StrictStr | None = Field(default=None, max_length=64)
     regions: list[Any] | None = Field(default=None, max_length=MAX_REGION_COUNT)
     options: dict[StrictStr, Any] | None = Field(default=None, max_length=16)
 
@@ -292,6 +293,7 @@ class OcrApi:
         image: bytes | bytearray | memoryview | str,
         regions: Sequence[Any] | None = None,
         options: Mapping[str, Any] | None = None,
+        model_id: str | None = None,
     ) -> dict[str, Any]:
         if isinstance(image, str):
             image_bytes = _decode_base64_image(image)
@@ -318,9 +320,20 @@ class OcrApi:
                 raise OcrApiInputError("OCR options exceed the supported bounds")
             if any(not isinstance(key, str) or not key or len(key) > 64 for key in options):
                 raise OcrApiInputError("OCR option names are invalid")
+        if model_id is not None and (
+            not isinstance(model_id, str)
+            or not model_id.strip()
+            or not _ENGINE_ID_RE.fullmatch(model_id.strip())
+        ):
+            raise OcrApiInputError("OCR model id is invalid")
         adapter = self._get_adapter()
+        normalized_options = dict(options) if options is not None else None
+        if model_id is not None:
+            if normalized_options is None:
+                normalized_options = {}
+            normalized_options["model_id"] = model_id.strip()
         try:
-            raw_regions = adapter.recognize(image_bytes, regions=regions, options=options)
+            raw_regions = adapter.recognize(image_bytes, regions=regions, options=normalized_options)
         except OcrAdapterUnavailableError:
             raise OcrApiUnavailableError() from None
         except OcrAdapterInputError:

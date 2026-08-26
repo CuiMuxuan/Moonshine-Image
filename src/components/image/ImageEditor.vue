@@ -7,7 +7,6 @@
       :class="{
         'cursor-grab': !isDrawingMode && !isDragging && !isToolbarInteracting,
         'cursor-grabbing': !isDrawingMode && isDragging && !isToolbarInteracting,
-        'cursor-none': isManualDrawingMode && !isToolbarInteracting,
       }"
       @wheel="onWheel"
       @pointerdown="onPointerDown"
@@ -60,10 +59,13 @@
         @update:tool-state="updateMaskToolState"
         @update:toolbar-interacting="updateToolbarInteracting"
         @sam-processing-state="$emit('sam-processing-state', $event)"
+        @smart-selection-request="$emit('smart-selection-request', $event)"
+        @smart-selection-cancel="$emit('smart-selection-cancel')"
         @sam-text-batch-request="$emit('sam-text-batch-request', $event)"
         @sam-text-batch-cancel="$emit('sam-text-batch-cancel')"
         @ocr-request="$emit('ocr-request', $event)"
         @update:ocr-settings="$emit('update:ocr-settings', $event)"
+        @update:smart-selection-model="$emit('update:smart-selection-model', $event)"
       />
     </div>
   </div>
@@ -236,10 +238,13 @@ const emit = defineEmits([
   "update:drawing-mode",
   "update:tool-state",
   "sam-processing-state",
+  "smart-selection-request",
+  "smart-selection-cancel",
   "sam-text-batch-request",
   "sam-text-batch-cancel",
   "ocr-request",
   "update:ocr-settings",
+  "update:smart-selection-model",
 ]);
 const imageUrl = computed(() => {
   if (props.imageUrl) {
@@ -270,11 +275,9 @@ const imageUrl = computed(() => {
   return store.imageUrl;
 });
 
-const mode = computed(() => store.mode);
 const scale = computed(() => store.scale);
 const drawingMode = computed(() => Boolean(props.drawingMode));
 const smartSelectionMode = computed(() => Boolean(props.smartSelectionMode));
-const isManualDrawingMode = computed(() => Boolean(props.showMasker && drawingMode.value));
 const isDrawingMode = computed(
   () => Boolean(props.showMasker && (drawingMode.value || smartSelectionMode.value))
 );
@@ -419,16 +422,6 @@ const onImageError = async () => {
   });
 };
 
-watch([() => store.scale, () => store.offsetX, () => store.offsetY], () => {
-  if (mode.value === "mask" && maskerRef.value) {
-    nextTick(() => {
-      maskerRef.value.$el.style.transform = `scale(${store.scale})`;
-      maskerRef.value.$el.style.left = `${store.offsetX}px`;
-      maskerRef.value.$el.style.top = `${store.offsetY}px`;
-    });
-  }
-});
-
 watch(
   () => props.mask,
   () => {
@@ -568,6 +561,7 @@ provide(
     isMaskerReady: () => Boolean(maskerRef.value?.isReady?.()),
     appendExternalSamTextResult: (payload) =>
       maskerRef.value?.appendExternalSamTextResult?.(payload),
+    runSamTextPrediction: () => maskerRef.value?.runSamTextPrediction?.(),
     clearSamContextSession: (contextId, options) =>
       maskerRef.value?.clearSamContextSession?.(contextId, options),
     scheduleSamRenderPreloadFlush: () =>
@@ -590,6 +584,7 @@ defineExpose({
   isMaskerReady: () => Boolean(maskerRef.value?.isReady?.()),
   appendExternalSamTextResult: (payload) =>
     maskerRef.value?.appendExternalSamTextResult?.(payload),
+  runSamTextPrediction: () => maskerRef.value?.runSamTextPrediction?.(),
   clearSamContextSession: (contextId, options) =>
     maskerRef.value?.clearSamContextSession?.(contextId, options),
   scheduleSamRenderPreloadFlush: () =>
@@ -632,7 +627,4 @@ defineExpose({
   cursor: grabbing !important;
 }
 
-.cursor-none {
-  cursor: none !important;
-}
 </style>

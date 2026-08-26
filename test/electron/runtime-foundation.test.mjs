@@ -30,6 +30,29 @@ import {
 const { privateKey, publicKey } = generateKeyPairSync("ed25519");
 const trustedKeys = { "moonshine-app-manifest-v1": publicKey };
 
+function storedZipEntry(fileName, mode = 0o100600) {
+  const name = Buffer.from(fileName, "utf8");
+  const local = Buffer.alloc(30);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(name.length, 26);
+
+  const central = Buffer.alloc(46);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(0x0314, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(name.length, 28);
+  central.writeUInt32LE((mode << 16) >>> 0, 38);
+
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(central.length + name.length, 12);
+  end.writeUInt32LE(local.length + name.length, 16);
+  return Buffer.concat([local, name, central, name, end]);
+}
+
 function signedManifest(overrides = {}) {
   const now = new Date();
   const payload = {
@@ -323,4 +346,25 @@ test("safe extraction rejects traversal and symlink entries before activation", 
     (error) => error.code === "ASSET_ZIP_PATH_TRAVERSAL"
   );
   assert.equal(await fs.stat(target).catch(() => null), null);
+});
+
+test("safe extraction writes regular ZIP entries and rejects real symlink archives", async (t) => {
+  const directory = await temporaryDirectory(t);
+  const archive = path.join(directory, "runtime.zip");
+  const target = path.join(directory, "runtime");
+  await fs.writeFile(archive, storedZipEntry("runtime/bin/tool.txt"));
+
+  const extracted = await extractZipSafely({ archivePath: archive, destination: target });
+  assert.equal(extracted.entries, 1);
+  assert.equal(extracted.uncompressedBytes, 0);
+  assert.equal((await fs.stat(path.join(target, "runtime", "bin", "tool.txt"))).isFile(), true);
+
+  const symlinkArchive = path.join(directory, "symlink.zip");
+  const symlinkTarget = path.join(directory, "symlink-target");
+  await fs.writeFile(symlinkArchive, storedZipEntry("runtime/link", 0o120777));
+  await assert.rejects(
+    extractZipSafely({ archivePath: symlinkArchive, destination: symlinkTarget }),
+    (error) => error.code === "ASSET_ZIP_SYMLINK"
+  );
+  assert.equal(await fs.stat(symlinkTarget).catch(() => null), null);
 });

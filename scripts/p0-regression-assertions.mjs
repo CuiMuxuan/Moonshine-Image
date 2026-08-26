@@ -360,8 +360,8 @@ function runAssertions() {
   });
   assertPattern({
     file: "src/layouts/MainLayout.vue",
-    description: "Main layout flushes deferred backend-path notice after startup overlay",
-    pattern: /const handleStartupOverlayFinished = \(\) => \{\s*startupExperienceFinished\.value = true;\s*flushPendingBackendPathNotice\(\);\s*\};/,
+    description: "Main layout settles startup after the overlay and service flow complete",
+    pattern: /const handleStartupOverlayFinished = \(\) => \{\s*startupOverlayFinished\.value = true;\s*settleStartupExperience\(\);\s*\};/,
   });
 
   logSection("Config & Shared State Contracts");

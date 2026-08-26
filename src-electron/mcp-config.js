@@ -16,10 +16,11 @@ export const MCP_CONFIG_IPC_CHANNELS = Object.freeze({
 });
 
 export class McpConfigError extends Error {
-  constructor(message, code = "MCP_CONFIG_INVALID") {
+  constructor(message, code = "MCP_CONFIG_INVALID", data = undefined) {
     super(message);
     this.name = "McpConfigError";
     this.code = code;
+    if (data !== undefined) this.data = data;
   }
 }
 
@@ -41,7 +42,31 @@ function rootIdentity(value) {
 
 function configErrorPayload(error) {
   const code = error instanceof McpConfigError ? error.code : "MCP_CONFIG_INVALID";
-  return { success: false, code, error: code };
+  const payload = { success: false, code, error: code };
+  if (error?.data && typeof error.data === "object" && !Array.isArray(error.data)) {
+    payload.data = {
+      enabled: error.data.enabled === true,
+      profileId: typeof error.data.profileId === "string" ? error.data.profileId : "",
+      allowedTools: Array.isArray(error.data.allowedTools) ? [...error.data.allowedTools] : [],
+      allowedRoots: Array.isArray(error.data.allowedRoots) ? [...error.data.allowedRoots] : [],
+      confirmationMode: typeof error.data.confirmationMode === "string"
+        ? error.data.confirmationMode
+        : "read_only",
+    };
+  }
+  return payload;
+}
+
+export function createSerialMutationQueue() {
+  let tail = Promise.resolve();
+  return (mutation) => {
+    if (typeof mutation !== "function") {
+      return Promise.reject(new TypeError("Mutation queue requires a function."));
+    }
+    const next = tail.then(mutation, mutation);
+    tail = next.catch(() => undefined);
+    return next;
+  };
 }
 
 function assertMcpPolicyShape(value) {
@@ -75,7 +100,7 @@ export function normalizeMcpConfig(value = {}) {
     profileId: metadata.profileId,
     allowedTools: Object.freeze([...metadata.allowedTools]),
     allowedRoots: Object.freeze(allowedRoots),
-    confirmationRequired: metadata.confirmationRequired,
+    confirmationMode: metadata.confirmationMode,
   });
 }
 

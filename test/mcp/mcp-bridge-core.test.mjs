@@ -168,7 +168,33 @@ test("McpBridge is disabled by default and never discloses its configured token"
   }
 });
 
-test("McpBridge binds canonical paths and confirmation plans to a policy and client", async () => {
+test("McpBridge reports actionable policy errors before starting a service", async () => {
+  const bridge = new McpBridge({ resolvePath: trustedResolver });
+
+  await assert.rejects(
+    () => bridge.start({
+      enabled: true,
+      profile: "desktop-default",
+      token: "mcp-secret-token",
+      allowedRoots: [],
+      allowedTools: ["moonshine.capabilities"],
+    }),
+    (error) => error?.code === "MCP_ALLOWED_ROOT_REQUIRED",
+  );
+
+  await assert.rejects(
+    () => bridge.start({
+      enabled: true,
+      profile: "desktop-default",
+      token: "mcp-secret-token",
+      allowedRoots: ["C:/moonshine/inputs"],
+      allowedTools: [],
+    }),
+    (error) => error?.code === "MCP_ALLOWED_TOOL_REQUIRED",
+  );
+});
+
+test("McpBridge auto-approve binds canonical paths to policy and client without per-request confirmation", async () => {
   const token = "mcp-secret-token";
   const received = [];
   const bridge = new McpBridge({
@@ -187,6 +213,7 @@ test("McpBridge binds canonical paths and confirmation plans to a policy and cli
   });
   const descriptor = await bridge.start({
     enabled: true,
+    confirmationMode: "auto_approve",
     profile: "desktop-default",
     token,
     allowedRoots: ["C:/moonshine/inputs"],
@@ -211,46 +238,23 @@ test("McpBridge binds canonical paths and confirmation plans to a policy and cli
     assert.equal(byId.get(4).result.policy_snapshot_id, descriptor.policy_snapshot_id);
     expectError(byId.get(5), 5, "TOOL_NOT_ALLOWED");
     expectError(byId.get(6), 6, "PATH_NOT_ALLOWED");
-    expectError(byId.get("caller-secret-request-id"), "caller-secret-request-id", "CONFIRMATION_REQUIRED");
+    assert.deepEqual(byId.get("caller-secret-request-id").result, { artifact_ids: ["artifact_12345678"], job_id: "job_12345678", status: "queued" });
     expectError(byId.get(8), 8, "INVALID_JOB_ID");
     assert.deepEqual(byId.get(9).result, { artifact_ids: ["artifact_12345678"], job_id: "job_12345678", status: "queued" });
-    assert.equal(received.length, 1);
-    assert.deepEqual(received[0].policy.allowedRoots, ["C:\\moonshine\\inputs"]);
-
-    const confirmationId = byId.get("caller-secret-request-id").error.data.confirmation_id;
-    assert.equal(bridge.approveConfirmation(confirmationId), true);
-
-    const [crossClientResponse] = await authenticatedCalls(descriptor.endpoint, token, [
-      request(10, "bridge.call", { confirmation_id: confirmationId, input_paths: ["C:/moonshine/inputs/a.png"], tool: "moonshine.image.process_batch" }),
-    ], "other-client");
-    expectError(crossClientResponse, 10, "CONFIRMATION_REQUIRED");
-
-    const [acceptedResponse] = await authenticatedCalls(descriptor.endpoint, token, [
-      request(11, "bridge.call", {
-        confirmation_id: confirmationId,
-        confirmed: true,
-        input_paths: ["C:/moonshine/inputs/a.png"],
-        tool: "moonshine.image.process_batch",
-      }),
-    ]);
-    assert.deepEqual(acceptedResponse.result, { artifact_ids: ["artifact_12345678"], job_id: "job_12345678", status: "queued" });
     assert.equal(received.length, 2);
-    assert.deepEqual(received[1].params.input_paths, [path.resolve("C:/moonshine/inputs/a.png")]);
-    assert.equal(Object.hasOwn(received[1].params, "confirmation_id"), false);
-    assert.equal(Object.hasOwn(received[1].params, "confirmed"), false);
-
-    const [replayedResponse] = await authenticatedCalls(descriptor.endpoint, token, [
-      request(12, "bridge.call", { confirmation_id: confirmationId, input_paths: ["C:/moonshine/inputs/a.png"], tool: "moonshine.image.process_batch" }),
-    ]);
-    expectError(replayedResponse, 12, "CONFIRMATION_REQUIRED");
+    assert.deepEqual(received[0].policy.allowedRoots, ["C:\\moonshine\\inputs"]);
+    const writeDispatch = received.find((entry) => entry.tool === "moonshine.image.process_batch");
+    assert.ok(writeDispatch, JSON.stringify(received));
+    assert.deepEqual(writeDispatch.params.input_paths, [path.resolve("C:/moonshine/inputs/a.png")]);
+    assert.equal(Object.hasOwn(writeDispatch.params, "confirmation_id"), false);
 
     const activity = bridge.getActivity();
-    assert.equal(activity.length, 8);
+    assert.equal(activity.length, 5);
     const activityText = JSON.stringify(activity);
     assert.equal(activityText.includes("caller-secret-request-id"), false);
     assert.equal(activityText.includes(token), false);
     assert.equal(activityText.includes("C:/moonshine/inputs/a.png"), false);
-    assert.equal(activity.at(-1).outcome, "rejected");
+    assert.equal(activity.at(-1).outcome, "accepted");
   } finally {
     await bridge.stop();
   }
@@ -314,7 +318,6 @@ test("McpBridge canonicalizes every supported path field and rejects unsafe reso
       mask_path: path.resolve("C:/moonshine/inputs/a.mask.png"),
       output_path: path.resolve("C:/moonshine/inputs/a.output.png"),
       sidecar_path: path.resolve("C:/moonshine/inputs/a.json"),
-      tool: "moonshine.image.process_batch",
     });
     for (let id = 3; id <= 18; id += 1) expectError(byId.get(id), id, "PATH_NOT_ALLOWED");
   } finally {
@@ -322,13 +325,20 @@ test("McpBridge canonicalizes every supported path field and rejects unsafe reso
   }
 });
 
-test("McpBridge expires unapproved confirmation plans", async () => {
+test("McpBridge read-only mode permits trusted OCR detection and rejects write tools", async () => {
   const token = "mcp-secret-token";
-  let nowMs = 0;
+  const dispatched = [];
   const bridge = new McpBridge({
-    confirmationTtlMs: 10,
-    dispatch: async () => ({ job_id: "job_12345678" }),
-    nowMs: () => nowMs,
+    dispatch: async (payload) => {
+      dispatched.push(payload);
+      return payload.tool === "moonshine.ocr.detect"
+        ? {
+            candidates: [{ id: "region_12345678", confidence: 0.97, text: "Moonshine", polygon: [[0, 0]], input_path: "C:/private/a.png" }],
+            input_path: "C:/private/a.png",
+            token: "must-not-project",
+          }
+        : { job_id: "job_12345678" };
+    },
     resolvePath: trustedResolver,
   });
   const descriptor = await bridge.start({
@@ -338,23 +348,28 @@ test("McpBridge expires unapproved confirmation plans", async () => {
     allowedRoots: ["C:/moonshine/inputs"],
   });
   try {
-    const [pendingResponse] = await authenticatedCalls(descriptor.endpoint, token, [
-      request(2, "bridge.call", { input_paths: ["C:/moonshine/inputs/a.png"], tool: "moonshine.image.process_batch" }),
+    const responses = await authenticatedCalls(descriptor.endpoint, token, [
+      request(2, "bridge.call", { input_path: "C:/moonshine/inputs/a.png", tool: "moonshine.ocr.detect" }),
+      request(3, "bridge.call", { input_paths: ["C:/moonshine/inputs/a.png"], tool: "moonshine.image.process_batch" }),
     ]);
-    const confirmationId = pendingResponse.error.data.confirmation_id;
-    nowMs = 11;
-    assert.equal(bridge.approveConfirmation(confirmationId), false);
-    const [expiredResponse] = await authenticatedCalls(descriptor.endpoint, token, [
-      request(3, "bridge.call", { confirmation_id: confirmationId, input_paths: ["C:/moonshine/inputs/a.png"], tool: "moonshine.image.process_batch" }),
-    ]);
-    expectError(expiredResponse, 3, "CONFIRMATION_REQUIRED");
-    assert.notEqual(expiredResponse.error.data.confirmation_id, confirmationId);
+    const byId = new Map(responses.map((response) => [response.id, response]));
+    assert.ok(byId.get(2).result, JSON.stringify(byId.get(2)));
+    assert.deepEqual(byId.get(2).result, {
+      candidates: [{ id: "region_12345678", confidence: 0.97, text: "Moonshine" }],
+    });
+    expectError(byId.get(3), 3, "POLICY_DENIED");
+    assert.equal(dispatched.length, 1);
+    assert.equal(dispatched[0].tool, "moonshine.ocr.detect");
+    assert.deepEqual(dispatched[0].params, { input_path: path.resolve("C:/moonshine/inputs/a.png") });
+    const resultText = JSON.stringify(byId.get(2).result);
+    assert.equal(resultText.includes("C:/private"), false);
+    assert.equal(resultText.includes("must-not-project"), false);
   } finally {
     await bridge.stop();
   }
 });
 
-test("McpBridge default workspace confirmation issues a contract id and dispatches only the approved binding", async () => {
+test("McpBridge auto-approve dispatches a trusted workspace write without per-request approval", async () => {
   const token = "mcp-secret-token";
   const dispatched = [];
   const bridge = new McpBridge({
@@ -366,36 +381,20 @@ test("McpBridge default workspace confirmation issues a contract id and dispatch
   });
   const descriptor = await bridge.start({
     enabled: true,
+    confirmationMode: "auto_approve",
     profile: "desktop-default",
     token,
     allowedRoots: ["C:/moonshine/inputs"],
   });
   try {
-    const initialParams = workspaceSubmitParams(descriptor);
-    const [pending] = await authenticatedCalls(descriptor.endpoint, token, [
-      request(2, "bridge.call", initialParams),
-    ]);
-    expectError(pending, 2, "CONFIRMATION_REQUIRED");
-    const confirmationId = pending.error.data.confirmation_id;
-    assert.match(confirmationId, /^cnf_[a-z0-9]{8,64}$/);
-    assert.equal(dispatched.length, 0);
-    assert.equal(bridge.approveConfirmation(confirmationId), true);
-
     const [accepted] = await authenticatedCalls(descriptor.endpoint, token, [
-      request(3, "bridge.call", workspaceSubmitParams(descriptor, {
-        confirmation: {
-          policy_snapshot_id: descriptor.policy_snapshot_id,
-          mode: "confirmed",
-          confirmation_id: confirmationId,
-        },
-      })),
+      request(2, "bridge.call", workspaceSubmitParams(descriptor)),
     ]);
     assert.deepEqual(accepted.result, { job_id: "job_12345678", status: "queued" });
     assert.equal(dispatched.length, 1);
     assert.deepEqual(dispatched[0].params.confirmation, {
       policy_snapshot_id: descriptor.policy_snapshot_id,
-      mode: "confirmed",
-      confirmation_id: confirmationId,
+      mode: "not_required",
     });
   } finally {
     await bridge.stop();
@@ -492,6 +491,7 @@ test("McpBridge rejects a drifted workspace policy snapshot before dispatch", as
   });
   const descriptor = await bridge.start({
     enabled: true,
+    confirmationMode: "auto_approve",
     profile: "desktop-default",
     token,
     allowedRoots: ["C:/moonshine/inputs"],
@@ -511,45 +511,50 @@ test("McpBridge rejects a drifted workspace policy snapshot before dispatch", as
   }
 });
 
-test("McpBridge bounds pending confirmation plans globally and per client", async () => {
+test("McpBridge full-access bypasses directory checks but retains tool allowlisting and safe projection", async () => {
   const token = "mcp-secret-token";
+  const dispatched = [];
+  let resolverCalls = 0;
   const bridge = new McpBridge({
-    dispatch: async () => ({ job_id: "job_12345678" }),
-    maxPendingConfirmations: 2,
-    maxPendingConfirmationsPerClient: 1,
-    resolvePath: trustedResolver,
+    dispatch: async (payload) => {
+      dispatched.push(payload);
+      return { job_id: "job_12345678", status: "queued", output_path: "C:/outside/result.png", token: "must-not-project" };
+    },
+    resolvePath: async (candidate) => {
+      resolverCalls += 1;
+      return trustedResolver(candidate);
+    },
   });
   const descriptor = await bridge.start({
     enabled: true,
+    confirmationMode: "full_access",
     profile: "desktop-default",
     token,
     allowedRoots: ["C:/moonshine/inputs"],
   });
+  const resolverCallsAfterStart = resolverCalls;
   try {
-    const [first] = await authenticatedCalls(descriptor.endpoint, token, [
-      request(2, "bridge.call", { input_paths: ["C:/moonshine/inputs/a.png"], tool: "moonshine.image.process_batch" }),
+    const responses = await authenticatedCalls(descriptor.endpoint, token, [
+      request(2, "bridge.call", {
+        confirmation: { token: "discard-me" },
+        input_paths: ["D:/outside/a.png"],
+        output_path: "D:/outside/result.png",
+        tool: "moonshine.image.process_batch",
+      }),
+      request(3, "bridge.call", { tool: "moonshine.not-allowed" }),
     ]);
-    const [duplicate] = await authenticatedCalls(descriptor.endpoint, token, [
-      request(3, "bridge.call", { input_paths: ["C:/moonshine/inputs/a.png"], tool: "moonshine.image.process_batch" }),
-    ]);
-    expectError(first, 2, "CONFIRMATION_REQUIRED");
-    expectError(duplicate, 3, "CONFIRMATION_REQUIRED");
-    assert.equal(duplicate.error.data.confirmation_id, first.error.data.confirmation_id);
-
-    const [perClientLimit] = await authenticatedCalls(descriptor.endpoint, token, [
-      request(4, "bridge.call", { input_paths: ["C:/moonshine/inputs/b.png"], tool: "moonshine.image.process_batch" }),
-    ]);
-    expectError(perClientLimit, 4, "CONFIRMATION_LIMIT_REACHED");
-
-    const [secondClient] = await authenticatedCalls(descriptor.endpoint, token, [
-      request(5, "bridge.call", { input_paths: ["C:/moonshine/inputs/b.png"], tool: "moonshine.image.process_batch" }),
-    ], "second-client");
-    expectError(secondClient, 5, "CONFIRMATION_REQUIRED");
-
-    const [globalLimit] = await authenticatedCalls(descriptor.endpoint, token, [
-      request(6, "bridge.call", { input_paths: ["C:/moonshine/inputs/c.png"], tool: "moonshine.image.process_batch" }),
-    ], "third-client");
-    expectError(globalLimit, 6, "CONFIRMATION_LIMIT_REACHED");
+    const byId = new Map(responses.map((response) => [response.id, response]));
+    assert.ok(byId.get(2).result, JSON.stringify(byId.get(2)));
+    assert.deepEqual(byId.get(2).result, { job_id: "job_12345678", status: "queued" });
+    expectError(byId.get(3), 3, "TOOL_NOT_ALLOWED");
+    assert.equal(resolverCalls, resolverCallsAfterStart);
+    assert.equal(dispatched.length, 1);
+    assert.deepEqual(dispatched[0].params, {
+      input_paths: ["D:/outside/a.png"],
+      output_path: "D:/outside/result.png",
+    });
+    assert.equal(JSON.stringify(byId.get(2)).includes("D:/outside"), false);
+    assert.equal(JSON.stringify(byId.get(2)).includes("must-not-project"), false);
   } finally {
     await bridge.stop();
   }

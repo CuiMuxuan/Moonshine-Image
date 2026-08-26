@@ -249,18 +249,24 @@ export const createOcrService = (httpClient) => {
       }
     },
 
-    async recognize({ imageBase64, regions = [], options = {} } = {}) {
+    async recognize({ imageBase64, modelId = "", regions = [], options = {}, signal } = {}) {
+      const normalizedModelId = String(modelId || "").trim();
       const payload = {
         image_base64: normalizeBase64(imageBase64),
+        ...(normalizedModelId ? { model_id: normalizedModelId } : {}),
         regions: Array.isArray(regions) ? regions.slice(0, 128) : [],
         options: options && typeof options === "object" ? Object.fromEntries(Object.entries(options).slice(0, 16)) : {},
       };
       try {
         return normalizeRecognizeResponse(await httpClient.post(OCR_RECOGNIZE_PATH, payload, {
           timeout: OCR_REQUEST_TIMEOUT_MS,
+          ...(signal ? { signal } : {}),
           headers: { "Content-Type": "application/json" },
         }));
       } catch (error) {
+        if (error?.name === "AbortError" || error?.name === "CanceledError" || error?.code === "ERR_CANCELED") {
+          throw error;
+        }
         if (error instanceof Error && error.message.startsWith("OCR ")) throw error;
         throw new Error("OCR 识别暂时失败");
       }

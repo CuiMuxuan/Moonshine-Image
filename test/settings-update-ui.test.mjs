@@ -28,6 +28,10 @@ const startupOverlaySource = fs.readFileSync(
   path.join(repoRoot, "src/components/global/StartupOverlay.vue"),
   "utf8"
 );
+const updateManagerSource = fs.readFileSync(
+  path.join(repoRoot, "src/stores/updateManager.js"),
+  "utf8"
+);
 const externalWorkflowSource = backendManagerSource.slice(
   backendManagerSource.indexOf("const handleProbeExternalEnvironment"),
   backendManagerSource.indexOf("const handlePythonEnvironmentSourceChange")
@@ -87,7 +91,7 @@ test("the update store owns one named preload subscription and disposes it safel
 
     assert.equal(updateManager.state.status, "available");
     assert.equal(updateManager.state.availableVersion, "1.3.0");
-    stateListener?.({ status: "downloaded", progress: 100 });
+    assert.equal(stateListener?.({ status: "downloaded", progress: 100 }), undefined);
     assert.equal(updateManager.state.status, "downloaded");
     assert.equal(updateManager.state.progress, 100);
 
@@ -103,6 +107,18 @@ test("the update store owns one named preload subscription and disposes it safel
   }
 });
 
+test("renderer IPC subscriptions do not return reactive store state across the bridge", () => {
+  assert.match(
+    updateManagerSource,
+    /onAppUpdateState\(\(nextState\) => \{\s*applyState\(nextState\);\s*\}\)/
+  );
+  assert.match(
+    updateManagerSource,
+    /onRuntimeState\(\(nextState\) => \{\s*applyRuntimeState\(nextState\);\s*\}\)/
+  );
+  assert.doesNotMatch(updateManagerSource, /on(?:AppUpdateState|RuntimeState)\(\(nextState\) => apply/);
+});
+
 test("the main layout owns the updater subscription and update attention entry", () => {
   assert.match(layoutSource, /const updateInitialization = updateManager\.initialize\(\)/);
   assert.match(layoutSource, /await updateInitialization/);
@@ -112,6 +128,38 @@ test("the main layout owns the updater subscription and update attention entry",
 
   assert.doesNotMatch(settingsSource, /updateManager\.initialize\(\)/);
   assert.doesNotMatch(settingsSource, /updateManager\.dispose\(\)/);
+});
+
+test("automatic startup covers configured environments and waits for model readiness", () => {
+  assert.doesNotMatch(layoutSource, /!invoke \|\| import\.meta\.env\.DEV/);
+  assert.match(layoutSource, /const shouldAutoStartService =/);
+  assert.match(layoutSource, /const startupPreparation = prepareBackendEngine\(\)/);
+  assert.match(layoutSource, /startupFlowPending\.value = false/);
+  assert.match(layoutSource, /startupOverlayFinished\.value/);
+  assert.match(layoutSource, /const modelResult = await ensureDefaultModelReady\(/);
+  assert.match(layoutSource, /runtimeState\.source === "external"/);
+  assert.match(layoutSource, /updateManager\.checkRuntime\(/);
+  assert.match(layoutSource, /modelRegistryStore\.invalidatePreparedModels\(\)/);
+  assert.match(backendManagerSource, /await modelRegistryStore\.ensureModelReady\(options\.model \|\| "lama"\)/);
+});
+
+test("startup overlay fades immediately while backend startup continues", () => {
+  const settleStart = layoutSource.indexOf("const settleStartupExperience");
+  const settleEnd = layoutSource.indexOf("const handleStartupOverlayVisibilityRequest", settleStart);
+  const settleSource = layoutSource.slice(settleStart, settleEnd);
+
+  assert.match(
+    settleSource,
+    /if \(startupOverlayFinished\.value\) \{\s*showStartupOverlay\.value = false;\s*\}/
+  );
+  assert.match(
+    settleSource,
+    /showStartupOverlay\.value = false;[\s\S]*if \(startupFlowPending\.value \|\| !startupOverlayFinished\.value\) return;/
+  );
+  assert.match(
+    layoutSource,
+    /watch\(showStartupOverlay, \(visible\) => \{\s*if \(!visible && startupExperienceFinished\.value\)/
+  );
 });
 
 test("runtime onboarding waits for startup and never blocks a ready environment", () => {
@@ -139,10 +187,27 @@ test("runtime onboarding waits for startup and never blocks a ready environment"
     electronMainSource,
     /ipcMain\.handle\("runtime-get-state", async \(\) => \{[\s\S]*await environmentManagerInitialization/
   );
+  assert.match(
+    electronMainSource,
+    /ipcMain\.handle\("runtime-check", async \(_event, options = \{\}\) => \{[\s\S]*await environmentManagerInitialization/
+  );
+  assert.match(
+    electronMainSource,
+    /ipcMain\.handle\("runtime-get-backend-spec", async \(\) => \{[\s\S]*await environmentManagerInitialization/
+  );
+  assert.match(
+    electronMainSource,
+    /async function ensureManagedRuntimeForLaunch[\s\S]*await environmentManagerInitialization/
+  );
 });
 
 test("packaged startup reuses the managed environment instead of rebuilding a project venv", () => {
-  assert.match(layoutSource, /projectResult\.backendMode === "bundled"/);
+  assert.match(layoutSource, /runtimeState\.source !== "external"/);
+  assert.match(layoutSource, /runtimeState\.source === "external"/);
+  assert.doesNotMatch(
+    layoutSource,
+    /runtimeState\.enabled[\s\S]{0,160}projectResult\.backendMode/,
+  );
   assert.match(layoutSource, /await updateManager\.checkRuntime\(/);
   assert.match(layoutSource, /\["ready", "degraded"\]\.includes\(runtimeState\.status\)/);
   assert.match(
@@ -427,24 +492,48 @@ test("external environment actions stay centered with the primary environment co
   );
 });
 
-test("startup overlay waits for a decoded first frame before playback", () => {
+test("external environment source toggle adapts to light and dark themes", () => {
+  const toggleStart = backendManagerSource.indexOf(
+    'data-testid="backend-python-environment-source-toggle"'
+  );
+  const toggleEnd = backendManagerSource.indexOf("/>", toggleStart);
+  const toggleSource = backendManagerSource.slice(toggleStart - 420, toggleEnd + 2);
+
+  assert.ok(toggleStart >= 0 && toggleEnd > toggleStart);
+  assert.match(toggleSource, /toggle-text-color="white"/);
+  assert.match(toggleSource, /:color="\$q\.dark\.isActive \? 'grey-9' : 'grey-3'"/);
+  assert.match(toggleSource, /:text-color="\$q\.dark\.isActive \? 'grey-3' : 'primary'"/);
+});
+
+test("startup overlay starts muted 1.5x playback and keeps the first frame visible", () => {
   assert.match(startupOverlaySource, /preload="auto"/);
-  assert.match(startupOverlaySource, /@loadeddata="handleVideoReady"/);
-  assert.match(startupOverlaySource, /@canplay="handleVideoReady"/);
+  assert.match(startupOverlaySource, /autoplay/);
+  assert.match(startupOverlaySource, /muted/);
+  assert.match(startupOverlaySource, /const STARTUP_PLAYBACK_RATE = 1\.5/);
   assert.match(
     startupOverlaySource,
-    /const handleVideoReady = \(\) => \{[\s\S]*?videoReady\.value = true;[\s\S]*?void schedulePlayback\(\);/
+    /video\.defaultPlaybackRate = STARTUP_PLAYBACK_RATE;\s*video\.playbackRate = STARTUP_PLAYBACK_RATE;/
   );
-  assert.match(startupOverlaySource, /await waitForFirstFramePaint\(\);/);
+  assert.match(startupOverlaySource, /video\.playbackRate = STARTUP_PLAYBACK_RATE;\s*video\.currentTime = 0;/);
   assert.match(
     startupOverlaySource,
-    /const retryPlayback = \(\) => \{[\s\S]*?playbackRetryTimer = window\.setTimeout\([\s\S]*?void schedulePlayback\(\);/
+    /video\.load\(\);[\s\S]*?startVideoPlayback\(\);/
   );
+  assert.match(
+    startupOverlaySource,
+    /const retryPlayback = \(\) => \{[\s\S]*?playbackRetryTimer = window\.setTimeout\([\s\S]*?startVideoPlayback\(\);/
+  );
+  assert.match(
+    startupOverlaySource,
+    /\.startup-overlay-leave-active[\s\S]*transition: opacity 260ms cubic-bezier\(0\.23, 1, 0\.32, 1\)/
+  );
+  const videoStyleStart = startupOverlaySource.indexOf(".startup-overlay-video");
+  const videoStyleEnd = startupOverlaySource.indexOf("}", videoStyleStart);
   assert.doesNotMatch(
-    startupOverlaySource,
-    /video\.play\?\.\(\)\.catch\(\(\) => \{\s*finish\(\);/
+    startupOverlaySource.slice(videoStyleStart, videoStyleEnd),
+    /opacity:\s*0/,
   );
-  assert.match(startupOverlaySource, /@media \(prefers-reduced-motion: reduce\)/);
+  assert.match(startupOverlaySource, /FALLBACK_TIMEOUT_MS = 8500/);
 });
 
 test("service manager offers a read-only external Python environment workflow", () => {

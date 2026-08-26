@@ -72,7 +72,6 @@
     "@webav/av-cliper": "^1.1.17",
     "axios": "^1.2.1",
     "electron-updater": "^6.8.9",
-    "extract-zip": "^2.0.1",
     "lodash-es": "^4.17.21",
     "pinia": "^3.0.1",
     "quasar": "^2.19.3",
@@ -80,7 +79,8 @@
     "vue": "^3.4.18",
     "vue-router": "^4.0.0",
     "vue-timeline-editor": "^0.1.4",
-    "vue3-moveable": "^0.28.0"
+    "vue3-moveable": "^0.28.0",
+    "yauzl": "^3.2.0"
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "3.1104.0",

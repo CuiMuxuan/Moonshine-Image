@@ -55,6 +55,8 @@ progress.md
 .npm-cache/
 .electron-cache/
 .codegraph/
+/.tmp/
+/src-electron/mcp-native-broker/target/
 
 # Local browser and agent tool state
 .playwright-cli/

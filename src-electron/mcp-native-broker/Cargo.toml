@@ -1,0 +1,15 @@
+[package]
+name = "moonshine-mcp-broker"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "moonshine-mcp-broker"
+path = "src/main.rs"
+
+[profile.release]
+strip = "symbols"
+lto = true
+codegen-units = 1
+panic = "abort"

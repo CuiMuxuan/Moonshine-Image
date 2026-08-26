@@ -612,7 +612,7 @@ export class ConfigManager {
       !Array.isArray(mcp.allowedRoots) ||
       mcp.allowedRoots.length > MAX_MCP_ALLOWED_ROOTS ||
       mcp.allowedRoots.some((root) => !isSafeMcpAllowedRoot(root)) ||
-      typeof mcp.confirmationRequired !== "boolean"
+      !["read_only", "auto_approve", "full_access"].includes(mcp.confirmationMode)
     ) {
       errors.push("MCP 配置无效或包含不允许的凭据字段。");
     }

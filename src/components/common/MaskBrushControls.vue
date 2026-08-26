@@ -17,6 +17,7 @@
         :color="drawingEnabled ? 'positive' : 'negative'"
         text-color="white"
         :icon="drawingEnabled ? 'toggle_on' : 'toggle_off'"
+        :aria-label="drawingEnabled ? '关闭绘制' : '开启绘制'"
         :disable="disabled"
         :size="resolvedButtonSize"
         class="control-button control-button-drawing"
@@ -32,6 +33,7 @@
           :color="mode === option.value ? 'primary' : inactiveButtonColor"
           :text-color="mode === option.value ? 'white' : secondaryTextColor"
           :icon="option.icon"
+          :aria-label="option.label"
           :disable="disabled"
           :size="resolvedButtonSize"
           class="mode-button"
@@ -46,6 +48,7 @@
         color="primary"
         text-color="white"
         icon="tune"
+        aria-label="画笔设置"
         :disable="disabled"
         :size="resolvedButtonSize"
         class="control-button control-button-settings"
@@ -79,42 +82,50 @@
 
             <div class="brush-settings-fields">
               <div class="brush-color-field">
-                <div class="brush-field-label text-caption q-mb-xs">画笔颜色</div>
+                <div class="brush-field-label text-caption">画笔颜色</div>
                 <label class="brush-color-input">
                   <input
                     :value="brushColor"
                     :disabled="disabled"
                     type="color"
+                    aria-label="选择画笔颜色"
                     @input="$emit('update:brush-color', $event.target.value)"
                   />
                 </label>
+                <span class="brush-field-value">{{ brushColor.toUpperCase() }}</span>
               </div>
 
-              <q-slider
-                :model-value="brushSize"
-                :disable="disabled"
-                :min="1"
-                :max="120"
-                :step="1"
-                label
-                label-always
-                @update:model-value="$emit('update:brush-size', $event)"
-              >
-                <template #prepend>画笔大小</template>
-              </q-slider>
+              <div class="brush-control-field">
+                <div class="brush-control-header">
+                  <span>画笔大小</span>
+                  <span class="brush-field-value">{{ brushSizeLabel }}</span>
+                </div>
+                <q-slider
+                  :model-value="brushSize"
+                  :disable="disabled"
+                  :min="1"
+                  :max="120"
+                  :step="1"
+                  aria-label="画笔大小"
+                  @update:model-value="$emit('update:brush-size', $event)"
+                />
+              </div>
 
-              <q-slider
-                :model-value="brushAlpha"
-                :disable="disabled"
-                :min="0.05"
-                :max="1"
-                :step="0.05"
-                label
-                label-always
-                @update:model-value="$emit('update:brush-alpha', $event)"
-              >
-                <template #prepend>画笔透明度</template>
-              </q-slider>
+              <div class="brush-control-field">
+                <div class="brush-control-header">
+                  <span>画笔透明度</span>
+                  <span class="brush-field-value">{{ brushAlphaLabel }}</span>
+                </div>
+                <q-slider
+                  :model-value="brushAlpha"
+                  :disable="disabled"
+                  :min="0.05"
+                  :max="1"
+                  :step="0.05"
+                  aria-label="画笔透明度"
+                  @update:model-value="$emit('update:brush-alpha', $event)"
+                />
+              </div>
             </div>
           </div>
         </q-menu>
@@ -126,6 +137,7 @@
       color="primary"
       text-color="white"
       icon="more_vert"
+      aria-label="更多画笔操作"
       :disable="disabled"
       :size="resolvedButtonSize"
       class="control-button control-button-more"
@@ -176,42 +188,50 @@
 
                 <div class="brush-settings-fields">
                   <div class="brush-color-field">
-                    <div class="brush-field-label text-caption q-mb-xs">画笔颜色</div>
+                    <div class="brush-field-label text-caption">画笔颜色</div>
                     <label class="brush-color-input">
                       <input
                         :value="brushColor"
                         :disabled="disabled"
                         type="color"
+                        aria-label="选择画笔颜色"
                         @input="$emit('update:brush-color', $event.target.value)"
                       />
                     </label>
+                    <span class="brush-field-value">{{ brushColor.toUpperCase() }}</span>
                   </div>
 
-                  <q-slider
-                    :model-value="brushSize"
-                    :disable="disabled"
-                    :min="1"
-                    :max="120"
-                    :step="1"
-                    label
-                    label-always
-                    @update:model-value="$emit('update:brush-size', $event)"
-                  >
-                    <template #prepend>画笔大小</template>
-                  </q-slider>
+                  <div class="brush-control-field">
+                    <div class="brush-control-header">
+                      <span>画笔大小</span>
+                      <span class="brush-field-value">{{ brushSizeLabel }}</span>
+                    </div>
+                    <q-slider
+                      :model-value="brushSize"
+                      :disable="disabled"
+                      :min="1"
+                      :max="120"
+                      :step="1"
+                      aria-label="画笔大小"
+                      @update:model-value="$emit('update:brush-size', $event)"
+                    />
+                  </div>
 
-                  <q-slider
-                    :model-value="brushAlpha"
-                    :disable="disabled"
-                    :min="0.05"
-                    :max="1"
-                    :step="0.05"
-                    label
-                    label-always
-                    @update:model-value="$emit('update:brush-alpha', $event)"
-                  >
-                    <template #prepend>画笔透明度</template>
-                  </q-slider>
+                  <div class="brush-control-field">
+                    <div class="brush-control-header">
+                      <span>画笔透明度</span>
+                      <span class="brush-field-value">{{ brushAlphaLabel }}</span>
+                    </div>
+                    <q-slider
+                      :model-value="brushAlpha"
+                      :disable="disabled"
+                      :min="0.05"
+                      :max="1"
+                      :step="0.05"
+                      aria-label="画笔透明度"
+                      @update:model-value="$emit('update:brush-alpha', $event)"
+                    />
+                  </div>
                 </div>
               </div>
             </q-menu>
@@ -222,6 +242,14 @@
             </q-item-section>
             <q-item-section>
               <q-item-label>撤回</q-item-label>
+            </q-item-section>
+          </q-item>
+          <q-item clickable :disable="disabled || !canRedo" @click="$emit('redo')">
+            <q-item-section avatar>
+              <q-icon name="redo" />
+            </q-item-section>
+            <q-item-section>
+              <q-item-label>重做</q-item-label>
             </q-item-section>
           </q-item>
           <q-item clickable :disable="disabled || !canClear" @click="$emit('clear')">
@@ -243,6 +271,7 @@
     >
       <q-btn
         icon="undo"
+        aria-label="撤回"
         :disable="disabled || !canUndo"
         :size="resolvedButtonSize"
         :text-color="secondaryTextColor"
@@ -251,7 +280,18 @@
         <q-tooltip>撤回</q-tooltip>
       </q-btn>
       <q-btn
+        icon="redo"
+        aria-label="重做"
+        :disable="disabled || !canRedo"
+        :size="resolvedButtonSize"
+        :text-color="secondaryTextColor"
+        @click="$emit('redo')"
+      >
+        <q-tooltip>重做</q-tooltip>
+      </q-btn>
+      <q-btn
         icon="clear"
+        aria-label="清空蒙版"
         :disable="disabled || !canClear"
         :size="resolvedButtonSize"
         :text-color="secondaryTextColor"
@@ -299,6 +339,10 @@ const props = defineProps({
     default: 0.75,
   },
   canUndo: {
+    type: Boolean,
+    default: false,
+  },
+  canRedo: {
     type: Boolean,
     default: false,
   },
@@ -351,6 +395,7 @@ defineEmits([
   "update:brush-color",
   "update:brush-alpha",
   "undo",
+  "redo",
   "clear",
 ]);
 
@@ -391,6 +436,11 @@ const modeLabel = computed(() => {
   const matched = MASK_TOOL_MODE_OPTIONS.find((option) => option.value === props.mode);
   return matched?.label || "画笔";
 });
+
+const brushSizeLabel = computed(() => `${Math.round(Number(props.brushSize) || 0)} px`);
+const brushAlphaLabel = computed(() =>
+  `${Math.round(Math.max(0, Math.min(1, Number(props.brushAlpha) || 0)) * 100)}%`
+);
 
 const brushPreviewStyle = computed(() => {
   const size = Math.max(14, Math.min(72, Number(props.brushSize || 0)));
@@ -662,21 +712,23 @@ const brushPreviewStyle = computed(() => {
 .brush-settings-fields {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 16px;
   min-width: 0;
 }
 
 .brush-color-field {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  min-height: 36px;
+  align-items: center;
+  gap: 10px;
 }
 
 .brush-color-input {
-  width: 100%;
-  height: 44px;
+  width: 42px;
+  height: 32px;
+  flex: 0 0 auto;
   border: 1px solid rgba(17, 24, 39, 0.14);
-  border-radius: 12px;
+  border-radius: 8px;
   overflow: hidden;
   background: #fff;
 }
@@ -693,6 +745,41 @@ const brushPreviewStyle = computed(() => {
   padding: 0;
   background: transparent;
   cursor: pointer;
+}
+
+.brush-control-field {
+  min-width: 0;
+}
+
+.brush-control-header {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: rgba(55, 65, 81, 0.9);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.brush-control-field :deep(.q-slider) {
+  margin-top: 2px;
+}
+
+.brush-field-value {
+  margin-left: auto;
+  color: rgba(75, 85, 99, 0.82);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+:global(body.body--dark) .brush-control-header {
+  color: rgba(228, 228, 231, 0.9);
+}
+
+:global(body.body--dark) .brush-field-value {
+  color: rgba(212, 212, 216, 0.76);
 }
 
 @media (max-width: 720px) {

@@ -37,12 +37,12 @@
             :sam-text-available="samTextAvailable"
             :sam-text-model-id="defaultSamTextModelId"
             :sam-runtime-device="samRuntimeDevice"
-            :sam-text-batch-target-count="selectedSamTextBatchFiles.length"
+            :sam-text-batch-target-count="selectedSmartSelectionImageFiles.length"
             :sam-text-batch-state="samTextBatchState"
             :ocr-available="ocrAvailable"
             :ocr-busy="ocrBusy"
             :ocr-status-message="ocrStatusMessage"
-            :ocr-model-id="OCR_MODEL_ID"
+            :ocr-model-id="defaultOcrModelId"
             :ocr-threshold-high="ocrThresholdHigh"
             :ocr-threshold-low="ocrThresholdLow"
             :ocr-sam-enhance="ocrSamEnhance"
@@ -60,10 +60,13 @@
             @update:drawing-mode="setMaskDrawingMode"
             @update:tool-state="updateImageMaskToolState"
             @sam-processing-state="handleSamProcessingState"
+            @smart-selection-request="runSmartSelectionRequest"
+            @smart-selection-cancel="cancelSmartSelection"
             @sam-text-batch-request="runSamTextBatchPrediction"
             @sam-text-batch-cancel="cancelSamTextBatchPrediction"
             @ocr-request="requestOcr"
             @update:ocr-settings="updateOcrSettings"
+            @update:smart-selection-model="updateSmartSelectionModel"
           />
         </workspace>
       </div>
@@ -197,6 +200,7 @@ const runtimeUiStore = useRuntimeUiStore();
 const runtimeDiagnosticsStore = useRuntimeDiagnosticsStore();
 const modelRegistryStore = useModelRegistryStore();
 const ocrService = createOcrService(api);
+let ocrRequestController = null;
 const MASK_INPAINT_MODEL_IDS = ["lama", "mat"];
 const MAT_CUDA_FALLBACK_MESSAGE = "MAT 需要 CUDA，当前已自动切换为 LaMa。";
 let samVisiblePreloadTimer = 0;
@@ -438,17 +442,26 @@ const ocrStatusMessage = computed(() => {
 const samCapabilities = ref(null);
 const samCapabilitiesLoadFailed = ref(false);
 const samTextBatchState = ref({
+  modelType: "sam",
+  scope: "selected",
   running: false,
   total: 0,
   completed: 0,
   success: 0,
   notFound: 0,
+  skipped: 0,
   failed: 0,
   cancelled: false,
+  items: [],
 });
 const samTextBatchCancelRequested = ref(false);
+let smartSelectionBatchGeneration = 0;
 const samSelectionBusy = computed(
-  () => Boolean(samSmartSelectionProcessingState.value.running || samTextBatchState.value.running)
+  () => Boolean(
+    samSmartSelectionProcessingState.value.running ||
+    samTextBatchState.value.running ||
+    ocrBusy.value
+  )
 );
 const backendEngineValue = computed(() => {
   const value = backendEngine?.value || {};
@@ -604,6 +617,7 @@ const samPointBoxModelOptions = computed(() =>
     .map((model) => ({
       label: model.family === "sam2" ? `${model.label || model.id}（SAM2.1）` : model.label || model.id,
       value: model.id,
+      type: "mask",
       family: model.family,
       enabledCapabilities: model.enabledCapabilities || null,
     }))
@@ -650,10 +664,28 @@ const samTextAvailable = computed(() =>
     )
   )
 );
+const isImageFile = (file) => {
+  const type = String(
+    file?.originalFile?.type || file?.type || file?.mimeType || file?.image?.mimeType || ""
+  ).toLowerCase();
+  if (type.startsWith("image/")) return true;
+  return /\.(avif|bmp|gif|jpe?g|png|tiff?|webp)$/i.test(String(file?.name || ""));
+};
+const selectedSmartSelectionBatchFiles = computed(() => {
+  const selected = Array.isArray(fileManagerStore.selectedFiles)
+    ? fileManagerStore.selectedFiles.filter(Boolean)
+    : [];
+  const current = fileManagerStore.currentFile;
+  if (current && !selected.some((file) => file?.id === current.id)) {
+    return [...selected, current];
+  }
+  return selected;
+});
+const selectedSmartSelectionImageFiles = computed(() =>
+  selectedSmartSelectionBatchFiles.value.filter(isImageFile)
+);
 const selectedSamTextBatchFiles = computed(() =>
-  fileManagerStore.selectedFiles.filter((file) =>
-    file.originalFile?.type?.startsWith("image/")
-  )
+  selectedSmartSelectionImageFiles.value
 );
 const defaultSamTextModelId = computed(() => {
   const configuredImageDefault = configuredImageSamModelId.value;
@@ -678,27 +710,49 @@ const samTextModelOptions = computed(() => {
   modelRegistryStore.installedMaskModels
     .filter((model) => supportsImageText(model) && samTextSupportedModelIds.includes(model.id))
     .forEach((model) => modelIds.add(model.id));
-  if (samTextSupportedModelIds.includes(defaultSamTextModelId.value)) {
-    modelIds.add(defaultSamTextModelId.value);
-  }
-  return Array.from(modelIds).map(buildSamTextModelOption);
+  return Array.from(modelIds).map((modelId) => ({
+    ...buildSamTextModelOption(modelId),
+    type: "mask",
+  }));
+});
+const ocrModelOptions = computed(() =>
+  // Model management marks a model usable once its files are verified. Runtime
+  // readiness is loaded separately, so do not hide a verified OCR model while
+  // the backend is still preparing it.
+  modelRegistryStore.installedOcrModels
+    .filter(
+      (model) =>
+        model?.available !== false
+    )
+    .map((model) => ({
+      label: `${model.label || "RapidOCR"} 文字识别模型`,
+      value: model.id,
+      type: "ocr",
+      family: model.family || "rapidocr",
+      enabledCapabilities: model.enabledCapabilities || model.capabilities || null,
+    }))
+);
+const defaultOcrModelId = computed(() => {
+  const configured = String(configStore.config.masking?.imageSmartSelectionDefaultModel || "").trim();
+  if (ocrModelOptions.value.some((option) => option.value === configured)) return configured;
+  return ocrModelOptions.value[0]?.value || OCR_MODEL_ID;
 });
 const samModelOptions = computed(() => {
   const byId = new Map();
-  [...samPointBoxModelOptions.value, ...samTextModelOptions.value].forEach((option) => {
+  [...samPointBoxModelOptions.value, ...samTextModelOptions.value, ...ocrModelOptions.value].forEach((option) => {
     if (option?.value) byId.set(option.value, option);
   });
   return Array.from(byId.values());
 });
 const samSmartSelectionAvailable = computed(
-  () => backendEngineValue.value.isRunning && (samPointBoxAvailable.value || samTextSupported.value || ocrAvailable.value)
+  () => backendEngineValue.value.isRunning
 );
 const defaultSamModelId = computed(() => {
   const configured = configuredImageSamModelId.value;
   if (samModelOptions.value.some((option) => option.value === configured)) {
     return configured;
   }
-  return samModelOptions.value[0]?.value || configured;
+  return samModelOptions.value[0]?.value || "";
 });
 const currentModelRunCapabilities = computed(() =>
   imageModelMetadata.value.runCapabilities || {}
@@ -738,7 +792,7 @@ const canSelectAllShortcut = computed(
     Boolean(
       canUseImageToolbarShortcuts.value &&
         fileManagerStore.files.some((file) =>
-          file.originalFile?.type?.startsWith("image/")
+          isImageFile(file)
         )
     )
 );
@@ -921,9 +975,7 @@ const handleSelectAll = (val) => {
 };
 
 const getLoadedImageFiles = () =>
-  fileManagerStore.files.filter((file) =>
-    file.originalFile?.type?.startsWith("image/")
-  );
+  fileManagerStore.files.filter((file) => isImageFile(file));
 
 const areAllLoadedImagesSelected = () => {
   const imageFiles = getLoadedImageFiles();
@@ -1025,6 +1077,21 @@ const updateOcrSettings = (patch = {}) => {
   persistOcrSettings();
 };
 
+const updateSmartSelectionModel = (modelId) => {
+  const normalizedModelId = String(modelId || "").trim();
+  if (!normalizedModelId || !samModelOptions.value.some((option) => option.value === normalizedModelId)) {
+    return;
+  }
+  const nextConfig = {
+    ...configStore.config,
+    masking: {
+      ...(configStore.config.masking || {}),
+      imageSmartSelectionDefaultModel: normalizedModelId,
+    },
+  };
+  void configStore.persistConfig(nextConfig);
+};
+
 const getOcrImageBase64 = async (file) => {
   const latestImage = file?.history?.[file.history.length - 1];
   if (!latestImage) throw new Error("OCR 图片不可用");
@@ -1064,7 +1131,11 @@ const recognizeOcrFile = async (file, options = {}) => {
     getImageDimensions(file),
     getOcrImageBase64(file),
   ]);
-  const result = await ocrService.recognize({ imageBase64 });
+  const result = await ocrService.recognize({
+    imageBase64,
+    modelId: options.modelId,
+    signal: options.signal,
+  });
   const candidates = buildOcrCandidates({
     width: dimensions.width,
     height: dimensions.height,
@@ -1083,6 +1154,7 @@ const recognizeOcrFile = async (file, options = {}) => {
           modelId: options.samModelId,
           box,
           multimaskOutput: false,
+          signal: options.signal,
         });
         const samCandidate = samResult?.candidates?.[0];
         if (samCandidate?.mask) {
@@ -1100,6 +1172,7 @@ const recognizeOcrFile = async (file, options = {}) => {
   return {
     width: dimensions.width,
     height: dimensions.height,
+    modelId: options.modelId || OCR_MODEL_ID,
     candidates,
     engineId: result.engine_id,
     regionCount: candidates.length,
@@ -1108,13 +1181,17 @@ const recognizeOcrFile = async (file, options = {}) => {
 
 const resetSamTextBatchState = (patch = {}) => {
   samTextBatchState.value = {
+    modelType: "sam",
+    scope: "selected",
     running: false,
     total: 0,
     completed: 0,
     success: 0,
     notFound: 0,
+    skipped: 0,
     failed: 0,
     cancelled: false,
+    items: [],
     ...patch,
   };
 };
@@ -1122,14 +1199,53 @@ const resetSamTextBatchState = (patch = {}) => {
 const cancelSamTextBatchPrediction = () => {
   if (!samTextBatchState.value.running) return;
   samTextBatchCancelRequested.value = true;
+  // Invalidate the active batch before its in-flight request can resolve.
+  smartSelectionBatchGeneration += 1;
+  ocrRequestController?.abort();
   samTextBatchState.value = {
     ...samTextBatchState.value,
     cancelled: true,
   };
 };
 
+const isRequestAbortError = (error) =>
+  error?.name === "AbortError" || error?.name === "CanceledError" || error?.code === "ERR_CANCELED";
+
+const cancelSmartSelection = () => {
+  if (!samTextBatchState.value.running && !ocrBusy.value) return;
+  samTextBatchCancelRequested.value = true;
+  ocrRequestController?.abort();
+  // SAM text requests do not expose an abort signal. Bumping the generation
+  // prevents their late responses from reaching the shared mask write-back path.
+  smartSelectionBatchGeneration += 1;
+  if (samTextBatchState.value.running) {
+    samTextBatchState.value = {
+      ...samTextBatchState.value,
+      cancelled: true,
+    };
+    updateSmartSelectionLoading({
+      modelType: samTextBatchState.value.modelType,
+      scope: samTextBatchState.value.scope,
+      completed: samTextBatchState.value.completed,
+      total: samTextBatchState.value.total,
+    });
+  }
+};
+
 const getFilesForSamTextBatch = () => {
-  return selectedSamTextBatchFiles.value;
+  return selectedSamTextBatchFiles.value.filter(isImageFile);
+};
+
+const isSmartSelectionBatchCurrent = (generation) =>
+  generation === smartSelectionBatchGeneration;
+
+const getFilesForSmartSelection = (scope = "selected") => {
+  if (scope === "current") {
+    return currentFile.value && isImageFile(currentFile.value) ? [currentFile.value] : [];
+  }
+  // Keep non-image entries in the OCR queue so they receive an explicit
+  // skipped result; the toolbar count remains image-only.
+  return selectedSmartSelectionBatchFiles.value;
 };
 
 const getFileCurrentMaskDataUrl = (file) => {
@@ -1235,19 +1351,312 @@ const applySamTextResultToFile = async ({
   result,
   prompt,
   sessionModelId,
+  commitGuard,
 } = {}) => {
+  if (typeof commitGuard === "function" && !commitGuard()) {
+    return { candidates: [], cancelled: true };
+  }
   const payload = {
     contextId: file?.id || "",
     modelId: sessionModelId,
     result,
     prompt,
     baseMask: getFileCurrentMaskDataUrl(file),
+    commitGuard,
   };
   const applied = await editorRef.value?.appendExternalSamTextResult?.(payload);
-  if (applied?.mask) {
+  if (applied?.cancelled || (typeof commitGuard === "function" && !commitGuard())) {
+    return { candidates: [], cancelled: true };
+  }
+  if (applied?.mask && (!commitGuard || commitGuard())) {
     fileManagerStore.updateFileMask(file.id, applied.mask);
   }
   return applied || { candidates: [] };
+};
+
+const applyOcrResultToFile = async ({ file, result, modelId = "", commitGuard } = {}) => {
+  if (typeof commitGuard === "function" && !commitGuard()) {
+    return { candidates: [], cancelled: true };
+  }
+  const applied = await editorRef.value?.appendExternalSamTextResult?.({
+    contextId: file?.id || "",
+    modelId: modelId || result?.modelId || OCR_MODEL_ID,
+    result: {
+      width: result?.width,
+      height: result?.height,
+      modelId: result?.modelId || modelId || OCR_MODEL_ID,
+      candidates: Array.isArray(result?.candidates) ? result.candidates : [],
+      performance: { source: "ocr", engineId: result?.engineId },
+    },
+    prompt: { type: "ocr" },
+    baseMask: getFileCurrentMaskDataUrl(file),
+    commitGuard,
+  });
+  if (applied?.cancelled || (typeof commitGuard === "function" && !commitGuard())) {
+    return { candidates: [], cancelled: true };
+  }
+  if (applied?.mask && file?.id && (!commitGuard || commitGuard())) {
+    fileManagerStore.updateFileMask(file.id, applied.mask);
+  }
+  return applied || { candidates: [] };
+};
+
+const appendSmartSelectionBatchItem = (item) => {
+  samTextBatchState.value = {
+    ...samTextBatchState.value,
+    items: [...(samTextBatchState.value.items || []), item],
+  };
+};
+
+const updateSmartSelectionLoading = ({ modelType = "sam", scope = "selected", completed = 0, total = 0 } = {}) => {
+  const label = modelType === "ocr" ? "RapidOCR" : "SAM 文本智能选区";
+  const scopeLabel = scope === "current" ? "当前图片" : "选中图片";
+  const cancelling = samTextBatchCancelRequested.value;
+  loadingControl?.show?.({
+    message: cancelling
+      ? `${label}将在当前文件完成后停止...`
+      : `${label}正在处理${scopeLabel}（${completed}/${total}）`,
+    progress: total > 0 ? completed / total : null,
+    actionLabel: cancelling ? "" : "取消",
+    onAction: cancelling ? null : cancelSmartSelection,
+  });
+};
+
+const buildSmartSelectionBatchSummaryMessage = ({ modelType, scope, success, notFound, skipped, failed, cancelled }) => {
+  const label = modelType === "ocr" ? "OCR" : "文本智选";
+  const scopeLabel = scope === "current" ? "当前图片" : "选中图片";
+  if (cancelled) {
+    return `已取消${label}${scopeLabel}，成功 ${success} 张，未检出 ${notFound} 张，跳过 ${skipped} 张，失败 ${failed} 张`;
+  }
+  return `${label}${scopeLabel}完成，成功 ${success} 张，未检出 ${notFound} 张，跳过 ${skipped} 张，失败 ${failed} 张`;
+};
+
+const runOcrBatchPrediction = async ({ scope = "selected", modelId = defaultOcrModelId.value } = {}) => {
+  if (!ocrAvailable.value || ocrBusy.value || samTextBatchState.value.running) return;
+  const filesToProcess = getFilesForSmartSelection(scope);
+  if (!filesToProcess.length) {
+    $q.notify({ type: "warning", message: scope === "current" ? "请先选择图片" : "请先选择图片", position: "top" });
+    return;
+  }
+
+  const options = {
+    modelId: modelId || defaultOcrModelId.value,
+    highThreshold: ocrThresholdHigh.value,
+    lowThreshold: ocrThresholdLow.value,
+    samEnhance: ocrSamEnhance.value,
+    samModelId: ocrSamModelId.value || samPointBoxModelOptions.value[0]?.value || "",
+  };
+  let context = { chainInputPath: "" };
+  let success = 0;
+  let notFound = 0;
+  let skipped = 0;
+  let failed = 0;
+  let completed = 0;
+  const processedFiles = new Set();
+  const batchGeneration = ++smartSelectionBatchGeneration;
+
+  try {
+    samTextBatchCancelRequested.value = false;
+    ocrRequestController = new AbortController();
+    options.signal = ocrRequestController.signal;
+    ocrBusy.value = true;
+    resetSamTextBatchState({
+      modelType: "ocr",
+      scope,
+      running: true,
+      total: filesToProcess.length,
+    });
+    isPageDisabled.value = true;
+    updateSmartSelectionLoading({ modelType: "ocr", scope, total: filesToProcess.length });
+    const imageFilesToProcess = filesToProcess.filter((file) => isImageFile(file));
+    if (imageFilesToProcess.length > 0) {
+      context = fileManagerStore.createProcessingInputContext(
+        configStore.config,
+        fileManagerStore.resolveProcessingTransport(imageFilesToProcess)
+      );
+    }
+    for (const file of filesToProcess) {
+      if (samTextBatchCancelRequested.value) break;
+      const isImage = isImageFile(file);
+      if (!isImage) {
+        skipped += 1;
+        completed += 1;
+        appendSmartSelectionBatchItem({
+          fileId: file?.id || "",
+          name: file?.name || "未命名文件",
+          status: "skipped",
+          message: "非图片文件",
+        });
+      } else {
+        try {
+          const result = await recognizeOcrFile(file, options);
+          if (samTextBatchCancelRequested.value) {
+            appendSmartSelectionBatchItem({
+              fileId: file.id,
+              name: file.name,
+              status: "cancelled",
+              message: "已取消当前请求，结果未写回",
+            });
+            processedFiles.add(file);
+            completed += 1;
+            break;
+          }
+          if (!result.candidates.length) {
+            notFound += 1;
+            appendSmartSelectionBatchItem({
+              fileId: file.id,
+              name: file.name,
+              status: "not-found",
+              message: "未发现文本区域",
+            });
+          } else {
+            const applied = await applyOcrResultToFile({
+              file,
+              result,
+              modelId: options.modelId,
+              commitGuard: () =>
+                isSmartSelectionBatchCurrent(batchGeneration) && !samTextBatchCancelRequested.value,
+            });
+            if (applied?.cancelled || !isSmartSelectionBatchCurrent(batchGeneration)) {
+              appendSmartSelectionBatchItem({
+                fileId: file.id,
+                name: file.name,
+                status: "cancelled",
+                message: "已取消当前请求，结果未写回",
+              });
+              processedFiles.add(file);
+              completed += 1;
+              break;
+            }
+            if (!applied?.candidates?.length) {
+              throw new Error("OCR 蒙版结果不可用");
+            }
+            success += 1;
+            appendSmartSelectionBatchItem({
+              fileId: file.id,
+              name: file.name,
+              status: "success",
+              message: `生成 ${applied.candidates.length} 个候选蒙版`,
+            });
+          }
+          completed += 1;
+          if (samTextBatchCancelRequested.value) break;
+        } catch (error) {
+          if (isRequestAbortError(error) || samTextBatchCancelRequested.value) {
+            appendSmartSelectionBatchItem({
+              fileId: file?.id || "",
+              name: file?.name || "未命名文件",
+              status: "cancelled",
+              message: "已取消当前请求，结果未写回",
+            });
+            processedFiles.add(file);
+            completed += 1;
+            break;
+          }
+          failed += 1;
+          completed += 1;
+          appendSmartSelectionBatchItem({
+            fileId: file?.id || "",
+            name: file?.name || "未命名文件",
+            status: "failed",
+            message: error?.message || "OCR 识别失败",
+          });
+        }
+      }
+      processedFiles.add(file);
+      samTextBatchState.value = {
+        ...samTextBatchState.value,
+        completed,
+        success,
+        notFound,
+        skipped,
+        failed,
+      };
+      updateSmartSelectionLoading({ modelType: "ocr", scope, completed, total: filesToProcess.length });
+    }
+
+    const cancelled = samTextBatchCancelRequested.value;
+    if (cancelled) {
+      const unprocessed = filesToProcess.filter((file) => !processedFiles.has(file));
+      for (const file of unprocessed) {
+        appendSmartSelectionBatchItem({
+          fileId: file?.id || "",
+          name: file?.name || "未命名文件",
+          status: "cancelled",
+          message: "未开始处理",
+        });
+      }
+      completed += unprocessed.length;
+    }
+    samTextBatchState.value = {
+      ...samTextBatchState.value,
+      running: false,
+      success,
+      notFound,
+      skipped,
+      failed,
+      cancelled,
+      completed,
+    };
+    $q.notify({
+      type: cancelled || failed > 0 ? "warning" : "positive",
+      message: buildSmartSelectionBatchSummaryMessage({
+        modelType: "ocr",
+        scope,
+        success,
+        notFound,
+        skipped,
+        failed,
+        cancelled,
+      }),
+      position: "top",
+    });
+  } catch (error) {
+    const cancelled = samTextBatchCancelRequested.value || isRequestAbortError(error);
+    const message = cancelled ? "已取消当前请求，结果未写回" : (error?.message || "OCR 批处理初始化失败");
+    const remaining = filesToProcess.filter((file) => !processedFiles.has(file));
+    remaining.forEach((file) => appendSmartSelectionBatchItem({
+      fileId: file?.id || "",
+      name: file?.name || "未命名文件",
+      status: cancelled ? "cancelled" : "failed",
+      message: cancelled ? "未开始处理" : message,
+    }));
+    if (!cancelled) failed += remaining.length;
+    completed += remaining.length;
+    samTextBatchState.value = {
+      ...samTextBatchState.value,
+      running: false,
+      success,
+      notFound,
+      skipped,
+      failed,
+      cancelled,
+      completed,
+    };
+    $q.notify({
+      type: cancelled ? "warning" : "negative",
+      message: cancelled ? buildSmartSelectionBatchSummaryMessage({
+        modelType: "ocr",
+        scope,
+        success,
+        notFound,
+        skipped,
+        failed,
+        cancelled,
+      }) : `OCR${scope === "current" ? "当前图片" : "选中图片"}失败：${message}`,
+      position: "top",
+    });
+  } finally {
+    try {
+      await cleanupPageProcessingInputs(context.chainInputPath);
+    } finally {
+      ocrRequestController = null;
+      samTextBatchCancelRequested.value = false;
+      ocrBusy.value = false;
+      loadingControl?.hide?.();
+      isPageDisabled.value = false;
+    }
+  }
 };
 
 const runSamTextBatchPrediction = async ({
@@ -1288,81 +1697,223 @@ const runSamTextBatchPrediction = async ({
     return;
   }
 
-  samTextBatchCancelRequested.value = false;
-  resetSamTextBatchState({
-    running: true,
-    total: filesToProcess.length,
-  });
-
-  const context = fileManagerStore.createProcessingInputContext(
-    configStore.config,
-    fileManagerStore.resolveProcessingTransport(filesToProcess)
-  );
+  let context = { chainInputPath: "" };
   let success = 0;
   let notFound = 0;
+  let skipped = 0;
   let failed = 0;
+  let completed = 0;
+  const processedFiles = new Set();
+  const batchGeneration = ++smartSelectionBatchGeneration;
 
   try {
+    samTextBatchCancelRequested.value = false;
+    resetSamTextBatchState({
+      modelType: "sam",
+      scope: "selected",
+      running: true,
+      total: filesToProcess.length,
+    });
+
+    isPageDisabled.value = true;
+    updateSmartSelectionLoading({ modelType: "sam", scope: "selected", total: filesToProcess.length });
+    context = fileManagerStore.createProcessingInputContext(
+      configStore.config,
+      fileManagerStore.resolveProcessingTransport(
+        filesToProcess.filter((file) => isImageFile(file))
+      )
+    );
     for (const file of filesToProcess) {
       if (samTextBatchCancelRequested.value) break;
-      try {
-        const imageInput = await resolveSamTextImageInput(file, context);
-        const runModelId = modelId || defaultSamTextModelId.value;
-        const result = await predictSamText({
-          image: imageInput.image,
-          imageType: imageInput.imageType,
-          modelId: runModelId,
-          text: prompt,
-          language,
-          promptSource,
-          promptColor,
-          promptNoun,
+      const isImage = isImageFile(file);
+      if (!isImage) {
+        skipped += 1;
+        completed += 1;
+        appendSmartSelectionBatchItem({
+          fileId: file?.id || "",
+          name: file?.name || "未命名文件",
+          status: "skipped",
+          message: "非图片文件",
         });
-        const applied = await applySamTextResultToFile({
-          file,
-          result,
-          prompt,
-          sessionModelId: runModelId,
-        });
-        if ((applied.candidates || []).length > 0) {
-          success += 1;
-        } else {
-          notFound += 1;
+      } else {
+        try {
+          const imageInput = await resolveSamTextImageInput(file, context);
+          const runModelId = modelId || defaultSamTextModelId.value;
+          const result = await predictSamText({
+            image: imageInput.image,
+            imageType: imageInput.imageType,
+            modelId: runModelId,
+            text: prompt,
+            language,
+            promptSource,
+            promptColor,
+            promptNoun,
+          });
+          if (samTextBatchCancelRequested.value) {
+            appendSmartSelectionBatchItem({
+              fileId: file.id,
+              name: file.name,
+              status: "cancelled",
+              message: "已取消当前请求，结果未写回",
+            });
+            processedFiles.add(file);
+            completed += 1;
+            break;
+          }
+          const applied = await applySamTextResultToFile({
+            file,
+            result,
+            prompt,
+            sessionModelId: runModelId,
+            commitGuard: () =>
+              isSmartSelectionBatchCurrent(batchGeneration) && !samTextBatchCancelRequested.value,
+          });
+          if (applied?.cancelled || !isSmartSelectionBatchCurrent(batchGeneration)) {
+            appendSmartSelectionBatchItem({
+              fileId: file.id,
+              name: file.name,
+              status: "cancelled",
+              message: "已取消当前请求，结果未写回",
+            });
+            processedFiles.add(file);
+            completed += 1;
+            break;
+          }
+          if ((applied.candidates || []).length > 0) {
+            success += 1;
+            appendSmartSelectionBatchItem({
+              fileId: file.id,
+              name: file.name,
+              status: "success",
+              message: `生成 ${applied.candidates.length} 个候选蒙版`,
+            });
+          } else {
+            notFound += 1;
+            appendSmartSelectionBatchItem({
+              fileId: file.id,
+              name: file.name,
+              status: "not-found",
+              message: "未找到匹配目标",
+            });
+          }
+          completed += 1;
+          if (samTextBatchCancelRequested.value) break;
+        } catch (error) {
+          if (samTextBatchCancelRequested.value || isRequestAbortError(error)) {
+            appendSmartSelectionBatchItem({
+              fileId: file?.id || "",
+              name: file?.name || "未命名文件",
+              status: "cancelled",
+              message: "已取消当前请求，结果未写回",
+            });
+            processedFiles.add(file);
+            completed += 1;
+            break;
+          }
+          failed += 1;
+          completed += 1;
+          appendSmartSelectionBatchItem({
+            fileId: file?.id || "",
+            name: file?.name || "未命名文件",
+            status: "failed",
+            message: error?.message || "文本智能选区失败",
+          });
+          console.warn(`SAM3 检索选中图片失败: ${file?.name || file?.id}`, error);
         }
-      } catch (error) {
-        failed += 1;
-        console.warn(`SAM3 检索选中图片失败: ${file?.name || file?.id}`, error);
-      } finally {
-        samTextBatchState.value = {
-          ...samTextBatchState.value,
-          completed: samTextBatchState.value.completed + 1,
-          success,
-          notFound,
-          failed,
-        };
       }
+      processedFiles.add(file);
+      samTextBatchState.value = {
+        ...samTextBatchState.value,
+        completed,
+        success,
+        notFound,
+        skipped,
+        failed,
+      };
+      updateSmartSelectionLoading({ modelType: "sam", scope: "selected", completed, total: filesToProcess.length });
     }
 
     const cancelled = samTextBatchCancelRequested.value;
+    if (cancelled) {
+      const unprocessed = filesToProcess.filter((item) => !processedFiles.has(item));
+      for (const file of unprocessed) {
+        appendSmartSelectionBatchItem({
+          fileId: file?.id || "",
+          name: file?.name || "未命名文件",
+          status: "cancelled",
+          message: "未开始处理",
+        });
+      }
+      completed += unprocessed.length;
+    }
     samTextBatchState.value = {
       ...samTextBatchState.value,
       running: false,
       success,
       notFound,
+      skipped,
       failed,
       cancelled,
+      completed,
     };
-    const type = cancelled ? "warning" : failed > 0 || notFound > 0 ? "warning" : "positive";
-    const message = cancelled
-      ? `已取消检索选中图片，成功 ${success} 张，未检出 ${notFound} 张，失败 ${failed} 张`
-      : `检索选中图片完成，成功 ${success} 张，未检出 ${notFound} 张，失败 ${failed} 张`;
     $q.notify({
-      type,
-      message,
+      type: cancelled || failed > 0 || notFound > 0 ? "warning" : "positive",
+      message: buildSmartSelectionBatchSummaryMessage({
+        modelType: "sam",
+        scope: "selected",
+        success,
+        notFound,
+        skipped,
+        failed,
+        cancelled,
+      }),
+      position: "top",
+    });
+  } catch (error) {
+    const cancelled = samTextBatchCancelRequested.value || isRequestAbortError(error);
+    const message = cancelled ? "已取消当前请求，结果未写回" : (error?.message || "文本智能选区批处理初始化失败");
+    if (!cancelled) {
+      const remaining = filesToProcess.filter((file) => !processedFiles.has(file));
+      remaining.forEach((file) => appendSmartSelectionBatchItem({
+        fileId: file?.id || "",
+        name: file?.name || "未命名文件",
+        status: "failed",
+        message,
+      }));
+      failed += remaining.length;
+      completed += remaining.length;
+    }
+    samTextBatchState.value = {
+      ...samTextBatchState.value,
+      running: false,
+      success,
+      notFound,
+      skipped,
+      failed,
+      cancelled,
+      completed,
+    };
+    $q.notify({
+      type: cancelled ? "warning" : "negative",
+      message: cancelled ? buildSmartSelectionBatchSummaryMessage({
+        modelType: "sam",
+        scope: "selected",
+        success,
+        notFound,
+        skipped,
+        failed,
+        cancelled,
+      }) : `文本智选失败：${message}`,
       position: "top",
     });
   } finally {
-    samTextBatchCancelRequested.value = false;
+    try {
+      await cleanupPageProcessingInputs(context.chainInputPath);
+    } finally {
+      samTextBatchCancelRequested.value = false;
+      loadingControl?.hide?.();
+      isPageDisabled.value = false;
+    }
   }
 };
 
@@ -2208,62 +2759,22 @@ const resizeMaskForFile = async (targetFile, sourceMaskUrl) => {
 
 const requestOcr = async () => {
   if (!ocrAvailable.value || ocrBusy.value || samSelectionBusy.value) return;
-  const file = currentFile.value;
-  if (!file?.id || !file.originalFile?.type?.startsWith("image/")) {
-    $q.notify({ type: "warning", message: "请先选择图片", position: "top" });
+  await runOcrBatchPrediction({ scope: "current" });
+};
+
+const runSmartSelectionRequest = async (payload = {}) => {
+  if (samSelectionBusy.value) return;
+  const modelType = payload?.modelType === "ocr" ? "ocr" : "sam";
+  const scope = payload?.scope === "selected" ? "selected" : "current";
+  if (modelType === "ocr") {
+    await runOcrBatchPrediction({ scope, modelId: payload?.modelId });
     return;
   }
-
-  ocrBusy.value = true;
-  isPageDisabled.value = true;
-  loadingControl?.show?.({
-    message: ocrSamEnhance.value ? "正在识别文本并生成 SAM 智能选区蒙版" : "正在识别文本并生成智能选区蒙版",
-    progress: null,
-  });
-  try {
-    const result = await recognizeOcrFile(file, {
-      highThreshold: ocrThresholdHigh.value,
-      lowThreshold: ocrThresholdLow.value,
-      samEnhance: ocrSamEnhance.value,
-      samModelId: ocrSamModelId.value || samPointBoxModelOptions.value[0]?.value || "",
-    });
-    if (!result.candidates.length) {
-      throw new Error("OCR 未返回高于候选阈值的文本区域");
-    }
-    const applied = await editorRef.value?.appendExternalSamTextResult?.({
-      contextId: file.id,
-      modelId: OCR_MODEL_ID,
-      result: {
-        width: result.width,
-        height: result.height,
-        candidates: result.candidates,
-        performance: { source: "ocr", engineId: result.engineId },
-      },
-      prompt: { type: "ocr" },
-      baseMask: getFileCurrentMaskDataUrl(file),
-    });
-    if (!applied?.candidates?.length) {
-      throw new Error("OCR 蒙版结果不可用");
-    }
-    if (applied.mask) {
-      fileManagerStore.updateFileMask(file.id, applied.mask);
-    }
-    $q.notify({
-      type: "positive",
-      message: `OCR 已生成 ${applied.candidates.length} 个智能选区候选，请审阅后确认`,
-      position: "top",
-    });
-  } catch (error) {
-    $q.notify({
-      type: "negative",
-      message: error?.message || "OCR 识别失败，请稍后重试",
-      position: "top",
-    });
-  } finally {
-    ocrBusy.value = false;
-    loadingControl?.hide?.();
-    isPageDisabled.value = false;
+  if (scope === "selected") {
+    await runSamTextBatchPrediction(payload);
+    return;
   }
+  await editorRef.value?.runSamTextPrediction?.();
 };
 
 const normalizeRendererImagePath = (filePath = "") => {

@@ -51,7 +51,7 @@ test("MCP configuration normalizes explicit safe metadata without enabling unlis
   assert.equal(normalized.profileId, "desktop.default");
   assert.deepEqual(normalized.allowedTools, ["moonshine.capabilities", "moonshine.jobs.cancel"]);
   assert.equal(normalized.allowedRoots.length, 1);
-  assert.equal(normalized.confirmationRequired, false);
+  assert.equal(normalized.confirmationMode, "auto_approve");
   assert.equal(Object.isFrozen(normalized), true);
   assert.equal(Object.isFrozen(normalized.allowedTools), true);
   assert.equal(Object.isFrozen(normalized.allowedRoots), true);

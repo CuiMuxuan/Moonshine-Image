@@ -2,13 +2,28 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import net from "node:net";
 import path from "node:path";
 
+import { projectMcpPublicResult } from "./mcp-application-dispatcher.js";
+
 export const MCP_PROTOCOL_VERSION = "moonshine-mcp-v1";
 export const MCP_TOOL_NAMES = Object.freeze([
+  "moonshine.status",
   "moonshine.capabilities",
+  "moonshine.models.list",
+  "moonshine.ocr.detect",
+  "moonshine.masks.generate",
+  "moonshine.image.process",
   "moonshine.image.process_batch",
   "moonshine.jobs.get",
   "moonshine.jobs.result",
   "moonshine.jobs.cancel",
+  "moonshine.job_groups.get",
+  "moonshine.job_groups.cancel",
+]);
+
+export const MCP_CONFIRMATION_MODES = Object.freeze([
+  "read_only",
+  "auto_approve",
+  "full_access",
 ]);
 
 const SAFE_ERROR_CODES = new Set([
@@ -26,6 +41,18 @@ const SAFE_ERROR_CODES = new Set([
   "JOB_NOT_FOUND",
   "JOB_IN_PROGRESS",
   "CANCELLED",
+  "INVALID_JOB_ID",
+  "INVALID_JOB_GROUP_ID",
+  "PATH_NOT_ALLOWED",
+  "TOOL_NOT_ALLOWED",
+  "BACKEND_CAPABILITY_UNAVAILABLE",
+  "OCR_UNAVAILABLE",
+  "OCR_RUNTIME_ERROR",
+  "OCR_RESULT_INVALID",
+  "OCR_INPUT_INVALID",
+  "SAM_UNAVAILABLE",
+  "SAM_RUNTIME_ERROR",
+  "ENVIRONMENT_NOT_READY",
 ]);
 
 const PATH_ARRAY_FIELDS = new Set(["input_paths", "output_paths", "mask_paths", "sidecar_paths"]);
@@ -33,13 +60,22 @@ const PATH_VALUE_FIELDS = new Set(["input_path", "output_path", "mask_path", "si
 const PATH_FIELDS = new Set([...PATH_ARRAY_FIELDS, ...PATH_VALUE_FIELDS]);
 const DEFAULT_MAX_ACTIVITY = 200;
 const DEFAULT_MAX_FRAME_BYTES = 64 * 1024;
-const DEFAULT_MAX_PENDING_CONFIRMATIONS = 500;
-const DEFAULT_MAX_PENDING_CONFIRMATIONS_PER_CLIENT = 20;
 const MAX_MAX_ACTIVITY = 10_000;
 const MAX_FRAME_BYTES = 1024 * 1024;
-const MAX_MAX_PENDING_CONFIRMATIONS = 10_000;
-const MAX_MAX_PENDING_CONFIRMATIONS_PER_CLIENT = 1_000;
-const DEFAULT_CONFIRMATION_TTL_MS = 5 * 60 * 1000;
+const SAFE_CLIENT_ID = /^[A-Za-z0-9._-]{1,128}$/;
+const JOB_ID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
+const GROUP_ID_PATTERN = /^grp_[a-z0-9]{16,64}$/;
+const SAFE_STATUS_PATTERN = /^[a-z_]{2,64}$/;
+
+const WRITE_TOOLS = new Set([
+  "moonshine.image.process",
+  "moonshine.image.process_batch",
+]);
+const PATH_TOOLS = new Set([
+  "moonshine.ocr.detect",
+  "moonshine.masks.generate",
+  ...WRITE_TOOLS,
+]);
 
 function bridgeError(code, data = undefined) {
   return data === undefined ? { code, message: code } : { code, message: code, data };
@@ -50,8 +86,16 @@ function asNonEmptyString(value) {
   return text || null;
 }
 
-function stablePolicyId(profile, roots, tools, confirmationRequired) {
-  const value = JSON.stringify({ profile, roots, tools, confirmationRequired });
+function normalizeConfirmationMode(value, legacyConfirmationRequired) {
+  if (MCP_CONFIRMATION_MODES.includes(value)) return value;
+  if (typeof legacyConfirmationRequired === "boolean") {
+    return legacyConfirmationRequired ? "read_only" : "auto_approve";
+  }
+  return "read_only";
+}
+
+function stablePolicyId(profile, roots, tools, confirmationMode) {
+  const value = JSON.stringify({ profile, roots, tools, confirmationMode });
   return `pol_mcp_${createHash("sha256").update(value).digest("hex").slice(0, 16)}`;
 }
 
@@ -74,7 +118,11 @@ function normalizeBoundedInteger(value, fallback, maximum) {
 function normalizeTools(allowedTools) {
   const requested = allowedTools ? new Set(allowedTools) : new Set(MCP_TOOL_NAMES);
   const tools = MCP_TOOL_NAMES.filter((tool) => requested.has(tool));
-  if (!tools.length) throw new TypeError("McpBridge requires at least one allowed tool.");
+  if (!tools.length) {
+    const error = new TypeError("McpBridge requires at least one allowed tool.");
+    error.code = "MCP_ALLOWED_TOOL_REQUIRED";
+    throw error;
+  }
   return Object.freeze(tools);
 }
 
@@ -131,45 +179,13 @@ function containsUnsupportedPathField(value, nested = false) {
   });
 }
 
-function projectArtifact(value) {
-  if (!value || typeof value !== "object") return null;
-  const artifactId = asNonEmptyString(value.artifact_id);
-  if (!artifactId || !/^[A-Za-z0-9_-]{8,128}$/.test(artifactId)) return null;
-  const artifact = { artifact_id: artifactId };
-  if (typeof value.mime_type === "string" && value.mime_type.length <= 128) artifact.mime_type = value.mime_type;
-  if (Number.isSafeInteger(value.size_bytes) && value.size_bytes >= 0) artifact.size_bytes = value.size_bytes;
-  return artifact;
-}
-
-function projectResult(tool, value, policy) {
-  const input = value && typeof value === "object" ? value : {};
-  if (tool === "moonshine.capabilities") {
-    return { tools: policy.allowedTools.slice() };
-  }
-  const result = {};
-  const jobId = asNonEmptyString(input.job_id);
-  if (jobId && /^[A-Za-z0-9_-]{8,128}$/.test(jobId)) result.job_id = jobId;
-  if (typeof input.status === "string" && /^[a-z_]{2,64}$/.test(input.status)) result.status = input.status;
-  const artifactIds = Array.isArray(input.artifact_ids)
-    ? input.artifact_ids.filter((item) => typeof item === "string" && /^[A-Za-z0-9_-]{8,128}$/.test(item)).slice(0, 100)
-    : [];
-  if (artifactIds.length) result.artifact_ids = artifactIds;
-  const artifacts = Array.isArray(input.artifacts) ? input.artifacts.map(projectArtifact).filter(Boolean).slice(0, 100) : [];
-  if (artifacts.length) result.artifacts = artifacts;
-  return result;
-}
-
 export class McpBridge {
   constructor({
     dispatch = null,
     resolvePath = null,
     maxActivity = DEFAULT_MAX_ACTIVITY,
     maxFrameBytes = DEFAULT_MAX_FRAME_BYTES,
-    maxPendingConfirmations = DEFAULT_MAX_PENDING_CONFIRMATIONS,
-    maxPendingConfirmationsPerClient = DEFAULT_MAX_PENDING_CONFIRMATIONS_PER_CLIENT,
-    confirmationTtlMs = DEFAULT_CONFIRMATION_TTL_MS,
     now = () => new Date().toISOString(),
-    nowMs = () => Date.now(),
   } = {}) {
     if (dispatch !== null && typeof dispatch !== "function") throw new TypeError("McpBridge dispatch must be a function.");
     if (resolvePath !== null && typeof resolvePath !== "function") throw new TypeError("McpBridge resolvePath must be a function.");
@@ -177,11 +193,7 @@ export class McpBridge {
     this.resolvePath = resolvePath;
     this.maxActivity = normalizeBoundedInteger(maxActivity, DEFAULT_MAX_ACTIVITY, MAX_MAX_ACTIVITY);
     this.maxFrameBytes = normalizeBoundedInteger(maxFrameBytes, DEFAULT_MAX_FRAME_BYTES, MAX_FRAME_BYTES);
-    this.maxPendingConfirmations = normalizeBoundedInteger(maxPendingConfirmations, DEFAULT_MAX_PENDING_CONFIRMATIONS, MAX_MAX_PENDING_CONFIRMATIONS);
-    this.maxPendingConfirmationsPerClient = normalizeBoundedInteger(maxPendingConfirmationsPerClient, DEFAULT_MAX_PENDING_CONFIRMATIONS_PER_CLIENT, MAX_MAX_PENDING_CONFIRMATIONS_PER_CLIENT);
-    this.confirmationTtlMs = normalizeBoundedInteger(confirmationTtlMs, DEFAULT_CONFIRMATION_TTL_MS, DEFAULT_CONFIRMATION_TTL_MS);
     this.now = now;
-    this.nowMs = nowMs;
     this.server = null;
     this.profile = null;
     this.token = null;
@@ -189,7 +201,6 @@ export class McpBridge {
     this.activity = [];
     this.nextCursor = 1;
     this.sockets = new Set();
-    this.confirmations = new Map();
   }
 
   get isRunning() {
@@ -200,7 +211,21 @@ export class McpBridge {
     return this.activity.filter((event) => event.cursor > Number(after || 0)).map((event) => ({ ...event }));
   }
 
-  async start({ enabled = false, profile, token, allowedRoots, allowedTools, confirmationRequired = true } = {}) {
+  recordActivity(event = {}) {
+    const input = event && typeof event === "object" ? event : {};
+    this.#record(input);
+    return this.activity[this.activity.length - 1] ? { ...this.activity[this.activity.length - 1] } : null;
+  }
+
+  async start({
+    enabled = false,
+    profile,
+    token,
+    allowedRoots,
+    allowedTools,
+    confirmationMode,
+    confirmationRequired,
+  } = {}) {
     if (!enabled) return { enabled: false, running: false };
     if (this.isRunning) return this.descriptor();
 
@@ -212,14 +237,15 @@ export class McpBridge {
     const tools = normalizeTools(allowedTools);
     this.profile = selectedProfile;
     this.token = selectedToken;
+    const selectedConfirmationMode = normalizeConfirmationMode(confirmationMode, confirmationRequired);
     this.policy = Object.freeze({
-      id: stablePolicyId(selectedProfile, roots, tools, Boolean(confirmationRequired)),
+      id: stablePolicyId(selectedProfile, roots, tools, selectedConfirmationMode),
       allowedRoots: roots,
       workspaceRegistry: Object.freeze(
         Object.fromEntries(roots.map((root) => [workspaceIdForRoot(root), root])),
       ),
       allowedTools: tools,
-      confirmationRequired: Boolean(confirmationRequired),
+      confirmationMode: selectedConfirmationMode,
     });
 
     this.server = net.createServer((socket) => this.#serve(socket));
@@ -243,6 +269,7 @@ export class McpBridge {
       profile: this.profile,
       policy_snapshot_id: this.policy.id,
       allowed_tools: this.policy.allowedTools.slice(),
+      confirmation_mode: this.policy.confirmationMode,
       workspace_ids: Object.keys(this.policy.workspaceRegistry),
     };
   }
@@ -256,11 +283,10 @@ export class McpBridge {
     this.token = null;
     this.profile = null;
     this.policy = null;
-    this.confirmations.clear();
   }
 
-  #record({ requestId = null, tool = null, outcome, code = null }) {
-    this.activity.push({
+  #record({ requestId = null, tool = null, outcome, code = null, clientId = null, clientName = null, clientVersion = null, jobId = null, jobGroupId = null, status = null, artifacts = [] }) {
+    const event = {
       cursor: this.nextCursor++,
       timestamp: this.now(),
       request_id: auditRequestId(requestId),
@@ -268,7 +294,15 @@ export class McpBridge {
       tool,
       outcome,
       code,
-    });
+    };
+    if (typeof clientId === "string" && SAFE_CLIENT_ID.test(clientId)) event.client_id = clientId;
+    if (typeof clientName === "string" && clientName.length <= 128) event.client_name = clientName;
+    if (typeof clientVersion === "string" && clientVersion.length <= 64) event.client_version = clientVersion;
+    if (typeof jobId === "string" && JOB_ID_PATTERN.test(jobId)) event.job_id = jobId;
+    if (typeof jobGroupId === "string" && GROUP_ID_PATTERN.test(jobGroupId)) event.job_group_id = jobGroupId;
+    if (typeof status === "string" && SAFE_STATUS_PATTERN.test(status)) event.status = status;
+    if (Array.isArray(artifacts)) event.artifacts = artifacts.slice(0, 100);
+    this.activity.push(event);
     if (this.activity.length > this.maxActivity) this.activity.splice(0, this.activity.length - this.maxActivity);
   }
 
@@ -345,36 +379,41 @@ export class McpBridge {
     const tool = asNonEmptyString(params.tool);
     if (!this.isRunning || this.policy !== policy) return this.#reject(requestId, tool, "APP_NOT_RUNNING");
     if (!tool || !policy.allowedTools.includes(tool)) return this.#reject(requestId, tool, "TOOL_NOT_ALLOWED");
+    if (policy.confirmationMode === "read_only" && WRITE_TOOLS.has(tool)) {
+      return this.#reject(requestId, tool, "POLICY_DENIED");
+    }
     let canonicalParams = structuredClone(params);
-    if (tool === "moonshine.image.process_batch") {
+    if (PATH_TOOLS.has(tool)) {
       if (this.#hasDriftedWorkspacePolicy(params, policy)) {
         return this.#reject(requestId, tool, "POLICY_REVOKED");
       }
-      const canonical = await this.#canonicalizePathParams(params, policy, clientId);
-      if (!canonical) return this.#reject(requestId, tool, "PATH_NOT_ALLOWED");
-      canonicalParams = canonical;
-      if (policy.confirmationRequired) {
-        const confirmation = this.#consumeConfirmation({
-          tool,
-          clientId,
-          confirmationId: params.confirmation_id,
-          policy,
-          params: canonicalParams,
-        });
-        if (!confirmation.accepted) {
-          if (confirmation.limitReached) return this.#reject(requestId, tool, "CONFIRMATION_LIMIT_REACHED");
-          return this.#reject(requestId, tool, "CONFIRMATION_REQUIRED", { confirmation_id: confirmation.id });
-        }
+      if (policy.confirmationMode === "full_access") {
+        canonicalParams = this.#stripConfirmation(canonicalParams);
+      } else {
+        const canonical = await this.#canonicalizePathParams(params, policy, clientId);
+        if (!canonical) return this.#reject(requestId, tool, "PATH_NOT_ALLOWED");
+        canonicalParams = canonical;
       }
     }
     if (tool.startsWith("moonshine.jobs.") && !/^[A-Za-z0-9_-]{8,128}$/.test(asNonEmptyString(params.job_id) || "")) {
       return this.#reject(requestId, tool, "INVALID_JOB_ID");
     }
+    if (tool.startsWith("moonshine.job_groups.") && !/^[A-Za-z0-9_-]{8,128}$/.test(asNonEmptyString(params.job_group_id) || "")) {
+      return this.#reject(requestId, tool, "INVALID_JOB_GROUP_ID");
+    }
     if (!this.dispatch) return this.#reject(requestId, tool, "APP_NOT_RUNNING");
     try {
-      const result = await this.dispatch({ tool, params: canonicalParams, policy: structuredClone(policy), requestId: auditRequestId(requestId) });
+      const dispatchParams = structuredClone(canonicalParams);
+      delete dispatchParams.tool;
+      const result = await this.dispatch({
+        tool,
+        params: dispatchParams,
+        policy: structuredClone(policy),
+        requestId: auditRequestId(requestId),
+        clientId,
+      });
       this.#record({ requestId, tool, outcome: "accepted" });
-      return { result: projectResult(tool, result, policy) };
+      return { result: projectMcpPublicResult(tool, result, policy) };
     } catch (error) {
       const code = SAFE_ERROR_CODES.has(error?.code) ? error.code : "APP_NOT_RUNNING";
       return this.#reject(requestId, tool, code);
@@ -393,9 +432,17 @@ export class McpBridge {
 
   async #canonicalizeRoots(allowedRoots) {
     const candidates = [...new Set((allowedRoots || []).map(asNonEmptyString).filter(Boolean))];
-    if (!candidates.length) throw new TypeError("McpBridge requires at least one allowed root.");
+    if (!candidates.length) {
+      const error = new TypeError("McpBridge requires at least one allowed root.");
+      error.code = "MCP_ALLOWED_ROOT_REQUIRED";
+      throw error;
+    }
     const roots = await Promise.all(candidates.map((candidate) => this.#resolveTrustedPath(candidate)));
-    if (roots.some((root) => !root)) throw new TypeError("McpBridge allowed roots must be canonical trusted paths.");
+    if (roots.some((root) => !root)) {
+      const error = new TypeError("McpBridge allowed roots must be canonical trusted paths.");
+      error.code = "MCP_ALLOWED_ROOT_INVALID";
+      throw error;
+    }
     return Object.freeze([...new Set(roots)].sort());
   }
 
@@ -424,8 +471,9 @@ export class McpBridge {
     }
     if (containsUnsupportedPathField(params)) return null;
     const canonical = structuredClone(params);
+    const hasInputPath = Object.hasOwn(params, "input_path");
     const inputPaths = Array.isArray(params.input_paths) ? params.input_paths : [];
-    if (!inputPaths.length) return null;
+    if (!hasInputPath && !inputPaths.length) return null;
     for (const field of PATH_ARRAY_FIELDS) {
       if (!Object.hasOwn(params, field)) continue;
       if (!Array.isArray(params[field])) return null;
@@ -530,57 +578,12 @@ export class McpBridge {
     }
   }
 
-  #consumeConfirmation({ tool, clientId, confirmationId, policy, params }) {
-    this.#pruneConfirmations();
-    const id = asNonEmptyString(confirmationId) || asNonEmptyString(params?.confirmation?.confirmation_id);
-    const hash = requestHash(this.#stripConfirmation(params));
-    const plan = id ? this.confirmations.get(id) : null;
-    if (plan && plan.approved && !plan.used && plan.tool === tool && plan.clientId === clientId && plan.policyId === policy.id && plan.requestHash === hash) {
-      plan.used = true;
-      this.confirmations.delete(id);
-      return { accepted: true };
-    }
-    for (const [existingId, existingPlan] of this.confirmations) {
-      if (!existingPlan.used && existingPlan.tool === tool && existingPlan.clientId === clientId && existingPlan.policyId === policy.id && existingPlan.requestHash === hash) {
-        return { accepted: false, id: existingId };
-      }
-    }
-    const pendingForClient = [...this.confirmations.values()].filter((candidate) => candidate.clientId === clientId && !candidate.used).length;
-    if (this.confirmations.size >= this.maxPendingConfirmations || pendingForClient >= this.maxPendingConfirmationsPerClient) {
-      return { accepted: false, limitReached: true };
-    }
-    const nextConfirmationId = `cnf_${randomBytes(16).toString("hex")}`;
-    this.confirmations.set(nextConfirmationId, {
-      approved: false,
-      clientId,
-      expiresAt: this.nowMs() + this.confirmationTtlMs,
-      policyId: policy.id,
-      requestHash: hash,
-      tool,
-      used: false,
-    });
-    return { accepted: false, id: nextConfirmationId };
-  }
-
   #stripConfirmation(params) {
     if (!params || typeof params !== "object") return params;
     const copy = structuredClone(params);
     delete copy.confirmation_id;
     delete copy.confirmation;
     return copy;
-  }
-
-  #pruneConfirmations() {
-    const now = this.nowMs();
-    for (const [id, plan] of this.confirmations) if (plan.expiresAt <= now || plan.used) this.confirmations.delete(id);
-  }
-
-  approveConfirmation(confirmationId) {
-    this.#pruneConfirmations();
-    const plan = this.confirmations.get(asNonEmptyString(confirmationId));
-    if (!plan || plan.used || plan.expiresAt <= this.nowMs()) return false;
-    plan.approved = true;
-    return true;
   }
 
   #reject(requestId, tool, code, data = undefined) {

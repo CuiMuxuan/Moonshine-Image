@@ -7,7 +7,11 @@ import { fileURLToPath } from "node:url";
 import {
   createMcpApplicationDispatcher,
   McpApplicationDispatchError,
+  TOOL_DEFINITIONS,
+  TOOL_NAMES,
+  projectMcpPublicResult,
 } from "../../src-electron/mcp-application-dispatcher.js";
+import { createMcpApprovalRegistry } from "../../src-electron/mcp-approval-registry.js";
 
 const jobId = "job_12345678";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -106,8 +110,274 @@ test("MCP capabilities remain in-memory and do not require an application reques
   const dispatcher = createMcpApplicationDispatcher();
   assert.deepEqual(
     await dispatcher.dispatch({ tool: "moonshine.capabilities", policy: { allowedTools: ["moonshine.capabilities"] } }),
-    { tools: ["moonshine.capabilities"] },
+    {
+      tools: TOOL_NAMES,
+      allowed_tools: ["moonshine.capabilities"],
+      policy: {
+        confirmation_mode: "auto_approve",
+        allowed_tools: ["moonshine.capabilities"],
+      },
+    },
   );
+});
+
+test("dispatcher exposes one stable complete tool definition surface", () => {
+  assert.deepEqual(TOOL_DEFINITIONS.map((definition) => definition.name), TOOL_NAMES);
+  assert.deepEqual(TOOL_NAMES, [
+    "moonshine.status",
+    "moonshine.capabilities",
+    "moonshine.models.list",
+    "moonshine.ocr.detect",
+    "moonshine.masks.generate",
+    "moonshine.image.process",
+    "moonshine.image.process_batch",
+    "moonshine.jobs.get",
+    "moonshine.jobs.result",
+    "moonshine.jobs.cancel",
+    "moonshine.job_groups.get",
+    "moonshine.job_groups.cancel",
+  ]);
+  assert.equal(TOOL_DEFINITIONS.every((definition) => definition.inputSchema?.type === "object"), true);
+});
+
+test("read-only policy rejects output and cancellation writes but allows capability reads", async () => {
+  const dispatcher = createMcpApplicationDispatcher();
+  const policy = { id: "pol_abcdefgh", confirmationMode: "read_only" };
+  const capabilities = await dispatcher.dispatch({ tool: "moonshine.capabilities", policy });
+  assert.equal(capabilities.policy.confirmation_mode, "read_only");
+  await assert.rejects(
+    dispatcher.dispatch({
+      tool: "moonshine.image.process",
+      policy,
+      params: {
+        workspace_id: "ws_abcdefgh",
+        operation: "remove_text",
+        item: { id: "itm_abcdefgh", input_path: "images/a.png", mask_path: "masks/a.png" },
+      },
+    }),
+    (error) => error instanceof McpApplicationDispatchError && error.code === "POLICY_READ_ONLY",
+  );
+  await assert.rejects(
+    dispatcher.dispatch({ tool: "moonshine.jobs.cancel", policy, params: { job_id: jobId } }),
+    (error) => error instanceof McpApplicationDispatchError && error.code === "POLICY_READ_ONLY",
+  );
+});
+
+test("OCR task executor receives artifact-only output and public projection strips paths and bytes", async () => {
+  const calls = [];
+  const dispatcher = createMcpApplicationDispatcher({
+    taskExecutor: async (request) => {
+      calls.push(request);
+      return {
+        job_id: jobId,
+        status: "succeeded",
+        regions: [{ region_id: "txt_12345678", text: "visible", confidence: 0.95, path: "C:/private" }],
+        artifacts: [{ artifact_id: "art_12345678", asset: { media_type: "application/json", size_bytes: 19, relative_path: "C:/private/result.json" } }],
+        image_base64: "must-not-escape",
+      };
+    },
+  });
+  const result = await dispatcher.dispatch({
+    tool: "moonshine.ocr.detect",
+    policy: { id: "pol_abcdefgh", confirmationMode: "read_only" },
+    clientId: "codex",
+    clientInfo: { name: "Codex Desktop", version: "9.8.7" },
+    params: { input_path: "C:/trusted/a.png", model_id: "ocr_rapid_onnx_mobile" },
+  });
+  assert.deepEqual(calls[0].output, { directory_name: "Moonshine-Output", overwrite: false, artifact_only: true });
+  assert.deepEqual(calls[0].clientInfo, { name: "Codex Desktop", version: "9.8.7" });
+  assert.equal(calls[0].policy.confirmationMode, "read_only");
+  assert.deepEqual(result, {
+    job_id: jobId,
+    status: "succeeded",
+    artifacts: [{ artifact_id: "art_12345678", mime_type: "application/json", size_bytes: 19 }],
+    candidates: [{ id: "txt_12345678", confidence: 0.95, text: "visible" }],
+  });
+  const projected = projectMcpPublicResult("moonshine.ocr.detect", { ...result, path: "C:/private", image_base64: "must-not-escape" });
+  assert.equal(JSON.stringify(projected).includes("C:/private"), false);
+  assert.equal(JSON.stringify(projected).includes("must-not-escape"), false);
+});
+
+test("batch processing splits at backend limit and returns a bounded job group", async () => {
+  let sequence = 0;
+  const requests = [];
+  const dispatcher = createMcpApplicationDispatcher({
+    request: async (request) => {
+      requests.push(request);
+      sequence += 1;
+      const queuedJobId = "job_" + String(sequence).padStart(8, "0");
+      return {
+        ok: true,
+        status: 202,
+        headers: { "x-moonshine-job-id": queuedJobId },
+        body: { job_id: queuedJobId, request_id: request.headers["X-Moonshine-Request-Id"], status: "queued" },
+      };
+    },
+  });
+  const items = Array.from({ length: 101 }, (_, index) => ({
+    id: "itm_" + String(index).padStart(8, "0"),
+    input_path: "images/" + index + ".png",
+    mask_path: "masks/" + index + ".png",
+  }));
+  const result = await dispatcher.dispatch({
+    tool: "moonshine.image.process_batch",
+    policy: { id: "pol_abcdefgh", confirmationMode: "auto_approve" },
+    clientId: "codex",
+    params: { workspace_id: "ws_abcdefgh", operation: "remove_icon", items, idempotency_key: "split-test" },
+  });
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests.map((request) => request.body.items.length), [100, 1]);
+  assert.match(result.job_group_id, /^grp_[a-z0-9]{32}$/);
+  assert.deepEqual(result.child_job_ids, ["job_00000001", "job_00000002"]);
+});
+
+test("local task groups use the local provider, enforce owner and policy, and cancel local children", async () => {
+  let sequence = 0;
+  const requestedRoutes = [];
+  const children = new Map();
+  const cancellations = [];
+  const dispatcher = createMcpApplicationDispatcher({
+    request: async (request) => {
+      requestedRoutes.push(request);
+      return { ok: true, status: 200, body: { job_id: jobId, status: "succeeded" } };
+    },
+    taskExecutor: async () => {
+      sequence += 1;
+      const id = "job_local_" + String(sequence).padStart(8, "0");
+      children.set(id, { job_id: id, status: "queued" });
+      return { job_id: id, status: "queued" };
+    },
+    jobProvider: {
+      get: ({ jobId: requestedJobId, clientId }) => {
+        assert.equal(clientId, "codex");
+        return children.get(requestedJobId) || null;
+      },
+      cancel: ({ jobId: requestedJobId, clientId }) => {
+        assert.equal(clientId, "codex");
+        cancellations.push(requestedJobId);
+        const child = children.get(requestedJobId);
+        if (child) child.status = "cancelled";
+        return child || null;
+      },
+    },
+  });
+  const items = Array.from({ length: 1001 }, (_, index) => ({
+    id: "itm_local" + String(index).padStart(8, "0"),
+    input_path: "images/" + index + ".png",
+    mask_path: "masks/" + index + ".png",
+  }));
+  const policy = { id: "pol_abcdefgh", confirmationMode: "auto_approve" };
+  const submitted = await dispatcher.dispatch({
+    tool: "moonshine.image.process_batch",
+    policy,
+    clientId: "codex",
+    params: { workspace_id: "ws_abcdefgh", operation: "remove_text", items },
+  });
+  assert.match(submitted.job_group_id, /^grp_[a-z0-9]{32}$/);
+  assert.deepEqual(requestedRoutes, []);
+
+  const state = await dispatcher.dispatch({
+    tool: "moonshine.job_groups.get",
+    policy,
+    clientId: "codex",
+    params: { job_group_id: submitted.job_group_id },
+  });
+  assert.equal(state.status, "queued");
+  assert.deepEqual(state.child_jobs.map((child) => child.status), ["queued", "queued"]);
+  assert.deepEqual(requestedRoutes, []);
+
+  await assert.rejects(
+    dispatcher.dispatch({
+      tool: "moonshine.job_groups.get",
+      policy,
+      clientId: "other-client",
+      params: { job_group_id: submitted.job_group_id },
+    }),
+    (error) => error instanceof McpApplicationDispatchError && error.code === "POLICY_DENIED",
+  );
+  await assert.rejects(
+    dispatcher.dispatch({
+      tool: "moonshine.job_groups.get",
+      policy: { ...policy, id: "pol_changed" },
+      clientId: "codex",
+      params: { job_group_id: submitted.job_group_id },
+    }),
+    (error) => error instanceof McpApplicationDispatchError && error.code === "POLICY_REVOKED",
+  );
+
+  const cancelled = await dispatcher.dispatch({
+    tool: "moonshine.job_groups.cancel",
+    policy,
+    clientId: "codex",
+    params: { job_group_id: submitted.job_group_id },
+  });
+  assert.equal(cancelled.status, "cancelled");
+  assert.deepEqual(cancellations, submitted.child_job_ids);
+  assert.deepEqual(requestedRoutes, []);
+});
+
+test("policy change revokes and cancels locally owned job groups", async () => {
+  const cancellations = [];
+  let sequence = 0;
+  const dispatcher = createMcpApplicationDispatcher({
+    taskExecutor: async () => ({ job_id: "job_revoke_" + String(++sequence).padStart(8, "0"), status: "queued" }),
+    jobProvider: {
+      get: ({ jobId: requestedJobId }) => ({ job_id: requestedJobId, status: "queued" }),
+      cancel: ({ jobId: requestedJobId, clientId }) => {
+        cancellations.push({ jobId: requestedJobId, clientId });
+        return { job_id: requestedJobId, status: "cancelled" };
+      },
+    },
+  });
+  const items = Array.from({ length: 1001 }, (_, index) => ({
+    id: "itm_revoke" + String(index).padStart(8, "0"),
+    input_path: "images/" + index + ".png",
+    mask_path: "masks/" + index + ".png",
+  }));
+  const submitted = await dispatcher.dispatch({
+    tool: "moonshine.image.process_batch",
+    policy: { id: "pol_abcdefgh", confirmationMode: "auto_approve" },
+    clientId: "codex",
+    params: { workspace_id: "ws_abcdefgh", operation: "remove_icon", items },
+  });
+
+  await dispatcher.onPolicyChanged("pol_changed");
+  assert.deepEqual(cancellations, submitted.child_job_ids.map((jobId) => ({ jobId, clientId: "codex" })));
+  await assert.rejects(
+    dispatcher.dispatch({
+      tool: "moonshine.job_groups.get",
+      policy: { id: "pol_changed", confirmationMode: "auto_approve" },
+      clientId: "codex",
+      params: { job_group_id: submitted.job_group_id },
+    }),
+    (error) => error instanceof McpApplicationDispatchError && error.code === "POLICY_REVOKED",
+  );
+});
+
+test("approval lifecycle is safe, client-scoped, recoverable, and expires without recursive sweeping", () => {
+  let now = 1_000;
+  const approvals = createMcpApprovalRegistry({ ttlMs: 10_000, nowMs: () => now });
+  const pending = approvals.create({
+    clientId: "codex",
+    tool: "moonshine.future.destructive",
+    policyId: "pol_abcdefgh",
+    requestHash: "a".repeat(64),
+    summary: { operation: "future_action", item_count: 2, path: "C:/private" },
+  });
+  assert.equal(pending.state, "pending");
+  assert.equal(JSON.stringify(pending).includes("C:/private"), false);
+  assert.equal(approvals.disconnect("codex")[0].disconnected, true);
+  assert.equal(approvals.recover("codex")[0].disconnected, false);
+  assert.equal(approvals.resolve({ approvalId: pending.approval_id, approved: true }).state, "approved");
+  assert.equal(approvals.consume({
+    approvalId: pending.approval_id,
+    clientId: "codex",
+    tool: "moonshine.future.destructive",
+    policyId: "pol_abcdefgh",
+    requestHash: "a".repeat(64),
+  }).accepted, true);
+  now += 30_000;
+  assert.deepEqual(approvals.sweep(), { expired: 0, pending: 0 });
 });
 
 test("Electron main injects the dispatcher and trusted path resolver without auto-starting MCP", async () => {

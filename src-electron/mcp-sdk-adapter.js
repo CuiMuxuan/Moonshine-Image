@@ -2,6 +2,8 @@ import { readFile } from "node:fs/promises";
 import net from "node:net";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import { TOOL_DEFINITIONS } from "./mcp-application-dispatcher.js";
 import { MCP_TOOL_NAMES } from "./mcp-bridge.js";
 
 const MCP_SERVER_NAME = "moonshine-image";
@@ -76,6 +78,39 @@ function resultText(value) {
   } catch {
     return "{}";
   }
+}
+
+function zodSchemaFromJson(schema = {}) {
+  if (!schema || typeof schema !== "object") return z.any();
+  if (schema.enum) return z.enum(schema.enum);
+  if (schema.type === "string") {
+    let value = z.string();
+    if (schema.minLength !== undefined) value = value.min(schema.minLength);
+    if (schema.maxLength !== undefined) value = value.max(schema.maxLength);
+    if (schema.pattern) value = value.regex(new RegExp(schema.pattern));
+    return value;
+  }
+  if (schema.type === "array") {
+    let value = z.array(zodSchemaFromJson(schema.items));
+    if (schema.minItems !== undefined) value = value.min(schema.minItems);
+    if (schema.maxItems !== undefined) value = value.max(schema.maxItems);
+    return value;
+  }
+  if (schema.type === "object") {
+    const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+    const properties = schema.properties && typeof schema.properties === "object" ? schema.properties : {};
+    const shape = Object.fromEntries(Object.entries(properties).map(([key, value]) => [
+      key,
+      required.has(key) ? zodSchemaFromJson(value) : zodSchemaFromJson(value).optional(),
+    ]));
+    return schema.additionalProperties === false ? z.object(shape).strict() : z.object(shape).passthrough();
+  }
+  return z.any();
+}
+
+function toolInputSchema(tool) {
+  const definition = TOOL_DEFINITIONS.find((item) => item.name === tool);
+  return zodSchemaFromJson(definition?.inputSchema || { type: "object" });
 }
 
 export class McpBridgeClient {
@@ -215,8 +250,12 @@ export class McpBridgeClient {
 export function createMcpSdkServer({ bridgeClient, allowedTools = MCP_TOOL_NAMES } = {}) {
   if (!bridgeClient || typeof bridgeClient.call !== "function") throw new TypeError("Mcp SDK adapter requires a bridge client.");
   const server = new McpServer({ name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION });
-  for (const tool of [...new Set(allowedTools)].filter((candidate) => MCP_TOOL_NAMES.includes(candidate))) {
-    server.registerTool(tool, { description: `Moonshine ${tool}` }, async (args) => {
+  // MCP clients commonly cache tools/list. Keep discovery stable and let the
+  // bridge enforce the current policy at call time.
+  const advertisedTools = MCP_TOOL_NAMES.slice();
+  void allowedTools;
+  for (const tool of advertisedTools) {
+    server.registerTool(tool, { description: `Moonshine ${tool}`, inputSchema: toolInputSchema(tool) }, async (args) => {
       try {
         const response = await bridgeClient.call(tool, args || {});
         if (response.error) {
@@ -250,7 +289,7 @@ export async function startMcpStdioAdapter({
 } = {}) {
   const bridgeClient = new McpBridgeClient({ descriptor, token, profile, clientId, socketFactory });
   await bridgeClient.connect();
-  const server = createMcpSdkServer({ bridgeClient, allowedTools: bridgeClient.descriptor.allowedTools });
+  const server = createMcpSdkServer({ bridgeClient, allowedTools: MCP_TOOL_NAMES });
   const transport = new StdioServerTransport(input, output, { maxBufferSize: MAX_FRAME_BYTES });
   await server.connect(transport);
   return { server, transport, bridgeClient };

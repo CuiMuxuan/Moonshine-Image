@@ -44,6 +44,8 @@ export class WindowLifecycleController {
     this.state = "visible";
     this.isQuitting = false;
     this.appQuitRequested = false;
+    this.rendererReady = false;
+    this.pendingNavigation = null;
   }
 
   attachWindow(windowInstance) {
@@ -52,6 +54,8 @@ export class WindowLifecycleController {
     }
 
     this.window = windowInstance;
+    this.rendererReady = false;
+    this.pendingNavigation = null;
     windowInstance.on("close", (event) => this.handleWindowClose(event));
     windowInstance.on("show", () => {
       if (!this.isQuitting) this._setState("visible");
@@ -62,9 +66,22 @@ export class WindowLifecycleController {
     windowInstance.on("closed", () => {
       if (this.window !== windowInstance) return;
       this.window = null;
+      this.rendererReady = false;
+      this.pendingNavigation = null;
       this._emit();
     });
     this._setState(this._windowIsVisible(windowInstance) ? "visible" : "hidden_tray");
+  }
+
+  markRendererReady() {
+    if (!this._hasLiveWindow(this.window)) return false;
+    this.rendererReady = true;
+    return this._flushPendingNavigation();
+  }
+
+  markRendererNotReady() {
+    this.rendererReady = false;
+    return true;
   }
 
   handleWindowClose(event) {
@@ -95,7 +112,8 @@ export class WindowLifecycleController {
     windowInstance.focus();
     this._setState("visible");
     if (route === MCP_ACTIVITY_ROUTE) {
-      this.onNavigationRequest({ route: MCP_ACTIVITY_ROUTE, source: "tray" });
+      this.pendingNavigation = { route: MCP_ACTIVITY_ROUTE, source: "tray" };
+      this._flushPendingNavigation();
     }
     return true;
   }
@@ -158,6 +176,22 @@ export class WindowLifecycleController {
 
   _emit() {
     this.onState(this.getState());
+  }
+
+  _flushPendingNavigation() {
+    if (!this.rendererReady || !this.pendingNavigation || !this._hasLiveWindow(this.window)) {
+      return false;
+    }
+
+    const request = this.pendingNavigation;
+    try {
+      const delivered = this.onNavigationRequest(request);
+      if (delivered === false) return false;
+      this.pendingNavigation = null;
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   _windowIsVisible(windowInstance) {

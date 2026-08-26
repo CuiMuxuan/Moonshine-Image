@@ -22,8 +22,6 @@ const packagedCandidates = [
   path.join(repoRoot, "dist", "electron", "Packaged", "Moonshine-Image-win32-x64"),
   path.join(repoRoot, "dist", "electron", "packaged", "Moonshine-Image-win32-x64"),
 ];
-const defaultCu126TorchWheelPath =
-  "C:\\code\\torch\\torch-2.11.0+cu126-cp312-cp312-win_amd64.whl";
 const DEFAULT_RUNTIME_FLAVORS = ["cpu", "cu130"];
 // Historical regression marker: const runtimeFlavors = ["cpu", "cu130"];
 const DEFAULT_MODEL_BUNDLES = ["bundled-models"];
@@ -266,8 +264,10 @@ function createMatrixEnv(runtimeFlavor, modelBundle) {
   };
 
   if (runtimeFlavor === "cu126") {
-    env.MOONSHINE_TORCH_WHEEL =
-      process.env.MOONSHINE_TORCH_WHEEL || defaultCu126TorchWheelPath;
+    const torchWheel = String(process.env.MOONSHINE_TORCH_WHEEL || "").trim();
+    if (torchWheel) {
+      env.MOONSHINE_TORCH_WHEEL = torchWheel;
+    }
   }
 
   return env;
@@ -301,9 +301,12 @@ async function buildOne(runtimeFlavor, modelBundle) {
     };
   }
 
-  if (runtimeFlavor === "cu126" && !fs.existsSync(env.MOONSHINE_TORCH_WHEEL)) {
+  if (
+    runtimeFlavor === "cu126" &&
+    (!env.MOONSHINE_TORCH_WHEEL || !fs.existsSync(env.MOONSHINE_TORCH_WHEEL))
+  ) {
     throw new Error(
-      `Missing CUDA 12.6 torch wheel: ${env.MOONSHINE_TORCH_WHEEL}. Set MOONSHINE_TORCH_WHEEL before running the release matrix.`
+      "Missing CUDA 12.6 torch wheel. Set MOONSHINE_TORCH_WHEEL to a local wheel before running the release matrix."
     );
   }
 

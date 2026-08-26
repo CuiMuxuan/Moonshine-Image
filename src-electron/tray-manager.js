@@ -57,7 +57,7 @@ export class TrayManager {
     return [
       { label: "打开窗口", click: () => this.lifecycle.restoreWindow() },
       {
-        label: "MCP 调用日志",
+        label: "打开活动日志",
         click: () => {
           this.lifecycle.restoreWindow({ route: "/activity/mcp" });
         },

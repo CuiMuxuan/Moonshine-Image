@@ -107,12 +107,17 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   "list-image-files",
   "load-app-state",
   "mcp-get-activity",
+  "mcp-get-approvals",
+  "mcp-get-client-configuration",
+  "mcp-get-client-sessions",
   "mcp-get-config",
   "mcp-get-state",
+  "mcp-disconnect-client",
+  "mcp-open-artifact-in-editor",
+  "mcp-probe-external-proxy",
+  "mcp-resolve-approval",
   "mcp-save-config",
   "mcp-select-root",
-  "mcp-start",
-  "mcp-stop",
   "model-manifest-get-state",
   "model-manifest-refresh",
   "open-external-link",
@@ -147,15 +152,21 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   "write-file-stream-chunk",
 ]);
 
-const ALLOWED_SEND_CHANNELS = new Set(["set-active-processing-task", "show-missing-files"]);
+const ALLOWED_SEND_CHANNELS = new Set([
+  "renderer-ready",
+  "set-active-processing-task",
+  "show-missing-files",
+]);
 const ALLOWED_EVENT_CHANNELS = new Set([
   "app-update-state",
   "backend-output",
+  "backend-service-state",
   "config-reset",
   "config-updated",
   "environment-state",
   "file-read-progress",
   "model-manifest-state",
+  "mcp-open-artifact",
   "python-install-path",
   "runtime-state",
   "state-cleared",
@@ -178,8 +189,16 @@ contextBridge.exposeInMainWorld("electron", {
     send: (channel, ...args) =>
       ipcRenderer.send(assertAllowedChannel(channel, ALLOWED_SEND_CHANNELS), ...args),
     on: (channel, listener) => {
-      ipcRenderer.on(assertAllowedChannel(channel, ALLOWED_EVENT_CHANNELS), listener);
-      return () => ipcRenderer.removeListener(channel, listener);
+      const allowedChannel = assertAllowedChannel(channel, ALLOWED_EVENT_CHANNELS);
+      if (typeof listener !== "function") return () => {};
+      // IpcRendererEvent is an Electron-only object and cannot cross the
+      // contextBridge structured-clone boundary. Renderer listeners only need
+      // the event payload, so keep the event local to preload and pass null.
+      const handler = (_event, ...args) => {
+        listener(null, ...args);
+      };
+      ipcRenderer.on(allowedChannel, handler);
+      return () => ipcRenderer.removeListener(allowedChannel, handler);
     },
     removeListener: (channel, listener) =>
       ipcRenderer.removeListener(assertAllowedChannel(channel, ALLOWED_EVENT_CHANNELS), listener),
@@ -291,22 +310,41 @@ contextBridge.exposeInMainWorld("electron", {
     getTrayState: () => ipcRenderer.invoke("tray-get-state"),
     getMcpState: () => ipcRenderer.invoke("mcp-get-state"),
     getMcpActivity: (after = 0) => ipcRenderer.invoke("mcp-get-activity", after),
-    startMcp: () => ipcRenderer.invoke("mcp-start"),
-    stopMcp: () => ipcRenderer.invoke("mcp-stop"),
     getMcpConfig: () => ipcRenderer.invoke("mcp-get-config"),
     saveMcpConfig: (config) => ipcRenderer.invoke("mcp-save-config", config),
     selectMcpRoot: () => ipcRenderer.invoke("mcp-select-root"),
+    getMcpClientConfiguration: () => ipcRenderer.invoke("mcp-get-client-configuration"),
+    probeMcpExternalProxy: () => ipcRenderer.invoke("mcp-probe-external-proxy"),
+    getMcpClientSessions: () => ipcRenderer.invoke("mcp-get-client-sessions"),
+    disconnectMcpClient: (sessionId) => ipcRenderer.invoke("mcp-disconnect-client", sessionId),
+    getMcpApprovals: () => ipcRenderer.invoke("mcp-get-approvals"),
+    resolveMcpApproval: (approvalId, decision) =>
+      ipcRenderer.invoke("mcp-resolve-approval", approvalId, decision),
+    openMcpArtifactInEditor: (jobId, artifactId) =>
+      ipcRenderer.invoke("mcp-open-artifact-in-editor", jobId, artifactId),
     onTrayState: (listener) => {
       if (typeof listener !== "function") return () => {};
-      const handler = (_event, state) => listener(state);
+      const handler = (_event, state) => {
+        listener(state);
+      };
       ipcRenderer.on("tray-state", handler);
       return () => ipcRenderer.removeListener("tray-state", handler);
     },
     onTrayNavigation: (listener) => {
       if (typeof listener !== "function") return () => {};
-      const handler = (_event, request) => listener(request);
+      const handler = (_event, request) => {
+        listener(request);
+      };
       ipcRenderer.on("tray-navigate", handler);
       return () => ipcRenderer.removeListener("tray-navigate", handler);
+    },
+    onMcpOpenArtifact: (listener) => {
+      if (typeof listener !== "function") return () => {};
+      const handler = (_event, payload) => {
+        listener(payload);
+      };
+      ipcRenderer.on("mcp-open-artifact", handler);
+      return () => ipcRenderer.removeListener("mcp-open-artifact", handler);
     },
     // SAM3 中文词表配置
     getSam3Lexicon: () => ipcRenderer.invoke("get-sam3-lexicon"),

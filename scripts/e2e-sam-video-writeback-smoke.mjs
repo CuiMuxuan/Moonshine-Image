@@ -18,8 +18,7 @@ const npmCommand = isWindows ? "npm.cmd" : "npm";
 const distDir = path.join(repoRoot, "dist", "spa");
 const indexHtmlPath = path.join(distDir, "index.html");
 const testVideoPath =
-  process.env.MOONSHINE_E2E_SAM_VIDEO_PATH ||
-  "C:\\Users\\cjh02\\Downloads\\生成看板娘呼吸动画视频 (5).mp4";
+  process.env.MOONSHINE_E2E_SAM_VIDEO_PATH || "";
 
 const browserExecutableCandidatesByPlatform = {
   win32: [
@@ -63,6 +62,13 @@ function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+function requireVideoFixture() {
+  assert(
+    testVideoPath && fs.existsSync(testVideoPath),
+    "Set MOONSHINE_E2E_SAM_VIDEO_PATH to an existing local MP4 fixture before running this smoke test."
+  );
 }
 
 function resolveSpawnCommand(command, args = []) {
@@ -585,6 +591,7 @@ async function runSmoke(page) {
 }
 
 async function main() {
+  requireVideoFixture();
   ensureBuildArtifacts();
   const server = await startStaticServer();
   const browser = await chromium.launch({

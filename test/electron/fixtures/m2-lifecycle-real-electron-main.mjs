@@ -153,6 +153,7 @@ if (!hasLock) {
         onNavigationRequest: (request) => navigationRequests.push(request),
       });
       lifecycle.attachWindow(windowInstance);
+      lifecycle.markRendererReady();
       const rendererId = windowInstance.webContents.id;
 
       windowInstance.close();

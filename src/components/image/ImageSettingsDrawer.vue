@@ -263,20 +263,20 @@
         <section class="settings-section">
           <div class="section-heading">
             <q-icon name="folder_open" />
-            <span>{{ backendAvailable ? "输出与设备" : "输出设置" }}</span>
+            <span>路径设置</span>
           </div>
 
           <folder-selector
             v-if="backendAvailable && needsFolderInput('imageFolder')"
             :model-value="folderPath"
-            label="输入文件夹"
+            label="输入路径"
             @update:model-value="$emit('update:folder-path', $event)"
           />
 
           <folder-selector
             v-if="backendAvailable && needsFolderInput('maskFolder') && (currentModel !== 'slbr' || isSlbrLocalScope)"
             :model-value="maskFolderPath"
-            label="蒙版文件夹"
+            label="蒙版路径"
             class="q-mt-md"
             @update:model-value="$emit('update:mask-folder-path', $event)"
           />
@@ -296,7 +296,7 @@
 
           <folder-selector
             :model-value="savePath"
-            label="保存路径"
+            :label="normalizedActionScope.value.value === 'folder' ? '输出路径' : '保存路径'"
             class="q-mt-md"
             @update:model-value="$emit('update:save-path', $event)"
           />
@@ -306,7 +306,7 @@
             no-caps
             color="primary"
             icon="folder_open"
-            label="打开保存路径"
+            :label="normalizedActionScope.value.value === 'folder' ? '打开输出路径' : '打开保存路径'"
             class="full-width settings-action-button q-mt-md"
             :disable="!canOpenSavePath"
             @click="$emit('open-save-path')"

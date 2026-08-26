@@ -34,6 +34,7 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
   const preparations = ref({});
   const pollTimers = new Map();
   const preparationJobs = new Map();
+  const preparedModelCache = new Map();
 
   const imageModels = computed(() => models.value.filter((model) => model.type === "image"));
   const installedImageModels = computed(() =>
@@ -55,7 +56,39 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
     modelManifest.value = payload.modelManifest || {};
     usingFallback.value = Boolean(payload.usingFallback);
     error.value = payload.error?.message || "";
+    for (const [modelId, cacheKey] of preparedModelCache) {
+      const model = models.value.find((item) => item.id === modelId);
+      if (!model?.loaded || !model.ready || !model.runtimeReady) {
+        preparedModelCache.delete(modelId);
+        continue;
+      }
+      if (cacheKey !== buildPreparedModelCacheKey(modelId, model, {})) {
+        preparedModelCache.delete(modelId);
+      }
+    }
   };
+
+  const buildPreparedModelCacheKey = (modelId, model, options = {}) => JSON.stringify({
+    modelId: String(modelId || "").trim(),
+    modelDir: String(options.modelDir || modelDir.value || "").trim(),
+    runtimeFlavor: String(runtime.value?.runtimeFlavor || "").trim(),
+    accelerator: String(
+      runtime.value?.accelerator || runtime.value?.selectedAccelerator || ""
+    ).trim(),
+    fileStatus: model?.fileStatus || "",
+    installed: Boolean(model?.installed),
+    verified: Boolean(model?.verified),
+    files: (Array.isArray(model?.files) ? model.files : []).map((file) => ({
+      path: file?.path || "",
+      sha256: file?.sha256 || "",
+      actualSha256: file?.actualSha256 || "",
+      size: file?.size ?? null,
+      actualSize: file?.actualSize ?? null,
+      exists: Boolean(file?.exists),
+      valid: Boolean(file?.valid),
+      resolvedPath: file?.resolvedPath || "",
+    })),
+  });
 
   const withConfiguredModelDir = (options = {}) => {
     if (options.modelDir) return options;
@@ -94,6 +127,15 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
     }
   };
 
+  const invalidatePreparedModels = (modelId = "") => {
+    const normalizedModelId = String(modelId || "").trim();
+    if (normalizedModelId) {
+      preparedModelCache.delete(normalizedModelId);
+      return;
+    }
+    preparedModelCache.clear();
+  };
+
   const verifyModel = async (modelId, options = {}) => {
     const response = await ModelRegistryService.verifyModel(
       modelId,
@@ -110,6 +152,7 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
   const switchModel = async (modelId) => {
     const response = await ModelRegistryService.switchModel(modelId);
     currentModel.value = response?.currentModel || modelId || currentModel.value || "lama";
+    invalidatePreparedModels();
     return response;
   };
 
@@ -290,6 +333,13 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
         ready: true,
         readiness: response.readiness || { status: "ready", reason: null },
       } : item);
+      const preparedModel = models.value.find((item) => item.id === modelId);
+      if (preparedModel) {
+        preparedModelCache.set(
+          modelId,
+          buildPreparedModelCacheKey(modelId, preparedModel, requestOptions),
+        );
+      }
       return report({
         stage: "ready",
         progress: 1,
@@ -302,6 +352,7 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
         readiness: response.readiness,
       });
     } catch (preparationError) {
+      preparedModelCache.delete(modelId);
       models.value = models.value.map((item) => item.id === modelId ? {
         ...item,
         loaded: false,
@@ -335,6 +386,34 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
     if (options.signal?.aborted) return Promise.reject(createAbortError());
 
     const effectiveOptions = withConfiguredModelDir(options);
+    const knownModel = models.value.find((model) => model.id === normalizedModelId);
+    const cacheKey = knownModel
+      ? buildPreparedModelCacheKey(normalizedModelId, knownModel, effectiveOptions)
+      : "";
+    if (
+      options.force !== true &&
+      knownModel?.installed &&
+      knownModel?.loaded &&
+      knownModel?.ready &&
+      knownModel?.runtimeReady &&
+      cacheKey &&
+      preparedModelCache.get(normalizedModelId) === cacheKey
+    ) {
+      const current = updatePreparation(normalizedModelId, {
+        label: knownModel.label || normalizedModelId,
+        stage: "ready",
+        progress: 1,
+        message: "模型已就绪。",
+        error: "",
+        verified: true,
+        loaded: true,
+        runtimeReady: true,
+        ready: true,
+        readiness: knownModel.readiness,
+      });
+      options.onProgress?.(current);
+      return Promise.resolve(current);
+    }
     const key = `${effectiveOptions.modelDir || "<default>"}::${normalizedModelId}`;
     let job = preparationJobs.get(key);
     if (!job) {
@@ -398,5 +477,6 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
     pollTask,
     getTaskForModel,
     ensureModelReady,
+    invalidatePreparedModels,
   };
 });

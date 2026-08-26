@@ -57,8 +57,9 @@
                       no-caps
                       unelevated
                       toggle-color="primary"
-                      color="grey-3"
-                      text-color="grey-8"
+                      toggle-text-color="white"
+                      :color="$q.dark.isActive ? 'grey-9' : 'grey-3'"
+                      :text-color="$q.dark.isActive ? 'grey-3' : 'primary'"
                       data-testid="backend-python-environment-source-toggle"
                       @update:model-value="handlePythonEnvironmentSourceChange"
                     />
@@ -2489,7 +2490,11 @@ const persistConfig = async (nextConfig) => {
     throw new Error(electronResult?.error || "配置持久化失败");
   }
 
-  const storeResult = await configStore.saveConfig(nextConfig);
+  // The main process owns the current MCP policy. Use its returned complete
+  // config so this legacy direct-save path cannot reintroduce a stale renderer
+  // MCP snapshot into Pinia memory after the disk write succeeds.
+  const effectiveConfig = electronResult?.config || nextConfig;
+  const storeResult = await configStore.saveConfig(effectiveConfig);
   if (!storeResult?.success) {
     if (Array.isArray(storeResult?.errors) && storeResult.errors.length > 0) {
       throw new Error(storeResult.errors.join("; "));
@@ -3451,6 +3456,22 @@ const startService = async () => {
     const result = startAction
       ? await startAction(options)
       : await window.electron.ipcRenderer.invoke("start-backend-service", options);
+
+    if (result?.success && !startAction) {
+      try {
+        await modelRegistryStore.ensureModelReady(options.model || "lama");
+      } catch (error) {
+        const modelFailure = {
+          success: false,
+          code: error?.code || "DEFAULT_MODEL_PREPARATION_FAILED",
+          error: error?.message || "默认模型校验或加载失败",
+          processRunning: true,
+        };
+        backendEngineStore.setFailed(modelFailure);
+        addTerminalLog(`默认模型准备失败：${modelFailure.error}`, "error");
+        return modelFailure;
+      }
+    }
 
     if (result.success) {
       const actualPort = Number(result.port || backendConfig.port);

@@ -32,7 +32,7 @@ test("MCP shared config keeps only the five non-secret policy fields", () => {
     profileId: "desktop.default",
     allowedTools: [MCP_ALLOWED_TOOL_OPTIONS[0]],
     allowedRoots: ["C:\\trusted"],
-    confirmationRequired: false,
+    confirmationMode: "auto_approve",
   });
   assert.doesNotMatch(JSON.stringify(config), /secret|private|descriptor|authorization/i);
 });

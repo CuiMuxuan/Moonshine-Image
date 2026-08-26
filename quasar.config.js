@@ -312,6 +312,7 @@ export default defineConfig((ctx) => {
           "build-resources/backend",
           "build-resources/ffmpeg",
           "build-resources/integrity",
+          "build-resources/mcp",
           ...(includeLegacyPackagedComponents
             ? ["build-resources/runtime", "build-resources/models"]
             : []),
@@ -320,7 +321,6 @@ export default defineConfig((ctx) => {
 
       builder: {
         // https://www.electron.build/configuration/configuration
-
         // Reuse the Electron distribution installed by npm. This keeps Builder
         // aligned with the lockfile and avoids a second GitHub ZIP download.
         electronDist: "node_modules/electron/dist",
@@ -359,6 +359,10 @@ export default defineConfig((ctx) => {
         // public runtime download dependency. Full offline ZIPs are assembled
         // separately from explicit payload roots.
         extraResources: [
+          {
+            from: "build-resources/mcp",
+            to: "mcp",
+          },
           {
             from: "build-resources/backend",
             to: "backend",

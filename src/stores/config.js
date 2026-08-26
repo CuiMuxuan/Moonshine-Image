@@ -60,7 +60,7 @@ export const useConfigStore = defineStore("config", () => {
       return { success: false, errors: rawErrors };
     }
 
-    const mergedConfig = ConfigManager.mergeWithDefault(newConfig);
+    let mergedConfig = ConfigManager.mergeWithDefault(newConfig);
 
     if (window.electron?.ipcRenderer?.invoke) {
       try {
@@ -73,6 +73,9 @@ export const useConfigStore = defineStore("config", () => {
             success: false,
             error: electronResult?.error || "配置持久化失败",
           };
+        }
+        if (electronResult.config && typeof electronResult.config === "object") {
+          mergedConfig = ConfigManager.mergeWithDefault(electronResult.config);
         }
       } catch (error) {
         return {

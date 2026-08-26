@@ -71,11 +71,7 @@ function assertValue({ description, actual, expected }) {
 }
 
 function resolveFfmpegBinRoot() {
-  const candidates = [
-    process.env.MOONSHINE_FFMPEG_ROOT,
-    "C:\\code\\ffmpeg",
-    "C:\\code\\ffmpeg\\bin",
-  ]
+  const candidates = [process.env.MOONSHINE_FFMPEG_ROOT]
     .map((value) => String(value || "").trim())
     .filter(Boolean);
 
@@ -91,7 +87,7 @@ function resolveFfmpegBinRoot() {
   }
 
   throw new Error(
-    "FFmpeg runtime not found. Set MOONSHINE_FFMPEG_ROOT or place it at C:\\code\\ffmpeg."
+    "FFmpeg runtime not found. Set MOONSHINE_FFMPEG_ROOT to an FFmpeg runtime root."
   );
 }
 
@@ -483,8 +479,8 @@ function runAssertions() {
   logSection("FFmpeg Export Path");
   assertPattern({
     file: "src-electron/electron-main.js",
-    description: "Electron resolves packaged and development FFmpeg paths",
-    pattern: /getPackagedFfmpegResourceRootPath[\s\S]*MOONSHINE_FFMPEG_ROOT[\s\S]*C:\\\\code\\\\ffmpeg\\\\bin/,
+    description: "Electron resolves packaged and configured FFmpeg paths",
+    pattern: /getPackagedFfmpegResourceRootPath[\s\S]*MOONSHINE_FFMPEG_ROOT[\s\S]*build-resources[\s\S]*PACKAGED_FFMPEG_RESOURCE_DIR/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",

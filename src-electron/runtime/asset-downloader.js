@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { pipeline } from "node:stream/promises";
 
-import extractZip from "extract-zip";
+import yauzl from "yauzl";
 
 import { assertSafeRelativePath } from "./manifest-verifier.js";
 import {
@@ -439,6 +440,10 @@ function zipEntryMode(entry) {
   return (Number(entry.externalFileAttributes) >> 16) & 0xffff;
 }
 
+function zipEntryType(entry) {
+  return zipEntryMode(entry) & 0xf000;
+}
+
 export function validateZipEntry(entry, state = {}, limits = {}) {
   const filename = String(entry?.fileName ?? "");
   if (!filename || filename.includes("\0") || filename.includes("\\")) {
@@ -460,11 +465,18 @@ export function validateZipEntry(entry, state = {}, limits = {}) {
       code: "ASSET_ZIP_PATH_TRAVERSAL",
     });
   }
-  const mode = zipEntryMode(entry);
-  if ((mode & 0xf000) === 0xa000) {
+  const type = zipEntryType(entry);
+  if (type === 0xa000) {
     throw downloadError(`ZIP symlinks are not allowed: ${filename}`, {
       kind: SOURCE_ERROR_KIND.INTEGRITY,
       code: "ASSET_ZIP_SYMLINK",
+    });
+  }
+  const directory = filename.endsWith("/");
+  if (type !== 0 && type !== (directory ? 0x4000 : 0x8000)) {
+    throw downloadError(`ZIP contains an unsupported entry type: ${filename}`, {
+      kind: SOURCE_ERROR_KIND.INTEGRITY,
+      code: "ASSET_ZIP_ENTRY_TYPE_INVALID",
     });
   }
   state.entries = Number(state.entries || 0) + 1;
@@ -478,6 +490,117 @@ export function validateZipEntry(entry, state = {}, limits = {}) {
     });
   }
   return state;
+}
+
+function openZipArchive(archivePath) {
+  return new Promise((resolve, reject) => {
+    yauzl.open(archivePath, {
+      autoClose: true,
+      decodeStrings: true,
+      lazyEntries: true,
+      strictFileNames: true,
+      validateEntrySizes: true,
+    }, (error, zipFile) => error ? reject(error) : resolve(zipFile));
+  });
+}
+
+function openZipEntryStream(zipFile, entry) {
+  return new Promise((resolve, reject) => {
+    zipFile.openReadStream(entry, (error, stream) => error ? reject(error) : resolve(stream));
+  });
+}
+
+function resolveZipEntryPath(rootPath, fileName) {
+  const relativePath = fileName.endsWith("/") ? fileName.slice(0, -1) : fileName;
+  const targetPath = path.resolve(rootPath, ...relativePath.split("/"));
+  const relative = path.relative(rootPath, targetPath);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw downloadError(`ZIP entry escapes the extraction root: ${fileName}`, {
+      kind: SOURCE_ERROR_KIND.INTEGRITY,
+      code: "ASSET_ZIP_PATH_TRAVERSAL",
+    });
+  }
+  return targetPath;
+}
+
+async function verifyDirectoryChain(rootPath, directoryPath) {
+  const relative = path.relative(rootPath, directoryPath);
+  let currentPath = rootPath;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    currentPath = path.join(currentPath, segment);
+    const stat = await fsp.lstat(currentPath);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw downloadError(`ZIP extraction path is not a real directory: ${segment}`, {
+        kind: SOURCE_ERROR_KIND.INTEGRITY,
+        code: stat.isSymbolicLink() ? "ASSET_ZIP_SYMLINK" : "ASSET_ZIP_PATH_INVALID",
+      });
+    }
+  }
+}
+
+async function extractZipEntry(zipFile, entry, { rootPath, onEntry }) {
+  onEntry?.(entry);
+  const fileName = String(entry.fileName);
+  const targetPath = resolveZipEntryPath(rootPath, fileName);
+  if (fileName.endsWith("/")) {
+    await fsp.mkdir(targetPath, { recursive: true });
+    await verifyDirectoryChain(rootPath, targetPath);
+    return;
+  }
+
+  const parentPath = path.dirname(targetPath);
+  await fsp.mkdir(parentPath, { recursive: true });
+  await verifyDirectoryChain(rootPath, parentPath);
+  const input = await openZipEntryStream(zipFile, entry);
+  const output = fs.createWriteStream(targetPath, { flags: "wx", mode: 0o600 });
+  try {
+    await pipeline(input, output);
+  } catch (error) {
+    await fsp.rm(targetPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function extractZipArchive(archivePath, { dir, onEntry } = {}) {
+  const rootPath = await fsp.realpath(dir);
+  const zipFile = await openZipArchive(archivePath);
+  const seenPaths = new Set();
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      zipFile.removeListener("entry", handleEntry);
+      zipFile.removeListener("end", handleEnd);
+      zipFile.removeListener("error", handleError);
+      if (error) {
+        zipFile.close();
+        reject(error);
+      } else {
+        resolve();
+      }
+    };
+    const handleError = (error) => finish(error);
+    const handleEnd = () => finish();
+    const handleEntry = (entry) => {
+      void (async () => {
+        const key = String(entry.fileName).replace(/\/$/, "").toLocaleLowerCase("en-US");
+        if (seenPaths.has(key)) {
+          throw downloadError(`ZIP contains a duplicate entry: ${entry.fileName}`, {
+            kind: SOURCE_ERROR_KIND.INTEGRITY,
+            code: "ASSET_ZIP_ENTRY_DUPLICATE",
+          });
+        }
+        seenPaths.add(key);
+        await extractZipEntry(zipFile, entry, { rootPath, onEntry });
+        if (!settled) zipFile.readEntry();
+      })().catch(finish);
+    };
+    zipFile.on("entry", handleEntry);
+    zipFile.once("end", handleEnd);
+    zipFile.once("error", handleError);
+    zipFile.readEntry();
+  });
 }
 
 async function verifyExtractedTree(rootPath, currentPath = rootPath) {
@@ -506,7 +629,7 @@ async function verifyExtractedTree(rootPath, currentPath = rootPath) {
 export async function extractZipSafely({
   archivePath,
   destination,
-  extractImpl = extractZip,
+  extractImpl = extractZipArchive,
   maxEntries = DEFAULT_MAX_ZIP_ENTRIES,
   maxUncompressedBytes = DEFAULT_MAX_UNCOMPRESSED_BYTES,
 } = {}) {
@@ -561,4 +684,3 @@ export {
   DEFAULT_RETRY_DELAY_MS,
   DEFAULT_TIMEOUT_MS,
 };
-

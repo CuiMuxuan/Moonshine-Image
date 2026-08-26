@@ -133,6 +133,11 @@ SAM3_LICENSE_HINT = (
     "SAM3/SAM3.1 权重由 Moonshine-Image 模型库提供下载时，仍需保留来源、版本、"
     "hash 与 Meta SAM License 确认记录；运行环境只使用本项目模型路径下的本地 checkpoint。"
 )
+RAPIDOCR_LICENSE = {
+    "name": "Apache-2.0",
+    "url": "https://github.com/RapidAI/RapidOCR/blob/main/LICENSE",
+    "note": "RapidOCR 项目代码采用 Apache License 2.0；ONNX 模型文件的来源与分发权利仍按本项目模型清单核验。",
+}
 LAMA_LICENSE = {
     "name": "Apache-2.0",
     "url": "https://github.com/advimman/lama/blob/main/LICENSE",
@@ -1341,6 +1346,9 @@ def build_model_status(model_dir: Path, cuda_info: Optional[dict] = None) -> lis
         "type": "ocr",
         "family": "rapidocr",
         "category": "ocr",
+        "license": RAPIDOCR_LICENSE,
+        "sourceLinks": [],
+        "manualSources": [],
         "installed": ocr_verified,
         "verified": ocr_verified,
         "available": ocr_verified,

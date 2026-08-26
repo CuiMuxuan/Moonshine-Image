@@ -7,6 +7,8 @@
         no-caps
         icon="select_all"
         label="全选"
+        aria-label="全选"
+        class="file-list-toolbar-button"
         :color="allVisibleImagesSelected ? 'primary' : undefined"
         data-testid="image-file-list-select-all"
         :disable="filteredFiles.length === 0"
@@ -18,6 +20,8 @@
         no-caps
         icon="flip_to_back"
         label="反选"
+        aria-label="反选"
+        class="file-list-toolbar-button"
         data-testid="image-file-list-invert-selection"
         :disable="filteredFiles.length === 0"
         @click="$emit('invert-selection')"
@@ -29,6 +33,8 @@
         color="negative"
         icon="delete"
         label="删除"
+        aria-label="删除"
+        class="file-list-toolbar-button"
         data-testid="image-file-list-delete-selected"
         :disable="selectedFiles.length === 0"
         @click="$emit('delete-selected')"
@@ -240,21 +246,34 @@ const getFileDisplayUrl = (file) => {
 .file-list-toolbar {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   padding: 8px 8px 4px;
+  container-type: inline-size;
+  container-name: file-list-toolbar;
 }
 
-@media (max-width: 420px) {
+@container file-list-toolbar (max-width: 320px) {
   .file-list-toolbar {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 2px;
   }
+
+  .file-list-toolbar-button :deep(.q-btn__content > span) {
+    display: none;
+  }
+}
+
+.file-list-toolbar-button {
+  min-width: 0;
+  width: 100%;
 }
 
 .file-list-toolbar :deep(.q-btn__content) {
   flex-wrap: nowrap;
   gap: 4px;
   min-width: 0;
+  width: 100%;
+  justify-content: center;
 }
 
 .file-list-toolbar :deep(.q-btn__content span) {

@@ -157,6 +157,25 @@ test("MCP manager coalesces duplicate start and rolls back bridge state after an
   }
 });
 
+test("MCP manager fails closed without spawning an adapter when an enabled policy is incomplete", async () => {
+  const { manager, bridge, spawns, tempRoot } = await createManager();
+  try {
+    const toolState = await manager.sync(policy({ allowedTools: [] }));
+    assert.equal(toolState.status, "failed");
+    assert.equal(toolState.error_code, "MCP_ALLOWED_TOOL_REQUIRED");
+    assert.equal(toolState.running, false);
+    assert.equal(bridge.isRunning, false);
+    assert.equal(spawns.length, 0);
+
+    const rootState = await manager.sync(policy({ allowedRoots: [] }));
+    assert.equal(rootState.status, "failed");
+    assert.equal(rootState.error_code, "MCP_ALLOWED_ROOT_REQUIRED");
+    assert.equal(spawns.length, 0);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("unexpected adapter exit revokes bridge access and exposes only a safe failure code", async () => {
   let child = null;
   const { manager, bridge, tempRoot } = await createManager({

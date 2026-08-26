@@ -35,12 +35,15 @@ function normalizePolicy(config = {}) {
   const allowedTools = Array.isArray(config.allowedTools)
     ? MCP_TOOL_NAMES.filter((tool) => config.allowedTools.includes(tool))
     : [];
+  const confirmationMode = ["read_only", "auto_approve", "full_access"].includes(config.confirmationMode)
+    ? config.confirmationMode
+    : (config.confirmationRequired === false ? "auto_approve" : "read_only");
   return Object.freeze({
     enabled: config.enabled === true,
     profile,
     allowedRoots: Object.freeze(allowedRoots),
     allowedTools: Object.freeze(allowedTools),
-    confirmationRequired: config.confirmationRequired !== false,
+    confirmationMode,
   });
 }
 
@@ -50,8 +53,15 @@ function policyIdentity(policy) {
     profile: policy.profile,
     allowedRoots: policy.allowedRoots,
     allowedTools: policy.allowedTools,
-    confirmationRequired: policy.confirmationRequired,
+    confirmationMode: policy.confirmationMode,
   });
+}
+
+function policyFailureCode(policy) {
+  if (!policy.enabled) return null;
+  if (!policy.allowedTools.length) return "MCP_ALLOWED_TOOL_REQUIRED";
+  if (!policy.allowedRoots.length) return "MCP_ALLOWED_ROOT_REQUIRED";
+  return null;
 }
 
 function waitForExit(child, timeoutMs) {
@@ -138,6 +148,17 @@ export class McpProcessManager {
       await this.stop({ preservePolicy: true });
       return this.getState();
     }
+    const failureCode = policyFailureCode(policy);
+    if (failureCode) {
+      if (this.status === "running" || this.status === "starting") {
+        await this.stop({ preservePolicy: true });
+      }
+      this.policy = policy;
+      this.policyKey = nextKey;
+      this.status = "failed";
+      this.errorCode = failureCode;
+      return this.getState();
+    }
     if (this.status === "running" && this.policyKey === nextKey) return this.getState();
     if (this.status === "starting" && this.policyKey === nextKey && this.startPromise) {
       await this.startPromise;
@@ -185,7 +206,7 @@ export class McpProcessManager {
         token: this.token,
         allowedRoots: policy.allowedRoots,
         allowedTools: policy.allowedTools,
-        confirmationRequired: policy.confirmationRequired,
+        confirmationMode: policy.confirmationMode,
       });
       const descriptorPath = await this.#writeDescriptor(descriptor);
       this.descriptorPath = descriptorPath;

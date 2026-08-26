@@ -14,6 +14,10 @@ const panelSource = fs.readFileSync(
   path.join(repoRoot, "src/components/global/SettingsPanel.vue"),
   "utf8"
 );
+const brushControlsSource = fs.readFileSync(
+  path.join(repoRoot, "src/components/common/MaskBrushControls.vue"),
+  "utf8"
+);
 
 const panelizedSettingKeys = [
   "backendPort",
@@ -84,6 +88,27 @@ test("settings panels remain keyboard accessible and theme-aware", () => {
   assert.match(settingsSource, /class="settings-icon-button"/);
   assert.match(settingsSource, /画笔大小/);
   assert.match(settingsSource, /画笔透明度/);
+});
+
+test("brush settings keep previews stable and map sliders to names and values", () => {
+  assert.match(brushControlsSource, /class="brush-control-header"[\s\S]*画笔大小[\s\S]*brushSizeLabel/);
+  assert.match(brushControlsSource, /class="brush-control-header"[\s\S]*画笔透明度[\s\S]*brushAlphaLabel/);
+  assert.match(brushControlsSource, /class="brush-color-field"[\s\S]*画笔颜色[\s\S]*brushColor\.toUpperCase/);
+  assert.match(brushControlsSource, /\.brush-preview-surface \{[\s\S]*min-height: 132px/);
+  assert.match(settingsSource, /class="brush-default-preview"/);
+  assert.match(settingsSource, /const getBrushPreviewStyle = \(key\) =>/);
+  assert.match(settingsSource, /Math\.min\(76, Number\(brush\.size\)/);
+  assert.match(settingsSource, /\.brush-default-preview \{[^}]*height: 112px/);
+  assert.doesNotMatch(settingsSource, /class="brush-dot"/);
+});
+
+test("brush icon controls expose accessible names", () => {
+  assert.match(brushControlsSource, /:aria-label="drawingEnabled \? '关闭绘制' : '开启绘制'"/);
+  assert.match(brushControlsSource, /:aria-label="option\.label"/);
+  assert.match(brushControlsSource, /aria-label="画笔设置"/);
+  assert.match(brushControlsSource, /aria-label="更多画笔操作"/);
+  assert.match(brushControlsSource, /aria-label="撤回"/);
+  assert.match(brushControlsSource, /aria-label="清空蒙版"/);
 });
 
 test("advanced select settings render only their most specific description", () => {

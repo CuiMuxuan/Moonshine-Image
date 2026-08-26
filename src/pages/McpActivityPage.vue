@@ -22,10 +22,15 @@
 </template>
 
 <script setup>
+import { onMounted } from "vue";
 import McpActivityPanel from "src/components/global/McpActivityPanel.vue";
 import { useMcpActivityStore } from "src/stores/mcpActivity";
 
 const store = useMcpActivityStore();
+
+onMounted(() => {
+  void store.refresh();
+});
 </script>
 
 <style scoped>

@@ -103,6 +103,7 @@
           :brush-color="brushColor"
           :brush-alpha="brushAlpha"
           :can-undo="canUndo"
+          :can-redo="canRedo"
           :button-size="toolbarButtonSize"
           :content-class="toolbarPopupClass"
           :popup-anchor="settingsPopupAnchor"
@@ -115,6 +116,7 @@
           @update:brush-color="updateBrushColor"
           @update:brush-alpha="updateBrushAlpha"
           @undo="undo"
+          @redo="redo"
           @clear="clearCanvas"
         >
           <template #after="{ buttonSize, textColor }">
@@ -174,6 +176,7 @@
         <div class="sam-toolbar-controls">
           <div class="sam-tool-main-group">
             <q-btn
+              v-if="!selectedSmartModelIsOcr"
               :color="selectedSamModelHasRunnableFeature ? 'positive' : 'grey-6'"
               text-color="white"
               icon="center_focus_strong"
@@ -186,6 +189,7 @@
             </q-btn>
 
             <q-btn
+              v-if="selectedSmartModelIsOcr"
               :color="ocrAvailable ? 'primary' : 'grey-6'"
               text-color="white"
               icon="text_fields"
@@ -194,7 +198,7 @@
               :size="toolbarButtonSize"
               class="sam-control-button"
               data-testid="ocr-smart-selection-button"
-              @click="emit('ocr-request')"
+              @click="requestSmartSelectionAction('ocr', 'current')"
             >
               <q-tooltip :class="toolbarTooltipContentClass">{{ ocrAvailable ? 'OCR 文本智能选区' : ocrStatusMessage }}</q-tooltip>
             </q-btn>
@@ -256,16 +260,25 @@
                     emit-value
                     map-options
                     options-dense
-                    label="默认模型"
+                    label="智能选区模型"
                     class="sam-model-select"
                     :disable="samPredicting || !resolvedSamModelOptions.length"
                     @update:model-value="updateSelectedSamModel"
                   />
                   <div v-else class="sam-empty-state">
-                    请先在模型管理中安装支持图片点选/框选或文本智选的 SAM 模型。
+                    <div>暂未安装可用的智能选区模型。</div>
+                    <q-btn
+                      outline
+                      no-caps
+                      color="primary"
+                      icon="model_training"
+                      label="前往安装模型"
+                      class="q-mt-sm"
+                      @click="openSmartSelectionModelManagement"
+                    />
                   </div>
-                  <div class="sam-settings-section ocr-settings-section">
-                    <div class="sam-settings-title">OCR 文本智能选区</div>
+                  <div v-if="selectedSmartModelIsOcr" class="sam-settings-section ocr-settings-section">
+                    <div class="sam-settings-title">RapidOCR 文字识别设置</div>
                     <div v-if="ocrAvailable" class="sam-settings-hint">RapidOCR 已就绪</div>
                     <div class="ocr-threshold-row">
                       <q-input
@@ -300,7 +313,7 @@
                       @update:model-value="updateOcrSettings({ samEnhance: $event })"
                     />
                     <q-select
-                      v-if="ocrSamModelOptions.length"
+                      v-if="ocrSamEnhance && ocrSamModelOptions.length"
                       :model-value="ocrSamModelId"
                       :options="ocrSamModelOptions"
                       dense
@@ -312,7 +325,12 @@
                       :disable="ocrBusy || !ocrSamEnhance"
                       @update:model-value="updateOcrSettings({ samModelId: $event })"
                     />
-                    <div v-else class="sam-settings-hint">未安装支持框选的 SAM 模型，OCR 将使用四边形蒙版。</div>
+                    <div
+                      v-else-if="ocrSamEnhance"
+                      class="sam-settings-hint"
+                    >
+                      未安装支持框选的 SAM 模型，OCR 将使用四边形蒙版。
+                    </div>
                   </div>
                   <div class="sam-settings-hint">{{ samStatusText }}</div>
                   <div v-if="samAutoExpandNotice" class="sam-auto-expand-notice">
@@ -326,57 +344,61 @@
                   </div>
 
                   <div
-                    v-if="selectedSamModelSupportsText"
+                    v-if="selectedSmartModelIsOcr || selectedSamModelSupportsText"
                     class="sam-settings-section"
-                    data-testid="sam-text-settings-section"
+                    data-testid="smart-selection-actions-section"
                   >
-                    <div class="sam-settings-title">文本智选</div>
-                    <q-input
-                      v-model="samTextPrompt"
-                      dense
-                      outlined
-                      :disable="samPredicting || samTextBatchRunning || !props.samImage"
-                      label="自定义文本"
-                      placeholder="输入短名词短语"
-                      class="sam-text-prompt"
-                      @keyup.enter="runSamTextPrediction"
-                    />
-
-                    <div class="sam-lexicon-row">
-                      <q-select
-                        v-model="samTextColor"
-                        :options="samTextColorOptions"
+                    <div class="sam-settings-title">
+                      {{ selectedSmartModelIsOcr ? "OCR 文本智能选区" : "文本智选" }}
+                    </div>
+                    <template v-if="!selectedSmartModelIsOcr">
+                      <q-input
+                        v-model="samTextPrompt"
                         dense
                         outlined
-                        clearable
-                        emit-value
-                        map-options
-                        options-dense
-                        label="颜色"
-                        class="sam-lexicon-select"
-                        :disable="samPredicting || samTextBatchRunning || !props.samImage"
+                        :disable="samPredicting || samTextBatchRunning || !props.samImage || !samTextSelectionAvailable"
+                        label="自定义文本"
+                        placeholder="输入短名词短语"
+                        class="sam-text-prompt"
+                        @keyup.enter="requestSmartSelectionAction('sam', 'current')"
                       />
-                      <q-select
-                        v-model="samTextNoun"
-                        :options="samTextNounOptions"
-                        dense
-                        outlined
-                        clearable
-                        emit-value
-                        map-options
-                        options-dense
-                        use-input
-                        input-debounce="0"
-                        label="目标"
-                        class="sam-lexicon-select"
-                        :disable="samPredicting || samTextBatchRunning || !props.samImage"
-                        @filter="filterSamTextNounOptions"
-                      />
-                    </div>
 
-                    <div v-if="samGeneratedPromptText" class="sam-generated-prompt">
-                      {{ samGeneratedPromptText }}
-                    </div>
+                      <div class="sam-lexicon-row">
+                        <q-select
+                          v-model="samTextColor"
+                          :options="samTextColorOptions"
+                          dense
+                          outlined
+                          clearable
+                          emit-value
+                          map-options
+                          options-dense
+                          label="颜色"
+                          class="sam-lexicon-select"
+                          :disable="samPredicting || samTextBatchRunning || !props.samImage || !samTextSelectionAvailable"
+                        />
+                        <q-select
+                          v-model="samTextNoun"
+                          :options="samTextNounOptions"
+                          dense
+                          outlined
+                          clearable
+                          emit-value
+                          map-options
+                          options-dense
+                          use-input
+                          input-debounce="0"
+                          label="目标"
+                          class="sam-lexicon-select"
+                          :disable="samPredicting || samTextBatchRunning || !props.samImage || !samTextSelectionAvailable"
+                          @filter="filterSamTextNounOptions"
+                        />
+                      </div>
+
+                      <div v-if="samGeneratedPromptText" class="sam-generated-prompt">
+                        {{ samGeneratedPromptText }}
+                      </div>
+                    </template>
 
                     <div v-if="samTextBatchVisible" class="sam-batch-state">
                       <div class="sam-batch-state-row">
@@ -389,9 +411,9 @@
                           size="sm"
                           icon="close"
                           color="primary"
-                          @click="cancelSamTextBatchPrediction"
+                          @click="cancelSmartSelection"
                         >
-                          <q-tooltip :class="toolbarTooltipContentClass">取消检索选中图片</q-tooltip>
+                          <q-tooltip :class="toolbarTooltipContentClass">取消当前智能选区任务</q-tooltip>
                         </q-btn>
                       </div>
                       <q-linear-progress
@@ -401,6 +423,24 @@
                         :value="samTextBatchProgress"
                         :indeterminate="samTextBatchRunning && !samTextBatchProgress"
                       />
+                      <q-virtual-scroll
+                        v-if="samTextBatchItems.length"
+                        :items="samTextBatchItems"
+                        class="sam-batch-results"
+                        :virtual-scroll-item-size="24"
+                        :virtual-scroll-slice-size="8"
+                      >
+                        <template #default="{ item }">
+                          <div
+                            :key="item.fileId || item.name"
+                            class="sam-batch-result-item"
+                            :class="`is-${item.status || 'pending'}`"
+                          >
+                            <span class="ellipsis">{{ item.name || item.fileId }}</span>
+                            <span>{{ item.message || item.status }}</span>
+                          </div>
+                        </template>
+                      </q-virtual-scroll>
                     </div>
 
                     <div class="sam-text-actions">
@@ -411,9 +451,9 @@
                         icon="image_search"
                         label="检索当前图片"
                         data-testid="sam-text-current-button"
-                        :disable="!canRunSamTextPrediction"
-                        :loading="samTextPredicting"
-                        @click="runSamTextPrediction"
+                        :disable="!canRunSmartSelectionCurrent"
+                        :loading="selectedSmartModelIsOcr ? ocrBusy : samTextPredicting"
+                        @click="requestSmartSelectionAction(selectedSmartModelIsOcr ? 'ocr' : 'sam', 'current')"
                       />
                       <q-btn
                         outline
@@ -422,9 +462,9 @@
                         icon="select_all"
                         label="检索选中图片"
                         data-testid="sam-text-batch-button"
-                        :disable="!canRunSamBatchTextPrediction"
+                        :disable="!canRunSmartSelectionBatch"
                         :loading="samTextBatchRunning"
-                        @click="requestSamTextBatchPrediction"
+                        @click="requestSmartSelectionAction(selectedSmartModelIsOcr ? 'ocr' : 'sam', 'selected')"
                       >
                         <q-tooltip :class="toolbarTooltipContentClass">{{ samTextBatchTooltip }}</q-tooltip>
                       </q-btn>
@@ -492,8 +532,64 @@
                       </q-item-section>
                       <q-item-section side>
                         <div class="sam-candidate-actions">
+                          <q-btn
+                            flat
+                            dense
+                            round
+                            :disable="samPredicting"
+                            class="sam-candidate-style-button"
+                            :aria-label="`修改${candidate.label}蒙版样式`"
+                            @click.stop
+                          >
+                            <span
+                              class="sam-candidate-color-swatch"
+                              :style="getSamCandidateSwatchStyle(candidate)"
+                              aria-hidden="true"
+                            ></span>
+                            <q-tooltip :class="toolbarTooltipContentClass">蒙版颜色与透明度</q-tooltip>
+                            <q-menu
+                              anchor="top end"
+                              self="top start"
+                              :offset="[8, 0]"
+                              :content-class="toolbarPopupContentClass"
+                              @click.stop
+                            >
+                              <div class="sam-candidate-style-panel q-pa-md">
+                                <div class="sam-candidate-style-heading">
+                                  <span class="text-subtitle2">蒙版样式</span>
+                                  <span class="text-caption text-grey-7">{{ candidate.label }}</span>
+                                </div>
+                                <label class="sam-candidate-color-control">
+                                  <span>蒙版颜色</span>
+                                  <input
+                                    :value="candidate.displayColor"
+                                    type="color"
+                                    :aria-label="`${candidate.label}蒙版颜色`"
+                                    @input="setSamCandidateDisplayStyle(candidate.localId, { color: $event.target.value }, { render: false })"
+                                    @change="commitSamCandidateDisplayStyle(candidate.localId)"
+                                  />
+                                  <span class="sam-candidate-style-value">{{ candidate.displayColor.toUpperCase() }}</span>
+                                </label>
+                                <div class="sam-candidate-alpha-control">
+                                  <div class="sam-candidate-style-control-header">
+                                    <span>蒙版透明度</span>
+                                    <span class="sam-candidate-style-value">{{ formatSamDisplayAlpha(candidate.displayAlpha) }}</span>
+                                  </div>
+                                  <q-slider
+                                    :model-value="candidate.displayAlpha"
+                                    :min="0.05"
+                                    :max="1"
+                                    :step="0.05"
+                                    :aria-label="`${candidate.label}蒙版透明度`"
+                                    @update:model-value="setSamCandidateDisplayStyle(candidate.localId, { alpha: $event }, { render: false })"
+                                    @change="commitSamCandidateDisplayStyle(candidate.localId)"
+                                  />
+                                </div>
+                              </div>
+                            </q-menu>
+                          </q-btn>
                           <q-input
-                            v-if="shouldAutoExpandSamMasks"
+                            v-if="shouldAutoExpandSamCandidate(candidate)"
                             :model-value="candidate.expandPx ?? candidate.autoExpandPx ?? 0"
                             type="number"
                             dense
@@ -513,8 +609,8 @@
                             flat
                             dense
                             round
-                            icon="close"
-                            color="primary"
+                            icon="delete"
+                            color="negative"
                             @click.stop="removeSamCandidate(candidate.localId)"
                           >
                             <q-tooltip :class="toolbarTooltipContentClass">删除该候选</q-tooltip>
@@ -537,6 +633,15 @@
               @click="undo"
             >
               <q-tooltip :class="toolbarTooltipContentClass">撤回</q-tooltip>
+            </q-btn>
+            <q-btn
+              icon="redo"
+              :disable="!canRedo"
+              :size="toolbarButtonSize"
+              :text-color="$q.dark.isActive ? 'grey-2' : 'grey-8'"
+              @click="redo"
+            >
+              <q-tooltip :class="toolbarTooltipContentClass">重做</q-tooltip>
             </q-btn>
             <q-btn
               icon="clear"
@@ -647,6 +752,11 @@ import {
   normalizeMaskToolMode,
   normalizeMaskToolUiState,
 } from "src/utils/maskTool";
+import { mergeEraseMaskPixels } from "src/utils/maskEraseLayer";
+import {
+  getNextMaskHistoryIndex,
+  getPreviousMaskHistoryIndex,
+} from "src/utils/maskHistory";
 import {
   clampBoxToViewport,
   computeAnchoredPlacement,
@@ -843,10 +953,13 @@ const emit = defineEmits([
   "update:tool-state",
   "update:toolbar-interacting",
   "sam-processing-state",
+  "smart-selection-request",
+  "smart-selection-cancel",
   "sam-text-batch-request",
   "sam-text-batch-cancel",
   "ocr-request",
   "update:ocr-settings",
+  "update:smart-selection-model",
 ]);
 
 const store = useEditorStore();
@@ -860,8 +973,10 @@ const brushAlpha = ref(DEFAULT_IMAGE_BRUSH.alpha);
 const toolMode = ref(MASK_TOOL_MODES.DRAW);
 const cursorPosition = ref(null);
 const history = ref([]);
+const historySamStates = ref([]);
 const historyIndex = ref(-1);
 const canUndo = ref(false);
+const canRedo = ref(false);
 const operationStartIndices = ref([0]);
 const toolbarPosition = ref({ x: 20, y: 20 });
 const isDraggingToolbar = ref(false);
@@ -872,6 +987,7 @@ const pendingMaskSyncDataUrl = ref("");
 const lastEmittedMaskDataUrl = ref("");
 const rectPreview = ref(null);
 const isDrawingWindowBound = ref(false);
+const activePointerId = ref(null);
 const toolbarPopupClass = "mask-toolbar-popup";
 const toolbarPopupContentClass = `${toolbarPopupClass} sam-toolbar-popup-layer`;
 const samSettingsPopupContentClass = `${toolbarPopupContentClass} sam-settings-toolbar-popup`;
@@ -1013,13 +1129,17 @@ const normalizeBatchState = (value = {}) => {
   const total = Math.max(0, Number(value.total || 0));
   const completed = Math.max(0, Math.min(total, Number(value.completed || 0)));
   return {
+    modelType: value.modelType === "ocr" ? "ocr" : "sam",
+    scope: value.scope === "current" ? "current" : "selected",
     running: Boolean(value.running),
     total,
     completed,
     success: Math.max(0, Number(value.success || 0)),
     notFound: Math.max(0, Number(value.notFound || value.not_found || 0)),
+    skipped: Math.max(0, Number(value.skipped || 0)),
     failed: Math.max(0, Number(value.failed || 0)),
     cancelled: Boolean(value.cancelled),
+    items: Array.isArray(value.items) ? value.items : [],
   };
 };
 
@@ -1035,15 +1155,18 @@ const samTextBatchProgress = computed(() => {
 });
 const samTextBatchText = computed(() => {
   const state = samTextBatchState.value;
-  if (!state.total) return "等待检索选中图片";
+  const actionLabel = state.modelType === "ocr" ? "OCR" : "文本智选";
+  const scopeLabel = state.scope === "current" ? "当前图片" : "选中图片";
+  if (!state.total) return `等待检索${scopeLabel}`;
   if (state.running) {
-    return `检索选中图片 ${state.completed}/${state.total} · 成功 ${state.success} · 未检出 ${state.notFound} · 失败 ${state.failed}`;
+    return `${actionLabel} ${scopeLabel} ${state.completed}/${state.total} · 成功 ${state.success} · 未检出 ${state.notFound} · 跳过 ${state.skipped} · 失败 ${state.failed}`;
   }
   if (state.cancelled) {
-    return `检索选中图片已取消 · 成功 ${state.success} · 未检出 ${state.notFound} · 失败 ${state.failed}`;
+    return `${actionLabel} ${scopeLabel}已取消 · 成功 ${state.success} · 未检出 ${state.notFound} · 跳过 ${state.skipped} · 失败 ${state.failed}`;
   }
-  return `检索选中图片完成 · 成功 ${state.success} · 未检出 ${state.notFound} · 失败 ${state.failed}`;
+  return `${actionLabel} ${scopeLabel}完成 · 成功 ${state.success} · 未检出 ${state.notFound} · 跳过 ${state.skipped} · 失败 ${state.failed}`;
 });
+const samTextBatchItems = computed(() => samTextBatchState.value.items || []);
 const samProcessingState = computed(() => {
   if (samTextBatchRunning.value) {
     return {
@@ -1063,6 +1186,13 @@ const samProcessingState = computed(() => {
     return {
       running: true,
       message: "正在运行 SAM 智能选区",
+      progress: null,
+    };
+  }
+  if (props.ocrBusy) {
+    return {
+      running: true,
+      message: "正在运行 RapidOCR 智能选区",
       progress: null,
     };
   }
@@ -1110,11 +1240,22 @@ const currentProcessingModelId = computed(() =>
   String(props.currentModel || "").trim().toLowerCase()
 );
 const shouldAutoExpandSamMasks = computed(() => currentProcessingModelId.value === "lama");
-const hasEnabledSamCandidates = computed(() =>
-  samCandidates.value.some((candidate) => candidate.enabled && candidate.mask)
-);
+const SAM_EXPANDABLE_CANDIDATE_SOURCES = new Set(["point", "box", "text", "ocr-sam"]);
+const isSamCandidateExpansionEligible = (candidate) =>
+  SAM_EXPANDABLE_CANDIDATE_SOURCES.has(
+    String(candidate?.source || "").trim().toLowerCase()
+  );
+const shouldAutoExpandSamCandidate = (candidate) =>
+  shouldAutoExpandSamMasks.value && isSamCandidateExpansionEligible(candidate);
 const samAutoExpandNotice = computed(
-  () => shouldAutoExpandSamMasks.value && hasEnabledSamCandidates.value
+  () =>
+    shouldAutoExpandSamMasks.value &&
+    samCandidates.value.some(
+      (candidate) =>
+        candidate.enabled &&
+        candidate.mask &&
+        isSamCandidateExpansionEligible(candidate)
+    )
 );
 const canUseSamEraseTool = computed(
   () =>
@@ -1133,8 +1274,9 @@ const samEraseTooltip = computed(() => {
 
 const samStatusText = computed(() => {
   if (!props.samImage) return "请先选择图片";
+  if (selectedSmartModelIsOcr.value) return ocrStatusMessage.value;
   if (!selectedSamModelHasRunnableFeature.value) {
-    return "请先安装支持图片点选/框选或文本智选的 SAM 模型";
+    return "请先安装可用的智能选区模型";
   }
   if (samPredicting.value) return "正在加载模型或计算图片特征";
   if (samToolMode.value === SAM_TOOL_MODES.ERASE) return "拖动擦除智能选区结果";
@@ -1252,6 +1394,7 @@ const normalizeSamModelOptions = (items = []) =>
     .map((item) => ({
       label: item.label || item.id || item.value,
       value: item.value || item.id,
+      type: item.type || (String(item.value || item.id || "").startsWith("ocr_") ? "ocr" : "mask"),
       family: item.family || "",
       enabledCapabilities: item.enabledCapabilities || null,
       disable: Boolean(item.disable),
@@ -1259,19 +1402,7 @@ const normalizeSamModelOptions = (items = []) =>
 
 const resolvedSamModelOptions = computed(() => {
   const options = normalizeSamModelOptions(props.samModelOptions);
-  if (!options.length) {
-    return [];
-  }
-  if (options.some((option) => option.value === props.samModelId)) {
-    return options;
-  }
-  return [
-    {
-      label: props.samModelId || "sam_vit_b",
-      value: props.samModelId || "sam_vit_b",
-    },
-    ...options,
-  ];
+  return options;
 });
 
 const effectiveSamModelId = computed(
@@ -1283,6 +1414,9 @@ const selectedSamModelOption = computed(() =>
 const selectedSamModelFamily = computed(() =>
   selectedSamModelOption.value?.family ||
   (["sam3", "sam3_1_multiplex"].includes(effectiveSamModelId.value) ? "sam3" : "")
+);
+const selectedSmartModelIsOcr = computed(
+  () => selectedSamModelOption.value?.type === "ocr" || selectedSamModelOption.value?.value?.startsWith("ocr_")
 );
 const selectedSamEnabledCapabilities = computed(
   () => selectedSamModelOption.value?.enabledCapabilities || null
@@ -1300,15 +1434,38 @@ const selectedSamModelSupportsPointBox = computed(() => {
   if (effectiveSamModelId.value === "sam3_1_multiplex") return false;
   return ["sam", "sam2", "sam3"].includes(selectedSamModelFamily.value);
 });
+const isSamTextModelOption = (option) => {
+  if (!option || option.type === "ocr") return false;
+  const capabilities = option.enabledCapabilities;
+  if (capabilities && typeof capabilities === "object") {
+    return capabilities.imageText === true;
+  }
+  return option.family === "sam3";
+};
+const samTextModelOption = computed(() => {
+  const configuredModelId = String(props.samTextModelId || "").trim();
+  return (
+    resolvedSamModelOptions.value.find(
+      (option) => option.value === configuredModelId && isSamTextModelOption(option)
+    ) || resolvedSamModelOptions.value.find(isSamTextModelOption) || null
+  );
+});
+const samTextSelectionAvailable = computed(() => Boolean(samTextModelOption.value));
+const samTextModelLabel = computed(
+  () => samTextModelOption.value?.label || props.samTextModelId || "SAM 文本模型"
+);
 const selectedSamModelCanRunText = computed(
   () => selectedSamModelSupportsText.value
 );
 const selectedSamModelHasRunnableFeature = computed(
-  () => selectedSamModelSupportsPointBox.value || selectedSamModelCanRunText.value
+  () => selectedSmartModelIsOcr.value
+    ? ocrAvailable.value
+    : selectedSamModelSupportsPointBox.value || selectedSamModelCanRunText.value
 );
 const canRunSamTextPrediction = computed(
   () =>
-    selectedSamModelSupportsText.value &&
+    samTextSelectionAvailable.value &&
+    !selectedSmartModelIsOcr.value &&
     Boolean(props.samImage) &&
     Boolean(samTextPromptSpec.value.text) &&
     !samPredicting.value &&
@@ -1316,14 +1473,48 @@ const canRunSamTextPrediction = computed(
 );
 const canRunSamBatchTextPrediction = computed(
   () =>
-    selectedSamModelSupportsText.value &&
+    samTextSelectionAvailable.value &&
+    !selectedSmartModelIsOcr.value &&
     Boolean(samTextPromptSpec.value.text) &&
     props.samTextBatchTargetCount > 0 &&
     !samPredicting.value &&
     !samTextBatchRunning.value
 );
+const canRunSmartSelectionCurrent = computed(() => {
+  if (selectedSmartModelIsOcr.value) {
+    return Boolean(
+      props.samImage &&
+      props.ocrAvailable &&
+      !props.ocrBusy &&
+      !samPredicting.value &&
+      !samTextBatchRunning.value
+    );
+  }
+  return canRunSamTextPrediction.value;
+});
+const canRunSmartSelectionBatch = computed(() => {
+  if (selectedSmartModelIsOcr.value) {
+    return Boolean(
+      props.ocrAvailable &&
+      props.samTextBatchTargetCount > 0 &&
+      !props.ocrBusy &&
+      !samPredicting.value &&
+      !samTextBatchRunning.value
+    );
+  }
+  return canRunSamBatchTextPrediction.value;
+});
 const samTextBatchTooltip = computed(() => {
-  if (!selectedSamModelSupportsText.value) return "当前 SAM 模型不支持文本智选";
+  if (selectedSmartModelIsOcr.value) {
+    if (!props.ocrAvailable) return props.ocrStatusMessage || "RapidOCR 尚未就绪";
+    if (props.samTextBatchTargetCount <= 0) return "请先选择图片";
+    if (samTextBatchRunning.value) return "正在检索选中图片";
+    return `使用 RapidOCR 检索 ${props.samTextBatchTargetCount} 张选中图片`;
+  }
+  if (!samTextSelectionAvailable.value) return "请先安装支持文本智选的 SAM 模型";
+  if (!selectedSamModelSupportsText.value) {
+    return `当前模型不支持文本智选，将使用 ${samTextModelLabel.value}`;
+  }
   if (!samTextPromptSpec.value.text) return "先输入文本提示或选择颜色/目标";
   if (props.samTextBatchTargetCount <= 0) return "请先选择图片";
   if (samTextBatchRunning.value) return "正在检索选中图片";
@@ -1331,23 +1522,42 @@ const samTextBatchTooltip = computed(() => {
 });
 const samCandidateMenuTooltip = computed(() => {
   if (samCandidates.value.length === 0) return "暂无候选蒙版";
-  return "候选蒙版显示与删除";
+  return "候选蒙版显示、样式与删除";
 });
 
 const updateSelectedSamModel = (modelId) => {
-  const nextModelId = String(modelId || props.samModelId || "sam_vit_b").trim();
+  const nextModelId = String(modelId || "").trim();
   if (!nextModelId || selectedSamModelId.value === nextModelId) return;
   saveSamContextSession();
   selectedSamModelId.value = nextModelId;
+  emit("update:smart-selection-model", nextModelId);
   restoreSamContextSession();
   scheduleSamSettingsMenuLayoutSync();
 };
 
+const openSmartSelectionModelManagement = () => {
+  globalSettings?.open?.({
+    tab: "models",
+    modelId: effectiveSamModelId.value || props.ocrModelId || "",
+  });
+};
+
 const getTextModelId = () => {
-  if (selectedSamModelSupportsText.value && effectiveSamModelId.value) {
+  if (
+    !selectedSmartModelIsOcr.value &&
+    isSamTextModelOption(selectedSamModelOption.value) &&
+    effectiveSamModelId.value
+  ) {
     return effectiveSamModelId.value;
   }
-  return props.samTextModelId || "sam3_1_multiplex";
+  return samTextModelOption.value?.value || props.samTextModelId || "sam3_1_multiplex";
+};
+
+const getOcrModelId = () => {
+  if (selectedSmartModelIsOcr.value && effectiveSamModelId.value) {
+    return effectiveSamModelId.value;
+  }
+  return String(props.ocrModelId || "").trim();
 };
 
 const resolveSamCpuRiskDialog = (confirmed) => {
@@ -1376,6 +1586,42 @@ const requestSamCpuRiskConfirmation = async (modelId) => {
   samCpuRiskDialogOpen.value = true;
   return new Promise((resolve) => {
     samCpuRiskDialogResolve = resolve;
+  });
+};
+
+const requestSmartSelectionAction = async (modelType, scope) => {
+  const normalizedModelType = modelType === "ocr" ? "ocr" : "sam";
+  const normalizedScope = scope === "selected" ? "selected" : "current";
+  if (normalizedModelType === "sam" && normalizedScope === "current") {
+    if (!canRunSamTextPrediction.value) return;
+  }
+  if (normalizedModelType === "sam" && normalizedScope === "selected") {
+    if (!canRunSamBatchTextPrediction.value) return;
+    const runModelId = getTextModelId();
+    if (!(await requestSamCpuRiskConfirmation(runModelId))) return;
+  }
+  if (normalizedModelType === "ocr" && normalizedScope === "current" && !canRunSmartSelectionCurrent.value) {
+    return;
+  }
+  if (normalizedModelType === "ocr" && normalizedScope === "selected" && !canRunSmartSelectionBatch.value) {
+    return;
+  }
+
+  closeSamToolbarPopups();
+  const promptSpec = samTextPromptSpec.value;
+  emit("smart-selection-request", {
+    modelType: normalizedModelType,
+    scope: normalizedScope,
+    modelId: normalizedModelType === "sam" ? getTextModelId() : getOcrModelId(),
+    ...(normalizedModelType === "sam"
+      ? {
+          text: promptSpec.text,
+          language: promptSpec.language,
+          promptSource: promptSpec.source,
+          promptColor: promptSpec.color,
+          promptNoun: promptSpec.noun,
+        }
+      : {}),
   });
 };
 
@@ -1424,6 +1670,8 @@ const buildSamTextCandidate = async (
 ) =>
   hydrateSamCandidateExpandPx({
     ...candidate,
+    displayColor: getEffectiveMaskDisplayColor(),
+    displayAlpha: getEffectiveMaskDisplayAlpha(),
     localId: `${Date.now()}-${samOperationIndex.value}-text-${index}`,
     label: `文本候选 ${index + 1}`,
     enabled: index === 0,
@@ -1437,6 +1685,7 @@ const cloneSamCandidates = (items = [], { preserveRenderCache = false } = {}) =>
   items.map((candidate) => {
     const nextCandidate = {
       ...candidate,
+      displayColor: normalizeSamDisplayColor(candidate?.displayColor, getEffectiveMaskDisplayColor()),
       displayAlpha: normalizeSamDisplayAlpha(candidate?.displayAlpha, getEffectiveMaskDisplayAlpha()),
     };
     if (!preserveRenderCache) {
@@ -1461,7 +1710,7 @@ const resolveSamSessionDimensions = (session = {}) => {
 
 const setSamCandidateExpandPx = async (localId, value, { render = true } = {}) => {
   const candidate = samCandidates.value.find((item) => item.localId === localId);
-  if (!candidate) return;
+  if (!candidate || !isSamCandidateExpansionEligible(candidate)) return;
   const nextValue = normalizeSamCandidateExpandPx(value, candidate.autoExpandPx ?? candidate.expandPx ?? 0);
   if (candidate.expandPx === nextValue) return;
   candidate.expandPx = nextValue;
@@ -1473,6 +1722,30 @@ const setSamCandidateExpandPx = async (localId, value, { render = true } = {}) =
   if (render) {
     await renderSamCandidates({ pushHistory: false });
   }
+};
+
+const setSamCandidateDisplayStyle = async (localId, style = {}, { render = true } = {}) => {
+  const candidate = samCandidates.value.find((item) => item.localId === localId);
+  if (!candidate) return;
+  const nextColor = normalizeSamDisplayColor(style.color, candidate.displayColor);
+  const nextAlpha = normalizeSamDisplayAlpha(style.alpha, candidate.displayAlpha);
+  if (candidate.displayColor === nextColor && candidate.displayAlpha === nextAlpha) return;
+  candidate.displayColor = nextColor;
+  candidate.displayAlpha = nextAlpha;
+  candidate.renderedMask = "";
+  candidate.renderedMaskMeta = null;
+  bumpSamCandidatesRevision();
+  if (render) {
+    saveSamContextSession();
+    await renderSamCandidates({ pushHistory: false });
+  }
+};
+
+const commitSamCandidateDisplayStyle = async (localId) => {
+  const candidate = samCandidates.value.find((item) => item.localId === localId);
+  if (!candidate) return;
+  saveSamContextSession();
+  await renderSamCandidates({ pushHistory: false });
 };
 
 const saveSamContextSession = () => {
@@ -1511,11 +1784,13 @@ const restoreSamContextSession = () => {
 };
 
 const hasActiveSamCandidateLayer = () =>
-  samCandidates.value.some((candidate) => candidate?.mask);
+  samCandidates.value.some((candidate) => candidate?.mask && candidate?.enabled !== false);
 
 const hasStoredSamContextCandidates = (contextId = getSamContextId()) => {
   const session = samSessionByContext.get(contextId);
-  return Array.isArray(session?.candidates) && session.candidates.some((candidate) => candidate?.mask);
+  return Array.isArray(session?.candidates) && session.candidates.some(
+    (candidate) => candidate?.mask && candidate?.enabled !== false
+  );
 };
 
 const hasSamContextCandidates = (contextId = getSamContextId()) => {
@@ -1824,12 +2099,25 @@ const resolveSamMaskAutoExpandPx = async (maskDataUrl, width, height) => {
 const normalizeSamCandidateExpandPx = (value, fallback = 0) =>
   normalizeSamExpandRadius(value, fallback);
 
-const hydrateSamCandidateExpandPx = async (candidate) => {
-  const fallback = normalizeSamCandidateExpandPx(candidate?.autoExpandPx ?? candidate?.expandPx ?? 0);
+const hydrateSamCandidateExpandPx = async (candidate, dimensions = {}) => {
+  const displayColor = normalizeSamDisplayColor(candidate?.displayColor, getEffectiveMaskDisplayColor());
   const displayAlpha = normalizeSamDisplayAlpha(candidate?.displayAlpha, getEffectiveMaskDisplayAlpha());
-  if (!candidate?.mask || !store.imageWidth || !store.imageHeight) {
+  if (!isSamCandidateExpansionEligible(candidate)) {
     return {
       ...candidate,
+      displayColor,
+      displayAlpha,
+      autoExpandPx: 0,
+      expandPx: 0,
+    };
+  }
+  const fallback = normalizeSamCandidateExpandPx(candidate?.autoExpandPx ?? candidate?.expandPx ?? 0);
+  const imageWidth = Math.max(0, Number(dimensions.width || store.imageWidth || 0));
+  const imageHeight = Math.max(0, Number(dimensions.height || store.imageHeight || 0));
+  if (!candidate?.mask || !imageWidth || !imageHeight) {
+    return {
+      ...candidate,
+      displayColor,
       displayAlpha,
       autoExpandPx: fallback,
       expandPx: normalizeSamCandidateExpandPx(candidate?.expandPx, fallback),
@@ -1837,10 +2125,11 @@ const hydrateSamCandidateExpandPx = async (candidate) => {
   }
   const autoExpandPx =
     candidate.autoExpandPx == null
-      ? await resolveSamMaskAutoExpandPx(candidate.mask, store.imageWidth, store.imageHeight)
+      ? await resolveSamMaskAutoExpandPx(candidate.mask, imageWidth, imageHeight)
       : normalizeSamCandidateExpandPx(candidate.autoExpandPx, fallback);
   return {
     ...candidate,
+    displayColor,
     displayAlpha,
     autoExpandPx,
     expandPx: normalizeSamCandidateExpandPx(candidate.expandPx, autoExpandPx),
@@ -1898,13 +2187,41 @@ const drawImageUrlToContext = (dataUrl) =>
 const normalizeSamDisplayAlpha = (value, fallback = DEFAULT_IMAGE_BRUSH.alpha) =>
   Math.min(1, Math.max(0.05, Number(value ?? fallback) || fallback || DEFAULT_IMAGE_BRUSH.alpha));
 
+const normalizeSamDisplayColor = (value, fallback = DEFAULT_IMAGE_BRUSH.color) =>
+  normalizeBrushConfig(
+    { color: value, size: DEFAULT_IMAGE_BRUSH.size, alpha: DEFAULT_IMAGE_BRUSH.alpha },
+    { ...DEFAULT_IMAGE_BRUSH, color: fallback }
+  ).color;
+
 const getEffectiveMaskDisplayAlpha = () =>
-  normalizeSamDisplayAlpha(props.toolState?.brushAlpha ?? brushAlpha.value, DEFAULT_IMAGE_BRUSH.alpha);
+  normalizeSamDisplayAlpha(brushAlpha.value ?? props.toolState?.brushAlpha, DEFAULT_IMAGE_BRUSH.alpha);
+
+const getEffectiveMaskDisplayColor = () =>
+  normalizeSamDisplayColor(brushColor.value || props.toolState?.brushColor, DEFAULT_IMAGE_BRUSH.color);
+
+const formatSamDisplayAlpha = (value) => `${Math.round(normalizeSamDisplayAlpha(value) * 100)}%`;
+
+const getSamCandidateSwatchStyle = (candidate = null) => ({
+  backgroundColor: normalizeSamDisplayColor(candidate?.displayColor),
+  opacity: normalizeSamDisplayAlpha(candidate?.displayAlpha),
+});
 
 const getSamCandidateMaskAlpha = (candidate = null) =>
   Math.round(255 * normalizeSamDisplayAlpha(candidate?.displayAlpha));
 
-const normalizeSamCandidateMaskOpacity = async (maskDataUrl, width, height, candidate = null) => {
+const getSamCandidateMaskColor = (candidate = null) => {
+  const normalized = normalizeSamDisplayColor(candidate?.displayColor).replace("#", "");
+  const expanded = normalized.length === 3
+    ? normalized.split("").map((character) => `${character}${character}`).join("")
+    : normalized;
+  return [
+    Number.parseInt(expanded.slice(0, 2), 16),
+    Number.parseInt(expanded.slice(2, 4), 16),
+    Number.parseInt(expanded.slice(4, 6), 16),
+  ];
+};
+
+const normalizeSamCandidateMaskStyle = async (maskDataUrl, width, height, candidate = null) => {
   if (!maskDataUrl || !width || !height) return maskDataUrl || "";
   const image = await drawImageUrlToContext(maskDataUrl);
   const canvas = document.createElement("canvas");
@@ -1917,13 +2234,22 @@ const normalizeSamCandidateMaskOpacity = async (maskDataUrl, width, height, cand
   canvasContext.drawImage(image, 0, 0, width, height);
   const imageData = canvasContext.getImageData(0, 0, width, height);
   const targetAlpha = getSamCandidateMaskAlpha(candidate);
+  const [targetRed, targetGreen, targetBlue] = getSamCandidateMaskColor(candidate);
   let changed = false;
-  for (let index = 3; index < imageData.data.length; index += 4) {
-    if (imageData.data[index] <= 0 || imageData.data[index] === targetAlpha) {
-      continue;
+  for (let index = 0; index < imageData.data.length; index += 4) {
+    if (imageData.data[index + 3] <= 0) continue;
+    if (
+      imageData.data[index] !== targetRed ||
+      imageData.data[index + 1] !== targetGreen ||
+      imageData.data[index + 2] !== targetBlue ||
+      imageData.data[index + 3] !== targetAlpha
+    ) {
+      imageData.data[index] = targetRed;
+      imageData.data[index + 1] = targetGreen;
+      imageData.data[index + 2] = targetBlue;
+      imageData.data[index + 3] = targetAlpha;
+      changed = true;
     }
-    imageData.data[index] = targetAlpha;
-    changed = true;
   }
   if (!changed) return maskDataUrl;
 
@@ -2026,15 +2352,20 @@ const resolveSamCandidateMaskForRendering = async (
   const renderWidth = Math.max(1, Math.round(width || maskCanvas.value?.width || store.imageWidth || 1));
   const renderHeight = Math.max(1, Math.round(height || maskCanvas.value?.height || store.imageHeight || 1));
   let renderMask = sourceMask;
-  const expandPx = normalizeSamCandidateExpandPx(candidate.expandPx, candidate.autoExpandPx ?? 0);
+  const autoExpand = shouldAutoExpandSamCandidate(candidate);
+  const expandPx = autoExpand
+    ? normalizeSamCandidateExpandPx(candidate.expandPx, candidate.autoExpandPx ?? 0)
+    : 0;
   const displayAlpha = normalizeSamDisplayAlpha(candidate.displayAlpha);
+  const displayColor = normalizeSamDisplayColor(candidate.displayColor);
   const renderMeta = {
     sourceMask,
     width: renderWidth,
     height: renderHeight,
     expandPx,
     eraseMask: candidate.eraseMask || "",
-    autoExpand: shouldAutoExpandSamMasks.value,
+    autoExpand,
+    displayColor,
     displayAlpha,
   };
   const cachedRender = candidate.renderedMaskMeta;
@@ -2046,6 +2377,7 @@ const resolveSamCandidateMaskForRendering = async (
     cachedRender.expandPx === renderMeta.expandPx &&
     cachedRender.eraseMask === renderMeta.eraseMask &&
     cachedRender.autoExpand === renderMeta.autoExpand &&
+    cachedRender.displayColor === renderMeta.displayColor &&
     cachedRender.displayAlpha === renderMeta.displayAlpha
   ) {
     recordSamRenderStat("cacheHitCount", {
@@ -2059,7 +2391,7 @@ const resolveSamCandidateMaskForRendering = async (
     lastRenderReason: "candidate-cache-miss",
   });
 
-  if (!shouldAutoExpandSamMasks.value) {
+  if (!autoExpand) {
     renderMask = sourceMask;
   } else {
     const cached = samExpandedMaskCache.get(candidate);
@@ -2097,9 +2429,28 @@ const resolveSamCandidateMaskForRendering = async (
     );
   }
 
-  renderMask = await normalizeSamCandidateMaskOpacity(renderMask, renderWidth, renderHeight, candidate);
-  candidate.renderedMask = renderMask;
-  candidate.renderedMaskMeta = renderMeta;
+  renderMask = await normalizeSamCandidateMaskStyle(renderMask, renderWidth, renderHeight, candidate);
+  // Async expansion/erase work can overlap with a candidate style edit. Only
+  // cache the result when the candidate still represents the request we built.
+  const currentRenderMeta = {
+    sourceMask: candidate?.mask || "",
+    width: renderWidth,
+    height: renderHeight,
+    expandPx: shouldAutoExpandSamCandidate(candidate)
+      ? normalizeSamCandidateExpandPx(candidate?.expandPx, candidate?.autoExpandPx ?? 0)
+      : 0,
+    eraseMask: candidate?.eraseMask || "",
+    autoExpand: shouldAutoExpandSamCandidate(candidate),
+    displayColor: normalizeSamDisplayColor(candidate?.displayColor),
+    displayAlpha: normalizeSamDisplayAlpha(candidate?.displayAlpha),
+  };
+  const renderMetaIsCurrent = Object.keys(renderMeta).every(
+    (key) => currentRenderMeta[key] === renderMeta[key]
+  );
+  if (renderMetaIsCurrent) {
+    candidate.renderedMask = renderMask;
+    candidate.renderedMaskMeta = renderMeta;
+  }
   return renderMask;
 };
 
@@ -2201,7 +2552,11 @@ const scheduleSamRenderPreloadFlush = () => {
   samPreloadFallbackTimer = window.setTimeout(run, 240);
 };
 
-const hasSamCandidateLayer = () => samCandidates.value.some((candidate) => candidate.mask);
+// Only enabled candidates participate in the visible/base-mask layer. Disabled
+// candidates remain available in the candidate list, but must not change the
+// base snapshot or its opacity during manual editing.
+const hasSamCandidateLayer = () =>
+  samCandidates.value.some((candidate) => candidate?.mask && candidate?.enabled !== false);
 
 const resolveCurrentSamBaseSnapshot = async () => {
   if (!maskCanvas.value) return null;
@@ -2210,6 +2565,12 @@ const resolveCurrentSamBaseSnapshot = async () => {
   if (samBaseSnapshot.value) return cloneImageData(samBaseSnapshot.value);
   if (samBaseSnapshotDataUrl.value) {
     return dataUrlToImageData(samBaseSnapshotDataUrl.value, width, height);
+  }
+  // When every smart candidate is temporarily disabled, the visible canvas is
+  // the current editable base. Capture it before re-enabling candidates so
+  // manual edits are not replaced by the candidates' original masks.
+  if (!hasSamCandidateLayer() && ctx.value) {
+    return ctx.value.getImageData(0, 0, width, height);
   }
   if (hasSamCandidateLayer()) {
     const canvas = document.createElement("canvas");
@@ -2295,8 +2656,22 @@ const drawRasterOperationLayer = (canvasContext, operation = {}) => {
   }
 
   if (operation.imageData && operation.dirtyRect) {
+    const existingImageData = canvasContext.getImageData(
+      operation.dirtyRect.x,
+      operation.dirtyRect.y,
+      operation.dirtyRect.width,
+      operation.dirtyRect.height
+    );
+    const mergedPixels = mergeEraseMaskPixels(
+      existingImageData.data,
+      operation.imageData.data
+    );
     canvasContext.putImageData(
-      operation.imageData,
+      new ImageData(
+        mergedPixels,
+        operation.dirtyRect.width,
+        operation.dirtyRect.height
+      ),
       operation.dirtyRect.x,
       operation.dirtyRect.y
     );
@@ -2361,26 +2736,34 @@ const applySamEraseOperationToEnabledCandidates = async (operation = {}) => {
 };
 
 const syncSamBaseSnapshotFromManualOperation = async (operationResult = {}) => {
-  if (!operationResult?.changed || !operationResult.operation || !hasSamCandidateLayer()) {
+  if (!operationResult?.changed || !operationResult.operation) {
     return false;
   }
 
+  const operation = operationResult.operation;
   const currentBaseSnapshot = await resolveCurrentSamBaseSnapshot();
-  if (!currentBaseSnapshot) return false;
-  const nextBaseSnapshot = applyRasterOperationToImageData(
-    currentBaseSnapshot,
-    operationResult.operation
-  );
-  if (!nextBaseSnapshot) return false;
+  if (!currentBaseSnapshot) {
+    return false;
+  }
 
-  samBaseSnapshot.value = nextBaseSnapshot;
-  samBaseSnapshotDataUrl.value = imageDataToDataUrl(nextBaseSnapshot);
-  bumpSamBaseSnapshotRevision();
+  const isEraseOperation = normalizeMaskToolMode(operation.mode) === MASK_TOOL_MODES.ERASE;
+  const candidateChanged = isEraseOperation
+    ? await applySamEraseOperationToEnabledCandidates(operation)
+    : false;
+  const nextBaseSnapshot = applyRasterOperationToImageData(currentBaseSnapshot, operation);
+  if (!nextBaseSnapshot && !candidateChanged) return false;
+
+  if (nextBaseSnapshot) {
+    samBaseSnapshot.value = nextBaseSnapshot;
+    samBaseSnapshotDataUrl.value = imageDataToDataUrl(nextBaseSnapshot);
+    bumpSamBaseSnapshotRevision();
+  }
   await renderSamCandidates({ pushHistory: true });
   return true;
 };
 
-const renderSamCandidates = async ({ pushHistory = false, saveSession = true } = {}) => {
+const renderSamCandidates = async ({ pushHistory = false, saveSession = true, commitGuard } = {}) => {
+  const canCommit = typeof commitGuard === "function" ? commitGuard : () => true;
   if (!ctx.value || !maskCanvas.value) return;
   const contextId = getSamContextId();
   const canvas = maskCanvas.value;
@@ -2453,7 +2836,8 @@ const renderSamCandidates = async ({ pushHistory = false, saveSession = true } =
       renderToken !== samRenderToken ||
       contextId !== getSamContextId() ||
       canvas !== maskCanvas.value ||
-      !ctx.value
+      !ctx.value ||
+      !canCommit()
     ) {
       return false;
     }
@@ -2576,6 +2960,8 @@ const runSamPrediction = async ({ point = null, box = null } = {}) => {
       (result.candidates || []).map((candidate, index) =>
         hydrateSamCandidateExpandPx({
           ...candidate,
+          displayColor: getEffectiveMaskDisplayColor(),
+          displayAlpha: getEffectiveMaskDisplayAlpha(),
           localId: `${Date.now()}-${samOperationIndex.value}-${index}`,
           label: box ? `框选候选 ${index + 1}` : `点选候选 ${index + 1}`,
           enabled: index === 0,
@@ -2605,10 +2991,18 @@ const runSamTextPrediction = async () => {
   const promptSpec = samTextPromptSpec.value;
   const prompt = promptSpec.text;
   if (!props.samImage || samPredicting.value || !prompt) return;
-  if (!selectedSamModelSupportsText.value) {
+  if (!samTextSelectionAvailable.value) {
     $q.notify({
       type: "warning",
-      message: "当前 SAM 模型不支持文本智选",
+      message: "请先在模型管理中安装支持文本智选的 SAM 模型",
+      position: "top",
+    });
+    return;
+  }
+  if (selectedSmartModelIsOcr.value) {
+    $q.notify({
+      type: "warning",
+      message: "RapidOCR 请使用 OCR 文本智能选区按钮",
       position: "top",
     });
     return;
@@ -2688,27 +3082,8 @@ const runSamTextPrediction = async () => {
   }
 };
 
-const requestSamTextBatchPrediction = async () => {
-  const promptSpec = samTextPromptSpec.value;
-  const prompt = promptSpec.text;
-  if (!canRunSamBatchTextPrediction.value || !prompt) return;
-  closeSamToolbarPopups();
-  const runModelId = getTextModelId();
-  if (!(await requestSamCpuRiskConfirmation(runModelId))) {
-    return;
-  }
-  emit("sam-text-batch-request", {
-    text: prompt,
-    language: promptSpec.language,
-    modelId: runModelId,
-    promptSource: promptSpec.source,
-    promptColor: promptSpec.color,
-    promptNoun: promptSpec.noun,
-  });
-};
-
-const cancelSamTextBatchPrediction = () => {
-  emit("sam-text-batch-cancel");
+const cancelSmartSelection = () => {
+  emit("smart-selection-cancel");
 };
 
 const composeSamMaskDataUrl = async ({ baseMask = "", candidates = [], width = 0, height = 0 } = {}) => {
@@ -2744,11 +3119,15 @@ const appendExternalSamTextResult = async ({
   result = {},
   prompt = "",
   baseMask = "",
+  commitGuard,
 } = {}) => {
+  const canCommit = typeof commitGuard === "function" ? commitGuard : () => true;
   const sessionKey = buildSamContextId(contextId);
   if (!sessionKey) return { candidates: [], mask: "", performance: result.performance || null };
 
-  const previousSession = samSessionByContext.get(sessionKey) || {};
+  const storedPreviousSession = samSessionByContext.get(sessionKey);
+  const hasPreviousSession = samSessionByContext.has(sessionKey);
+  const previousSession = storedPreviousSession || {};
   const width = Number(result.width || 0);
   const height = Number(result.height || 0);
   const previousCandidates = cloneSamCandidates(previousSession.candidates || [], {
@@ -2761,6 +3140,8 @@ const appendExternalSamTextResult = async ({
     (result.candidates || []).map((candidate, index) =>
       hydrateSamCandidateExpandPx({
         ...candidate,
+        displayColor: getEffectiveMaskDisplayColor(),
+        displayAlpha: getEffectiveMaskDisplayAlpha(),
         localId: `${Date.now()}-${previousOperationIndex}-batch-text-${index}`,
         label: candidate.label || `智能选区候选 ${previousCandidates.length + index + 1}`,
         enabled: candidate.enabled == null ? index === 0 : Boolean(candidate.enabled),
@@ -2768,17 +3149,31 @@ const appendExternalSamTextResult = async ({
         modelId: candidate.modelId || modelId || getTextModelId(),
         prompt: candidate.prompt || result.prompt || { type: "text", text: prompt },
         createdAt: new Date().toISOString(),
-      })
+      }, { width, height })
     )
   );
   const mergedCandidates = [...previousCandidates, ...nextCandidates];
   const baseSnapshotDataUrl = previousSession.baseSnapshotDataUrl || baseMask || "";
+  if (!canCommit()) return { candidates: [], mask: "", performance: result.performance || null, cancelled: true };
   const composedMask = await composeSamMaskDataUrl({
     baseMask: baseSnapshotDataUrl,
     candidates: mergedCandidates,
     width,
     height,
   });
+
+  if (!canCommit()) return { candidates: [], mask: "", performance: result.performance || null, cancelled: true };
+
+  const previousActiveCandidates = cloneSamCandidates(samCandidates.value, {
+    preserveRenderCache: canPreserveSamRenderCache({ width, height }),
+  });
+  const previousActiveBaseSnapshotDataUrl = samBaseSnapshotDataUrl.value;
+  const previousActiveOperationIndex = samOperationIndex.value;
+  const previousActivePerformance = samLastPerformance.value;
+  const previousVisibleImageData =
+    sessionKey === activeSamContextId.value && ctx.value && maskCanvas.value
+      ? ctx.value.getImageData(0, 0, maskCanvas.value.width, maskCanvas.value.height)
+      : null;
 
   samSessionByContext.set(sessionKey, {
     ...previousSession,
@@ -2802,8 +3197,32 @@ const appendExternalSamTextResult = async ({
     samOperationIndex.value = previousOperationIndex + 1;
     samLastPerformance.value = result.performance ? { ...result.performance } : samLastPerformance.value;
     if (ctx.value && maskCanvas.value) {
-      await renderSamCandidates({ pushHistory: nextCandidates.length > 0 });
+      await renderSamCandidates({
+        pushHistory: nextCandidates.length > 0,
+        commitGuard: canCommit,
+      });
     }
+  }
+
+  if (!canCommit()) {
+    if (hasPreviousSession) {
+      samSessionByContext.set(sessionKey, previousSession);
+    } else {
+      samSessionByContext.delete(sessionKey);
+    }
+    if (sessionKey === activeSamContextId.value) {
+      samCandidates.value = previousActiveCandidates;
+      samBaseSnapshotDataUrl.value = previousActiveBaseSnapshotDataUrl;
+      samOperationIndex.value = previousActiveOperationIndex;
+      samLastPerformance.value = previousActivePerformance;
+      bumpSamCandidatesRevision();
+      bumpSamBaseSnapshotRevision();
+      resetSamRenderState();
+      if (previousVisibleImageData && ctx.value && maskCanvas.value) {
+        ctx.value.putImageData(previousVisibleImageData, 0, 0);
+      }
+    }
+    return { candidates: [], mask: "", performance: result.performance || null, cancelled: true };
   }
 
   return {
@@ -2816,7 +3235,15 @@ const appendExternalSamTextResult = async ({
 const setSamCandidateEnabled = async (localId, enabled) => {
   const candidate = samCandidates.value.find((item) => item.localId === localId);
   if (!candidate) return;
-  candidate.enabled = Boolean(enabled);
+  const wasEnabled = candidate.enabled !== false;
+  const nextEnabled = Boolean(enabled);
+  candidate.enabled = nextEnabled;
+  if (!wasEnabled && nextEnabled && candidate.eraseMask) {
+    candidate.eraseMask = "";
+    candidate.renderedMask = "";
+    candidate.renderedMaskMeta = null;
+    samExpandedMaskCache.delete(candidate);
+  }
   bumpSamCandidatesRevision();
   await renderSamCandidates({ pushHistory: true });
 };
@@ -2880,16 +3307,52 @@ const clearSamContextSession = async (contextId = getSamContextId(), options = {
   return true;
 };
 
+// Keep this helper below the session primitives so history captures complete
+// candidate/base state without relying on a later reactive tick.
+const captureSamHistoryState = () => ({
+  contextId: activeSamContextId.value || getSamContextId(),
+  candidates: cloneSamCandidates(samCandidates.value),
+  hoveredCandidateId: hoveredSamCandidateId.value || "",
+  baseSnapshot: samBaseSnapshot.value ? cloneImageData(samBaseSnapshot.value) : null,
+  baseSnapshotDataUrl: samBaseSnapshotDataUrl.value || "",
+  operationIndex: Number.isInteger(samOperationIndex.value) ? samOperationIndex.value : 0,
+  lastPerformance: samLastPerformance.value ? { ...samLastPerformance.value } : null,
+});
+
+const restoreSamHistoryState = (state = null) => {
+  if (!state) return false;
+  const currentContextId = getSamContextId();
+  const stateContextId = String(state.contextId || "").trim();
+  if (stateContextId && currentContextId && stateContextId !== currentContextId) {
+    return false;
+  }
+
+  activeSamContextId.value = stateContextId || activeSamContextId.value || currentContextId;
+  samCandidates.value = cloneSamCandidates(state.candidates || []);
+  hoveredSamCandidateId.value = state.hoveredCandidateId || "";
+  samBaseSnapshot.value = state.baseSnapshot ? cloneImageData(state.baseSnapshot) : null;
+  samBaseSnapshotDataUrl.value = state.baseSnapshotDataUrl || "";
+  samOperationIndex.value = Number.isInteger(state.operationIndex) ? state.operationIndex : 0;
+  samLastPerformance.value = state.lastPerformance ? { ...state.lastPerformance } : null;
+  bumpSamCandidatesRevision();
+  bumpSamBaseSnapshotRevision();
+  resetSamRenderState();
+  saveSamContextSession();
+  return true;
+};
+
 const saveInitialState = () => {
   const canvas = maskCanvas.value;
   if (!canvas || !ctx.value || canvas.width <= 0 || canvas.height <= 0) return;
 
   history.value = [];
+  historySamStates.value = [];
   historyIndex.value = -1;
   operationStartIndices.value = [0];
 
   const initialState = ctx.value.getImageData(0, 0, canvas.width, canvas.height);
-  history.value.push(initialState);
+  history.value.push(cloneImageData(initialState));
+  historySamStates.value.push(captureSamHistoryState());
   historyIndex.value = 0;
   operationStartIndices.value = [0];
   pendingMaskSyncDataUrl.value = "";
@@ -3025,7 +3488,14 @@ const emitMask = () => {
 };
 
 const updateCanUndoRedo = () => {
-  canUndo.value = historyIndex.value > operationStartIndices.value[0];
+  canUndo.value = getPreviousMaskHistoryIndex(
+    operationStartIndices.value,
+    historyIndex.value
+  ) >= 0;
+  canRedo.value = getNextMaskHistoryIndex(
+    operationStartIndices.value,
+    historyIndex.value
+  ) >= 0;
 };
 
 const appendHistorySnapshot = (imageData) => {
@@ -3033,6 +3503,7 @@ const appendHistorySnapshot = (imageData) => {
 
   if (historyIndex.value < history.value.length - 1) {
     history.value.splice(historyIndex.value + 1);
+    historySamStates.value.splice(historyIndex.value + 1);
     operationStartIndices.value = operationStartIndices.value.filter(
       (index) => index <= historyIndex.value
     );
@@ -3041,30 +3512,78 @@ const appendHistorySnapshot = (imageData) => {
   const newIndex = history.value.length;
   operationStartIndices.value.push(newIndex);
   history.value.push(cloneImageData(imageData));
+  historySamStates.value.push(captureSamHistoryState());
   historyIndex.value = history.value.length - 1;
   updateCanUndoRedo();
 };
 
 const getCanvasPoint = (event) => {
-  if (!maskCanvas.value) return null;
+  if (!maskCanvas.value || !event) return null;
   const rect = maskCanvas.value.getBoundingClientRect();
+  if (!rect.width || !rect.height || !maskCanvas.value.width || !maskCanvas.value.height) {
+    return null;
+  }
+
+  const x = (event.clientX - rect.left) * (maskCanvas.value.width / rect.width);
+  const y = (event.clientY - rect.top) * (maskCanvas.value.height / rect.height);
+
   return {
-    x: (event.clientX - rect.left) / props.scale,
-    y: (event.clientY - rect.top) / props.scale,
+    x: Math.max(0, Math.min(maskCanvas.value.width, x)),
+    y: Math.max(0, Math.min(maskCanvas.value.height, y)),
   };
 };
 
 const updateCursorPosition = (event) => {
+  if (!event) return;
   cursorPosition.value = {
     x: event.clientX,
     y: event.clientY,
   };
 };
 
+const isActiveDrawingPointer = (event) =>
+  activePointerId.value !== null && event?.pointerId === activePointerId.value;
+
+const bindDrawingPointer = (event) => {
+  detachDrawingWindowListeners();
+  activePointerId.value = event.pointerId;
+  window.addEventListener("pointermove", handleWindowPointerMove, true);
+  window.addEventListener("pointerup", handleWindowPointerUp, true);
+  window.addEventListener("pointercancel", handleWindowPointerCancel, true);
+  window.addEventListener("lostpointercapture", handleLostPointerCapture, true);
+  isDrawingWindowBound.value = true;
+
+  if (typeof maskCanvas.value?.setPointerCapture === "function") {
+    try {
+      maskCanvas.value.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture can fail when a remote-control bridge ends the native pointer stream.
+    }
+  }
+};
+
 const detachDrawingWindowListeners = () => {
-  if (!isDrawingWindowBound.value) return;
-  window.removeEventListener("pointermove", handleWindowPointerMove, true);
-  window.removeEventListener("pointerup", handleWindowPointerUp, true);
+  if (isDrawingWindowBound.value) {
+    window.removeEventListener("pointermove", handleWindowPointerMove, true);
+    window.removeEventListener("pointerup", handleWindowPointerUp, true);
+    window.removeEventListener("pointercancel", handleWindowPointerCancel, true);
+    window.removeEventListener("lostpointercapture", handleLostPointerCapture, true);
+  }
+
+  const pointerId = activePointerId.value;
+  if (
+    pointerId !== null &&
+    typeof maskCanvas.value?.hasPointerCapture === "function" &&
+    maskCanvas.value.hasPointerCapture(pointerId)
+  ) {
+    try {
+      maskCanvas.value.releasePointerCapture(pointerId);
+    } catch {
+      // The capture may already have been released by the browser or remote-control client.
+    }
+  }
+
+  activePointerId.value = null;
   isDrawingWindowBound.value = false;
 };
 
@@ -3106,11 +3625,15 @@ const finishSamEraseOperation = async (event = null) => {
     return;
   }
 
-  const changed = await applySamEraseOperationToEnabledCandidates(result.operation);
-  await renderSamCandidates({ pushHistory: changed });
+  const changed = await syncSamBaseSnapshotFromManualOperation(result);
+  if (!changed) {
+    await renderSamCandidates({ pushHistory: false });
+  }
 };
 
 const handleWindowPointerMove = (event) => {
+  if (!isActiveDrawingPointer(event)) return;
+
   if (smartSelectionMode.value && samPointerStart.value) {
     updateCursorPosition(event);
     samDragPoint.value = clampSamCanvasPoint(getCanvasPoint(event));
@@ -3121,6 +3644,17 @@ const handleWindowPointerMove = (event) => {
   updateCursorPosition(event);
   rasterMaskEditor.updateOperation(getCanvasPoint(event));
   event.preventDefault();
+};
+
+const handleWindowPointerCancel = (event) => {
+  if (!isActiveDrawingPointer(event)) return;
+  cancelCurrentOperation();
+  event.preventDefault();
+};
+
+const handleLostPointerCapture = (event) => {
+  if (!isActiveDrawingPointer(event)) return;
+  cancelCurrentOperation();
 };
 
 const finishSamPointerOperation = async (event) => {
@@ -3148,6 +3682,8 @@ const finishSamPointerOperation = async (event) => {
 };
 
 const handleWindowPointerUp = async (event) => {
+  if (!isActiveDrawingPointer(event)) return;
+
   if (smartSelectionMode.value && samPointerStart.value) {
     updateCursorPosition(event);
     await finishSamPointerOperation(event);
@@ -3171,35 +3707,38 @@ const handleWindowPointerUp = async (event) => {
 };
 
 const handleCanvasPointerDown = (event) => {
-  if (event.button !== 0 || !effectiveDrawingEnabled.value || !maskCanvas.value || !ctx.value) {
+  if (
+    event.button !== 0 ||
+    activePointerId.value !== null ||
+    !effectiveDrawingEnabled.value ||
+    !maskCanvas.value ||
+    !ctx.value
+  ) {
     return;
   }
 
   updateCursorPosition(event);
   if (smartSelectionMode.value) {
     if (smartEraseDrawingEnabled.value) {
-      const result = rasterMaskEditor.beginOperation(getCanvasPoint(event));
+      const point = getCanvasPoint(event);
+      const result = rasterMaskEditor.beginOperation(point);
       rectPreview.value = rasterMaskEditor.rectPreview.value;
       if (!result.started) return;
       samEraseOperation.value = {
         startedAt: Date.now(),
       };
-      detachDrawingWindowListeners();
-      window.addEventListener("pointermove", handleWindowPointerMove, true);
-      window.addEventListener("pointerup", handleWindowPointerUp, true);
-      isDrawingWindowBound.value = true;
+      bindDrawingPointer(event);
       event.preventDefault();
       event.stopPropagation();
       return;
     }
 
     if (selectedSamModelSupportsPointBox.value) {
-      samPointerStart.value = clampSamCanvasPoint(getCanvasPoint(event));
+      const point = getCanvasPoint(event);
+      if (!point) return;
+      samPointerStart.value = clampSamCanvasPoint(point);
       samDragPoint.value = samPointerStart.value;
-      detachDrawingWindowListeners();
-      window.addEventListener("pointermove", handleWindowPointerMove, true);
-      window.addEventListener("pointerup", handleWindowPointerUp, true);
-      isDrawingWindowBound.value = true;
+      bindDrawingPointer(event);
       event.preventDefault();
       event.stopPropagation();
     }
@@ -3210,15 +3749,13 @@ const handleCanvasPointerDown = (event) => {
   rectPreview.value = rasterMaskEditor.rectPreview.value;
   if (!result.started) return;
 
-  detachDrawingWindowListeners();
-  window.addEventListener("pointermove", handleWindowPointerMove, true);
-  window.addEventListener("pointerup", handleWindowPointerUp, true);
-  isDrawingWindowBound.value = true;
+  bindDrawingPointer(event);
   event.preventDefault();
   event.stopPropagation();
 };
 
 const handleCanvasPointerMove = (event) => {
+  if (activePointerId.value !== null && !isActiveDrawingPointer(event)) return;
   updateCursorPosition(event);
 };
 
@@ -3242,10 +3779,16 @@ const setSamToolMode = (value) => {
   }
   if (samToolMode.value === nextMode) return;
 
-  samPointerStart.value = null;
-  samDragPoint.value = null;
-  if (rasterMaskEditor.isOperating.value || samEraseOperation.value) {
+  if (
+    activePointerId.value !== null ||
+    samPointerStart.value ||
+    rasterMaskEditor.isOperating.value ||
+    samEraseOperation.value
+  ) {
     cancelCurrentOperation();
+  } else {
+    samPointerStart.value = null;
+    samDragPoint.value = null;
   }
   samToolMode.value = nextMode;
 };
@@ -3368,23 +3911,31 @@ const resetView = async () => {
 };
 
 const undo = () => {
-  if (historyIndex.value <= 0 || !ctx.value) return;
-
-  let currentOpIndex = 0;
-  for (let index = operationStartIndices.value.length - 1; index >= 0; index -= 1) {
-    if (operationStartIndices.value[index] <= historyIndex.value) {
-      currentOpIndex = index;
-      break;
-    }
-  }
-
-  const previousOpIndex = Math.max(0, currentOpIndex - 1);
-  const targetIndex = operationStartIndices.value[previousOpIndex];
+  if (!ctx.value) return;
+  const targetIndex = getPreviousMaskHistoryIndex(
+    operationStartIndices.value,
+    historyIndex.value
+  );
   if (targetIndex < 0 || targetIndex >= history.value.length) return;
 
-  operationStartIndices.value = operationStartIndices.value.filter((index) => index <= targetIndex);
   historyIndex.value = targetIndex;
+  restoreSamHistoryState(historySamStates.value[targetIndex]);
   ctx.value.putImageData(history.value[historyIndex.value], 0, 0);
+  updateCanUndoRedo();
+  emitMask();
+};
+
+const redo = () => {
+  if (!ctx.value) return;
+  const targetIndex = getNextMaskHistoryIndex(
+    operationStartIndices.value,
+    historyIndex.value
+  );
+  if (targetIndex < 0 || targetIndex >= history.value.length) return;
+
+  historyIndex.value = targetIndex;
+  restoreSamHistoryState(historySamStates.value[targetIndex]);
+  ctx.value.putImageData(history.value[targetIndex], 0, 0);
   updateCanUndoRedo();
   emitMask();
 };
@@ -3592,15 +4143,6 @@ onUnmounted(() => {
   });
 });
 
-useEventListener(window, "mousemove", (event) => {
-  if (effectiveDrawingEnabled.value && !isToolbarInteracting.value) {
-    cursorPosition.value = {
-      x: event.clientX,
-      y: event.clientY,
-    };
-  }
-});
-
 useEventListener(window, "pointermove", syncToolbarPointerRegionState, {
   passive: true,
   capture: true,
@@ -3615,8 +4157,13 @@ useEventListener(window, "pointerup", syncToolbarPointerRegionState, {
 });
 useEventListener(window, "blur", () => {
   setToolbarPointerRegionState(false);
-  if (rasterMaskEditor.isOperating.value) {
-    void finishCurrentOperation();
+  if (
+    activePointerId.value !== null ||
+    rasterMaskEditor.isOperating.value ||
+    samEraseOperation.value ||
+    samPointerStart.value
+  ) {
+    cancelCurrentOperation();
   }
 });
 
@@ -3692,8 +4239,12 @@ watch(
   () => props.smartSelectionMode,
   (enabled) => {
     if (!enabled) {
-      samPointerStart.value = null;
-      samDragPoint.value = null;
+      if (activePointerId.value !== null || samPointerStart.value || samEraseOperation.value) {
+        cancelCurrentOperation();
+      } else {
+        samPointerStart.value = null;
+        samDragPoint.value = null;
+      }
     }
     if (enabled && rasterMaskEditor.isOperating.value) {
       cancelCurrentOperation();
@@ -3794,9 +4345,8 @@ watch(
       lastExecutedSamModelId.value,
       props.samModelId,
       options[0]?.value,
-      "sam_vit_b",
     ].find((modelId) => modelId && options.some((option) => option.value === modelId));
-    selectedSamModelId.value = preferredModelId || props.samModelId || options[0]?.value || "sam_vit_b";
+    selectedSamModelId.value = preferredModelId || options[0]?.value || "";
     scheduleSamSettingsMenuLayoutSync();
   },
   { immediate: true }
@@ -3807,6 +4357,14 @@ watch(
   (enabled) => {
     if (!enabled) {
       cursorPosition.value = null;
+      if (
+        activePointerId.value !== null ||
+        rasterMaskEditor.isOperating.value ||
+        samEraseOperation.value ||
+        samPointerStart.value
+      ) {
+        cancelCurrentOperation();
+      }
     }
   },
   { immediate: true }
@@ -3886,8 +4444,10 @@ defineExpose({
   updateMask,
   getMaskData,
   undo,
+  redo,
   resetView,
   appendExternalSamTextResult,
+  runSamTextPrediction,
   clearSamContextSession,
   scheduleSamRenderPreloadFlush,
   flushSamRenderPreloadQueue,
@@ -3896,6 +4456,7 @@ defineExpose({
   resetSamRenderStats,
   isReady: () => Boolean(maskCanvas.value && ctx.value),
   canUndo: () => canUndo.value,
+  canRedo: () => canRedo.value,
 });
 </script>
 
@@ -4181,6 +4742,35 @@ defineExpose({
   min-height: 24px;
 }
 
+.sam-batch-results {
+  display: block;
+  margin-top: 7px;
+  height: 120px;
+  max-height: 120px;
+  overflow: auto;
+  border-top: 1px solid rgba(17, 24, 39, 0.08);
+  padding-top: 6px;
+}
+
+.sam-batch-result-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  min-height: 24px;
+  align-items: center;
+  color: rgba(75, 85, 99, 0.9);
+  font-size: 11px;
+}
+
+.sam-batch-result-item.is-failed {
+  color: #b91c1c;
+}
+
+.sam-batch-result-item.is-cancelled,
+.sam-batch-result-item.is-skipped {
+  color: #92400e;
+}
+
 .sam-text-actions {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -4200,6 +4790,86 @@ defineExpose({
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.sam-candidate-style-button {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+}
+
+.sam-candidate-color-swatch {
+  display: block;
+  width: 18px;
+  height: 18px;
+  border: 1px solid rgba(17, 24, 39, 0.18);
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.62);
+}
+
+.sam-candidate-style-panel {
+  width: min(280px, calc(100vw - 32px));
+}
+
+.sam-candidate-style-heading,
+.sam-candidate-color-control,
+.sam-candidate-style-control-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sam-candidate-style-heading {
+  justify-content: space-between;
+  min-width: 0;
+  margin-bottom: 14px;
+}
+
+.sam-candidate-style-heading .text-caption {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sam-candidate-color-control {
+  min-height: 36px;
+  color: rgba(55, 65, 81, 0.9);
+  font-size: 12px;
+}
+
+.sam-candidate-color-control input {
+  width: 42px;
+  height: 32px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid rgba(17, 24, 39, 0.14);
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.sam-candidate-alpha-control {
+  margin-top: 12px;
+}
+
+.sam-candidate-style-control-header {
+  min-height: 22px;
+  justify-content: space-between;
+  color: rgba(55, 65, 81, 0.9);
+  font-size: 12px;
+}
+
+.sam-candidate-style-value {
+  margin-left: auto;
+  color: rgba(75, 85, 99, 0.82);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sam-candidate-alpha-control :deep(.q-slider) {
+  margin-top: 2px;
 }
 
 .sam-expand-input {
@@ -4296,9 +4966,49 @@ defineExpose({
   background: rgba(39, 39, 42, 0.62);
 }
 
+.masker-dark .sam-batch-results,
+:global(body.body--dark .sam-batch-results) {
+  border-top-color: rgba(255, 255, 255, 0.1);
+}
+
+.masker-dark .sam-batch-result-item,
+:global(body.body--dark .sam-batch-result-item) {
+  color: rgba(228, 228, 231, 0.86);
+}
+
+.masker-dark .sam-batch-result-item.is-failed,
+:global(body.body--dark .sam-batch-result-item.is-failed) {
+  color: #fca5a5;
+}
+
+.masker-dark .sam-batch-result-item.is-cancelled,
+.masker-dark .sam-batch-result-item.is-skipped,
+:global(body.body--dark .sam-batch-result-item.is-cancelled),
+:global(body.body--dark .sam-batch-result-item.is-skipped) {
+  color: #fcd34d;
+}
+
 .masker-dark .sam-candidate-list,
 :global(body.body--dark .sam-candidate-list) {
   background: rgba(39, 39, 42, 0.62);
+}
+
+:global(body.body--dark .sam-candidate-color-swatch) {
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+
+:global(body.body--dark .sam-candidate-color-control),
+:global(body.body--dark .sam-candidate-style-control-header) {
+  color: rgba(228, 228, 231, 0.9);
+}
+
+:global(body.body--dark .sam-candidate-style-value) {
+  color: rgba(212, 212, 216, 0.76);
+}
+
+:global(body.body--dark .sam-candidate-color-control input) {
+  border-color: rgba(255, 255, 255, 0.12);
 }
 
 .toolbar-container {

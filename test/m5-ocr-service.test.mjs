@@ -39,7 +39,12 @@ test("OCR service keeps capability and recognize routes allowlisted", async () =
 
   const capabilities = await service.getCapabilities();
   assert.equal(capabilities.enabled, true);
-  const result = await service.recognize({ imageBase64: "data:image/png;base64,AAAA" });
+  const requestController = new AbortController();
+  const result = await service.recognize({
+    imageBase64: "data:image/png;base64,AAAA",
+    modelId: "ocr_rapid_onnx_mobile",
+    signal: requestController.signal,
+  });
   assert.equal(result.regions.length, 1);
   assert.equal(result.regions[0].confidence, 0.94);
   assert.deepEqual(calls.map(({ method, path }) => `${method} ${path}`), [
@@ -47,7 +52,9 @@ test("OCR service keeps capability and recognize routes allowlisted", async () =
     `POST ${OCR_RECOGNIZE_PATH}`,
   ]);
   assert.equal(calls[1].payload.image_base64, "AAAA");
+  assert.equal(calls[1].payload.model_id, "ocr_rapid_onnx_mobile");
   assert.equal(calls[1].options.timeout, 15000);
+  assert.equal(calls[1].options.signal, requestController.signal);
 });
 
 test("OCR capability errors fail closed and path-like input is rejected", async () => {

@@ -40,6 +40,10 @@ function createFixture(t) {
   writeFile(models, "mat/Places_512_FullData_G.pth", "mat");
   writeFile(models, "sam/sam_vit_b_01ec64.pth", "sam1-default");
   writeFile(models, "sam2/sam2.1_hiera_large.pt", "sam2-default");
+  writeFile(models, "ocr/PP-OCRv6_det_small.onnx", "ocr-det");
+  writeFile(models, "ocr/PP-OCRv6_rec_small.onnx", "ocr-rec");
+  writeFile(models, "ocr/ch_ppocr_mobile_v2.0_cls_mobile.onnx", "ocr-cls");
+  writeFile(models, "ocr/manifest.json", JSON.stringify({ id: "rapidocr" }));
   writeFile(models, "sam/sam_vit_h.pth", "optional-sam1");
   writeFile(models, "sam3/sam3.pt", "must-not-ship");
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -105,6 +109,10 @@ test("offline bundle creates a verifiable outer ZIP with NSIS sibling and signed
     [
       "models/big-lama.pt",
       "models/mat/Places_512_FullData_G.pth",
+      "models/ocr/ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+      "models/ocr/manifest.json",
+      "models/ocr/PP-OCRv6_det_small.onnx",
+      "models/ocr/PP-OCRv6_rec_small.onnx",
       "models/sam/sam_vit_b_01ec64.pth",
       "models/sam2/sam2.1_hiera_large.pt",
       "models/slbr.pth.tar",
