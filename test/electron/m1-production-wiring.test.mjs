@@ -37,11 +37,19 @@ test("M1 backend wiring keeps persistent jobs behind the Electron userData switc
   assert.doesNotMatch(jobStoreBuilder, /tempfile\.gettempdir/);
 });
 
-test("M1 Electron backend launch injects userData and the migration switch", () => {
+test("M1 Electron backend launch injects persistent storage and OCR model paths", () => {
   const launchBackend = extractFunction(
     electronSource,
     "async function launchBackendService(",
     "\n\nipcMain.handle(\"start-backend-service\"",
+  );
+  assert.match(
+    launchBackend,
+    /modelDir:\s*launchConfig\.modelDir\s*\|\|\s*globalConfig\.general\?\.modelDir\s*\|\|\s*""/,
+  );
+  assert.match(
+    launchBackend,
+    /MOONSHINE_OCR_MODEL_ROOT:\s*path\.join\(effectiveModelDir,\s*"ocr"\)/,
   );
   assert.match(launchBackend, /MOONSHINE_USER_DATA_DIR:\s*app\.getPath\("userData"\)/);
   assert.match(launchBackend, /MOONSHINE_PERSISTENT_JOBS_ENABLED:\s*"1"/);

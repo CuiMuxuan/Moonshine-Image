@@ -443,6 +443,37 @@ class MoonshineSamPredictRequest(BaseModel):
         return values
 
 
+class MoonshineSamBatchPrompt(BaseModel):
+    """One prompt in a single-image SAM batch request."""
+
+    id: Optional[str] = Field(None, min_length=1, max_length=128)
+    points: List[SamPromptPoint] = Field(default_factory=list, max_length=64)
+    box: Optional[SamPromptBox] = None
+
+    @model_validator(mode="after")
+    def validate_prompt(cls, values: "MoonshineSamBatchPrompt"):
+        if not values.points and values.box is None:
+            raise ValueError("At least one point or box prompt is required for each batch item")
+        return values
+
+
+class MoonshineSamPredictBatchRequest(BaseModel):
+    """Predict multiple prompts against one image embedding."""
+
+    image: str = Field(..., description="Base64 image data or local image path")
+    image_type: Literal["base64", "path"] = Field("base64")
+    model_id: str = Field("sam_vit_b", description="SAM1/SAM2.1/SAM3 model id")
+    prompts: List[MoonshineSamBatchPrompt] = Field(..., min_length=1, max_length=128)
+    multimask_output: bool = Field(True)
+
+    @model_validator(mode="after")
+    def validate_prompt_ids(cls, values: "MoonshineSamPredictBatchRequest"):
+        prompt_ids = [str(prompt.id).strip() for prompt in values.prompts if prompt.id]
+        if len(prompt_ids) != len(set(prompt_ids)):
+            raise ValueError("Batch prompt ids must be unique")
+        return values
+
+
 class SamVideoObjectPrompt(BaseModel):
     object_id: int = Field(1, ge=1)
     points: List[SamPromptPoint] = Field(default_factory=list)

@@ -110,6 +110,28 @@ test("OCR recognition writes through the shared SAM candidate mask path", () => 
   assert.match(maskerSource, /candidate\.label \|\| `智能选区候选/);
 });
 
+test("OCR SAM enhancement uses one ordered batch request with stable prompt ids", () => {
+  assert.match(indexSource, /predictSamMasksBatch/);
+  assert.match(indexSource, /const samPrompts = \[\]/);
+  assert.match(indexSource, /id: promptId, box, points: \[\]/);
+  assert.match(indexSource, /candidateByPromptId = new Map/);
+  assert.match(indexSource, /batchResult\?\.results/);
+  assert.match(indexSource, /expectedPromptIds = new Set/);
+  assert.match(indexSource, /new Set\(responsePromptIds\)\.size/);
+  assert.match(indexSource, /expectedPromptIds\.has/);
+  assert.match(indexSource, /批量增强失败，回退逐框处理/);
+  assert.match(indexSource, /predictSamMask\(/);
+});
+
+test("SAM batch service keeps a separate endpoint and batch-wide multimask setting", () => {
+  const serviceSource = read("src/services/SamPredictionService.js");
+  assert.ok(serviceSource.includes('SAM_PREDICT_BATCH_PATH = "/api/v1/moonshine/sam/predict-batch"'));
+  assert.match(serviceSource, /export const predictSamMasksBatch = async/);
+  assert.match(serviceSource, /prompts = request\.prompts\.map/);
+  assert.match(serviceSource, /multimask_output: request\.multimask_output/);
+  assert.match(serviceSource, /api\.post\(SAM_PREDICT_BATCH_PATH/);
+});
+
 test("OCR and SAM batch commits are guarded against cancellation races", () => {
   assert.match(indexSource, /let smartSelectionBatchGeneration = 0/);
   assert.match(indexSource, /const isSmartSelectionBatchCurrent = \(generation\) =>/);

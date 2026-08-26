@@ -49,10 +49,12 @@ SAM2_MODEL_TYPES = {
     "sam2_1_hiera_large": "sam2_1_large",
 }
 
-POINT_BOX_FAMILIES = {"sam", "sam2"}
+POINT_BOX_FAMILIES = {"sam", "sam2", "sam3"}
 TEXT_FAMILIES = {"sam3"}
 SAM_VIDEO_MASK_JPEG_QUALITY = 88
 SAM_VIDEO_MASK_BYTES_PER_PIXEL_ESTIMATE = 0.18
+SAM_BATCH_MAX_PROMPTS = 128
+SAM_BATCH_DEFAULT_MICRO_BATCH = 8
 
 SAM3_REQUIRED_MODULES = {
     "sam3": "sam3",
@@ -566,6 +568,13 @@ class SamService:
                 "models": point_box_models,
                 "defaultModelId": default_point_box_model,
                 "promptTypes": ["point", "box"],
+                "batch": {
+                    "enabled": bool(point_box_models),
+                    "scope": "single-image",
+                    "maxPrompts": SAM_BATCH_MAX_PROMPTS,
+                    "promptTypes": ["point", "box", "mixed"],
+                    "partialResults": True,
+                },
             },
             "video": {
                 "enabled": bool(video_models),
@@ -996,7 +1005,7 @@ class SamService:
         for point in points:
             x = float(point.x if hasattr(point, "x") else point["x"])
             y = float(point.y if hasattr(point, "y") else point["y"])
-            label = int(point.label if hasattr(point, "label") else point["label"])
+            label = int(point.label if hasattr(point, "label") else point.get("label", 1))
             coords.append([x, y])
             labels.append(1 if label else 0)
         return np.array(coords, dtype=np.float32), np.array(labels, dtype=np.int32)
@@ -2194,6 +2203,607 @@ class SamService:
                 "loadImageMs": round(load_image_ms, 2),
                 "setImageMs": round(set_image_ms, 2),
                 "predictMs": round(predict_ms, 2),
+                "encodeMs": round(encode_ms, 2),
+                "totalMs": round(total_ms, 2),
+            },
+        }
+
+    @staticmethod
+    def _batch_prompt_value(prompt, name: str, default=None):
+        if hasattr(prompt, name):
+            return getattr(prompt, name)
+        if isinstance(prompt, dict):
+            return prompt.get(name, default)
+        return default
+
+    @classmethod
+    def _normalize_batch_prompts(cls, prompts: list) -> list[dict]:
+        normalized = []
+        seen_ids = set()
+        for index, prompt in enumerate(prompts or []):
+            raw_id = cls._batch_prompt_value(prompt, "id")
+            prompt_id = re.sub(r"[\x00-\x1f\x7f]", "", str(raw_id or "")).strip()[:128]
+            if not prompt_id:
+                prompt_id = f"prompt-{index + 1}"
+            if prompt_id in seen_ids:
+                raise SamServiceError(f"Batch prompt ids must be unique: {prompt_id}")
+            seen_ids.add(prompt_id)
+
+            points = list(cls._batch_prompt_value(prompt, "points", []) or [])
+            box = cls._batch_prompt_value(prompt, "box")
+            if not points and box is None:
+                raise SamServiceError(
+                    f"At least one point or box prompt is required for batch item {index}"
+                )
+            point_coords, point_labels = cls._normalize_points(points)
+            box_xyxy = cls._normalize_box(box)
+            if point_coords is not None and box_xyxy is not None:
+                prompt_type = "mixed"
+            elif box_xyxy is not None:
+                prompt_type = "box"
+            else:
+                prompt_type = "point"
+
+            point_payload = []
+            for point in points:
+                point_payload.append(
+                    {
+                        "x": float(point.x if hasattr(point, "x") else point["x"]),
+                        "y": float(point.y if hasattr(point, "y") else point["y"]),
+                        "label": int(point.label if hasattr(point, "label") else point.get("label", 1)),
+                    }
+                )
+            box_payload = None
+            if box is not None:
+                box_payload = {
+                    "x": float(box.x if hasattr(box, "x") else box["x"]),
+                    "y": float(box.y if hasattr(box, "y") else box["y"]),
+                    "width": float(box.width if hasattr(box, "width") else box["width"]),
+                    "height": float(box.height if hasattr(box, "height") else box["height"]),
+                }
+            normalized.append(
+                {
+                    "id": prompt_id,
+                    "index": index,
+                    "points": points,
+                    "pointCoords": point_coords,
+                    "pointLabels": point_labels,
+                    "box": box,
+                    "boxXYXY": box_xyxy,
+                    "promptType": prompt_type,
+                    "prompt": {"points": point_payload, "box": box_payload},
+                }
+            )
+        if not normalized:
+            raise SamServiceError("At least one point or box prompt is required.")
+        if len(normalized) > SAM_BATCH_MAX_PROMPTS:
+            raise SamServiceError(
+                f"SAM batch prompt count exceeds the limit of {SAM_BATCH_MAX_PROMPTS}."
+            )
+        return normalized
+
+    @staticmethod
+    def _validate_batch_prompt_capability(prompt: dict, model_status: dict) -> Optional[str]:
+        capabilities = model_status.get("enabledCapabilities") or {}
+        has_points = prompt.get("pointCoords") is not None
+        has_box = prompt.get("boxXYXY") is not None
+        if has_points and not capabilities.get("imagePoint"):
+            return "该 SAM 模型未启用图片点选能力。"
+        if has_box and not capabilities.get("imageBox"):
+            return "该 SAM 模型未启用图片框选能力。"
+        return None
+
+    def _prepare_batch_image(
+        self,
+        *,
+        image: str,
+        image_type: str,
+        model_id: str,
+        model_status: dict,
+    ) -> dict:
+        """Load one image embedding and keep it available for all batch items."""
+        family = str(model_status.get("family") or "").lower()
+        model_cache_key = (model_id, self.device)
+        load_image_started_at = time.perf_counter()
+        rgb_np_img, image_hash = self._load_image(image, image_type)
+        load_image_ms = (time.perf_counter() - load_image_started_at) * 1000
+        context = {
+            "family": family,
+            "modelId": model_id,
+            "modelCacheKey": model_cache_key,
+            "rgb": rgb_np_img,
+            "imageHash": image_hash,
+            "loadImageMs": load_image_ms,
+            "setImageMs": 0.0,
+            "imageCacheHit": False,
+            "modelCached": False,
+        }
+
+        if family == "sam3":
+            model_cached = model_cache_key in self._sam3_image_predictors
+            predictor_bundle = self._get_sam3_image_predictor(model_id)
+            context["model"] = predictor_bundle["model"]
+            context["processor"] = predictor_bundle["processor"]
+            context["modelCached"] = model_cached
+            cached_image = self._sam3_image_cache.get(model_cache_key)
+            context["imageCacheHit"] = bool(
+                cached_image is not None
+                and cached_image.get("imageHash") == image_hash
+                and cached_image.get("state") is not None
+            )
+            autocast_context = (
+                torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+                if self.device == "cuda"
+                else contextlib.nullcontext()
+            )
+            with autocast_context:
+                if context["imageCacheHit"]:
+                    context["state"] = cached_image["state"]
+                else:
+                    set_image_started_at = time.perf_counter()
+                    context["state"] = context["processor"].set_image(
+                        Image.fromarray(rgb_np_img)
+                    )
+                    context["setImageMs"] = (time.perf_counter() - set_image_started_at) * 1000
+                    self._sam3_image_cache[model_cache_key] = {
+                        "imageHash": image_hash,
+                        "state": context["state"],
+                    }
+            return context
+
+        model_cached = model_cache_key in self._predictors
+        predictor = self._get_predictor(model_id)
+        context["predictor"] = predictor
+        context["modelCached"] = model_cached
+        cached_image_hash = self._image_cache.get(model_cache_key)
+        context["imageCacheHit"] = cached_image_hash == image_hash
+        if not context["imageCacheHit"]:
+            set_image_started_at = time.perf_counter()
+            predictor.set_image(rgb_np_img)
+            context["setImageMs"] = (time.perf_counter() - set_image_started_at) * 1000
+            self._image_cache[model_cache_key] = image_hash
+        return context
+
+    @staticmethod
+    def _is_retryable_batch_error(error: Exception) -> bool:
+        if isinstance(error, (MemoryError, RuntimeError)):
+            return True
+        message = str(error).lower()
+        return "out of memory" in message or "no available kernel" in message
+
+    def _run_loaded_prompt(self, context: dict, prompt: dict, multimask_output: bool):
+        family = context["family"]
+        if family == "sam3":
+            autocast_context = (
+                torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+                if self.device == "cuda"
+                else contextlib.nullcontext()
+            )
+            with autocast_context:
+                box_prompt = prompt["boxXYXY"]
+                if box_prompt is not None:
+                    box_prompt = box_prompt[None, :]
+                return context["model"].predict_inst(
+                    context["state"],
+                    point_coords=prompt["pointCoords"],
+                    point_labels=prompt["pointLabels"],
+                    box=box_prompt,
+                    multimask_output=multimask_output,
+                )
+        return context["predictor"].predict(
+            point_coords=prompt["pointCoords"],
+            point_labels=prompt["pointLabels"],
+            box=prompt["boxXYXY"],
+            multimask_output=multimask_output,
+        )
+
+    def _run_loaded_box_batch(
+        self,
+        context: dict,
+        prompts: list[dict],
+        multimask_output: bool,
+    ):
+        """Use each adapter's low-level Bx4 path for pure box prompts."""
+        boxes = np.stack([prompt["boxXYXY"] for prompt in prompts]).astype(np.float32)
+        family = context["family"]
+        if family == "sam3":
+            autocast_context = (
+                torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+                if self.device == "cuda"
+                else contextlib.nullcontext()
+            )
+            with autocast_context:
+                return context["model"].predict_inst(
+                    context["state"],
+                    point_coords=None,
+                    point_labels=None,
+                    box=boxes,
+                    multimask_output=multimask_output,
+                )
+
+        predictor = context["predictor"]
+        if family == "sam":
+            transformed_boxes = predictor.transform.apply_boxes(
+                boxes, predictor.original_size
+            )
+            boxes_torch = torch.as_tensor(
+                transformed_boxes, dtype=torch.float, device=predictor.device
+            )
+            return predictor.predict_torch(
+                point_coords=None,
+                point_labels=None,
+                boxes=boxes_torch,
+                mask_input=None,
+                multimask_output=multimask_output,
+                return_logits=False,
+            )
+        if family == "sam2":
+            mask_input, point_coords, point_labels, boxes_torch = predictor._prep_prompts(
+                None, None, boxes, None, True
+            )
+            return predictor._predict(
+                point_coords,
+                point_labels,
+                boxes_torch,
+                mask_input,
+                multimask_output,
+                return_logits=False,
+            )
+        raise SamServiceError(f"Unsupported SAM model family for batch prediction: {family}")
+
+    @staticmethod
+    def _select_batch_output(value, index: int, count: int, kind: str):
+        if value is None:
+            return None
+        if isinstance(value, (list, tuple)):
+            nested_values = any(
+                isinstance(item, (list, tuple, np.ndarray)) or torch.is_tensor(item)
+                for item in value
+            )
+            if len(value) == count and (kind == "masks" or nested_values):
+                return value[index]
+            if count == 1:
+                return value
+        if torch.is_tensor(value):
+            if kind == "masks" and value.ndim >= 4 and value.shape[0] == count:
+                return value[index]
+            if kind != "masks" and value.ndim >= 2 and value.shape[0] == count:
+                return value[index]
+            if kind == "masks" and count > 1 and value.ndim == 3 and value.shape[0] == count:
+                return value[index]
+            return value
+        array = np.asarray(value)
+        if kind == "masks" and array.ndim >= 4 and array.shape[0] == count:
+            return array[index]
+        if kind != "masks" and array.ndim >= 2 and array.shape[0] == count:
+            return array[index]
+        if kind == "masks" and count > 1 and array.ndim == 3 and array.shape[0] == count:
+            return array[index]
+        return array
+
+    @classmethod
+    def _batch_mask_array(cls, masks, index: int, count: int) -> np.ndarray:
+        selected = cls._select_batch_output(masks, index, count, "masks")
+        if selected is None:
+            raise ValueError("SAM returned no masks")
+        if torch.is_tensor(selected):
+            selected = selected.detach().cpu().numpy()
+        array = np.asarray(selected)
+        if array.ndim == 4 and array.shape[0] == 1:
+            array = array[0]
+        if array.ndim == 2:
+            array = array[None, ...]
+        if array.ndim != 3:
+            raise ValueError("SAM returned masks with an unsupported shape")
+        if array.shape[0] < 1:
+            raise ValueError("SAM returned an empty mask set")
+        return array
+
+    @classmethod
+    def _build_batch_candidates(
+        cls,
+        *,
+        masks,
+        scores,
+        prompt: dict,
+        model_id: str,
+        image_hash: str,
+    ) -> list[dict]:
+        mask_array = cls._batch_mask_array(masks, 0, 1)
+        candidates = []
+        for candidate_index, mask in enumerate(mask_array):
+            if torch.is_tensor(mask):
+                mask = mask.detach().cpu().numpy()
+            mask_array_np = np.asarray(mask)
+            if mask_array_np.dtype == np.bool_ or (
+                mask_array_np.size and float(np.nanmax(mask_array_np)) <= 1.0
+            ):
+                binary_mask = (mask_array_np > 0.5).astype(np.uint8) * 255
+            else:
+                binary_mask = (mask_array_np > 128).astype(np.uint8) * 255
+            candidates.append(
+                {
+                    "id": f"{prompt['id']}-{model_id}-{image_hash[:12]}-{candidate_index}",
+                    "index": candidate_index,
+                    "mask": cls._mask_to_data_url(binary_mask),
+                    "score": cls._score_to_float(scores, candidate_index),
+                    "promptType": prompt["promptType"],
+                }
+            )
+        return cls._sort_candidates_by_score(candidates)
+
+    @staticmethod
+    def _batch_error(error: Exception, model_id: str) -> tuple[str, str]:
+        if isinstance(error, SamServiceError):
+            return "SAM_PROMPT_FAILED", str(error)
+        if isinstance(error, MemoryError):
+            return "SAM_OOM", "SAM 推理显存不足。请切换到更小的 SAM 型号或降低图片分辨率。"
+        if isinstance(error, RuntimeError):
+            message = SamService._format_runtime_error(error, model_id=model_id)
+            if "显存不足" in message:
+                return "SAM_OOM", message
+            return "SAM_RUNTIME_ERROR", message
+        if isinstance(error, ValueError):
+            return "SAM_PROMPT_INVALID", str(error)
+        return "SAM_PROMPT_FAILED", f"SAM 推理失败：{error}"
+
+    @torch.inference_mode()
+    def predict_batch(
+        self,
+        *,
+        image: str,
+        image_type: str,
+        model_id: str,
+        prompts: list,
+        multimask_output: bool,
+    ) -> dict:
+        """Predict ordered prompts against one image, with bounded fallbacks."""
+        total_started_at = time.perf_counter()
+        model_status = self._get_model_status(model_id)
+        normalized_prompts = self._normalize_batch_prompts(prompts)
+        slots = [None] * len(normalized_prompts)
+        capability_errors = {
+            index: self._validate_batch_prompt_capability(prompt, model_status)
+            for index, prompt in enumerate(normalized_prompts)
+        }
+        capability_errors = {
+            index: message for index, message in capability_errors.items() if message
+        }
+        batched_prompt_count = 0
+        sequential_prompt_count = 0
+        fallback_count = 0
+        retry_count = 0
+
+        try:
+            with self._lock:
+                context = self._prepare_batch_image(
+                    image=image,
+                    image_type=image_type,
+                    model_id=model_id,
+                    model_status=model_status,
+                )
+                box_indices = [
+                    index
+                    for index, prompt in enumerate(normalized_prompts)
+                    if prompt["promptType"] == "box" and index not in capability_errors
+                ]
+                sequential_indices = [
+                    index
+                    for index in range(len(normalized_prompts))
+                    if index not in box_indices and index not in capability_errors
+                ]
+
+                pending = list(box_indices)
+                configured_micro_batch_size = min(
+                    SAM_BATCH_DEFAULT_MICRO_BATCH, max(1, len(pending))
+                )
+                micro_batch_size = configured_micro_batch_size
+                final_micro_batch_size = micro_batch_size
+                while pending:
+                    chunk_indices = pending[:micro_batch_size]
+                    chunk_prompts = [normalized_prompts[index] for index in chunk_indices]
+                    try:
+                        predict_started_at = time.perf_counter()
+                        outputs = self._run_loaded_box_batch(
+                            context, chunk_prompts, multimask_output
+                        )
+                        predict_ms = (time.perf_counter() - predict_started_at) * 1000
+                        masks, scores, logits = outputs
+                        for offset, prompt_index in enumerate(chunk_indices):
+                            # Validate the shape before committing the chunk. A
+                            # malformed adapter response takes the same fallback
+                            # path as an unsupported low-level batch method.
+                            self._batch_mask_array(masks, offset, len(chunk_indices))
+                            slots[prompt_index] = {
+                                "masks": self._select_batch_output(
+                                    masks, offset, len(chunk_indices), "masks"
+                                ),
+                                "scores": self._select_batch_output(
+                                    scores, offset, len(chunk_indices), "scores"
+                                ),
+                                "logits": self._select_batch_output(
+                                    logits, offset, len(chunk_indices), "logits"
+                                ),
+                                "mode": "batch",
+                                "predictMs": predict_ms / max(1, len(chunk_indices)),
+                            }
+                        batched_prompt_count += len(chunk_indices)
+                        pending = pending[len(chunk_indices) :]
+                    except Exception as error:
+                        if micro_batch_size > 1 and self._is_retryable_batch_error(error):
+                            micro_batch_size = max(1, micro_batch_size // 2)
+                            final_micro_batch_size = micro_batch_size
+                            retry_count += 1
+                            torch_gc()
+                            continue
+                        # Unsupported adapters and a single-item batch both
+                        # degrade to the legacy loaded-predictor path.
+                        fallback_count += len(chunk_indices)
+                        sequential_prompt_count += len(chunk_indices)
+                        for prompt_index in chunk_indices:
+                            prompt = normalized_prompts[prompt_index]
+                            try:
+                                predict_started_at = time.perf_counter()
+                                outputs = self._run_loaded_prompt(
+                                    context, prompt, multimask_output
+                                )
+                                predict_ms = (time.perf_counter() - predict_started_at) * 1000
+                                masks, scores, logits = outputs
+                                self._batch_mask_array(masks, 0, 1)
+                                slots[prompt_index] = {
+                                    "masks": masks,
+                                    "scores": scores,
+                                    "logits": logits,
+                                    "mode": "sequential-fallback",
+                                    "predictMs": predict_ms,
+                                }
+                            except Exception as item_error:
+                                slots[prompt_index] = {"error": item_error}
+                        pending = pending[len(chunk_indices) :]
+
+                for prompt_index in sequential_indices:
+                    prompt = normalized_prompts[prompt_index]
+                    try:
+                        predict_started_at = time.perf_counter()
+                        outputs = self._run_loaded_prompt(context, prompt, multimask_output)
+                        predict_ms = (time.perf_counter() - predict_started_at) * 1000
+                        masks, scores, logits = outputs
+                        self._batch_mask_array(masks, 0, 1)
+                        slots[prompt_index] = {
+                            "masks": masks,
+                            "scores": scores,
+                            "logits": logits,
+                            "mode": "sequential",
+                            "predictMs": predict_ms,
+                        }
+                        sequential_prompt_count += 1
+                    except Exception as error:
+                        slots[prompt_index] = {"error": error}
+                        sequential_prompt_count += 1
+        except SamServiceError:
+            raise
+        except RuntimeError as error:
+            raise SamServiceError(self._format_runtime_error(error, model_id=model_id)) from error
+        except ValueError as error:
+            raise SamServiceError(str(error)) from error
+
+        encode_started_at = time.perf_counter()
+        results = []
+        success_count = 0
+        failed_count = 0
+        for prompt_index, prompt in enumerate(normalized_prompts):
+            if prompt_index in capability_errors:
+                error_message = capability_errors[prompt_index]
+                results.append(
+                    {
+                        "id": prompt["id"],
+                        "index": prompt["index"],
+                        "promptType": prompt["promptType"],
+                        "prompt": prompt["prompt"],
+                        "status": "failed",
+                        "success": False,
+                        "candidates": [],
+                        "errorCode": "SAM_CAPABILITY_UNSUPPORTED",
+                        "errorMessage": error_message,
+                        "error": {
+                            "code": "SAM_CAPABILITY_UNSUPPORTED",
+                            "message": error_message,
+                        },
+                    }
+                )
+                failed_count += 1
+                continue
+            slot = slots[prompt_index] or {"error": RuntimeError("SAM prompt did not produce a result")}
+            if slot.get("error") is not None:
+                error_code, error_message = self._batch_error(slot["error"], model_id)
+                results.append(
+                    {
+                        "id": prompt["id"],
+                        "index": prompt["index"],
+                        "promptType": prompt["promptType"],
+                        "prompt": prompt["prompt"],
+                        "status": "failed",
+                        "success": False,
+                        "candidates": [],
+                        "errorCode": error_code,
+                        "errorMessage": error_message,
+                        "error": {"code": error_code, "message": error_message},
+                    }
+                )
+                failed_count += 1
+                continue
+            try:
+                candidates = self._build_batch_candidates(
+                    masks=slot["masks"],
+                    scores=slot.get("scores"),
+                    prompt=prompt,
+                    model_id=model_id,
+                    image_hash=context["imageHash"],
+                )
+                results.append(
+                    {
+                        "id": prompt["id"],
+                        "index": prompt["index"],
+                        "promptType": prompt["promptType"],
+                        "prompt": prompt["prompt"],
+                        "status": "succeeded",
+                        "success": True,
+                        "candidates": candidates,
+                        "performance": {
+                            "executionMode": slot.get("mode"),
+                            "predictMs": round(float(slot.get("predictMs") or 0), 2),
+                        },
+                    }
+                )
+                success_count += 1
+            except Exception as error:
+                error_code, error_message = self._batch_error(error, model_id)
+                results.append(
+                    {
+                        "id": prompt["id"],
+                        "index": prompt["index"],
+                        "promptType": prompt["promptType"],
+                        "prompt": prompt["prompt"],
+                        "status": "failed",
+                        "success": False,
+                        "candidates": [],
+                        "errorCode": error_code,
+                        "errorMessage": error_message,
+                        "error": {"code": error_code, "message": error_message},
+                    }
+                )
+                failed_count += 1
+
+        encode_ms = (time.perf_counter() - encode_started_at) * 1000
+        total_ms = (time.perf_counter() - total_started_at) * 1000
+        return {
+            "schemaVersion": "sam-predict-batch/v1",
+            "modelId": model_id,
+            "imageHash": context["imageHash"],
+            "width": int(context["rgb"].shape[1]),
+            "height": int(context["rgb"].shape[0]),
+            "promptCount": len(normalized_prompts),
+            "successCount": success_count,
+            "failedCount": failed_count,
+            "results": results,
+            "performance": {
+                "device": self.device,
+                "modelCached": context["modelCached"],
+                "imageCacheHit": context["imageCacheHit"],
+                "imageMegapixels": round(
+                    float(context["rgb"].shape[0] * context["rgb"].shape[1]) / 1_000_000,
+                    3,
+                ),
+                "loadImageMs": round(float(context["loadImageMs"]), 2),
+                "setImageMs": round(float(context["setImageMs"]), 2),
+                "batchedPromptCount": batched_prompt_count,
+                "sequentialPromptCount": sequential_prompt_count,
+                "fallbackCount": fallback_count,
+                "retryCount": retry_count,
+                "microBatchSize": final_micro_batch_size if box_indices else 0,
+                "configuredMicroBatchSize": (
+                    configured_micro_batch_size if box_indices else 0
+                ),
                 "encodeMs": round(encode_ms, 2),
                 "totalMs": round(total_ms, 2),
             },

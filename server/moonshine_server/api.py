@@ -112,6 +112,7 @@ from moonshine_server.schema import (
     VideoBatchInpaintRequest,
     MoonshineModelRegistryRequest,
     MoonshineSamPredictRequest,
+    MoonshineSamPredictBatchRequest,
     MoonshineSamTextPredictRequest,
     MoonshineSamVideoPropagateRequest,
 )
@@ -296,6 +297,7 @@ class Api:
         self.add_api_route("/api/v1/moonshine/models/tasks/{task_id}", self.api_moonshine_model_task, methods=["GET"])
         self.add_api_route("/api/v1/moonshine/sam/capabilities", self.api_moonshine_sam_capabilities, methods=["GET"])
         self.add_api_route("/api/v1/moonshine/sam/predict", self.api_moonshine_sam_predict, methods=["POST"])
+        self.add_api_route("/api/v1/moonshine/sam/predict-batch", self.api_moonshine_sam_predict_batch, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/ocr/capabilities", self.api_moonshine_ocr_capabilities, methods=["GET"])
         self.add_api_route("/api/v1/moonshine/ocr/recognize", self.api_moonshine_ocr_recognize, methods=["POST"])
         self.add_api_route("/api/v1/moonshine/sam/video/propagate", self.api_moonshine_sam_video_propagate, methods=["POST"])
@@ -851,6 +853,20 @@ class Api:
                 model_id=req.model_id,
                 points=req.points,
                 box=req.box,
+                multimask_output=req.multimask_output,
+            )
+        except SamServiceError as error:
+            raise HTTPException(status_code=422, detail=str(error))
+        return JSONResponse(content=jsonable_encoder(result))
+
+    def api_moonshine_sam_predict_batch(self, req: MoonshineSamPredictBatchRequest):
+        """Run multiple point/box prompts against one SAM image embedding."""
+        try:
+            result = self._get_sam_service().predict_batch(
+                image=req.image,
+                image_type=req.image_type,
+                model_id=req.model_id,
+                prompts=req.prompts,
                 multimask_output=req.multimask_output,
             )
         except SamServiceError as error:

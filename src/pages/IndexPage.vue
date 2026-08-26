@@ -170,6 +170,7 @@ import {
 import {
   getSamCapabilities,
   predictSamMask,
+  predictSamMasksBatch,
   predictSamText,
 } from "src/services/SamPredictionService";
 import {
@@ -1144,28 +1145,81 @@ const recognizeOcrFile = async (file, options = {}) => {
     lowThreshold: options.lowThreshold ?? ocrThresholdLow.value,
   });
   if (options.samEnhance && options.samModelId && candidates.length) {
-    for (const candidate of candidates) {
+    const samPrompts = [];
+    const candidateByPromptId = new Map();
+    candidates.forEach((candidate, candidateIndex) => {
       const box = getPolygonBoundingBox(candidate.polygon);
-      if (!box) continue;
+      if (!box) return;
+      const promptId = String(candidate.localId || `ocr-${candidateIndex + 1}`);
+      samPrompts.push({ id: promptId, box, points: [] });
+      candidateByPromptId.set(promptId, { candidate, box });
+    });
+
+    const applySamResult = (item, fallbackPrompt = null) => {
+      const itemId = String(item?.id || fallbackPrompt?.id || "");
+      const target = candidateByPromptId.get(itemId);
+      const candidate = target?.candidate;
+      const samCandidate = item?.candidates?.[0];
+      if (!candidate || item?.status === "failed" || !samCandidate?.mask) return false;
+      candidate.mask = samCandidate.mask;
+      candidate.source = "ocr-sam";
+      candidate.modelId = options.samModelId;
+      candidate.prompt = { ...candidate.prompt, box: target.box };
+      candidate.samScore = samCandidate.score;
+      return true;
+    };
+
+    const isAbortError = (error) =>
+      error?.name === "AbortError" ||
+      error?.name === "CanceledError" ||
+      error?.code === "ERR_CANCELED";
+
+    if (samPrompts.length) {
       try {
-        const samResult = await predictSamMask({
+        const batchResponse = await predictSamMasksBatch({
           image: imageBase64,
           imageType: "base64",
           modelId: options.samModelId,
-          box,
+          prompts: samPrompts,
           multimaskOutput: false,
           signal: options.signal,
         });
-        const samCandidate = samResult?.candidates?.[0];
-        if (samCandidate?.mask) {
-          candidate.mask = samCandidate.mask;
-          candidate.source = "ocr-sam";
-          candidate.modelId = options.samModelId;
-          candidate.prompt = { box, polygon: candidate.polygon };
-          candidate.samScore = samCandidate.score;
+        const batchResult = batchResponse?.data ?? batchResponse;
+        const batchItems = Array.isArray(batchResult?.results) ? batchResult.results : [];
+        const expectedPromptIds = new Set(samPrompts.map((prompt) => prompt.id));
+        const responsePromptIds = batchItems.map((item) => String(item?.id || ""));
+        if (
+          batchItems.length !== samPrompts.length ||
+          responsePromptIds.some((id) => !id) ||
+          new Set(responsePromptIds).size !== responsePromptIds.length ||
+          responsePromptIds.some((id) => !expectedPromptIds.has(id))
+        ) {
+          throw new Error("SAM 批量响应项与请求提示不匹配");
         }
+        batchItems.forEach((item) => applySamResult(item));
       } catch (error) {
-        console.warn("OCR SAM 增强失败，回退四边形蒙版:", error?.message || error);
+        if (isAbortError(error)) throw error;
+        console.warn("OCR SAM 批量增强失败，回退逐框处理:", error?.message || error);
+        for (const prompt of samPrompts) {
+          try {
+            const samResult = await predictSamMask({
+              image: imageBase64,
+              imageType: "base64",
+              modelId: options.samModelId,
+              box: prompt.box,
+              multimaskOutput: false,
+              signal: options.signal,
+            });
+            applySamResult({
+              id: prompt.id,
+              status: "succeeded",
+              candidates: (samResult?.data ?? samResult)?.candidates || [],
+            }, prompt);
+          } catch (itemError) {
+            if (isAbortError(itemError)) throw itemError;
+            console.warn("OCR SAM 增强失败，回退四边形蒙版:", itemError?.message || itemError);
+          }
+        }
       }
     }
   }

@@ -7720,11 +7720,11 @@ async function launchBackendService(event, config, signal) {
     const modelManifestEnv = await prepareModelManifestForLaunch(sendLog, signal);
     cancellation = getBackendStartCancellation(signal);
     if (cancellation) return cancellation;
+    const effectiveModelDir = resolveEffectiveModelDir({
+      modelDir: launchConfig.modelDir || globalConfig.general?.modelDir || "",
+    });
 
     if (managedRuntime?.success) {
-      const effectiveModelDir = resolveEffectiveModelDir({
-        modelDir: launchConfig.modelDir || "",
-      });
       backendPython = managedRuntime.pythonExecutable;
       backendEnv = getUtf8ProcessEnv(
         getIsolatedPythonCommandEnv(managedRuntime.pythonRoot, {
@@ -7749,9 +7749,6 @@ async function launchBackendService(event, config, signal) {
         });
       }
 
-      const effectiveModelDir = resolveEffectiveModelDir({
-        modelDir: launchConfig.modelDir || "",
-      });
       backendPython = bundledResult.pythonPath;
       backendEnv = getUtf8ProcessEnv(
         getBundledRuntimeCommandEnv({
@@ -7789,6 +7786,7 @@ async function launchBackendService(event, config, signal) {
 
     backendEnv = getUtf8ProcessEnv({
       ...backendEnv,
+      MOONSHINE_OCR_MODEL_ROOT: path.join(effectiveModelDir, "ocr"),
       MOONSHINE_USER_DATA_DIR: app.getPath("userData"),
       MOONSHINE_PERSISTENT_JOBS_ENABLED: "1",
       MOONSHINE_WORKSPACE_ROOTS_JSON: JSON.stringify(

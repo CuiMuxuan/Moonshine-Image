@@ -31,6 +31,8 @@ const normalizeBox = (box) => {
   };
 };
 
+export const SAM_PREDICT_BATCH_PATH = "/api/v1/moonshine/sam/predict-batch";
+
 const validateSamRequest = (request = {}) => {
   const points = Array.isArray(request.points) ? request.points : [];
   if (!request.image) {
@@ -39,6 +41,24 @@ const validateSamRequest = (request = {}) => {
   if (!points.length && !request.box) {
     throw new Error("请先添加点选或框选提示");
   }
+};
+
+const validateSamBatchRequest = (request = {}) => {
+  if (!request.image) {
+    throw new Error("图片数据不能为空");
+  }
+  if (!Array.isArray(request.prompts) || !request.prompts.length) {
+    throw new Error("请至少提供一个点选或框选提示");
+  }
+  if (request.prompts.length > 128) {
+    throw new Error("SAM 批量提示数量超过限制");
+  }
+  request.prompts.forEach((prompt) => {
+    const points = Array.isArray(prompt?.points) ? prompt.points : [];
+    if (!points.length && !prompt?.box) {
+      throw new Error("每个批量项都必须包含点选或框选提示");
+    }
+  });
 };
 
 const buildSamVideoPayload = (request = {}) => {
@@ -101,6 +121,47 @@ export const predictSamMask = async (request = {}) => {
     }
     if (error.response || error.request) {
       throw new Error(classifyMoonshineError(error, "SAM 智能选区失败").message);
+    }
+    throw error;
+  }
+};
+
+export const predictSamMasksBatch = async (request = {}) => {
+  try {
+    validateSamBatchRequest(request);
+    const imageType = request.image_type || request.imageType || "base64";
+    const prompts = request.prompts.map((prompt, index) => {
+      const normalizedId = [...String(prompt?.id || `prompt-${index + 1}`)]
+        .filter((character) => {
+          const code = character.charCodeAt(0);
+          return code >= 32 && code !== 127;
+        })
+        .join("")
+        .slice(0, 128);
+      return {
+        id: normalizedId || `prompt-${index + 1}`,
+        points: normalizePoints(Array.isArray(prompt?.points) ? prompt.points : []),
+        box: normalizeBox(prompt?.box),
+      };
+    });
+    return await api.post(SAM_PREDICT_BATCH_PATH, {
+      image: normalizeImagePayload(request.image, imageType),
+      image_type: imageType,
+      model_id: request.model_id || request.modelId || "sam_vit_b",
+      prompts,
+      multimask_output: request.multimask_output ?? request.multimaskOutput ?? true,
+    }, {
+      ...(request.signal ? { signal: request.signal } : {}),
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+  } catch (error) {
+    if (error?.name === "AbortError" || error?.name === "CanceledError" || error?.code === "ERR_CANCELED") {
+      throw error;
+    }
+    if (error.response || error.request) {
+      throw new Error(classifyMoonshineError(error, "SAM 批量智能选区失败").message);
     }
     throw error;
   }
@@ -219,6 +280,7 @@ export default {
   getSamCapabilities,
   predictSamText,
   predictSamMask,
+  predictSamMasksBatch,
   propagateSamVideo,
   createSamVideoPropagationJob,
   getSamVideoPropagationJob,
