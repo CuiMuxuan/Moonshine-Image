@@ -163,15 +163,16 @@ test("standalone validator defaults to the current package version", () => {
   try {
     const nodePath = path.join(temporaryRoot, "fake-node.exe");
     fs.writeFileSync(nodePath, "test-node");
+    const applicationPackage = JSON.parse(fs.readFileSync("package.json", "utf8"));
+    const defaultChannel = resolveValidationEdition({ appVersion: applicationPackage.version }).channel;
     const result = buildStandaloneValidator({
-      channel: "test",
+      channel: defaultChannel,
       nodeExe: nodePath,
       outputDir: temporaryRoot,
       archive: false,
       packageName: "validator-version-fixture",
     });
     const validatorPackage = JSON.parse(fs.readFileSync(path.join(result.packageRoot, "package.json"), "utf8"));
-    const applicationPackage = JSON.parse(fs.readFileSync("package.json", "utf8"));
     assert.equal(validatorPackage.version, applicationPackage.version);
     assert.equal(result.manifest.appVersion, applicationPackage.version);
     assert.equal(
