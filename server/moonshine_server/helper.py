@@ -133,10 +133,18 @@ def load_model(model: torch.nn.Module, url_or_path, device, model_md5):
 
 
 def numpy_to_bytes(image_numpy: np.ndarray, ext: str) -> bytes:
+    normalized_ext = ext.lower().lstrip(".")
+    if normalized_ext in {"jpg", "jpeg"}:
+        encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), 100]
+    elif normalized_ext == "png":
+        encode_params = [int(cv2.IMWRITE_PNG_COMPRESSION), 0]
+    else:
+        encode_params = []
+
     data = cv2.imencode(
-        f".{ext}",
+        f".{normalized_ext}",
         image_numpy,
-        [int(cv2.IMWRITE_JPEG_QUALITY), 100, int(cv2.IMWRITE_PNG_COMPRESSION), 0],
+        encode_params,
     )[1]
     image_bytes = data.tobytes()
     return image_bytes

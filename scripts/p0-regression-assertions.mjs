@@ -492,7 +492,7 @@ function runAssertions() {
   assertPattern({
     file: "src-electron/electron-main.js",
     description: "Packaged backend startup honors the configured model directory before falling back to bundled models",
-    pattern: /function resolveEffectiveModelDir\(input = \{\}\)[\s\S]*const configuredModelDir = String\(modelDir \|\| ""\)\.trim\(\);[\s\S]*return configuredModelDir \|\| getEffectiveBundledModelDir\(\);[\s\S]*if \(isBundledBackendMode\(global\.projectPath\)\)[\s\S]*const effectiveModelDir = resolveEffectiveModelDir\(\{[\s\S]*modelDir: (?:config\?\.|launchConfig\.)modelDir \|\| "",[\s\S]*args\.push\(`--model-dir=\$\{effectiveModelDir\}`\)/,
+    pattern: /function resolveEffectiveModelDir\(input = \{\}\)[\s\S]*const configuredModelDir = String\(modelDir \|\| ""\)\.trim\(\);[\s\S]*return configuredModelDir \|\| getEffectiveBundledModelDir\(\);[\s\S]*const effectiveModelDir = resolveEffectiveModelDir\(\{[\s\S]*modelDir: launchConfig\.modelDir \|\| globalConfig\.general\?\.modelDir \|\| "",[\s\S]*if \(managedRuntime\?\.success\)[\s\S]*args\.push\(`--model-dir=\$\{effectiveModelDir\}`\)[\s\S]*else if \(isBundledBackendMode\(global\.projectPath\)\)[\s\S]*args\.push\(`--model-dir=\$\{effectiveModelDir\}`\)/,
   });
   assertPattern({
     file: "src-electron/electron-main.js",
