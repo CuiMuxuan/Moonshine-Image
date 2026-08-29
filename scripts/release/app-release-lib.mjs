@@ -541,6 +541,14 @@ function objectMetadata(object, version) {
   };
 }
 
+function uploadBody(object) {
+  // R2 reset the streamed app-manifest PUT; keep this small object replayable
+  // while retaining streaming uploads for installers and other large files.
+  return object.type === "app manifest"
+    ? fs.readFileSync(object.path)
+    : fs.createReadStream(object.path);
+}
+
 export async function putImmutableObject({ client, bucket, object, version }) {
   const existing = await headObjectOrNull(client, bucket, object.key);
   if (existing) {
@@ -555,7 +563,7 @@ export async function putImmutableObject({ client, bucket, object, version }) {
       new PutObjectCommand({
         Bucket: bucket,
         Key: object.key,
-        Body: fs.createReadStream(object.path),
+        Body: uploadBody(object),
         ContentLength: object.size,
         ContentType: object.contentType,
         CacheControl: object.cacheControl,
@@ -579,7 +587,7 @@ export async function putStableManifest({ client, bucket, object, version }) {
     new PutObjectCommand({
       Bucket: bucket,
       Key: object.key,
-      Body: fs.createReadStream(object.path),
+      Body: uploadBody(object),
       ContentLength: object.size,
       ContentType: object.contentType,
       CacheControl: object.cacheControl,
