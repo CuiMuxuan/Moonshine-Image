@@ -8,6 +8,7 @@ import {
   mcpPolicyBypassesTrustedDirectories,
   projectMcpPolicy,
 } from "./mcp-policy.js";
+import { getMcpToolDefinition } from "../src/shared/mcpToolDefinitions.js";
 
 const MAX_BACKEND_BATCH_ITEMS = 100;
 const MAX_CHILD_TASK_ITEMS = 1_000;
@@ -44,10 +45,18 @@ const operationSchema = Object.freeze({ type: "string", enum: ["remove_text", "r
 const modelSchema = Object.freeze({ type: "string", pattern: "^[a-z][a-z0-9._-]{0,63}$" });
 
 function readDefinition(name, description, inputSchema = EMPTY_INPUT_SCHEMA) {
+  const metadata = getMcpToolDefinition(name);
+  if (!metadata || metadata.access !== "read") {
+    throw new Error(`MCP tool access metadata mismatch for ${name}.`);
+  }
   return Object.freeze({ name, description, inputSchema, access: "read", async: false });
 }
 
 function taskDefinition(name, description, inputSchema) {
+  const metadata = getMcpToolDefinition(name);
+  if (!metadata || metadata.access !== "task") {
+    throw new Error(`MCP tool access metadata mismatch for ${name}.`);
+  }
   return Object.freeze({ name, description, inputSchema, access: "task", async: true });
 }
 

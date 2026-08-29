@@ -632,11 +632,32 @@ export class ConfigManager {
       userConfig = migrateLegacyConfigShape(userConfig);
     }
 
+    const migratedConfig = migrateLegacyConfigShape(userConfig || {});
     const merged = this.alignWithDefaultSchema(
       createDefaultAppConfig(),
-      migrateLegacyConfigShape(userConfig || {})
+      migratedConfig
     );
     merged.schemaVersion = CONFIG_SCHEMA_VERSION;
+
+    // Only an actually empty input is a new configuration. Older persisted
+    // files may omit MCP entirely or one of its fields; keep those policies
+    // closed instead of silently granting a tool or directory.
+    const hasPersistedConfigFields = Object.keys(migratedConfig).length > 0;
+    if (hasPersistedConfigFields && !isPlainObject(migratedConfig.mcp)) {
+      merged.mcp.allowedTools = [];
+      merged.mcp.allowedRoots = [];
+    } else if (
+      isPlainObject(migratedConfig.mcp) &&
+      !Object.prototype.hasOwnProperty.call(migratedConfig.mcp, "allowedTools")
+    ) {
+      merged.mcp.allowedTools = [];
+    }
+    if (
+      isPlainObject(migratedConfig.mcp) &&
+      !Object.prototype.hasOwnProperty.call(migratedConfig.mcp, "allowedRoots")
+    ) {
+      merged.mcp.allowedRoots = [];
+    }
 
     if (merged?.video && Object.prototype.hasOwnProperty.call(merged.video, "outputPath")) {
       delete merged.video.outputPath;

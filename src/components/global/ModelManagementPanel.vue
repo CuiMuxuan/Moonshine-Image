@@ -165,7 +165,6 @@
 
                 <div class="model-action-row">
                   <q-btn
-                    v-if="model.type !== 'ocr'"
                     outline
                     no-caps
                     color="primary"
@@ -214,23 +213,14 @@
                     @click="downloadModel(model)"
                   />
                   <q-btn
-                    v-if="hasManualInstallGuide(model)"
                     outline
                     no-caps
-                    color="secondary"
+                    color="primary"
                     icon="folder_open"
-                    label="手动安装"
+                    label="手动安装说明"
                     class="settings-action-button"
                     @click="openManualInstallGuide(model)"
                   />
-                  <q-chip
-                    v-if="model.downloadable && !canDownload(model) && !hasManualInstallGuide(model)"
-                    outline
-                    color="grey"
-                    text-color="grey-8"
-                  >
-                    暂无下载源
-                  </q-chip>
                 </div>
 
                 <q-linear-progress
@@ -256,7 +246,7 @@
                       no-caps
                       color="primary"
                       icon="folder_open"
-                      label="查看手动安装"
+                      label="查看安装说明"
                       @click="openManualInstallGuide(model)"
                     />
                   </div>
@@ -277,7 +267,7 @@
                       no-caps
                       color="primary"
                       icon="folder_open"
-                      label="查看手动安装"
+                      label="查看安装说明"
                       @click="openManualInstallGuide(model)"
                     />
                   </div>
@@ -362,12 +352,14 @@
                         <q-btn
                           flat
                           dense
-                          no-caps
+                          round
                           color="primary"
-                          icon="info"
-                          label="安装说明"
+                          icon="help_outline"
+                          aria-label="查看安装说明"
                           @click="openManualInstallGuide(model)"
-                        />
+                        >
+                          <q-tooltip>安装说明</q-tooltip>
+                        </q-btn>
                       </div>
                       <div v-if="model.manualSources?.length" class="source-list q-mt-sm">
                         <div
@@ -498,7 +490,7 @@
       <q-card class="manual-install-dialog">
         <q-card-section class="manual-install-header">
           <div>
-            <div class="text-subtitle1 text-weight-medium">手动安装模型</div>
+            <div class="text-subtitle1 text-weight-medium">手动安装说明</div>
             <div class="text-caption text-grey-7">
               {{ manualInstallModel?.label || manualInstallModel?.id || "模型文件" }}
             </div>
@@ -1173,12 +1165,36 @@ const ensureSelectedModel = () => {
 const verifyModel = async (modelId) => {
   verifyingModelId.value = modelId;
   try {
-    await modelRegistry.verifyModel(modelId, modelRegistryRequestOptions.value);
-    $q.notify({
-      type: "positive",
-      message: "模型校验完成",
-      position: "top",
-    });
+    const response = await modelRegistry.verifyModel(modelId, modelRegistryRequestOptions.value);
+    const model = response?.model || modelRegistry.models.find((item) => item.id === modelId);
+    if (!model) throw new Error("模型状态返回无效");
+    const files = Array.isArray(model?.files) ? model.files : [];
+    const missingFiles = Array.isArray(model?.missingFiles) ? model.missingFiles : [];
+    const corruptFiles = Array.isArray(model?.corruptFiles) ? model.corruptFiles : [];
+    const hasExistingFile = files.some((file) => file?.exists);
+    const allFilesMissing = files.length === 0 || files.every((file) => !file?.exists);
+    const modelMissing =
+      !hasExistingFile &&
+      (missingFiles.length > 0 || model.fileStatus === "missing" || allFilesMissing || model.installed === false);
+    if (modelMissing) {
+      $q.notify({
+        type: "warning",
+        message: "未在模型路径检测到此模型",
+        position: "top",
+      });
+    } else if (corruptFiles.length > 0 || missingFiles.length > 0 || model?.verified === false) {
+      $q.notify({
+        type: "negative",
+        message: corruptFiles.length > 0 ? "模型校验失败：检测到文件损坏" : "模型文件不完整",
+        position: "top",
+      });
+    } else {
+      $q.notify({
+        type: "positive",
+        message: "校验成功",
+        position: "top",
+      });
+    }
   } catch (error) {
     $q.notify({
       type: "negative",
@@ -1194,7 +1210,7 @@ const canDownload = (model) =>
   Boolean(model?.downloadable && model?.sourceLinks?.length);
 
 const hasManualInstallGuide = (model) =>
-  Boolean(model?.manualSources?.length || model?.manualHint || model?.files?.length);
+  Boolean(model);
 
 const openManualInstallGuide = (model) => {
   manualInstallModel.value = model;

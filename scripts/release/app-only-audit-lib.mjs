@@ -13,6 +13,7 @@ import {
   PACKAGED_BACKEND_RESOURCE_DIR,
   PACKAGED_FFMPEG_RESOURCE_DIR,
   PACKAGED_MODELS_RESOURCE_DIR,
+  PACKAGED_SAM3_RESOURCE_DIR,
   PACKAGED_RUNTIME_RESOURCE_DIR,
 } from "../../src-electron/integrity/public-key.js";
 
@@ -89,9 +90,13 @@ function auditIntegrity(resourcesRoot, integrityPublicKeyPem) {
   assert(manifest.resourceMode === "app-only", "Integrity manifest resourceMode must be app-only");
   assert(Array.isArray(manifest.entries) && manifest.entries.length > 0, "Integrity manifest has no entries");
 
+  const runtimeFlavor = String(manifest.runtimeFlavor || "").trim().toLowerCase();
+  const sam3Expected = ["cu126", "cu130"].includes(runtimeFlavor) || Boolean(manifest.sam3);
+
   const allowedPrefixes = new Set([
     `${PACKAGED_BACKEND_RESOURCE_DIR}/`,
     `${PACKAGED_FFMPEG_RESOURCE_DIR}/`,
+    ...(sam3Expected ? [`${PACKAGED_SAM3_RESOURCE_DIR}/`] : []),
   ]);
   const entryPaths = new Set();
   for (const entry of manifest.entries) {
@@ -113,7 +118,11 @@ function auditIntegrity(resourcesRoot, integrityPublicKeyPem) {
   }
 
   const packagedResourcePaths = [];
-  for (const resourceName of [PACKAGED_BACKEND_RESOURCE_DIR, PACKAGED_FFMPEG_RESOURCE_DIR]) {
+  for (const resourceName of [
+    PACKAGED_BACKEND_RESOURCE_DIR,
+    PACKAGED_FFMPEG_RESOURCE_DIR,
+    ...(sam3Expected ? [PACKAGED_SAM3_RESOURCE_DIR] : []),
+  ]) {
     const resourceRoot = path.join(resourcesRoot, resourceName);
     assert(fs.existsSync(resourceRoot), `Missing app-only ${resourceName} resources: ${resourceRoot}`);
     packagedResourcePaths.push(
@@ -135,6 +144,20 @@ function auditIntegrity(resourcesRoot, integrityPublicKeyPem) {
     packagedResourcePaths.length === entryPaths.size,
     "Integrity manifest contains unexpected app-only entries",
   );
+
+  if (sam3Expected) {
+    const sam3Root = path.join(resourcesRoot, PACKAGED_SAM3_RESOURCE_DIR);
+    const wheelManifestPath = path.join(sam3Root, "wheel-manifest.json");
+    assert(fs.existsSync(wheelManifestPath), `Missing SAM3 wheel manifest: ${wheelManifestPath}`);
+    const wheelManifest = JSON.parse(fs.readFileSync(wheelManifestPath, "utf8"));
+    const fileName = String(wheelManifest.fileName || "").trim();
+    const wheelPath = path.join(sam3Root, fileName);
+    assert(wheelManifest.package === "sam3", "SAM3 wheel manifest package must be sam3");
+    assert(/^sam3-.+\.whl$/iu.test(fileName), "SAM3 wheel manifest fileName is invalid");
+    assert(/^[a-f0-9]{64}$/iu.test(String(wheelManifest.sha256 || "")), "SAM3 wheel manifest sha256 is invalid");
+    assert(fs.existsSync(wheelPath), `SAM3 wheel is missing: ${wheelPath}`);
+    assert(sha256File(wheelPath) === String(wheelManifest.sha256).toLowerCase(), "SAM3 wheel manifest hash mismatch");
+  }
 
   const forbiddenResourceDirs = [
     PACKAGED_RUNTIME_RESOURCE_DIR,

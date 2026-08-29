@@ -8,13 +8,36 @@ import test from "node:test";
 import {
   BOOTSTRAP_STATUS,
   DEFAULT_PYTHON_INSTALLER_URL,
+  DEFAULT_PYPI_INDEX_URL,
+  DEFAULT_PYPI_INDEX_URLS,
+  DEFAULT_PYPI_ALIYUN_INDEX_URL,
+  DEFAULT_PYPI_MIRROR_INDEX_URL,
+  DEFAULT_TORCH_INDEX_URLS,
+  DEFAULT_TORCH_INDEX_CANDIDATES,
+  DEFAULT_TORCH_ALIYUN_INDEX_URL,
+  DEFAULT_TORCH_SJTU_INDEX_URL,
+  DEFAULT_TORCH_NJU_INDEX_URL,
+  DEFAULT_TORCH_MIRROR_INDEX_URLS,
+  TORCH_SOURCE_MODES,
   EnvironmentBootstrap,
+  probePackageSource,
 } from "../../src-electron/runtime/environment-bootstrap.js";
 import {
   BUNDLED_FFMPEG_SPEC_HASH,
   DEFAULT_PYTHON_VERSION,
   buildEnvironmentSpec,
 } from "../../src-electron/runtime/environment-spec.js";
+
+test("default source candidates include the configured Chinese PyPI and Torch mirrors", () => {
+  assert.deepEqual(DEFAULT_PYPI_INDEX_URLS, [
+    DEFAULT_PYPI_MIRROR_INDEX_URL,
+    DEFAULT_PYPI_ALIYUN_INDEX_URL,
+    DEFAULT_PYPI_INDEX_URL,
+  ]);
+  assert.ok(DEFAULT_TORCH_INDEX_CANDIDATES.cu130.includes(DEFAULT_TORCH_ALIYUN_INDEX_URL));
+  assert.ok(DEFAULT_TORCH_INDEX_CANDIDATES.cu130.includes(DEFAULT_TORCH_SJTU_INDEX_URL));
+  assert.ok(DEFAULT_TORCH_INDEX_CANDIDATES.cu130.includes(DEFAULT_TORCH_NJU_INDEX_URL));
+});
 
 test("default Python installer URL matches the managed environment version", () => {
   assert.match(
@@ -58,6 +81,201 @@ test("Python discovery verifies an installer result before accepting it", async 
   assert.equal(await manager._discoverPython(), installedPython);
 });
 
+test("source probing selects the fastest usable ordinary and Torch source independently", async (t) => {
+  const data = await fixture(t);
+  const probes = [];
+  const { manager, commands } = makeBootstrap(data, {
+    sourceProbe: async (url, options) => {
+      probes.push({ url, category: options.category, packageName: options.packageName });
+      const latencyMs = (url.includes("pypi.tuna") || url.includes("mirrors.tuna"))
+        ? options.category === "python" ? 12 : 42
+        : options.category === "python" ? 80 : 9;
+      return { url, reachable: true, packageAvailable: true, usable: true, latencyMs };
+    },
+  });
+
+  const result = await manager.bootstrap({ accelerator: "cpu" });
+  assert.equal(result.success, true, JSON.stringify(result));
+  assert.equal(result.state.sourceSelection.python.selected.url, DEFAULT_PYPI_MIRROR_INDEX_URL);
+  assert.equal(result.state.sourceSelection.torch.selected.url, DEFAULT_TORCH_ALIYUN_INDEX_URL);
+  assert.equal(
+    probes.length,
+    DEFAULT_PYPI_INDEX_URLS.length + DEFAULT_TORCH_INDEX_CANDIDATES.cpu.length,
+  );
+  const install = commands.find(({ args }) => args.includes("-r"));
+  assert.ok(install);
+  assert.equal(install.args[install.args.indexOf("--index-url") + 1], DEFAULT_PYPI_MIRROR_INDEX_URL);
+  assert.equal(install.args[install.args.indexOf("--find-links") + 1], `${DEFAULT_TORCH_ALIYUN_INDEX_URL}/cpu`);
+});
+
+test("source probing reports both ordinary sources when neither is usable", async (t) => {
+  const data = await fixture(t);
+  const result = await makeBootstrap(data, {
+    sourceProbe: async (_url, options) => options.category === "python"
+      ? { reachable: false, packageAvailable: false, usable: false, error: "offline" }
+      : { reachable: true, packageAvailable: true, usable: true, latencyMs: 1 },
+  }).manager.bootstrap({ accelerator: "cpu" });
+
+  assert.equal(result.success, false);
+  assert.equal(result.code, "ENVIRONMENT_SOURCE_UNAVAILABLE");
+  assert.match(result.error, /普通 Python 依赖下载源不可用/);
+  assert.match(result.error, new RegExp(DEFAULT_PYPI_MIRROR_INDEX_URL.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
+  assert.match(result.error, new RegExp(DEFAULT_PYPI_INDEX_URL.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
+  assert.match(result.error, new RegExp(DEFAULT_PYPI_ALIYUN_INDEX_URL.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
+  assert.equal(result.details.category, "python");
+  assert.deepEqual(result.details.unavailableSources, DEFAULT_PYPI_INDEX_URLS);
+});
+
+test("source probing reports both CUDA Torch sources when neither provides the target wheel", async (t) => {
+  const data = await fixture(t);
+  const wheelPath = path.join(data.root, "sam3-0.1.0-py3-none-any.whl");
+  await fs.writeFile(wheelPath, "local sam3 wheel");
+  const result = await makeBootstrap(data, {
+    sam3WheelPath: wheelPath,
+    sam3WheelHash: sha256("local sam3 wheel"),
+    sourceProbe: async (_url, options) => options.category === "torch-cuda"
+      ? { reachable: false, packageAvailable: false, usable: false, error: "offline" }
+      : { reachable: true, packageAvailable: true, usable: true, latencyMs: 1 },
+  }).manager.bootstrap({ accelerator: "cu130" });
+
+  assert.equal(result.success, false);
+  assert.equal(result.code, "ENVIRONMENT_SOURCE_UNAVAILABLE");
+  assert.match(result.error, /PyTorch CUDA 专用源不可用/);
+  assert.match(result.error, new RegExp(DEFAULT_TORCH_MIRROR_INDEX_URLS.cu130.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
+  assert.match(result.error, new RegExp(DEFAULT_TORCH_INDEX_URLS.cu130.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
+  assert.equal(result.details.category, "torch-cuda");
+  assert.deepEqual(
+    result.details.unavailableSources,
+    DEFAULT_TORCH_INDEX_CANDIDATES.cu130,
+  );
+});
+
+test("package source probe rejects a reachable conda channel for a pip Torch install", async () => {
+  const result = await probePackageSource("https://mirrors.example/anaconda/cloud/pytorch", {
+    packageName: "torch",
+    version: "2.11.0+cu130",
+    category: "torch-cuda",
+    accelerator: "cu130",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => '<a href="torch-2.11.0-py312_0.tar.bz2">conda package</a>',
+    }),
+  });
+  assert.equal(result.reachable, true);
+  assert.equal(result.pipWheelAvailable, false);
+  assert.equal(result.packageAvailable, false);
+  assert.equal(result.usable, false);
+});
+
+test("package source probe distinguishes a reachable index without the requested wheel", async () => {
+  const result = await probePackageSource("https://mirror.example/simple", {
+    packageName: "torch",
+    version: "2.11.0+cu130",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => "<a href=\"torch-2.11.0-cp312-win_amd64.whl\">torch</a>",
+    }),
+  });
+  assert.equal(result.reachable, true);
+  assert.equal(result.packageAvailable, false);
+  assert.equal(result.usable, false);
+  assert.match(result.error, /target torch==2\.11\.0\+cu130 was not found/);
+});
+
+test("package source probe derives the correct install layout for flat and PEP 503 Torch mirrors", async () => {
+  const requests = [];
+  const fetchImpl = async (url) => {
+    requests.push(url);
+    return {
+      ok: true,
+      status: 200,
+      text: async () => '<a href="torch-2.11.0+cu130-cp312-win_amd64.whl">torch</a>',
+    };
+  };
+  const flat = await probePackageSource(DEFAULT_TORCH_ALIYUN_INDEX_URL, {
+    packageName: "torch",
+    version: "2.11.0+cu130",
+    category: "torch-cuda",
+    accelerator: "cu130",
+    fetchImpl,
+  });
+  const index = await probePackageSource(DEFAULT_TORCH_NJU_INDEX_URL, {
+    packageName: "torch",
+    version: "2.11.0+cu130",
+    category: "torch-cuda",
+    accelerator: "cu130",
+    fetchImpl,
+  });
+
+  assert.equal(flat.mode, TORCH_SOURCE_MODES.FIND_LINKS);
+  assert.equal(flat.endpoint, `${DEFAULT_TORCH_ALIYUN_INDEX_URL}/cu130/`);
+  assert.equal(flat.installUrl, `${DEFAULT_TORCH_ALIYUN_INDEX_URL}/cu130`);
+  assert.equal(index.mode, TORCH_SOURCE_MODES.INDEX);
+  assert.equal(index.endpoint, `${DEFAULT_TORCH_NJU_INDEX_URL}/cu130/torch/`);
+  assert.equal(index.installUrl, `${DEFAULT_TORCH_NJU_INDEX_URL}/cu130`);
+  assert.deepEqual(requests, [flat.endpoint, index.endpoint]);
+});
+
+test("package-level Torch mirror URLs normalize to the variant root", async () => {
+  const requests = [];
+  const fetchImpl = async (url) => {
+    requests.push(url);
+    return {
+      ok: true,
+      status: 200,
+      text: async () => '<a href="torch-2.11.0+cu130-cp312-win_amd64.whl">torch</a>',
+    };
+  };
+
+  const trailingPackage = await probePackageSource(
+    "https://mirror.example/pytorch/whl/cu130/torch",
+    {
+      packageName: "torch",
+      version: "2.11.0+cu130",
+      category: "torch-cuda",
+      accelerator: "cu130",
+      fetchImpl,
+    },
+  );
+  const packageBeforeVariant = await probePackageSource(
+    "https://mirror.example/pytorch/whl/torchvision/cu130",
+    {
+      packageName: "torchvision",
+      version: "2.11.0+cu130",
+      category: "torch-cuda",
+      accelerator: "cu130",
+      fetchImpl,
+    },
+  );
+
+  assert.equal(trailingPackage.installUrl, "https://mirror.example/pytorch/whl/cu130");
+  assert.equal(trailingPackage.endpoint, "https://mirror.example/pytorch/whl/cu130/torch/");
+  assert.equal(packageBeforeVariant.installUrl, "https://mirror.example/pytorch/whl/cu130");
+  assert.equal(packageBeforeVariant.endpoint, "https://mirror.example/pytorch/whl/cu130/torchvision/");
+  assert.deepEqual(requests, [trailingPackage.endpoint, packageBeforeVariant.endpoint]);
+});
+
+test("CPU Torch probing rejects a CUDA-only wheel listing", async () => {
+  const result = await probePackageSource("https://mirror.example/pytorch/whl/cpu", {
+    packageName: "torch",
+    version: "2.11.0+cpu",
+    category: "torch-cpu",
+    accelerator: "cpu",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => '<a href="torch-2.11.0+cu130-cp312-win_amd64.whl">torch</a>',
+    }),
+  });
+
+  assert.equal(result.reachable, true);
+  assert.equal(result.pipWheelAvailable, true);
+  assert.equal(result.packageAvailable, false);
+  assert.equal(result.usable, false);
+});
+
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "moonshine-environment-bootstrap-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -85,6 +303,13 @@ function makeBootstrap(fixtureData, overrides = {}) {
       commands.push({ command, args });
       return { success: true, code: 0, stdout: args[0] === "--version" ? "Python 3.12.10" : "ok", stderr: "" };
     },
+    sourceProbe: async (url) => ({
+      url,
+      reachable: true,
+      packageAvailable: true,
+      usable: true,
+      latencyMs: 1,
+    }),
     probe: async () => ({ success: true, python: {}, torch: {}, cuda: {}, backend: {}, ffmpeg: {} }),
     ...overrides,
   });
@@ -179,6 +404,7 @@ test("bootstrap stages Python/venv/pip and atomically activates a verified envir
     "detect-accelerator",
     "resolve-environment",
     "environment-path",
+    "probe-package-sources",
     "python-discovery",
     "python-ready",
     "create-venv",
@@ -197,6 +423,63 @@ test("bootstrap stages Python/venv/pip and atomically activates a verified envir
   assert.equal(pointer.pythonExecutableRelative, "venv/Scripts/python.exe");
   assert.equal(pointer.pythonExecutableRelative.includes(".staging"), false);
   await assert.rejects(fs.access(path.join(data.root, pointer.path, "ffmpeg", "ffmpeg.exe")));
+});
+
+test("CUDA bootstrap installs the packaged SAM3 wheel after base requirements", async (t) => {
+  const data = await fixture(t);
+  const wheelPath = path.join(data.root, "sam3-0.1.0-py3-none-any.whl");
+  const wheelContents = "local sam3 wheel";
+  await fs.writeFile(wheelPath, wheelContents);
+  const { manager, commands } = makeBootstrap(data, {
+    sam3WheelPath: wheelPath,
+    sam3WheelHash: sha256(wheelContents),
+  });
+  const progress = [];
+  const result = await manager.bootstrap({
+    accelerator: "cu130",
+    onProgress: (value) => progress.push(value),
+  });
+
+  assert.equal(result.success, true, JSON.stringify(result));
+  assert.equal(result.spec.sam3WheelHash, sha256(wheelContents));
+  const requirementsCommand = commands.find(({ args }) => args.includes("-r"));
+  assert.ok(requirementsCommand);
+  assert.equal(requirementsCommand.args.some((value) => /sam3==/iu.test(value)), false);
+  const sam3Command = commands.find(({ args }) => args.includes("--no-deps") && args.includes(wheelPath));
+  assert.ok(sam3Command);
+  assert.deepEqual(sam3Command.args.slice(0, 5), ["-m", "pip", "install", "--no-deps", "--force-reinstall"]);
+  const stepNames = result.state.steps.map(({ name }) => name);
+  assert.ok(stepNames.includes("inspect-sam3-wheel"));
+  assert.ok(stepNames.includes("install-sam3-wheel"));
+  assert.ok(stepNames.indexOf("inspect-sam3-wheel") < stepNames.indexOf("install-sam3-wheel"));
+});
+
+test("CUDA bootstrap fails closed when the packaged SAM3 wheel is unavailable or tampered", async (t) => {
+  const missing = await fixture(t);
+  const missingResult = await makeBootstrap(missing).manager.bootstrap({ accelerator: "cu130" });
+  assert.equal(missingResult.success, false);
+  assert.equal(missingResult.code, "ENVIRONMENT_SAM3_WHEEL_UNAVAILABLE");
+
+  const tampered = await fixture(t);
+  const wheelPath = path.join(tampered.root, "sam3-0.1.0-py3-none-any.whl");
+  await fs.writeFile(wheelPath, "actual wheel");
+  const tamperedResult = await makeBootstrap(tampered, {
+    sam3WheelPath: wheelPath,
+    sam3WheelHash: sha256("expected wheel"),
+  }).manager.bootstrap({ accelerator: "cu130" });
+  assert.equal(tamperedResult.success, false);
+  assert.equal(tamperedResult.code, "ENVIRONMENT_SAM3_WHEEL_HASH_MISMATCH");
+});
+
+test("CPU bootstrap does not inspect or install a SAM3 wheel", async (t) => {
+  const data = await fixture(t);
+  const { manager, commands } = makeBootstrap(data, {
+    sam3WheelPath: path.join(data.root, "missing-sam3.whl"),
+    sam3WheelHash: "f".repeat(64),
+  });
+  const result = await manager.bootstrap({ accelerator: "cpu" });
+  assert.equal(result.success, true, JSON.stringify(result));
+  assert.equal(commands.some(({ args }) => args.includes("missing-sam3.whl")), false);
 });
 
 test("bootstrap rejects unsafe pointer paths and migrates staging-era Python pointers", async (t) => {
@@ -391,6 +674,13 @@ test("bootstrap uses source overrides and leaves the previous active environment
   let probeCount = 0;
   const failed = makeBootstrap(data, {
     probe: async () => ({ success: ++probeCount > 1 }),
+    sourceProbe: async (url) => ({
+      url,
+      reachable: true,
+      packageAvailable: true,
+      usable: true,
+      latencyMs: 1,
+    }),
     commandRunner: async (_command, args) => {
       if (args[0] === "-m" && args[1] === "pip" && args[2] === "install" && args.includes("-r")) {
         return { success: false, code: 1, stderr: "mirror unavailable" };

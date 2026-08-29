@@ -41,6 +41,10 @@ const includeLegacyPackagedComponents = ["1", "true", "yes"].includes(
     .trim()
     .toLowerCase(),
 );
+const packageRuntimeFlavor = String(process.env.MOONSHINE_RUNTIME_FLAVOR || "cu130")
+  .trim()
+  .toLowerCase();
+const includePackagedSam3 = ["cu126", "cu130"].includes(packageRuntimeFlavor);
 
 export default defineConfig((ctx) => {
   if (ctx.mode.electron && ctx.prod) {
@@ -313,6 +317,7 @@ export default defineConfig((ctx) => {
           "build-resources/ffmpeg",
           "build-resources/integrity",
           "build-resources/mcp",
+          ...(includePackagedSam3 ? ["build-resources/sam3"] : []),
           ...(includeLegacyPackagedComponents
             ? ["build-resources/runtime", "build-resources/models"]
             : []),
@@ -367,6 +372,12 @@ export default defineConfig((ctx) => {
             from: "build-resources/backend",
             to: "backend",
           },
+          ...(includePackagedSam3
+            ? [{
+                from: "build-resources/sam3",
+                to: "sam3",
+              }]
+            : []),
           {
             from: "build-resources/ffmpeg",
             to: "ffmpeg",

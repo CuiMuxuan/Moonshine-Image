@@ -676,6 +676,7 @@
                           dense
                           data-testid="global-settings-image-sam-default-model"
                         />
+                        <template #description>{{ imageSmartSelectionModelDescription }}</template>
                       </SettingsPanel>
                       </div>
 
@@ -1664,7 +1665,7 @@ const settingsHelp = Object.freeze({
   imageSmartSelectionModel: createSettingsHelp(
     "image-smart-selection-model",
     "智能选区默认模型",
-    "SAM1/SAM2.1 支持点选与框选，SAM3/SAM3.1 支持文本智选。未安装的模型需先在模型管理中准备。"
+    "点选和框选模型包括 SAM1、SAM2.1 与标准 SAM3；SAM3.1 Multiplex 当前仅支持文本选取。"
   ),
   samRenderCache: createSettingsHelp(
     "sam-render-cache",
@@ -1790,6 +1791,57 @@ const imageSamDefaultModelOptions = computed(() =>
     .filter((model) => ["sam", "sam2", "sam3"].includes(model.family))
     .map(buildSamDefaultModelOption)
 );
+const selectedImageSamModel = computed(() =>
+  knownSamModels.value.find(
+    (model) => model.id === localConfig.value.masking?.imageSmartSelectionDefaultModel
+  ) || null
+);
+const resolveImageSamCapabilities = (model = {}) => {
+  const enabled = model.enabledCapabilities || {};
+  const hasCapabilityMetadata = ["imagePoint", "imageBox", "imageText"].some(
+    (key) => Object.hasOwn(enabled, key)
+  );
+  if (hasCapabilityMetadata) {
+    return {
+      point: enabled.imagePoint === true,
+      box: enabled.imageBox === true,
+      text: enabled.imageText === true,
+    };
+  }
+
+  const modelId = String(model.id || "").toLowerCase();
+  const family = String(model.family || "").toLowerCase();
+  if (modelId === "sam3_1_multiplex") {
+    return { point: false, box: false, text: true };
+  }
+  if (family === "sam3" || modelId === "sam3") {
+    return { point: true, box: true, text: true };
+  }
+  return {
+    point: ["sam", "sam2"].includes(family),
+    box: ["sam", "sam2"].includes(family),
+    text: false,
+  };
+};
+const imageSmartSelectionModelDescription = computed(() => {
+  const model = selectedImageSamModel.value;
+  if (!model) {
+    return "点选和框选模型：SAM1、SAM2.1、标准 SAM3；仅文本选取模型：SAM3.1 Multiplex。";
+  }
+
+  const label = formatSamDefaultModelLabel(model).replace(" · 未安装", "");
+  const capabilities = resolveImageSamCapabilities(model);
+  if ((capabilities.point || capabilities.box) && capabilities.text) {
+    return `当前选择 ${label}：支持点选、框选和文本选取。仅文本选取模型：SAM3.1 Multiplex。`;
+  }
+  if (capabilities.point || capabilities.box) {
+    return `当前选择 ${label}：支持点选和框选。仅文本选取模型：SAM3.1 Multiplex；标准 SAM3 还支持文本选取。`;
+  }
+  if (capabilities.text) {
+    return `当前选择 ${label}：仅支持文本选取。如需点选或框选，请使用 SAM1、SAM2.1 或标准 SAM3。`;
+  }
+  return `当前选择 ${label}：当前未开放图片点选、框选或文本选取能力。`;
+});
 const videoSamDefaultModelOptions = computed(() =>
   knownSamModels.value
     .filter((model) => model.family === "sam2" && String(model.modelVersion || "SAM2.1").includes("SAM2.1"))

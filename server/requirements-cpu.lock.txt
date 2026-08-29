@@ -1,5 +1,6 @@
 # Moonshine-Image v1.3.0 CPU environment lock (Python 3.12.10 / win-x64)
-# The installer selects the PyTorch CPU index as an extra index.
+# The installer probes CPU wheel mirrors and selects either a PEP 503 extra
+# index or a flat --find-links source before installing this lock.
 torch==2.11.0+cpu
 torchvision==0.26.0+cpu
 opencv-python==5.0.0.93

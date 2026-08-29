@@ -2,6 +2,12 @@ import {
   createDefaultShortcuts,
   normalizeShortcutConfig,
 } from "../utils/shortcutConfig.js";
+import {
+  MCP_ALLOWED_TOOL_OPTIONS as SHARED_MCP_ALLOWED_TOOL_OPTIONS,
+  MCP_READ_ONLY_TOOL_OPTIONS,
+} from "./mcpToolDefinitions.js";
+
+export { MCP_READ_ONLY_TOOL_OPTIONS };
 
 export const CONFIG_SCHEMA_VERSION = 16;
 
@@ -52,20 +58,9 @@ export const MCP_CONFIRMATION_MODES = Object.freeze([
   "auto_approve",
   "full_access",
 ]);
-export const MCP_ALLOWED_TOOL_OPTIONS = Object.freeze([
-  "moonshine.status",
-  "moonshine.capabilities",
-  "moonshine.models.list",
-  "moonshine.ocr.detect",
-  "moonshine.masks.generate",
-  "moonshine.image.process",
-  "moonshine.image.process_batch",
-  "moonshine.jobs.get",
-  "moonshine.jobs.result",
-  "moonshine.jobs.cancel",
-  "moonshine.job_groups.get",
-  "moonshine.job_groups.cancel",
-]);
+// Keep the public option list and its read-only subset derived from the shared
+// capability metadata used by the Electron dispatcher.
+export const MCP_ALLOWED_TOOL_OPTIONS = SHARED_MCP_ALLOWED_TOOL_OPTIONS;
 export const MAX_MCP_ALLOWED_ROOTS = 16;
 export const MAX_MCP_ALLOWED_ROOT_LENGTH = 1024;
 
@@ -210,6 +205,13 @@ export const DEFAULT_MCP_CONFIG = Object.freeze({
   allowedRoots: Object.freeze([]),
   confirmationMode: "read_only",
 });
+// Defaults for a newly created application configuration. Persisted MCP
+// policies continue to use DEFAULT_MCP_CONFIG semantics when a field was
+// explicitly present, including an explicit empty allowlist.
+export const DEFAULT_NEW_MCP_CONFIG = Object.freeze({
+  ...DEFAULT_MCP_CONFIG,
+  allowedTools: Object.freeze([...MCP_READ_ONLY_TOOL_OPTIONS]),
+});
 export const MCP_CONFIG_FIELD_NAMES = Object.freeze([
   "enabled",
   "profileId",
@@ -306,7 +308,11 @@ export const normalizeMcpConfigMetadata = (value = {}) => {
   return {
     enabled: typeof config.enabled === "boolean" ? config.enabled : DEFAULT_MCP_CONFIG.enabled,
     profileId: normalizeMcpProfileId(config.profileId),
-    allowedTools: normalizeMcpAllowedTools(config.allowedTools),
+    allowedTools: normalizeMcpAllowedTools(
+      Object.prototype.hasOwnProperty.call(config, "allowedTools")
+        ? config.allowedTools
+        : DEFAULT_MCP_CONFIG.allowedTools,
+    ),
     allowedRoots: normalizeMcpAllowedRoots(config.allowedRoots),
     confirmationMode: normalizeMcpConfirmationMode(
       config.confirmationMode,
@@ -355,8 +361,8 @@ export const createDefaultAppConfig = () => ({
     ...DEFAULT_MASKING_CONFIG,
   },
   mcp: {
-    ...DEFAULT_MCP_CONFIG,
-    allowedTools: [...DEFAULT_MCP_CONFIG.allowedTools],
+    ...DEFAULT_NEW_MCP_CONFIG,
+    allowedTools: [...DEFAULT_NEW_MCP_CONFIG.allowedTools],
     allowedRoots: [...DEFAULT_MCP_CONFIG.allowedRoots],
   },
   ui: {
@@ -552,6 +558,25 @@ export const normalizeConfigToCurrentSchema = (rawConfig = {}) => {
   const migrated = migrateLegacyConfigShape(rawConfig);
   const aligned = alignConfigWithDefaultSchema(defaultConfig, migrated);
   aligned.schemaVersion = CONFIG_SCHEMA_VERSION;
+  // Only a genuinely empty input represents a new configuration. Existing
+  // files from before MCP was added may omit the section entirely; keep those
+  // policies closed instead of silently granting tools or directories.
+  const hasPersistedConfigFields = Object.keys(migrated).length > 0;
+  if (hasPersistedConfigFields && !isPlainObject(migrated.mcp)) {
+    aligned.mcp.allowedTools = [...DEFAULT_MCP_CONFIG.allowedTools];
+    aligned.mcp.allowedRoots = [...DEFAULT_MCP_CONFIG.allowedRoots];
+  } else if (
+    isPlainObject(migrated.mcp) &&
+    !Object.prototype.hasOwnProperty.call(migrated.mcp, "allowedTools")
+  ) {
+    aligned.mcp.allowedTools = [...DEFAULT_MCP_CONFIG.allowedTools];
+  }
+  if (
+    isPlainObject(migrated.mcp) &&
+    !Object.prototype.hasOwnProperty.call(migrated.mcp, "allowedRoots")
+  ) {
+    aligned.mcp.allowedRoots = [...DEFAULT_MCP_CONFIG.allowedRoots];
+  }
   if (!String(aligned.masking?.defaultSamModel || "").trim()) {
     aligned.masking.defaultSamModel = DEFAULT_MASKING_CONFIG.defaultSamModel;
   }

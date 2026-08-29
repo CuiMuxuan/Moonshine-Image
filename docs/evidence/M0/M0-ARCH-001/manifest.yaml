@@ -66,12 +66,12 @@ files:
     size_bytes: 6603
     kind: fixture
   - path: package.json
-    sha256: 0d243d983dd199528f46e02572247eea7043f3fc1f0bdf87d56e9d69787051e2
-    size_bytes: 6629
+    sha256: 31141d2da7a1254f9715aad20adf1e7d1840e996e13d7fd90fbd102eca280813
+    size_bytes: 6621
     kind: contract
   - path: package-lock.json
-    sha256: b921d1a49dfad457014681c527c1d2d6ba9bfad8bf6aa50ce9abe7287169b3be
-    size_bytes: 510589
+    sha256: 9f23217b12ad2283cd936d8c66ea69f2046739304be63de5044ad2d059ddcf37
+    size_bytes: 510573
     kind: contract
   - path: docs/evidence/M0/M0-ARCH-001/task.yaml
     sha256: b30c28e358e3891d7fc6a15d4be0a1ffb252d314ba681d44cfdeebac3b4f17e4

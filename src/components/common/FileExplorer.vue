@@ -1,6 +1,5 @@
 <template>
   <q-drawer
-    show-if-above
     overlay
     bordered
     v-model="drawerModel"

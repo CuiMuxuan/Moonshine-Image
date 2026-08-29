@@ -117,6 +117,11 @@ test("MCP settings explains and presents the policy controls consistently", () =
   assert.match(settingsPanelSource, /mcp-module-grid/);
   assert.match(settingsPanelSource, /grid-template-areas/);
   assert.match(settingsPanelSource, /copyClientConfiguration/);
+  assert.match(settingsPanelSource, /label="复制 AI 提示词"/);
+  assert.match(settingsPanelSource, /clientAiPrompt/);
+  assert.match(settingsPanelSource, /copyClientAiPrompt/);
+  assert.match(settingsPanelSource, /moonshine\.status/);
+  assert.match(settingsPanelSource, /moonshine\.capabilities/);
   assert.match(settingsPanelSource, /probeExternalProxy/);
   assert.match(settingsPanelSource, /disconnectClientSession/);
   assert.match(activityPanelSource, /待处理审批/);

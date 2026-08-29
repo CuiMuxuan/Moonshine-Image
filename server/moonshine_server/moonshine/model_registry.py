@@ -138,6 +138,83 @@ RAPIDOCR_LICENSE = {
     "url": "https://github.com/RapidAI/RapidOCR/blob/main/LICENSE",
     "note": "RapidOCR 项目代码采用 Apache License 2.0；ONNX 模型文件的来源与分发权利仍按本项目模型清单核验。",
 }
+RAPIDOCR_MODEL_BASE_URL = (
+    "https://huggingface.co/CuiMuxuan/moonshine-models/resolve/main/ocr/rapidocr"
+)
+RAPIDOCR_MODEL_FILES = (
+    {
+        "path": "ocr/PP-OCRv6_det_small.onnx",
+        "label": "检测模型（det）",
+        "size": 9929594,
+        "sha256": "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f",
+        "sourceLinks": [
+            {
+                "label": "Hugging Face 主源",
+                "type": "huggingface",
+                "url": f"{RAPIDOCR_MODEL_BASE_URL}/PP-OCRv6_det_small.onnx",
+            }
+        ],
+        "legacyPaths": [],
+    },
+    {
+        "path": "ocr/PP-OCRv6_rec_small.onnx",
+        "label": "识别模型（rec）",
+        "size": 21234383,
+        "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
+        "sourceLinks": [
+            {
+                "label": "Hugging Face 主源",
+                "type": "huggingface",
+                "url": f"{RAPIDOCR_MODEL_BASE_URL}/PP-OCRv6_rec_small.onnx",
+            }
+        ],
+        "legacyPaths": [],
+    },
+    {
+        "path": "ocr/ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+        "label": "方向分类模型（cls）",
+        "size": 585532,
+        "sha256": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c",
+        "sourceLinks": [
+            {
+                "label": "Hugging Face 主源",
+                "type": "huggingface",
+                "url": f"{RAPIDOCR_MODEL_BASE_URL}/ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+            }
+        ],
+        "legacyPaths": [],
+    },
+)
+RAPIDOCR_MODEL_MANIFEST = {
+    "id": "ocr_rapid_onnx_mobile",
+    "label": "RapidOCR",
+    "description": "RapidOCR det/rec/cls ONNX 文本识别模型。",
+    "type": "ocr",
+    "family": "rapidocr",
+    "category": "ocr",
+    "license": RAPIDOCR_LICENSE,
+    "downloadable": True,
+    "sourceLinks": [source for file_spec in RAPIDOCR_MODEL_FILES for source in file_spec["sourceLinks"]],
+    "manualSources": [
+        {
+            "label": "夸克网盘副源",
+            "type": "quark",
+            "url": MANUAL_MODEL_SOURCE_URL,
+        }
+    ],
+    "manualHint": (
+        "请将 RapidOCR 的 det、rec、cls 三个 ONNX 文件放入当前模型路径的 ocr/ 子路径。"
+        + MANUAL_MODEL_INSTALL_HINT
+    ),
+    "requiresMask": False,
+    "files": RAPIDOCR_MODEL_FILES,
+    "size": sum(file_spec["size"] for file_spec in RAPIDOCR_MODEL_FILES),
+    "sha256": "",
+    "capabilities": {
+        "imageText": True,
+        "imagePolygon": True,
+    },
+}
 LAMA_LICENSE = {
     "name": "Apache-2.0",
     "url": "https://github.com/advimman/lama/blob/main/LICENSE",
@@ -850,7 +927,7 @@ MODEL_MANIFEST = (
         "recommendedVram": 16384,
         "runCapabilities": {
             "scopes": ["currentImage", "selectedImages", "videoFrames"],
-            "maskPrompts": ["point", "box", "text"],
+            "maskPrompts": ["text"],
             "languages": ["zh-CN", "en"],
             "outputRequired": False,
         },
@@ -868,6 +945,7 @@ MODEL_MANIFEST = (
         },
     },
 )
+MODEL_MANIFEST = MODEL_MANIFEST + (RAPIDOCR_MODEL_MANIFEST,)
 
 SIGNED_MODEL_MANIFEST_PATH_ENV = "MOONSHINE_MODEL_MANIFEST_PATH"
 SIGNED_MODEL_MANIFEST_REQUIRED_ENV = "MOONSHINE_REQUIRE_SIGNED_MODEL_MANIFEST"
@@ -888,14 +966,35 @@ def _env_enabled(name: str) -> bool:
 
 
 def _downloads_disabled_fallback() -> tuple[dict, ...]:
-    return tuple(
-        {
-            **model,
-            "downloadable": False,
-            "sourceLinks": [],
-        }
-        for model in MODEL_MANIFEST
-    )
+    return tuple(_disable_model_downloads(model) for model in MODEL_MANIFEST)
+
+
+def _disable_model_downloads(model: dict) -> dict:
+    return {
+        **model,
+        "downloadable": False,
+        "sourceLinks": [],
+        "files": [
+            {
+                **file_spec,
+                "sourceLinks": [],
+                # Older catalogs used the `sources` alias. Clear both names
+                # so the download worker cannot resurrect a disabled URL.
+                "sources": [],
+            }
+            for file_spec in model.get("files", [])
+        ],
+    }
+
+
+def _has_download_sources(model: dict) -> bool:
+    """Return whether a model has either aggregate or per-file download URLs."""
+    if model.get("sourceLinks"):
+        return True
+    for file_spec in model.get("files") or []:
+        if file_spec.get("sourceLinks") or file_spec.get("sources"):
+            return True
+    return False
 
 
 def _validate_https_url(value: str, label: str):
@@ -919,6 +1018,7 @@ def _validate_external_model(model: dict, index: int) -> dict:
     if not isinstance(files, list) or not files:
         raise ValueError(f"models[{index}].files must be a non-empty array")
     file_paths = set()
+    file_source_count = 0
     for file_index, file_spec in enumerate(files):
         if not isinstance(file_spec, dict):
             raise ValueError(f"models[{index}].files[{file_index}] must be an object")
@@ -934,11 +1034,24 @@ def _validate_external_model(model: dict, index: int) -> dict:
             raise ValueError(f"models[{index}].files[{file_index}].sha256 is invalid")
         for legacy_path in file_spec.get("legacyPaths") or []:
             _safe_relative_path(legacy_path)
+        file_sources = file_spec.get("sourceLinks") or file_spec.get("sources") or []
+        if not isinstance(file_sources, list):
+            raise ValueError(f"models[{index}].files[{file_index}].sourceLinks must be an array")
+        for source_index, source in enumerate(file_sources):
+            if not isinstance(source, dict):
+                raise ValueError(
+                    f"models[{index}].files[{file_index}].sourceLinks[{source_index}] must be an object"
+                )
+            _validate_https_url(
+                source.get("url"),
+                f"models[{index}].files[{file_index}].sourceLinks[{source_index}].url",
+            )
+        file_source_count += bool(file_sources)
 
     source_links = model.get("sourceLinks") or []
     if not isinstance(source_links, list):
         raise ValueError(f"models[{index}].sourceLinks must be an array")
-    if bool(model.get("downloadable")) and not source_links:
+    if bool(model.get("downloadable")) and not source_links and file_source_count < len(files):
         raise ValueError(f"models[{index}] is downloadable but has no sourceLinks")
     for source_index, source in enumerate(source_links):
         if not isinstance(source, dict):
@@ -986,6 +1099,11 @@ def _parse_signed_model_manifest(document: dict, expected_channel: str) -> tuple
             raise ValueError(f"Duplicate model id: {model_id}")
         ids.add(model_id)
         models.append(model)
+    # RapidOCR is a core application capability. Keep its aggregate card even
+    # when an optional signed catalog does not enumerate it, but do not expose
+    # unsigned download URLs in signed-manifest mode.
+    if RAPIDOCR_MODEL_MANIFEST["id"] not in ids:
+        models.append(_disable_model_downloads(RAPIDOCR_MODEL_MANIFEST))
     return tuple(models), {
         "source": "signed",
         "required": _env_enabled(SIGNED_MODEL_MANIFEST_REQUIRED_ENV),
@@ -1323,55 +1441,6 @@ def build_model_status(model_dir: Path, cuda_info: Optional[dict] = None) -> lis
         }
         models.append(item)
 
-    # RapidOCR is shipped as a local ONNX triplet rather than a downloadable
-    # manifest item. Keep it as one aggregate smart-selection model card while
-    # preserving per-file status for diagnostics in model management.
-    ocr_files = [
-        {"path": "ocr/PP-OCRv6_det_small.onnx", "label": "检测模型（det）"},
-        {"path": "ocr/PP-OCRv6_rec_small.onnx", "label": "识别模型（rec）"},
-        {"path": "ocr/ch_ppocr_mobile_v2.0_cls_mobile.onnx", "label": "方向分类模型（cls）"},
-    ]
-    ocr_file_statuses = [_file_status(model_dir, file_spec) for file_spec in ocr_files]
-    ocr_missing_files = [file_status["path"] for file_status in ocr_file_statuses if not file_status["exists"]]
-    ocr_corrupt_files = [
-        file_status["path"]
-        for file_status in ocr_file_statuses
-        if file_status["exists"] and not file_status["valid"]
-    ]
-    ocr_verified = not ocr_missing_files and not ocr_corrupt_files
-    models.append({
-        "id": "ocr_rapid_onnx_mobile",
-        "label": "RapidOCR",
-        "description": "RapidOCR det/rec/cls ONNX 文本识别模型。",
-        "type": "ocr",
-        "family": "rapidocr",
-        "category": "ocr",
-        "license": RAPIDOCR_LICENSE,
-        "sourceLinks": [],
-        "manualSources": [],
-        "installed": ocr_verified,
-        "verified": ocr_verified,
-        "available": ocr_verified,
-        "downloadable": False,
-        "requiresMask": False,
-        "files": ocr_file_statuses,
-        "missingFiles": ocr_missing_files,
-        "corruptFiles": ocr_corrupt_files,
-        "fileStatus": "verified" if ocr_verified else ("corrupt" if ocr_corrupt_files else "missing"),
-        "loadState": "not_loaded",
-        "loaded": False,
-        "runtimeReady": ocr_verified,
-        "ready": ocr_verified,
-        "readiness": {
-            "status": "ready" if ocr_verified else "blocked",
-            "reason": None if ocr_verified else ("files_corrupt" if ocr_corrupt_files else "files_missing"),
-        },
-        "deviceCompatible": True,
-        "capabilities": {
-            "imageText": True,
-            "imagePolygon": True,
-        },
-    })
     return models
 
 
@@ -1434,7 +1503,7 @@ class ModelDownloadTaskManager:
             raise ValueError(f"Unknown model: {model_id}")
         if not manifest_item.get("downloadable"):
             raise ValueError("该模型不支持软件内下载。")
-        if not manifest_item.get("sourceLinks"):
+        if not _has_download_sources(manifest_item):
             raise ValueError("暂无下载源。")
 
         license_metadata = manifest_item.get("license") or _model_license_metadata(manifest_item)
@@ -1539,55 +1608,97 @@ class ModelDownloadTaskManager:
             )
 
     def _download_model_files(self, task_id: str, manifest_item: dict, model_dir: Path):
-        source_links = manifest_item.get("sourceLinks") or []
         file_specs = manifest_item.get("files") or []
-        if len(file_specs) != 1:
-            raise ValueError("当前下载器仅支持单文件模型。")
+        if not file_specs:
+            raise ValueError("模型清单没有可下载文件。")
 
-        file_spec = file_specs[0]
-        relative_path = _safe_relative_path(file_spec.get("path", ""))
-        target_path = model_dir / relative_path
-        part_path = target_path.with_name(f"{target_path.name}.part")
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        estimated_size = int(file_spec.get("size") or 0)
-        ensure_disk_space(
-            target_path,
-            estimated_size,
-            safety_bytes=DEFAULT_DISK_SPACE_SAFETY_BYTES,
-            operation="下载模型文件",
+        total_expected = sum(max(0, int(file_spec.get("size") or 0)) for file_spec in file_specs)
+        downloaded_total = 0
+        self._patch_task(
+            task_id,
+            total_bytes=total_expected or None,
+            downloaded_bytes=0,
+            progress=0,
         )
+        model_sources = manifest_item.get("sourceLinks") or []
 
-        last_error = None
-        for source in source_links:
-            url = source.get("url") if isinstance(source, dict) else str(source)
-            if not url:
-                continue
-            try:
-                self._download_url_to_file(task_id, url, part_path)
-                expected_sha256 = str(file_spec.get("sha256") or "").strip().lower()
-                if expected_sha256:
-                    actual_sha256 = _sha256_file(part_path)
-                    if actual_sha256 != expected_sha256:
-                        raise ValueError("模型文件校验失败，请重新下载。")
-                os.replace(part_path, target_path)
-                return
-            except Exception as error:
-                last_error = error
+        for file_spec in file_specs:
+            relative_path = _safe_relative_path(file_spec.get("path", ""))
+            target_path = model_dir / relative_path
+            part_path = target_path.with_name(f"{target_path.name}.part")
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            estimated_size = int(file_spec.get("size") or 0)
+            ensure_disk_space(
+                target_path,
+                estimated_size,
+                safety_bytes=DEFAULT_DISK_SPACE_SAFETY_BYTES,
+                operation="下载模型文件",
+            )
+
+            file_sources = file_spec.get("sourceLinks") or file_spec.get("sources") or model_sources
+            if not file_sources:
+                raise ValueError(f"模型文件没有下载源：{relative_path}")
+            self._patch_task(
+                task_id,
+                message=f"正在下载 {file_spec.get('label') or relative_path.name}...",
+            )
+            last_error = None
+            for source in file_sources:
+                url = source.get("url") if isinstance(source, dict) else str(source)
+                if not url:
+                    continue
                 try:
-                    part_path.unlink(missing_ok=True)
-                except TypeError:
-                    if part_path.exists():
-                        part_path.unlink()
-                continue
+                    downloaded = self._download_url_to_file(
+                        task_id,
+                        url,
+                        part_path,
+                        downloaded_offset=downloaded_total,
+                        aggregate_total=total_expected,
+                    )
+                    actual_size = part_path.stat().st_size
+                    if estimated_size and actual_size != estimated_size:
+                        raise ValueError(
+                            f"模型文件大小校验失败：{relative_path}（期望 {estimated_size}，实际 {actual_size}）"
+                        )
+                    expected_sha256 = str(file_spec.get("sha256") or "").strip().lower()
+                    if expected_sha256:
+                        actual_sha256 = _sha256_file(part_path)
+                        if actual_sha256 != expected_sha256:
+                            raise ValueError("模型文件校验失败，请重新下载。")
+                    os.replace(part_path, target_path)
+                    downloaded_total += downloaded
+                    if total_expected:
+                        self._patch_task(
+                            task_id,
+                            downloaded_bytes=downloaded_total,
+                            progress=min(0.99, downloaded_total / total_expected),
+                        )
+                    break
+                except Exception as error:
+                    last_error = error
+                    try:
+                        part_path.unlink(missing_ok=True)
+                    except TypeError:
+                        if part_path.exists():
+                            part_path.unlink()
+                    continue
+            else:
+                raise last_error or ValueError(f"暂无可用下载源：{relative_path}")
 
-        raise last_error or ValueError("暂无可用下载源。")
-
-    def _download_url_to_file(self, task_id: str, url: str, part_path: Path):
+    def _download_url_to_file(
+        self,
+        task_id: str,
+        url: str,
+        part_path: Path,
+        downloaded_offset: int = 0,
+        aggregate_total: Optional[int] = None,
+    ) -> int:
         request = Request(url, headers={"User-Agent": "Moonshine-Image"})
         with urlopen(request, timeout=30) as response:
             total_bytes = response.headers.get("Content-Length")
             total_bytes = int(total_bytes) if total_bytes and total_bytes.isdigit() else None
-            self._patch_task(task_id, total_bytes=total_bytes)
+            effective_total = aggregate_total or total_bytes
+            self._patch_task(task_id, total_bytes=effective_total)
 
             downloaded = 0
             with part_path.open("wb") as output:
@@ -1603,12 +1714,17 @@ class ModelDownloadTaskManager:
                     )
                     output.write(chunk)
                     downloaded += len(chunk)
-                    progress = downloaded / total_bytes if total_bytes else 0
+                    progress = (
+                        (downloaded_offset + downloaded) / effective_total
+                        if effective_total
+                        else 0
+                    )
                     self._patch_task(
                         task_id,
-                        downloaded_bytes=downloaded,
+                        downloaded_bytes=downloaded_offset + downloaded,
                         progress=max(0, min(0.99, progress)),
                     )
+            return downloaded
 
 
 download_task_manager = ModelDownloadTaskManager()

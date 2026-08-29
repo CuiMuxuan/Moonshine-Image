@@ -2,23 +2,13 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import net from "node:net";
 import path from "node:path";
 
+import { MCP_TOOL_DEFINITIONS } from "../src/shared/mcpToolDefinitions.js";
 import { projectMcpPublicResult } from "./mcp-application-dispatcher.js";
 
 export const MCP_PROTOCOL_VERSION = "moonshine-mcp-v1";
-export const MCP_TOOL_NAMES = Object.freeze([
-  "moonshine.status",
-  "moonshine.capabilities",
-  "moonshine.models.list",
-  "moonshine.ocr.detect",
-  "moonshine.masks.generate",
-  "moonshine.image.process",
-  "moonshine.image.process_batch",
-  "moonshine.jobs.get",
-  "moonshine.jobs.result",
-  "moonshine.jobs.cancel",
-  "moonshine.job_groups.get",
-  "moonshine.job_groups.cancel",
-]);
+export const MCP_TOOL_NAMES = Object.freeze(
+  MCP_TOOL_DEFINITIONS.map((definition) => definition.name),
+);
 
 export const MCP_CONFIRMATION_MODES = Object.freeze([
   "read_only",

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
@@ -14,6 +15,7 @@ import {
   PACKAGED_FFMPEG_RESOURCE_DIR,
   PACKAGED_FFMPEG_TARGET_DIR,
   PACKAGED_MODELS_RESOURCE_DIR,
+  PACKAGED_SAM3_RESOURCE_DIR,
   PACKAGED_RUNTIME_METADATA_FILE,
   PACKAGED_RUNTIME_RESOURCE_DIR,
   PACKAGED_RUNTIME_TARGET_DIR,
@@ -28,7 +30,11 @@ const repoRoot = path.resolve(__dirname, "..");
 const sourceModelsRoot = path.join(repoRoot, "models");
 const buildResourcesRoot = path.join(repoRoot, "build-resources");
 const packagedModelsRoot = path.join(buildResourcesRoot, PACKAGED_MODELS_RESOURCE_DIR);
+const packagedSam3Root = path.join(buildResourcesRoot, PACKAGED_SAM3_RESOURCE_DIR);
+const sam3WheelStagingRoot = path.join(buildResourcesRoot, ".tmp", "runtime", "sam3-wheel");
+const sam3SourceRoot = path.join(repoRoot, "third_party", "sam3");
 const modelBundle = normalizeModelBundle(process.env.MOONSHINE_MODEL_BUNDLE);
+const runtimeFlavor = String(process.env.MOONSHINE_RUNTIME_FLAVOR || "cu130").trim().toLowerCase();
 const packagedFfmpegRoot = path.join(
   buildResourcesRoot,
   PACKAGED_FFMPEG_RESOURCE_DIR,
@@ -62,6 +68,10 @@ const protectedResourceDirs = [
   {
     rootDir: path.join(buildResourcesRoot, PACKAGED_FFMPEG_RESOURCE_DIR),
     resourcePrefix: PACKAGED_FFMPEG_RESOURCE_DIR,
+  },
+  {
+    rootDir: packagedSam3Root,
+    resourcePrefix: PACKAGED_SAM3_RESOURCE_DIR,
   },
 ];
 const protectedResourceFiles = [
@@ -268,12 +278,120 @@ function copyPackagedFfmpegRuntime() {
   });
 }
 
-function createManifestEntries({ includeBundledComponents = true, includeFfmpeg = true } = {}) {
+function isCudaRuntimeFlavor() {
+  return runtimeFlavor === "cu126" || runtimeFlavor === "cu130";
+}
+
+function findSam3Wheel(directoryPath) {
+  if (!fs.existsSync(directoryPath) || !fs.statSync(directoryPath).isDirectory()) {
+    return null;
+  }
+  const wheels = fs.readdirSync(directoryPath)
+    .filter((fileName) => /^sam3-.+\.whl$/iu.test(fileName))
+    .map((fileName) => path.join(directoryPath, fileName));
+  if (wheels.length > 1) {
+    throw new Error(`Expected exactly one SAM3 wheel in ${directoryPath}, found: ${wheels.join(", ")}`);
+  }
+  return wheels[0] || null;
+}
+
+function resolveSam3WheelSource() {
+  const configured = String(process.env.MOONSHINE_SAM3_WHEEL || "").trim();
+  if (configured) {
+    const configuredPath = path.resolve(configured);
+    if (fs.existsSync(configuredPath) && fs.statSync(configuredPath).isFile()) {
+      if (!/^sam3-.+\.whl$/iu.test(path.basename(configuredPath))) {
+        throw new Error(`MOONSHINE_SAM3_WHEEL must name a sam3-*.whl file: ${configuredPath}`);
+      }
+      return configuredPath;
+    }
+    const configuredWheel = findSam3Wheel(configuredPath);
+    if (configuredWheel) return configuredWheel;
+    throw new Error(`Configured SAM3 wheel does not exist: ${configuredPath}`);
+  }
+
+  return findSam3Wheel(sam3WheelStagingRoot) || findSam3Wheel(packagedSam3Root);
+}
+
+function buildSam3Wheel() {
+  ensureDir(sam3WheelStagingRoot);
+  const python = String(
+    process.env.MOONSHINE_SAM3_BUILD_PYTHON || process.env.PYTHON || "python",
+  ).trim();
+  if (!python) throw new Error("A Python executable is required to build the SAM3 wheel.");
+  if (!fs.existsSync(path.join(sam3SourceRoot, "pyproject.toml"))) {
+    throw new Error(`SAM3 source tree is missing pyproject.toml: ${sam3SourceRoot}`);
+  }
+
+  resetDir(sam3WheelStagingRoot);
+  const result = spawnSync(
+    python,
+    [
+      "-m",
+      "pip",
+      "wheel",
+      "--no-deps",
+      "--no-build-isolation",
+      "--wheel-dir",
+      sam3WheelStagingRoot,
+      sam3SourceRoot,
+    ],
+    { cwd: repoRoot, env: process.env, stdio: "inherit" },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`SAM3 wheel build failed with exit code ${result.status}.`);
+  }
+  return findSam3Wheel(sam3WheelStagingRoot);
+}
+
+function preparePackagedSam3Wheel() {
+  if (!isCudaRuntimeFlavor()) {
+    resetDir(packagedSam3Root);
+    return null;
+  }
+
+  // Resolve the source before resetting the destination: an explicitly
+  // supplied wheel may already live under build-resources/sam3.
+  const sourceWheel = resolveSam3WheelSource() || buildSam3Wheel();
+  if (!sourceWheel || !fs.existsSync(sourceWheel)) {
+    throw new Error(
+      `CUDA resource preparation requires a SAM3 wheel. Set MOONSHINE_SAM3_WHEEL or build ${sam3SourceRoot}.`,
+    );
+  }
+
+  const fileName = path.basename(sourceWheel);
+  const sourceRelative = path.relative(path.resolve(packagedSam3Root), path.resolve(sourceWheel));
+  const sourceIsDestination = sourceRelative === ""
+    || (!sourceRelative.startsWith(`..${path.sep}`) && sourceRelative !== ".." && !path.isAbsolute(sourceRelative));
+  const sourceBytes = sourceIsDestination
+    ? fs.readFileSync(sourceWheel)
+    : null;
+  resetDir(packagedSam3Root);
+  const destinationWheel = path.join(packagedSam3Root, fileName);
+  if (sourceBytes) fs.writeFileSync(destinationWheel, sourceBytes);
+  else fs.copyFileSync(sourceWheel, destinationWheel);
+  const manifest = {
+    schemaVersion: 1,
+    package: "sam3",
+    fileName,
+    sha256: sha256File(destinationWheel),
+    installMode: "wheel-non-editable-no-deps",
+  };
+  fs.writeFileSync(
+    path.join(packagedSam3Root, "wheel-manifest.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
+  return manifest;
+}
+
+function createManifestEntries({ includeBundledComponents = true, includeFfmpeg = true, includeSam3 = isCudaRuntimeFlavor() } = {}) {
   const entries = [];
   const resourceDirs = protectedResourceDirs.filter(({ resourcePrefix }) =>
     resourcePrefix === "backend"
       || (includeFfmpeg && resourcePrefix === PACKAGED_FFMPEG_RESOURCE_DIR)
-      || (includeBundledComponents && resourcePrefix === PACKAGED_MODELS_RESOURCE_DIR),
+      || (includeBundledComponents && resourcePrefix === PACKAGED_MODELS_RESOURCE_DIR)
+      || (includeSam3 && resourcePrefix === PACKAGED_SAM3_RESOURCE_DIR),
   );
   const resourceFiles = includeBundledComponents ? protectedResourceFiles : [];
 
@@ -343,6 +461,7 @@ function prepareMcpAdapterResource() {
 export function prepareElectronResources({ includeBundledComponents = false, includeFfmpeg = true } = {}) {
   prepareBackendResources();
   prepareMcpAdapterResource();
+  const sam3 = preparePackagedSam3Wheel();
   if (includeFfmpeg) {
     copyPackagedFfmpegRuntime();
   }
@@ -360,7 +479,8 @@ export function prepareElectronResources({ includeBundledComponents = false, inc
     resourceMode: includeBundledComponents ? "bundled" : "app-only",
     generatedAt: new Date().toISOString(),
     hashAlgorithm: "sha256",
-    entries: createManifestEntries({ includeBundledComponents, includeFfmpeg }),
+    sam3,
+    entries: createManifestEntries({ includeBundledComponents, includeFfmpeg, includeSam3: Boolean(sam3) }),
   };
   const manifestBuffer = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
   const signature = crypto

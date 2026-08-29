@@ -29,6 +29,7 @@ import {
   PACKAGED_FFMPEG_RESOURCE_DIR,
   PACKAGED_FFMPEG_TARGET_DIR,
   PACKAGED_MODELS_RESOURCE_DIR,
+  PACKAGED_SAM3_RESOURCE_DIR,
   PACKAGED_RUNTIME_ENV_DIR,
   PACKAGED_RUNTIME_METADATA_FILE,
   PACKAGED_RUNTIME_RESOURCE_DIR,
@@ -131,7 +132,10 @@ import { VIDEO_TASK_DIRECTORY_PREFIX } from "../src/utils/videoProcessingResume.
 import { WindowLifecycleController } from "./window-lifecycle-controller.js";
 import { TrayManager } from "./tray-manager.js";
 import { createMcpBridge, registerMcpIpc } from "./mcp-ipc.js";
-import { createMcpApplicationDispatcher } from "./mcp-application-dispatcher.js";
+import {
+  createMcpApplicationDispatcher,
+  TOOL_DEFINITIONS,
+} from "./mcp-application-dispatcher.js";
 import { projectMcpCandidate } from "./mcp-artifacts.js";
 import { workspaceIdForRoot } from "./mcp-bridge.js";
 import { McpProcessManager } from "./mcp-process-manager.js";
@@ -148,8 +152,11 @@ import {
   canonicalizeMcpConfig,
   createSerialMutationQueue,
   registerMcpConfigIpc,
+  ensureMcpManagedRootDirectory,
+  resolveMcpManagedImageOutputRoot,
   resolveTrustedMcpDirectory,
   resolveTrustedMcpPath,
+  synchronizeMcpManagedRoot,
 } from "./mcp-config.js";
 import {
   BACKEND_RUNTIME_IMPORT_TIMEOUT_MS,
@@ -1890,9 +1897,18 @@ function createRuntimeManager() {
 runtimeManager = createRuntimeManager();
 
 function getEnvironmentSourceConfig() {
+  const parseCandidates = (value) => {
+    const candidates = String(value || "")
+      .split(/[;,\r\n]+/u)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return candidates.length ? candidates : undefined;
+  };
   return {
     pipIndexUrl: String(process.env.MOONSHINE_PYPI_INDEX_URL || "").trim() || undefined,
     torchIndexUrl: String(process.env.MOONSHINE_TORCH_INDEX_URL || "").trim() || undefined,
+    pipIndexCandidates: parseCandidates(process.env.MOONSHINE_PYPI_INDEX_CANDIDATES),
+    torchIndexCandidates: parseCandidates(process.env.MOONSHINE_TORCH_INDEX_CANDIDATES),
     extraIndexUrl: String(process.env.MOONSHINE_PIP_EXTRA_INDEX_URL || "").trim() || undefined,
     pythonInstallerUrl: String(process.env.MOONSHINE_PYTHON_INSTALLER_URL || "").trim() || undefined,
   };
@@ -1902,6 +1918,7 @@ function createEnvironmentManager() {
   const packaged = Boolean(app.isPackaged);
   const backendProjectPath = getPackagedBackendProjectPath();
   const environmentSourceConfig = getEnvironmentSourceConfig();
+  const sam3Wheel = getPackagedSam3WheelConfig();
   const requirementsPath = path.join(backendProjectPath, "requirements.txt");
   const requirementsPaths = {
     cpu: path.join(backendProjectPath, "requirements-cpu.lock.txt"),
@@ -1916,6 +1933,8 @@ function createEnvironmentManager() {
     requirementsPaths,
     requirementsLockPaths: requirementsPaths,
     requirementsLockPath: requirementsPath,
+    sam3WheelPath: sam3Wheel.path,
+    sam3WheelHash: sam3Wheel.hash,
     ffmpegSourcePath,
     commandRunner: (command, args, options = {}) => runProcess(command, args, {
       cwd: options.cwd,
@@ -2677,6 +2696,29 @@ function getPackagedFfmpegResourceRootPath() {
     PACKAGED_FFMPEG_RESOURCE_DIR,
     PACKAGED_FFMPEG_TARGET_DIR
   );
+}
+
+function getPackagedSam3ResourceRootPath() {
+  return path.join(getResourcesRootPath(), PACKAGED_SAM3_RESOURCE_DIR);
+}
+
+function getPackagedSam3WheelConfig() {
+  const resourceRoot = getPackagedSam3ResourceRootPath();
+  const manifestPath = path.join(resourceRoot, "wheel-manifest.json");
+  try {
+    const manifest = readJsonFile(manifestPath);
+    const fileName = String(manifest?.fileName || "").trim();
+    const hash = String(manifest?.sha256 || "").trim().toLowerCase();
+    if (!/^sam3-.+\.whl$/iu.test(fileName) || !/^[a-f0-9]{64}$/iu.test(hash)) {
+      return { path: "", hash: "" };
+    }
+    return {
+      path: path.join(resourceRoot, fileName),
+      hash,
+    };
+  } catch {
+    return { path: "", hash: "" };
+  }
 }
 
 function getDefaultModelDir() {
@@ -4547,6 +4589,12 @@ function saveSam3Lexicon(payload = {}) {
   return { ...normalized, path: lexiconPath, saved: true };
 }
 
+function getDefaultMcpReadOnlyTools() {
+  return TOOL_DEFINITIONS
+    .filter((definition) => definition?.access === "read")
+    .map((definition) => definition.name);
+}
+
 function createRuntimeDefaultConfig() {
   const userDataPath = app.getPath("userData");
   const nextConfig = createDefaultAppConfig();
@@ -4564,6 +4612,12 @@ function createRuntimeDefaultConfig() {
   nextConfig.masking.videoSmartSelectionDefaultModel =
     DEFAULT_MASKING_CONFIG.videoSmartSelectionDefaultModel;
   nextConfig.video.tempFramesPath = path.join(userDataPath, "temp", "video_frames");
+  // New runtime configurations start with the read-only portion of the
+  // registered MCP tool surface and the effective image-output directory.
+  // Explicit fields from a persisted config still win during alignment below.
+  nextConfig.mcp.allowedTools = getDefaultMcpReadOnlyTools();
+  const managedRoot = resolveMcpManagedImageOutputRoot(nextConfig);
+  nextConfig.mcp.allowedRoots = managedRoot ? [managedRoot] : [];
   return nextConfig;
 }
 
@@ -4571,6 +4625,25 @@ function mergeConfigWithDefaults(config = {}) {
   const migratedConfig = migrateLegacyConfigShape(config);
   const merged = alignConfigWithDefaultSchema(createRuntimeDefaultConfig(), migratedConfig);
   merged.schemaVersion = CONFIG_SCHEMA_VERSION;
+  // Only an actually empty input is a new configuration. Older persisted
+  // files may omit MCP entirely or one of its fields; keep those policies
+  // closed instead of silently granting a tool or directory.
+  const hasPersistedConfigFields = Object.keys(migratedConfig).length > 0;
+  if (hasPersistedConfigFields && !isPlainObject(migratedConfig.mcp)) {
+    merged.mcp.allowedTools = [];
+    merged.mcp.allowedRoots = [];
+  } else if (
+    isPlainObject(migratedConfig.mcp) &&
+    !Object.prototype.hasOwnProperty.call(migratedConfig.mcp, "allowedTools")
+  ) {
+    merged.mcp.allowedTools = [];
+  }
+  if (
+    isPlainObject(migratedConfig.mcp) &&
+    !Object.prototype.hasOwnProperty.call(migratedConfig.mcp, "allowedRoots")
+  ) {
+    merged.mcp.allowedRoots = [];
+  }
   return merged;
 }
 
@@ -5127,6 +5200,14 @@ function loadAppConfig() {
       const sanitizedConfig = sanitizeAppConfig(configData);
       if (validateConfig(sanitizedConfig)) {
         globalConfig = sanitizedConfig;
+        try {
+          ensureMcpManagedRootDirectory(globalConfig);
+        } catch (error) {
+          // Keep a valid configuration even when a user-selected output
+          // location is temporarily unavailable; MCP lifecycle startup will
+          // report the policy error instead of aborting application startup.
+          console.warn("Failed to create MCP managed image-output directory:", error?.message || error);
+        }
         if (
           needsConfigMigration(configData) ||
           JSON.stringify(configData) !== JSON.stringify(sanitizedConfig)
@@ -5173,6 +5254,7 @@ function createDefaultConfig() {
         fs.mkdirSync(dir, { recursive: true });
       }
     });
+    ensureMcpManagedRootDirectory(globalConfig);
 
   } catch (error) {
     console.error("Failed to create default configuration:", error);
@@ -5236,6 +5318,20 @@ ipcMain.handle("save-app-config", async (event, newConfig) => enqueueMcpConfigMu
       return { success: false, error: "Invalid configuration payload" };
     }
     const sanitizedConfig = sanitizeAppConfig(configWithCurrentMcp);
+    const previousManagedMcpRoot = resolveMcpManagedImageOutputRoot(globalConfig);
+    const nextManagedMcpRoot = resolveMcpManagedImageOutputRoot(sanitizedConfig);
+    sanitizedConfig.mcp = {
+      ...sanitizedConfig.mcp,
+      allowedRoots: synchronizeMcpManagedRoot({
+        allowedRoots: sanitizedConfig.mcp?.allowedRoots,
+        previousRoot: previousManagedMcpRoot,
+        nextRoot: nextManagedMcpRoot,
+      }),
+    };
+    // The managed root is a real directory permission, so materialize it
+    // before the bridge canonicalizes the policy. User-added roots remain
+    // untouched and an explicitly removed managed root is not recreated.
+    ensureMcpManagedRootDirectory(sanitizedConfig);
     if (!validateConfig(sanitizedConfig)) {
       console.error("Configuration validation failed: INVALID_CONFIGURATION");
       return { success: false, error: "Invalid configuration payload" };
@@ -5254,6 +5350,14 @@ ipcMain.handle("save-app-config", async (event, newConfig) => enqueueMcpConfigMu
       };
     }
 
+    const previousMcpConfig = globalConfig?.mcp || DEFAULT_MCP_CONFIG;
+    const mcpPolicyChanged = !sameMcpPolicy(sanitizedConfig.mcp, previousMcpConfig);
+    if (mcpPolicyChanged) {
+      // File settings can move the managed image-output root. Keep the live
+      // MCP bridge in lockstep with the policy that will be written below.
+      await synchronizeMcpLifecycle(sanitizedConfig.mcp, previousMcpConfig);
+    }
+
     const configPath = getConfigPath();
     try {
       fs.writeFileSync(configPath, JSON.stringify(sanitizedConfig, null, 2));
@@ -5269,6 +5373,9 @@ ipcMain.handle("save-app-config", async (event, newConfig) => enqueueMcpConfigMu
       global.projectPath = globalConfig.general.backendProjectPath || "";
       return { success: true, config: sanitizedConfig };
     } catch {
+      if (mcpPolicyChanged) {
+        await synchronizeMcpLifecycle(previousMcpConfig, sanitizedConfig.mcp).catch(() => null);
+      }
       throw new McpConfigError("MCP configuration could not be saved.", "MCP_CONFIG_SAVE_FAILED");
     }
   } catch (error) {

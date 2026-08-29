@@ -123,6 +123,21 @@ test("model manifest verifier accepts HF/Quark metadata and enforces the SAM lic
   assert.throws(() => verifySignedManifest(insecure, { publicKeys }), /HTTPS URL/);
 });
 
+test("model manifest verifier accepts downloadable sources attached to each file", () => {
+  const perFileSource = signedModelManifest(4, {
+    models: [modelRecord({
+      sourceLinks: [],
+      files: [{
+        path: "big-lama.pt",
+        size: 5,
+        sha256: "a".repeat(64),
+        sourceLinks: [{ type: "huggingface", url: "https://huggingface.co/example/model.bin" }],
+      }],
+    })],
+  });
+  assert.doesNotThrow(() => verifySignedManifest(perFileSource, { publicKeys }));
+});
+
 test("ModelManifestManager falls back to the mirror and exposes only a verified backend path", async (t) => {
   const { manager, layout, calls } = await fixture(t);
   const result = await manager.refresh();
@@ -165,4 +180,3 @@ test("disabled model manifest manager does not require signed registry mode", as
   assert.equal(manager.getState().status, MODEL_MANIFEST_STATUS.DISABLED);
   assert.deepEqual(manager.getBackendEnvironment(), {});
 });
-

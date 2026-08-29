@@ -19,8 +19,9 @@
     >
       <div class="empty-content text-center">
         <img class="empty-state-logo" :src="emptyStateLogoImage" alt="Moonshine Logo" />
-        <p class="q-mt-md" :class="emptyStateTextClass">
-          Upload a video from the left panel to start editing.
+        <p class="empty-state-message q-mt-md" :class="emptyStateTextClass">
+          <span class="empty-state-line" lang="zh-CN">请从左侧面板上传视频以开始编辑。</span>
+          <span class="empty-state-line" lang="en">Upload a video from the left panel to start editing.</span>
         </p>
       </div>
     </div>
@@ -598,6 +599,18 @@ onUnmounted(() => {
   object-fit: contain;
   display: block;
   margin: 0 auto;
+}
+
+.empty-state-message {
+  width: min(100%, 34rem);
+  max-width: calc(100vw - 2rem);
+  margin-inline: auto;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+.empty-state-line {
+  display: block;
 }
 
 .empty-state--light {

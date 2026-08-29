@@ -68,9 +68,17 @@
       <div class="page-content-shell">
         <router-view :backend-running="backendRunning" @update:loading="handleLoadingUpdate" />
 
-        <q-inner-loading :showing="loadingState.showing" class="global-loading">
+        <q-inner-loading
+          :showing="loadingState.showing"
+          class="global-loading"
+          data-testid="global-loading-overlay"
+        >
           <div class="global-loading-content">
-            <div class="global-loading-logo-shell" aria-hidden="true">
+            <div
+              class="global-loading-logo-shell global-loading-pulse"
+              data-testid="global-loading-pulse"
+              aria-hidden="true"
+            >
               <img class="global-loading-logo" :src="globalLoadingLogo" alt="" />
             </div>
             <span class="global-loading-message text-h6 text-primary text-center">
@@ -413,10 +421,18 @@ const clearPageDrawer = (side, owner = null) => {
   }
 };
 
-const normalizeLoadingMessage = (message = "") =>
+const normalizeLoadingEllipsis = (message = "") =>
   String(message || "").replace(
-    /\s*，?\s*可打开(?:后端|服务)管理页面查看进度/g,
-    "\n可打开服务管理页面查看进度"
+    /(?:。+|…+|\.{2,})[^\S\r\n]*(?=\r?\n|$)/g,
+    "…"
+  );
+
+const normalizeLoadingMessage = (message = "") =>
+  normalizeLoadingEllipsis(
+    String(message || "").replace(
+      /\s*，?\s*可打开(?:后端|服务)管理页面查看进度/g,
+      "\n可打开服务管理页面查看进度"
+    )
   );
 
 const normalizeLoadingPayload = (messageOrOptions, progressArg = null) => {
@@ -440,9 +456,11 @@ const normalizeLoadingPayload = (messageOrOptions, progressArg = null) => {
 };
 
 const normalizeBackendHintBreak = (message = "") =>
-  normalizeLoadingMessage(message).replace(
-    /\s*[\uFF0C,]?\s*\u53ef\u6253\u5f00\u540e\u7aef\u7ba1\u7406\u9875\u9762\u67e5\u770b\u8fdb\u5ea6/g,
-    "\n\u53ef\u6253\u5f00\u540e\u7aef\u7ba1\u7406\u9875\u9762\u67e5\u770b\u8fdb\u5ea6"
+  normalizeLoadingEllipsis(
+    normalizeLoadingMessage(message).replace(
+      /\s*[\uFF0C,]?\s*\u53ef\u6253\u5f00\u540e\u7aef\u7ba1\u7406\u9875\u9762\u67e5\u770b\u8fdb\u5ea6/g,
+      "\n\u53ef\u6253\u5f00\u540e\u7aef\u7ba1\u7406\u9875\u9762\u67e5\u770b\u8fdb\u5ea6"
+    )
   );
 
 const openBackendDiagnostics = () => {
@@ -957,7 +975,7 @@ const ensureDefaultModelReady = async (modelId = "") => {
   }
 };
 
-const startBackendService = async (options = {}) => {
+const startBackendService = async (options = {}, lifecycle = {}) => {
   const invoke = getElectronInvoke();
   if (!invoke) {
     const failure = normalizeBackendFailure(null, "当前环境无法启动服务");
@@ -984,6 +1002,7 @@ const startBackendService = async (options = {}) => {
       ready: true,
     });
 
+    lifecycle.onHealthCheckStart?.();
     const healthy = await checkBackendStatus({ notifyOnFailure: false });
     if (!healthy) {
       const failure = normalizeBackendFailure(result, "AI 引擎启动后健康检查失败");
@@ -1577,7 +1596,7 @@ router.beforeEach(async (to, from) => {
   object-fit: contain;
   display: block;
   transform-origin: center;
-  animation: global-loading-breathe 2.2s ease-in-out infinite;
+  animation: global-loading-breathe 2.2s cubic-bezier(0.77, 0, 0.175, 1) infinite;
   will-change: transform, opacity, filter;
 }
 
@@ -1687,17 +1706,27 @@ router.beforeEach(async (to, from) => {
   }
 
   50% {
-    transform: scale(1.08);
+    transform: scale(1.1);
     opacity: 1;
     filter: drop-shadow(0 10px 22px rgba(17, 24, 39, 0.22));
   }
 }
 
+@keyframes global-loading-reduced-pulse {
+  0%,
+  100% {
+    opacity: 0.82;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .global-loading-logo {
-    animation: none;
+    animation: global-loading-reduced-pulse 1.6s cubic-bezier(0.77, 0, 0.175, 1) infinite;
     transform: none;
-    opacity: 1;
     filter: none;
   }
 }

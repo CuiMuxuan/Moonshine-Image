@@ -10,6 +10,7 @@ const drawerSource = read("src/components/image/ImageSettingsDrawer.vue");
 const explorerSource = read("src/components/common/FileExplorer.vue");
 const listSource = read("src/components/common/FileList.vue");
 const modelPanelSource = read("src/components/global/ModelManagementPanel.vue");
+const mainLayoutSource = read("src/layouts/MainLayout.vue");
 const modelRegistrySource = read("src/stores/modelRegistry.js");
 const backendModelRegistrySource = read("server/moonshine_server/moonshine/model_registry.py");
 const configSchemaSource = read("src/shared/appConfigSchema.js");
@@ -245,5 +246,43 @@ test("model management presents RapidOCR as one aggregated intelligent-selection
   assert.match(backendModelRegistrySource, /ocr_rapid_onnx_mobile/);
   assert.match(modelPanelSource, /RapidOCR/);
   assert.match(modelPanelSource, /ocrModels/);
-  assert.match(modelPanelSource, /v-if="model\.type !== 'ocr'"/);
+  assert.doesNotMatch(modelPanelSource, /v-if="model\.type !== 'ocr'"/);
+  assert.match(modelPanelSource, /icon="verified"[\s\S]*label="校验"/);
+  assert.match(modelPanelSource, /label="手动安装说明"/);
+  assert.match(modelPanelSource, /outline[\s\S]*label="手动安装说明"/);
+  assert.match(modelPanelSource, /icon="help_outline"/);
+  assert.match(modelPanelSource, /aria-label="查看安装说明"/);
+  assert.match(modelPanelSource, /<q-tooltip>安装说明<\/q-tooltip>/);
+  assert.match(backendModelRegistrySource, /RAPIDOCR_MODEL_BASE_URL[\s\S]*huggingface\.co\/CuiMuxuan\/moonshine-models\/resolve\/main\/ocr\/rapidocr/);
+  assert.match(backendModelRegistrySource, /"manualSources": \[[\s\S]*MANUAL_MODEL_SOURCE_URL/);
+});
+
+test("model verification distinguishes a missing model from a successful check", () => {
+  assert.match(modelPanelSource, /未在模型路径检测到此模型/);
+  assert.match(modelPanelSource, /const allFilesMissing = files\.length === 0 \|\| files\.every/);
+  assert.match(modelPanelSource, /const modelMissing =\s*[\s\S]*allFilesMissing/);
+  assert.match(modelPanelSource, /message: "校验成功"/);
+});
+
+test("global loading uses a visible breathing pulse with a reduced-motion variant", () => {
+  assert.match(mainLayoutSource, /data-testid="global-loading-overlay"/);
+  assert.match(mainLayoutSource, /data-testid="global-loading-pulse"/);
+  assert.match(mainLayoutSource, /animation: global-loading-breathe/);
+  assert.match(mainLayoutSource, /@keyframes global-loading-breathe/);
+  assert.match(mainLayoutSource, /@keyframes global-loading-reduced-pulse/);
+  assert.match(mainLayoutSource, /@media \(prefers-reduced-motion: reduce\)/);
+  assert.match(
+    mainLayoutSource,
+    /@keyframes global-loading-breathe[\s\S]*?transform: scale\(0\.9\);[\s\S]*?50%[\s\S]*?transform: scale\(1\.1\);/
+  );
+  assert.match(
+    mainLayoutSource,
+    /animation: global-loading-breathe 2\.2s cubic-bezier\(0\.77, 0, 0\.175, 1\) infinite/
+  );
+  assert.match(
+    mainLayoutSource,
+    /\.global-loading-logo[\s\S]*?will-change: transform, opacity, filter/
+  );
+  assert.doesNotMatch(mainLayoutSource, /@keyframes global-loading-pulse/);
+  assert.match(mainLayoutSource, /filter: drop-shadow\(0 6px 14px/);
 });

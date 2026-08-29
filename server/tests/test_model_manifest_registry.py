@@ -15,8 +15,11 @@ if str(SERVER_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVER_ROOT))
 
 from moonshine_server.moonshine.model_registry import (
+    ModelDownloadTask,
     ModelDownloadTaskManager,
+    RAPIDOCR_MODEL_MANIFEST,
     _device_compatible,
+    _sam_model_capability_metadata,
     build_model_status,
     get_model_manifest_metadata,
 )
@@ -82,6 +85,155 @@ def signed_document(models, channel="stable", sequence=3):
 
 
 class SignedModelManifestTests(unittest.TestCase):
+    def test_builtin_rapidocr_manifest_is_downloadable_and_has_file_sources(self):
+        with tempfile.TemporaryDirectory(prefix="moonshine-ocr-manifest-") as root:
+            models = build_model_status(Path(root) / "models")
+        ocr = next(model for model in models if model["id"] == "ocr_rapid_onnx_mobile")
+        self.assertTrue(ocr["downloadable"])
+        self.assertEqual(len(ocr["files"]), 3)
+        self.assertEqual(len(ocr["sourceLinks"]), 3)
+        self.assertEqual(len(ocr["manualSources"]), 1)
+        self.assertEqual(ocr["size"], 31_749_509)
+        self.assertTrue(all(file["sha256"] and file["size"] > 0 for file in ocr["files"]))
+        self.assertTrue(all(
+            source["url"].startswith(
+                "https://huggingface.co/CuiMuxuan/moonshine-models/resolve/main/ocr/rapidocr/"
+            )
+            for source in ocr["sourceLinks"]
+        ))
+        self.assertEqual(ocr["manualSources"][0]["url"], "https://pan.quark.cn/s/2e51ec70c7b9")
+
+    def test_download_manager_downloads_and_verifies_multiple_files(self):
+        contents = {
+            "https://example.invalid/det.onnx": b"det",
+            "https://example.invalid/rec.onnx": b"rec-model",
+        }
+        manifest = {
+            **RAPIDOCR_MODEL_MANIFEST,
+            "id": "ocr-test",
+            "sourceLinks": [],
+            "files": [
+                {
+                    "path": "ocr/det.onnx",
+                    "label": "det",
+                    "size": len(contents["https://example.invalid/det.onnx"]),
+                    "sha256": __import__("hashlib").sha256(contents["https://example.invalid/det.onnx"]).hexdigest(),
+                    "sourceLinks": [{"url": "https://example.invalid/det.onnx"}],
+                },
+                {
+                    "path": "ocr/rec.onnx",
+                    "label": "rec",
+                    "size": len(contents["https://example.invalid/rec.onnx"]),
+                    "sha256": __import__("hashlib").sha256(contents["https://example.invalid/rec.onnx"]).hexdigest(),
+                    "sourceLinks": [{"url": "https://example.invalid/rec.onnx"}],
+                },
+            ],
+        }
+
+        class FakeResponse:
+            def __init__(self, value):
+                self.value = value
+                self.headers = {"Content-Length": str(len(value))}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, size=-1):
+                if not self.value:
+                    return b""
+                chunk, self.value = self.value[:size], self.value[size:]
+                return chunk
+
+        def fake_urlopen(request, timeout=30):
+            del timeout
+            return FakeResponse(contents[request.full_url])
+
+        with tempfile.TemporaryDirectory(prefix="moonshine-ocr-download-") as root, mock.patch(
+            "moonshine_server.moonshine.model_registry.urlopen", side_effect=fake_urlopen
+        ):
+            manager = ModelDownloadTaskManager()
+            task = ModelDownloadTask(id="ocr-task", model_id="ocr-test")
+            manager._tasks[task.id] = task
+            manager._download_model_files(task.id, manifest, Path(root))
+
+            self.assertEqual((Path(root) / "ocr/det.onnx").read_bytes(), contents["https://example.invalid/det.onnx"])
+            self.assertEqual((Path(root) / "ocr/rec.onnx").read_bytes(), contents["https://example.invalid/rec.onnx"])
+            self.assertEqual(task.total_bytes, len(b"det") + len(b"rec-model"))
+            self.assertEqual(task.downloaded_bytes, task.total_bytes)
+            self.assertGreaterEqual(task.progress, 0.99)
+
+    def test_download_manager_accepts_per_file_sources_without_model_source_links(self):
+        manifest = {
+            "id": "ocr-file-sources",
+            "label": "OCR file sources",
+            "type": "ocr",
+            "downloadable": True,
+            "sourceLinks": [],
+            "files": [
+                {
+                    "path": "ocr/det.onnx",
+                    "size": 3,
+                    "sha256": "a" * 64,
+                    "sourceLinks": [{"url": "https://example.invalid/det.onnx"}],
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory(prefix="moonshine-ocr-file-source-") as root, mock.patch(
+            "moonshine_server.moonshine.model_registry.get_model_manifest",
+            return_value=manifest,
+        ), mock.patch("threading.Thread.start"):
+            manager = ModelDownloadTaskManager()
+            task = manager.create_download_task("ocr-file-sources", Path(root))
+
+        self.assertEqual(task.model_id, "ocr-file-sources")
+
+    def test_download_manager_rejects_a_file_with_an_unexpected_size(self):
+        contents = b"det"
+        manifest = {
+            "id": "ocr-size-mismatch",
+            "downloadable": True,
+            "sourceLinks": [],
+            "files": [
+                {
+                    "path": "ocr/det.onnx",
+                    "size": len(contents) + 1,
+                    "sha256": __import__("hashlib").sha256(contents).hexdigest(),
+                    "sourceLinks": [{"url": "https://example.invalid/det.onnx"}],
+                },
+            ],
+        }
+
+        class FakeResponse:
+            headers = {"Content-Length": str(len(contents))}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, size=-1):
+                del size
+                value = getattr(self, "value", contents)
+                self.value = b""
+                return value
+
+        def fake_urlopen(_request, timeout=30):
+            del timeout
+            return FakeResponse()
+
+        with tempfile.TemporaryDirectory(prefix="moonshine-ocr-size-") as root, mock.patch(
+            "moonshine_server.moonshine.model_registry.urlopen", side_effect=fake_urlopen
+        ):
+            manager = ModelDownloadTaskManager()
+            task = ModelDownloadTask(id="ocr-size-task", model_id="ocr-size-mismatch")
+            manager._tasks[task.id] = task
+            with self.assertRaisesRegex(ValueError, "大小校验失败"):
+                manager._download_model_files(task.id, manifest, Path(root))
+
     def test_model_manager_initializes_mat_on_cpu_without_cuda(self):
         manager = ModelManager.__new__(ModelManager)
         fake_generator = mock.Mock()
@@ -204,6 +356,19 @@ class SignedModelManifestTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(SamServiceError, "CUDA-only"):
                     service.prepare_model(f"{family}_model")
+
+    def test_sam3_image_prompt_capabilities_distinguish_standard_and_multiplex(self):
+        standard = _sam_model_capability_metadata({"id": "sam3", "family": "sam3"})
+        multiplex = _sam_model_capability_metadata(
+            {"id": "sam3_1_multiplex", "family": "sam3"}
+        )
+
+        self.assertTrue(standard["enabledCapabilities"]["imagePoint"])
+        self.assertTrue(standard["enabledCapabilities"]["imageBox"])
+        self.assertTrue(standard["enabledCapabilities"]["imageText"])
+        self.assertFalse(multiplex["enabledCapabilities"]["imagePoint"])
+        self.assertFalse(multiplex["enabledCapabilities"]["imageBox"])
+        self.assertTrue(multiplex["enabledCapabilities"]["imageText"])
 
     def test_verified_manifest_replaces_the_bundled_catalog(self):
         with tempfile.TemporaryDirectory(prefix="moonshine-model-manifest-") as root:

@@ -21,3 +21,15 @@ test("manual mask edits continue syncing when all smart candidates are temporari
   assert.match(resolveSource, /!hasSamCandidateLayer\(\) && ctx\.value/);
   assert.match(resolveSource, /ctx\.value\.getImageData\(0, 0, width, height\)/);
 });
+
+test("pure manual drawing does not reapply its first completed operation through SAM composition", () => {
+  const syncStart = imageMaskerSource.indexOf("const syncSamBaseSnapshotFromManualOperation");
+  const syncEnd = imageMaskerSource.indexOf("const renderSamCandidates", syncStart);
+  const syncSource = imageMaskerSource.slice(syncStart, syncEnd);
+
+  assert.match(syncSource, /const hasSamBackedMask = Boolean\(/);
+  assert.match(syncSource, /samBaseSnapshot\.value/);
+  assert.match(syncSource, /samBaseSnapshotDataUrl\.value/);
+  assert.match(syncSource, /samCandidates\.value\.length/);
+  assert.match(syncSource, /if \(!hasSamBackedMask\) \{\s*return false;/);
+});

@@ -984,6 +984,7 @@ const dragOffset = ref({ x: 0, y: 0 });
 const hasManualToolbarPosition = ref(false);
 const maskVisible = ref(true);
 const pendingMaskSyncDataUrl = ref("");
+const pendingMaskSyncClear = ref(false);
 const lastEmittedMaskDataUrl = ref("");
 const rectPreview = ref(null);
 const isDrawingWindowBound = ref(false);
@@ -2740,6 +2741,15 @@ const syncSamBaseSnapshotFromManualOperation = async (operationResult = {}) => {
     return false;
   }
 
+  const hasSamBackedMask = Boolean(
+    samBaseSnapshot.value ||
+    samBaseSnapshotDataUrl.value ||
+    samCandidates.value.length
+  );
+  if (!hasSamBackedMask) {
+    return false;
+  }
+
   const operation = operationResult.operation;
   const currentBaseSnapshot = await resolveCurrentSamBaseSnapshot();
   if (!currentBaseSnapshot) {
@@ -3356,6 +3366,7 @@ const saveInitialState = () => {
   historyIndex.value = 0;
   operationStartIndices.value = [0];
   pendingMaskSyncDataUrl.value = "";
+  pendingMaskSyncClear.value = false;
   updateCanUndoRedo();
 };
 
@@ -3468,6 +3479,7 @@ const emitMask = () => {
 
   if (!canvasHasVisibleMaskPixels()) {
     pendingMaskSyncDataUrl.value = "";
+    pendingMaskSyncClear.value = true;
     lastEmittedMaskDataUrl.value = "";
     emit("update:mask", {
       clear: true,
@@ -3478,6 +3490,7 @@ const emitMask = () => {
 
   const dataUrl = maskCanvas.value.toDataURL("image/png");
   pendingMaskSyncDataUrl.value = dataUrl;
+  pendingMaskSyncClear.value = false;
   lastEmittedMaskDataUrl.value = dataUrl;
   emit("update:mask", {
     contextId: getMaskEmitContextId(),
@@ -4202,6 +4215,13 @@ watch(
   (newMask) => {
     if (!props.show || !ctx.value) return;
     const nextMaskDataUrl = normalizeMaskDataUrl(newMask);
+    if (!nextMaskDataUrl && pendingMaskSyncClear.value) {
+      pendingMaskSyncClear.value = false;
+      return;
+    }
+    if (nextMaskDataUrl) {
+      pendingMaskSyncClear.value = false;
+    }
     if (nextMaskDataUrl && nextMaskDataUrl === pendingMaskSyncDataUrl.value) {
       pendingMaskSyncDataUrl.value = "";
       return;
@@ -4311,6 +4331,7 @@ watch(
     saveSamContextSession();
     restoreSamContextSession();
     pendingMaskSyncDataUrl.value = "";
+    pendingMaskSyncClear.value = false;
     lastEmittedMaskDataUrl.value = "";
     await nextTick();
     if (samCandidates.value.length && ctx.value && maskCanvas.value) {

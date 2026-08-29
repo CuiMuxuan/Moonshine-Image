@@ -5,6 +5,8 @@ import test from "node:test";
 const read = (path) => fs.readFileSync(path, "utf8");
 const editorSource = read("src/components/image/ImageEditor.vue");
 const maskerSource = read("src/components/image/ImageMasker.vue");
+const imagePageSource = read("src/pages/IndexPage.vue");
+const fileExplorerSource = read("src/components/common/FileExplorer.vue");
 
 test("ImageMasker owns canvas positioning without editor-level duplicate transforms", () => {
   assert.doesNotMatch(
@@ -37,5 +39,31 @@ test("drawing pointer ownership handles remote-control event ordering and cancel
   assert.doesNotMatch(
     maskerSource,
     /useEventListener\(window, "mousemove", \(event\) =>[\s\S]*?cursorPosition\.value/
+  );
+});
+
+test("image drawers mount only after their persisted state has been restored", () => {
+  assert.doesNotMatch(imagePageSource, /left: true/);
+  assert.match(imagePageSource, /const pageDrawerStateReady = ref\(false\)/);
+  assert.match(
+    imagePageSource,
+    /if \(!layoutDrawers \|\| !pageDrawerStateReady\.value\) return;/
+  );
+  assert.match(
+    imagePageSource,
+    /await restorePageState\(\);\s*pageDrawerStateReady\.value = true;/
+  );
+  assert.doesNotMatch(fileExplorerSource, /show-if-above/);
+});
+
+test("an emitted empty-mask round trip does not reset the undo and redo history", () => {
+  assert.match(maskerSource, /const pendingMaskSyncClear = ref\(false\)/);
+  assert.match(
+    maskerSource,
+    /if \(!canvasHasVisibleMaskPixels\(\)\) \{[\s\S]*?pendingMaskSyncClear\.value = true;/
+  );
+  assert.match(
+    maskerSource,
+    /if \(!nextMaskDataUrl && pendingMaskSyncClear\.value\) \{\s*pendingMaskSyncClear\.value = false;\s*return;/
   );
 });

@@ -86,18 +86,23 @@ export function createEnvironmentSpec({
   accelerator,
   requirementsLockHash,
   ffmpegHash,
+  sam3WheelHash,
 } = {}) {
   if (schema !== ENVIRONMENT_SPEC_SCHEMA) {
     throw new TypeError(`Unsupported environment spec schema: ${schema}`);
   }
-  return Object.freeze({
+  const spec = {
     schema: ENVIRONMENT_SPEC_SCHEMA,
     appVersion: normalizeVersion(appVersion, "appVersion"),
     pythonVersion: normalizeVersion(pythonVersion, "pythonVersion"),
     accelerator: normalizeAccelerator(accelerator),
     requirementsLockHash: normalizeHash(requirementsLockHash, "requirementsLockHash"),
     ffmpegHash: normalizeHash(ffmpegHash, "ffmpegHash"),
-  });
+  };
+  if (sam3WheelHash !== undefined && sam3WheelHash !== null && String(sam3WheelHash).trim()) {
+    spec.sam3WheelHash = normalizeHash(sam3WheelHash, "sam3WheelHash");
+  }
+  return Object.freeze(spec);
 }
 
 export function canonicalizeEnvironmentSpec(spec) {

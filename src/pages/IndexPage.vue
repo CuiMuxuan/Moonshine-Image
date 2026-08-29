@@ -212,14 +212,14 @@ const getDefaultDrawerState = () => {
 
   if (viewportWidth >= 1680) {
     return {
-      left: true,
+      left: false,
       right: true,
     };
   }
 
   if (viewportWidth >= 1280) {
     return {
-      left: true,
+      left: false,
       right: false,
     };
   }
@@ -418,6 +418,7 @@ const IMAGE_PROCESSING_TASK_ID = "image-processing";
 const imagePageFooterOwner = Symbol("image-page-footer");
 const imagePageLeftDrawerOwner = Symbol("image-page-left-drawer");
 const imagePageRightDrawerOwner = Symbol("image-page-right-drawer");
+const pageDrawerStateReady = ref(false);
 const currentFile = computed(() => fileManagerStore.currentFile);
 const selectedFiles = computed(() => fileManagerStore.selectedFiles);
 const OCR_MODEL_ID = "ocr_rapid_onnx_mobile";
@@ -4620,7 +4621,7 @@ const loadImageModelOptions = async ({ preferredModel = currentModel.value } = {
 };
 
 const syncLayoutDrawers = () => {
-  if (!layoutDrawers) return;
+  if (!layoutDrawers || !pageDrawerStateReady.value) return;
 
   layoutDrawers.setPageDrawer({
     side: "left",
@@ -4988,6 +4989,7 @@ onMounted(async () => {
 
   // 3. 恢复页面状态
   await restorePageState();
+  pageDrawerStateReady.value = true;
   await loadImageModelOptions();
   void loadOcrCapabilities();
 

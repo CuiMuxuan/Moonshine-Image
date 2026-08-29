@@ -590,6 +590,10 @@ class Api:
                 loaded = self.model_manager.name == model_id and self.model_manager.model is not None
             elif model.get("type") == "mask":
                 loaded = self._get_sam_service().model_load_state(model_id)["loaded"]
+            elif model.get("type") == "ocr":
+                # The OCR adapter is lazy; file verification is its readiness
+                # signal and avoids reporting a permanently "not loaded" card.
+                loaded = bool(model.get("verified", model.get("installed")))
 
             verified = bool(model.get("verified", model.get("installed")))
             compatible = bool(model.get("deviceCompatible", True))
@@ -773,6 +777,10 @@ class Api:
             elif model.get("type") == "mask":
                 preparation = self._get_sam_service().prepare_model(model_id)
                 loaded_model = bool(preparation.get("loaded"))
+            elif model.get("type") == "ocr":
+                # RapidOCR initializes lazily on the first recognition call;
+                # verified ONNX files are sufficient for the preparation gate.
+                loaded_model = True
             else:
                 raise ValueError(f"Unsupported model type: {model.get('type')}")
         except Exception as error:

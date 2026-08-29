@@ -103,6 +103,22 @@ manifest uses `no-cache, no-store, must-revalidate`.
 
 ## Local Commands
 
+For app-only CUDA builds, the resource preparation step removes `sam3` from the CUDA lock
+transaction and places one controlled local wheel under `resources/sam3`. It first uses
+`MOONSHINE_SAM3_WHEEL`, then an existing `build-resources/.tmp/runtime/sam3-wheel` output, and
+finally builds `third_party/sam3` with the selected Python. The application installs that wheel
+after the base requirements with `pip --no-deps --force-reinstall`; CPU builds omit the resource.
+
+```powershell
+$env:MOONSHINE_RUNTIME_FLAVOR = "cu130"
+# Optional when a pre-built wheel is available:
+$env:MOONSHINE_SAM3_WHEEL = "C:\release\sam3-0.1.0-py3-none-any.whl"
+npm.cmd run build:electron:installer
+```
+
+If the workstation's NSIS cache is missing `StdUtils::TestParameter`, use the repository's
+isolated local compiler path: `npm.cmd run build:electron:installer:local`.
+
 Validate local output and show the exact upload plan without credentials or network writes:
 
 ```powershell

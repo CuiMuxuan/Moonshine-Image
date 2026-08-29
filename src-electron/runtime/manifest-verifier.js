@@ -206,6 +206,7 @@ function validateModelRegistry(models) {
       fail(`${prefix}.files must be a non-empty array`, "MANIFEST_FIELD_INVALID");
     }
     const filePaths = new Set();
+    let fileSourceCount = 0;
     for (const [fileIndex, file] of files.entries()) {
       const filePrefix = `${prefix}.files[${fileIndex}]`;
       if (!isPlainObject(file)) fail(`${filePrefix} must be an object`, "MANIFEST_FIELD_INVALID");
@@ -223,13 +224,24 @@ function validateModelRegistry(models) {
         file.legacyPaths.forEach((legacyPath, legacyIndex) =>
           assertSafeRelativePath(legacyPath, `${filePrefix}.legacyPaths[${legacyIndex}]`));
       }
+      const fileSources = file.sourceLinks ?? file.sources ?? [];
+      if (!Array.isArray(fileSources)) {
+        fail(`${filePrefix}.sourceLinks must be an array`, "MANIFEST_FIELD_INVALID");
+      }
+      fileSources.forEach((source, sourceIndex) => {
+        if (!isPlainObject(source)) {
+          fail(`${filePrefix}.sourceLinks[${sourceIndex}] must be an object`, "MANIFEST_FIELD_INVALID");
+        }
+        validateHttpsUrl(source.url, `${filePrefix}.sourceLinks[${sourceIndex}].url`);
+      });
+      if (fileSources.length > 0) fileSourceCount += 1;
     }
 
     const sourceLinks = model.sourceLinks ?? [];
     if (!Array.isArray(sourceLinks)) {
       fail(`${prefix}.sourceLinks must be an array`, "MANIFEST_FIELD_INVALID");
     }
-    if (model.downloadable && sourceLinks.length === 0) {
+    if (model.downloadable && sourceLinks.length === 0 && fileSourceCount < files.length) {
       fail(`${prefix}.sourceLinks is required for downloadable models`, "MANIFEST_FIELD_INVALID");
     }
     sourceLinks.forEach((source, sourceIndex) => {

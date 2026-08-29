@@ -872,6 +872,7 @@ const emit = defineEmits(["update:modelValue"]);
 
 const backendEngineActions = inject("backendEngine", ref({}));
 const globalSettings = inject("globalSettings", null);
+const loadingControl = inject("loadingControl", null);
 const readInjectedValue = (value) => value?.value ?? value;
 const getBackendEngineAction = (name) => {
   const actions = readInjectedValue(backendEngineActions) || {};
@@ -1145,10 +1146,37 @@ const notifyExternalEnvironmentFailure = (result, fallbackMessage) => {
   $q.notify({ type: "negative", message, position: "top", timeout: 5000 });
   return true;
 };
-const handleProbeExternalEnvironment = async () => {
-  const result = await updateManager.probeExternalEnvironment({
-    candidateId: externalEnvironment.value.candidateId,
+const withGlobalLoading = async (message, action) => {
+  loadingControl?.show?.(message);
+  try {
+    return await action();
+  } finally {
+    loadingControl?.hide?.();
+  }
+};
+const markExternalEnvironmentUnavailable = (message) => {
+  const error = {
+    code: "EXTERNAL_ENV_FULL_CHECK_FAILED",
+    message,
+  };
+  updateManager.applyRuntimeState({
+    source: "external",
+    status: "failed",
+    error,
+    external: {
+      ...externalEnvironment.value,
+      status: "invalid",
+      canActivate: false,
+      error,
+    },
   });
+};
+const handleProbeExternalEnvironment = async () => {
+  const result = await withGlobalLoading("正在校验已有 Python 环境…", () =>
+    updateManager.probeExternalEnvironment({
+      candidateId: externalEnvironment.value.candidateId,
+    })
+  );
   if (notifyExternalEnvironmentFailure(result, "已有 Python 环境校验失败。")) return result;
   if (result?.valid === false || externalEnvironmentStatus.value === "invalid") {
     $q.notify({ type: "warning", message: "该路径未通过完整环境校验。", position: "top" });
@@ -1178,8 +1206,22 @@ const handleActivateExternalEnvironment = async () => {
   });
   if (notifyExternalEnvironmentFailure(result, "启用已有 Python 环境失败。")) return;
   pythonEnvironmentSource.value = "external";
+  addTerminalLog("已切换到用户选择的 Python 环境，正在重新检测服务环境。", "info");
+  await withGlobalLoading("正在重新检测所选 Python 环境…", () =>
+    checkEnvironment({ syncServiceStatus: true })
+  );
+
+  if (!environmentStatus.configured) {
+    const message = "完整环境检测未通过；已保留所选 Python 环境，但当前标记为不可用。";
+    markExternalEnvironmentUnavailable(message);
+    addTerminalLog(message, "warning");
+    $q.notify({ type: "warning", message, position: "top", timeout: 5000 });
+    return result;
+  }
+
   addTerminalLog("已切换到用户选择的 Python 环境。", "success");
   $q.notify({ type: "positive", message: "已开始使用此 Python 环境。", position: "top" });
+  return result;
 };
 const performForgetExternalEnvironment = async ({ returnToManaged = false } = {}) => {
   const result = returnToManaged
@@ -3453,9 +3495,17 @@ const startService = async () => {
       samReleaseBeforeProcessing: backendConfig.samReleaseBeforeProcessing,
     };
     const startAction = getBackendEngineAction("start");
-    const result = startAction
-      ? await startAction(options)
-      : await window.electron.ipcRenderer.invoke("start-backend-service", options);
+    let result;
+    if (startAction) {
+      result = await startAction(options, {
+        onHealthCheckStart: () => {
+          addTerminalLog("服务健康检查开始……", "success");
+        },
+      });
+    } else {
+      addTerminalLog("服务健康检查开始……", "success");
+      result = await window.electron.ipcRenderer.invoke("start-backend-service", options);
+    }
 
     if (result?.success && !startAction) {
       try {

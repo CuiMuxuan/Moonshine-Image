@@ -1,5 +1,6 @@
 # Moonshine-Image v1.3.0 NVIDIA environment lock (Python 3.12.10 / win-x64)
-# The installer selects the PyTorch cu130 index as an extra index.
+# The installer probes CUDA 13.0 wheel mirrors and selects either a PEP 503
+# extra index or a flat --find-links source before installing this lock.
 torch==2.11.0+cu130
 torchvision==0.26.0+cu130
 opencv-python==4.11.0.86
@@ -21,7 +22,6 @@ yacs==0.1.8
 Pillow==12.2.0
 rembg[cpu]==2.0.75
 numpy==2.4.4
-sam3==0.1.0
 iopath==0.1.10
 hydra-core==1.3.2
 omegaconf==2.3.0

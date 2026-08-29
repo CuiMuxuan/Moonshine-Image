@@ -145,6 +145,7 @@
               <div class="mcp-client-actions q-mt-sm">
                 <q-btn flat dense no-caps color="primary" icon="terminal" label="复制启动命令" :disable="!clientCommand" @click="copyClientCommand" />
                 <q-btn flat dense no-caps color="primary" icon="network_check" label="检查连通性" :loading="externalProbeLoading" @click="probeExternalProxy" />
+                <q-btn flat dense no-caps color="primary" icon="smart_toy" label="复制 AI 提示词" :disable="!clientAiPrompt" @click="copyClientAiPrompt" />
               </div>
               <div v-if="externalProbeMessage" class="mcp-inline-feedback q-mt-sm" :class="{ 'is-error': externalProbeFailed }">
                 <q-icon :name="externalProbeFailed ? 'error_outline' : 'check_circle_outline'" size="16px" />
@@ -332,6 +333,7 @@ import { copyToClipboard, useQuasar } from "quasar";
 import McpActivityPanel from "src/components/global/McpActivityPanel.vue";
 import {
   DEFAULT_MCP_CONFIG,
+  DEFAULT_NEW_MCP_CONFIG,
   MCP_ALLOWED_TOOL_OPTIONS,
 } from "src/shared/appConfigSchema";
 import { useMcpActivityStore } from "src/stores/mcpActivity";
@@ -395,7 +397,7 @@ const confirmationModeOptions = Object.freeze([
 const createDefaultPolicy = () => ({
   enabled: DEFAULT_MCP_CONFIG.enabled,
   profileId: DEFAULT_MCP_CONFIG.profileId,
-  allowedTools: [],
+  allowedTools: [...DEFAULT_NEW_MCP_CONFIG.allowedTools],
   allowedRoots: [],
   confirmationMode: DEFAULT_MCP_CONFIG.confirmationMode || "read_only",
 });
@@ -427,6 +429,21 @@ const clientSessions = computed(() => store.clientSessions);
 const clientCommand = computed(() => {
   const command = clientConfiguration.value.command;
   return command ? [command, ...clientConfiguration.value.args].join(" ") : "";
+});
+const clientAiPrompt = computed(() => {
+  const configuration = clientConfiguration.value.jsonTemplate || "";
+  const command = clientCommand.value || "";
+  if (!configuration && !command) return "";
+  return [
+    "请将 Moonshine Image MCP 服务接入当前 AI harness。",
+    "请先识别当前 harness 使用的 MCP 配置位置或设置入口，只新增或更新 Moonshine Image 这一项，并完整保留其他无关 MCP 配置。不要执行任何与 MCP 接入无关的业务操作、文件写入或命令。",
+    "将下面的 MCP stdio 配置写入识别到的配置中：",
+    "```json",
+    configuration,
+    "```",
+    command ? `对应启动命令（用于核对）：${command}` : "",
+    "完成后重新加载或重连 MCP 配置，然后依次执行 initialize、工具列表发现、moonshine.status；如果工具可用，再执行 moonshine.capabilities。请报告配置文件位置（可隐藏敏感路径）、重载/重连结果、initialize 结果、发现到的工具名称以及状态检查结果。",
+  ].filter(Boolean).join("\n\n");
 });
 const clientConfigurationHint = computed(() => {
   if (!clientConfiguration.value.available) return "外部 stdio 代理暂不可用。";
@@ -742,6 +759,7 @@ const copyClientConfiguration = () => copyText(
   "MCP stdio 配置已复制。",
 );
 const copyClientCommand = () => copyText(clientCommand.value, "MCP 启动命令已复制。");
+const copyClientAiPrompt = () => copyText(clientAiPrompt.value, "AI 接入提示词已复制。");
 
 const probeExternalProxy = async () => {
   const api = electronApi();

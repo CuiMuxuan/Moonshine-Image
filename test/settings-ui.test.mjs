@@ -137,5 +137,13 @@ test("advanced select settings render only their most specific description", () 
     assert.ok(start >= 0 && end > start, key);
     assert.doesNotMatch(settingsSource.slice(start, end), /<template #hint>|text-caption text-grey-7 q-mt-xs/);
   });
-  assert.doesNotMatch(settingsSource, /getImageSamDefaultHint|getVideoSamDefaultHint|getSamDefaultHint/);
+  assert.match(
+    settingsSource,
+    /<template #description>\{\{ imageSmartSelectionModelDescription \}\}<\/template>/
+  );
+  assert.match(settingsSource, /modelId === "sam3_1_multiplex"/);
+  assert.match(settingsSource, /enabled\.imagePoint === true/);
+  assert.match(settingsSource, /仅支持文本选取/);
+  assert.match(settingsSource, /SAM1、SAM2\.1 或标准 SAM3/);
+  assert.doesNotMatch(settingsSource, /getVideoSamDefaultHint|getSamDefaultHint/);
 });

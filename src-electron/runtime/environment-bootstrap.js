@@ -26,10 +26,56 @@ export const ENVIRONMENT_BOOTSTRAP_SCHEMA = 1;
 export const DEFAULT_PYTHON_INSTALLER_URL =
   "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe";
 export const DEFAULT_PYPI_INDEX_URL = "https://pypi.org/simple";
+export const DEFAULT_PYPI_MIRROR_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple";
+export const DEFAULT_PYPI_ALIYUN_INDEX_URL = "https://mirrors.aliyun.com/pypi/simple";
+export const DEFAULT_PYPI_INDEX_URLS = Object.freeze([
+  DEFAULT_PYPI_MIRROR_INDEX_URL,
+  DEFAULT_PYPI_ALIYUN_INDEX_URL,
+  DEFAULT_PYPI_INDEX_URL,
+]);
 export const DEFAULT_TORCH_INDEX_URLS = Object.freeze({
   cpu: "https://download.pytorch.org/whl/cpu",
   cu130: "https://download.pytorch.org/whl/cu130",
 });
+export const DEFAULT_TORCH_MIRROR_INDEX_URLS = Object.freeze({
+  // TUNA mirrors the PyTorch conda channel. We still validate the requested
+  // wheel before selecting it because a reachable conda directory is not
+  // necessarily a pip-compatible wheel index.
+  cpu: "https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/pytorch/",
+  cu130: "https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/pytorch/",
+});
+export const DEFAULT_TORCH_ALIYUN_INDEX_URL = "https://mirrors.aliyun.com/pytorch-wheels";
+export const DEFAULT_TORCH_SJTU_INDEX_URL = "https://mirror.sjtu.edu.cn/pytorch-wheels";
+export const DEFAULT_TORCH_NJU_INDEX_URL = "https://mirrors.nju.edu.cn/pytorch/whl";
+// Keep the source groups separate: pip's ordinary index and the PyTorch wheel
+// index have different package layouts and must be selected independently.
+export const DEFAULT_TORCH_INDEX_CANDIDATES = Object.freeze({
+  cpu: Object.freeze([
+    DEFAULT_TORCH_MIRROR_INDEX_URLS.cpu,
+    DEFAULT_TORCH_ALIYUN_INDEX_URL,
+    DEFAULT_TORCH_SJTU_INDEX_URL,
+    DEFAULT_TORCH_NJU_INDEX_URL,
+    DEFAULT_TORCH_INDEX_URLS.cpu,
+  ]),
+  cu130: Object.freeze([
+    DEFAULT_TORCH_MIRROR_INDEX_URLS.cu130,
+    DEFAULT_TORCH_ALIYUN_INDEX_URL,
+    DEFAULT_TORCH_SJTU_INDEX_URL,
+    DEFAULT_TORCH_NJU_INDEX_URL,
+    DEFAULT_TORCH_INDEX_URLS.cu130,
+  ]),
+});
+
+// PyTorch mirrors do not share one URL layout.  Keep the public candidate
+// arrays backwards compatible (they are still strings), and resolve each
+// candidate to an install descriptor immediately before probing/installing.
+export const TORCH_SOURCE_MODES = Object.freeze({
+  INDEX: "index",
+  FIND_LINKS: "find-links",
+  UNSUPPORTED: "unsupported",
+});
+
+const TORCH_PACKAGE_PATH_SEGMENTS = new Set(["torch", "torchvision", "torchaudio"]);
 
 const HASH_PATTERN = /^[a-f0-9]{64}$/i;
 const OFFLINE_PAYLOAD_SCHEMA = 1;
@@ -169,6 +215,8 @@ const COMMAND_LABELS = Object.freeze({
   "create-venv": "创建项目虚拟环境",
   "upgrade-pip": "更新 pip",
   "install-requirements": "安装 Python 与 PyTorch 依赖",
+  "inspect-sam3-wheel": "校验 SAM3 本地 wheel",
+  "install-sam3-wheel": "安装 SAM3 本地 wheel",
   "relocate-offline-runtime": "调整离线运行环境",
 });
 
@@ -265,6 +313,275 @@ function parseLockedRequirements(value) {
     .filter(Boolean);
 }
 
+function normalizeSourceUrl(value) {
+  if (value && typeof value === "object") {
+    return String(value.url ?? value.baseUrl ?? value.indexUrl ?? value.href ?? "").trim();
+  }
+  return String(value ?? "").trim();
+}
+
+function normalizeSourceCandidates(values = []) {
+  const list = Array.isArray(values) ? values : [values];
+  const seen = new Set();
+  const result = [];
+  for (const value of list) {
+    const url = normalizeSourceUrl(value);
+    const key = url.replace(/\/+$/u, "").toLowerCase();
+    if (!url || seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+  }
+  return result;
+}
+
+function trimSourceUrl(value) {
+  return normalizeSourceUrl(value).replace(/\/+$/u, "");
+}
+
+function hasSourceVariant(url, accelerator) {
+  const normalized = trimSourceUrl(url).toLowerCase();
+  const variant = String(accelerator || "").trim().toLowerCase();
+  return Boolean(variant && new RegExp(`(?:^|/)${variant}(?:/|$)`, "u").test(normalized));
+}
+
+function normalizeTorchSourceRoot(url) {
+  const raw = trimSourceUrl(url);
+  if (!raw) return raw;
+
+  // Mirrors are often documented as a package-specific URL, for example
+  // `/pytorch/whl/cu130/torch` or `/pytorch/whl/torch/cu130`.  pip needs the
+  // variant root and appends the package name itself, so remove package path
+  // segments while preserving the rest of the URL.
+  try {
+    const parsed = new URL(raw);
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    const filtered = segments.filter(
+      (segment) => !TORCH_PACKAGE_PATH_SEGMENTS.has(String(segment).toLowerCase()),
+    );
+    parsed.pathname = filtered.length ? `/${filtered.join("/")}` : "/";
+    return trimSourceUrl(parsed.toString());
+  } catch {
+    // Keep support for test/custom relative URLs without letting malformed
+    // input break source diagnostics.
+    return raw.replace(/\/(?:torch|torchvision|torchaudio)(?=\/|$)/giu, "") || raw;
+  }
+}
+
+function appendSourceVariant(url, accelerator) {
+  const base = normalizeTorchSourceRoot(url);
+  const variant = String(accelerator || "").trim().toLowerCase();
+  if (!base || !variant || hasSourceVariant(base, variant)) return base;
+  return `${base}/${variant}`;
+}
+
+function inferTorchSourceMode(url, suppliedMode) {
+  const explicit = String(suppliedMode || "").trim().toLowerCase();
+  if ([TORCH_SOURCE_MODES.INDEX, TORCH_SOURCE_MODES.FIND_LINKS, TORCH_SOURCE_MODES.UNSUPPORTED].includes(explicit)) {
+    return explicit;
+  }
+  const normalized = trimSourceUrl(url).toLowerCase();
+  if (normalized.includes("anaconda/cloud/pytorch")) return TORCH_SOURCE_MODES.UNSUPPORTED;
+  if (normalized.includes("mirrors.aliyun.com/pytorch-wheels")) return TORCH_SOURCE_MODES.FIND_LINKS;
+  return TORCH_SOURCE_MODES.INDEX;
+}
+
+/**
+ * Resolve a legacy string or an explicit source object into the URL that pip
+ * actually understands.  `url` remains the user/configuration value for
+ * diagnostics; `installUrl`/`probeUrl` carry variant-specific paths.
+ */
+function normalizeSourceCandidate(value, { category = "", accelerator = "", packageName = "" } = {}) {
+  const sourceObject = value && typeof value === "object" ? value : {};
+  const url = normalizeSourceUrl(value);
+  const torchSource = String(category || "").startsWith("torch-");
+  if (!torchSource) {
+    const installUrl = sourceObject.installUrl || sourceObject.probeUrl || url;
+    return {
+      url,
+      mode: TORCH_SOURCE_MODES.INDEX,
+      installUrl: trimSourceUrl(installUrl),
+      probeUrl: trimSourceUrl(sourceObject.probeUrl || installUrl),
+      packageName,
+    };
+  }
+
+  const mode = inferTorchSourceMode(url, sourceObject.mode || sourceObject.installMode);
+  const configuredInstallUrl = sourceObject.installUrl || sourceObject.variantUrl;
+  const variantUrl = configuredInstallUrl
+    ? normalizeTorchSourceRoot(configuredInstallUrl)
+    : mode === TORCH_SOURCE_MODES.UNSUPPORTED
+      ? normalizeTorchSourceRoot(url)
+      : appendSourceVariant(url, accelerator);
+  const installUrl = trimSourceUrl(variantUrl);
+  const probeUrl = trimSourceUrl(sourceObject.probeUrl || installUrl);
+  return {
+    url,
+    mode,
+    installUrl,
+    probeUrl,
+    packageName,
+    variant: String(accelerator || "").trim().toLowerCase(),
+  };
+}
+
+function sourcePackageEndpoint(baseUrl, packageName) {
+  const base = trimSourceUrl(baseUrl);
+  const normalizedName = normalizeDistributionName(packageName);
+  if (!normalizedName) return `${base}/`;
+  // A package-specific PEP 503 URL is already complete.  This matters for
+  // custom mirrors configured with .../torch/ or .../torchvision/ directly.
+  const lastSegment = base.split("/").filter(Boolean).at(-1)?.toLowerCase();
+  return lastSegment === normalizedName ? `${base}/` : `${base}/${encodeURIComponent(normalizedName)}/`;
+}
+
+function decodeSourceBody(value) {
+  return String(value || "")
+    .replace(/&#x2b;|&#43;|%2b/giu, "+")
+    .replace(/&amp;/giu, "&")
+    .replace(/&quot;/giu, '"')
+    .replace(/&#x2f;|%2f/giu, "/");
+}
+
+function sourceBodyContainsVersion(body, version) {
+  const normalizedBody = decodeSourceBody(body).toLowerCase();
+  const normalizedVersion = decodeSourceBody(version).trim().toLowerCase();
+  if (!normalizedVersion || normalizedVersion === "*") return true;
+  return normalizedBody.includes(normalizedVersion);
+}
+
+function sourceBodyContainsPipWheel(body) {
+  return /\.whl(?:[#"'<>\s]|$)/iu.test(decodeSourceBody(body));
+}
+
+function sourceSupportsTorchVariant(body, category, accelerator, packageName, version) {
+  if (!String(category || "").startsWith("torch-")) return true;
+  const normalizedBody = decodeSourceBody(body).toLowerCase();
+  if (!sourceBodyContainsPipWheel(normalizedBody)) return false;
+  const normalizedPackage = normalizeDistributionName(packageName);
+  const normalizedVersion = decodeSourceBody(version).trim().toLowerCase();
+  const links = normalizedBody.match(/[^\s"'<>]+\.whl(?:#[^\s"'<>]*)?/giu) || [];
+  const matchingPackage = links.filter((link) => {
+    const fileName = link.split(/[\\/]/u).at(-1) || link;
+    const packagePrefix = fileName.toLowerCase().startsWith(`${normalizedPackage}-`);
+    const versionMatch = !normalizedVersion || normalizedVersion === "*" || fileName.toLowerCase().includes(normalizedVersion);
+    return packagePrefix && versionMatch;
+  });
+  if (matchingPackage.length === 0) return false;
+  if (category !== "torch-cuda" && category !== "torch-cpu") return true;
+  const variant = String(accelerator || "").trim().toLowerCase();
+  return !variant || matchingPackage.some((link) => link.toLowerCase().includes(variant));
+}
+
+function combineAbortSignals(parentSignal, timeoutMs) {
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(new Error("source probe timed out")),
+    Math.max(500, Number(timeoutMs) || 8000),
+  );
+  timeout.unref?.();
+  const relay = () => controller.abort(parentSignal.reason);
+  if (parentSignal?.aborted) relay();
+  else parentSignal?.addEventListener?.("abort", relay, { once: true });
+  return {
+    signal: controller.signal,
+    cleanup() {
+      clearTimeout(timeout);
+      parentSignal?.removeEventListener?.("abort", relay);
+    },
+  };
+}
+
+/**
+ * Probe one package source without changing the target environment.
+ * `packageAvailable` deliberately checks the requested version as well as
+ * HTTP reachability; this prevents a conda directory or a CPU-only index from
+ * being selected for a CUDA wheel transaction.
+ */
+export async function probePackageSource(
+  sourceUrl,
+  {
+    packageName = "",
+    version = "",
+    category = "",
+    accelerator = "",
+    timeoutMs = 8000,
+    signal,
+    fetchImpl = globalThis.fetch,
+  } = {},
+) {
+  const candidate = normalizeSourceCandidate(sourceUrl, { category, accelerator, packageName });
+  const url = candidate.url;
+  const probeUrl = candidate.probeUrl || url;
+  const probeEndpoint = candidate.mode === TORCH_SOURCE_MODES.FIND_LINKS
+    || candidate.mode === TORCH_SOURCE_MODES.UNSUPPORTED
+    ? `${trimSourceUrl(probeUrl)}/`
+    : sourcePackageEndpoint(probeUrl, packageName);
+  const startedAt = Date.now();
+  const result = {
+    url,
+    endpoint: probeEndpoint,
+    probeUrl,
+    installUrl: candidate.installUrl || probeUrl,
+    mode: candidate.mode,
+    latencyMs: null,
+    status: null,
+    reachable: false,
+    packageAvailable: false,
+    pipWheelAvailable: null,
+    acceleratorAvailable: null,
+    usable: false,
+    error: "",
+  };
+  if (!url) {
+    result.error = "source URL is empty";
+    return result;
+  }
+  if (typeof fetchImpl !== "function") {
+    result.error = "fetch is unavailable";
+    return result;
+  }
+  const request = combineAbortSignals(signal, timeoutMs);
+  try {
+    const response = await fetchImpl(result.endpoint, {
+      method: "GET",
+      cache: "no-store",
+      headers: { Accept: "text/html, application/vnd.pypi.simple.v1+json" },
+      signal: request.signal,
+    });
+    result.status = Number(response?.status || 0) || null;
+    result.reachable = response?.ok == null
+      ? Boolean(result.status && result.status >= 200 && result.status < 400)
+      : Boolean(response.ok);
+    const body = result.reachable && typeof response?.text === "function"
+      ? await response.text()
+      : "";
+    const torchSource = String(category || "").startsWith("torch-");
+    result.pipWheelAvailable = torchSource ? sourceBodyContainsPipWheel(body) : null;
+    result.acceleratorAvailable = category === "torch-cuda" ? (
+      !accelerator || decodeSourceBody(body).toLowerCase().includes(String(accelerator).toLowerCase())
+    ) : null;
+    const versionAvailable = torchSource
+      ? sourceSupportsTorchVariant(body, category, accelerator, packageName, version)
+      : sourceBodyContainsVersion(body, version);
+    result.packageAvailable = result.reachable && versionAvailable && (
+      !torchSource || candidate.mode !== TORCH_SOURCE_MODES.UNSUPPORTED
+    );
+    result.usable = result.reachable && result.packageAvailable;
+    if (result.reachable && !result.packageAvailable) {
+      result.error = torchSource
+        ? `target ${packageName}==${version} was not found in a compatible pip wheel index`
+        : `target ${packageName}==${version} was not found`;
+    }
+    if (!result.reachable) result.error = `HTTP ${result.status || 0}`;
+  } catch (error) {
+    result.error = error?.message || String(error);
+  } finally {
+    request.cleanup();
+    result.latencyMs = Math.max(0, Date.now() - startedAt);
+  }
+  return result;
+}
+
 function makeOperationId(now) {
   return `env-${Number(now())}-${process.pid}-${Math.random().toString(16).slice(2, 10)}`;
 }
@@ -317,16 +634,49 @@ async function invokeCommandRunner(runner, command, args, options) {
 }
 
 function mergeSources(base, overrides = {}, accelerator) {
+  const explicitPipUrl = normalizeSourceUrl(
+    overrides.pipIndexUrl ?? base.pipIndexUrl ?? base.pythonIndexUrl,
+  );
+  const explicitTorchUrl = normalizeSourceUrl(
+    overrides.torchIndexUrl ?? base.torchIndexUrl,
+  );
+  const pipFallback = explicitPipUrl ? [explicitPipUrl] : DEFAULT_PYPI_INDEX_URLS;
+  const torchFallback = explicitTorchUrl
+    ? [explicitTorchUrl]
+    : (DEFAULT_TORCH_INDEX_CANDIDATES[accelerator] || [DEFAULT_TORCH_INDEX_URLS[accelerator]]);
+  const rawPipCandidates = overrides.pipIndexCandidates !== undefined
+    ? overrides.pipIndexCandidates
+    : explicitPipUrl
+      ? [explicitPipUrl]
+      : base.pipIndexCandidates !== undefined
+        ? base.pipIndexCandidates
+        : pipFallback;
+  const rawTorchCandidates = overrides.torchIndexCandidates !== undefined
+    ? overrides.torchIndexCandidates
+    : explicitTorchUrl
+      ? [explicitTorchUrl]
+      : base.torchIndexCandidates !== undefined
+        ? base.torchIndexCandidates
+        : torchFallback;
+  const pipIndexCandidates = normalizeSourceCandidates(rawPipCandidates).length > 0
+    ? normalizeSourceCandidates(rawPipCandidates)
+    : normalizeSourceCandidates(pipFallback);
+  const torchIndexCandidates = normalizeSourceCandidates(rawTorchCandidates).length > 0
+    ? normalizeSourceCandidates(rawTorchCandidates)
+    : normalizeSourceCandidates(torchFallback);
   const merged = {
-    pythonIndexUrl: base.pythonIndexUrl || DEFAULT_PYPI_INDEX_URL,
-    pipIndexUrl: base.pipIndexUrl || base.pythonIndexUrl || DEFAULT_PYPI_INDEX_URL,
-    torchIndexUrl: base.torchIndexUrl || DEFAULT_TORCH_INDEX_URLS[accelerator],
-    extraIndexUrl: base.extraIndexUrl || "",
-    pythonInstallerUrl: base.pythonInstallerUrl || DEFAULT_PYTHON_INSTALLER_URL,
+    ...base,
     ...overrides,
+    pythonIndexUrl: overrides.pythonIndexUrl || base.pythonIndexUrl || DEFAULT_PYPI_INDEX_URL,
+    pipIndexUrl: explicitPipUrl || pipIndexCandidates[0] || DEFAULT_PYPI_INDEX_URL,
+    torchIndexUrl: explicitTorchUrl || torchIndexCandidates[0] || DEFAULT_TORCH_INDEX_URLS[accelerator],
+    pipIndexCandidates,
+    torchIndexCandidates,
+    extraIndexUrl: overrides.extraIndexUrl || base.extraIndexUrl || "",
+    pythonInstallerUrl: overrides.pythonInstallerUrl || base.pythonInstallerUrl || DEFAULT_PYTHON_INSTALLER_URL,
   };
-  if (!merged.pipIndexUrl) merged.pipIndexUrl = merged.pythonIndexUrl;
-  if (!merged.torchIndexUrl) merged.torchIndexUrl = DEFAULT_TORCH_INDEX_URLS[accelerator];
+  if (!merged.pipIndexUrl) merged.pipIndexUrl = merged.pipIndexCandidates[0] || merged.pythonIndexUrl;
+  if (!merged.torchIndexUrl) merged.torchIndexUrl = merged.torchIndexCandidates[0] || DEFAULT_TORCH_INDEX_URLS[accelerator];
   return merged;
 }
 
@@ -351,6 +701,8 @@ export class EnvironmentBootstrap {
     requirementsLockPaths = requirementsPaths,
     requirementsLockHash,
     requirementsLockHashes = {},
+    sam3WheelPath = "",
+    sam3WheelHash = "",
     ffmpegSourcePath,
     ffmpegHash,
     pythonExecutable = "python",
@@ -358,6 +710,7 @@ export class EnvironmentBootstrap {
     commandRunner,
     acceleratorRunner,
     sourceConfig = {},
+    sourceProbe = probePackageSource,
     probe = probeEnvironment,
     detector = detectAccelerator,
     fsImpl = fs,
@@ -382,6 +735,8 @@ export class EnvironmentBootstrap {
     this.requirementsLockPaths = { ...requirementsLockPaths };
     this.requirementsLockHash = requirementsLockHash || "";
     this.requirementsLockHashes = { ...requirementsLockHashes };
+    this.sam3WheelPath = sam3WheelPath || "";
+    this.sam3WheelHash = sam3WheelHash || "";
     this.ffmpegSourcePath = ffmpegSourcePath || "";
     this.ffmpegHash = ffmpegHash || "";
     this.pythonExecutable = pythonExecutable || "python";
@@ -389,6 +744,7 @@ export class EnvironmentBootstrap {
     this.commandRunner = commandRunner;
     this.acceleratorRunner = acceleratorRunner;
     this.sourceConfig = { ...sourceConfig };
+    this.sourceProbe = typeof sourceProbe === "function" ? sourceProbe : probePackageSource;
     this.probe = probe;
     this.detector = detector;
     this.fs = fsImpl;
@@ -413,6 +769,7 @@ export class EnvironmentBootstrap {
       stagingPath: null,
       activePath: null,
       specHash: null,
+      sourceSelection: null,
       error: null,
       steps: [],
       startedAt: null,
@@ -1047,33 +1404,88 @@ export class EnvironmentBootstrap {
     };
   }
 
-  _applyBundledFfmpegState(health, resource) {
-    if (resource?.available !== false) return health;
-    const coreSuccess = health?.success !== false;
-    const resourceMessage = resource?.error?.message || "应用内置 FFmpeg 不可用。";
-    const warning = resourceMessage.startsWith("FFmpeg:")
-      ? resourceMessage
-      : `FFmpeg: ${resourceMessage}`;
-    return {
-      ...(health || {}),
-      success: coreSuccess,
-      degraded: coreSuccess,
-      ffmpeg: {
-        ...(health?.ffmpeg || {}),
-        ok: false,
-        path: resource?.path || health?.ffmpeg?.path || "",
-        error: warning,
-        resourceError: clone(resource?.error || null),
-      },
-      warnings: [...new Set([...(health?.warnings || []), warning])],
-      capabilities: {
-        ...(health?.capabilities || {}),
-        core: coreSuccess,
-        image: coreSuccess,
-        video: false,
-        ffmpeg: false,
-      },
-    };
+ _applyBundledFfmpegState(health, resource) {
+   if (resource?.available !== false) return health;
+   const coreSuccess = health?.success !== false;
+   const resourceMessage = resource?.error?.message || "应用内置 FFmpeg 不可用。";
+   const warning = resourceMessage.startsWith("FFmpeg:")
+     ? resourceMessage
+     : `FFmpeg: ${resourceMessage}`;
+   return {
+     ...(health || {}),
+     success: coreSuccess,
+     degraded: coreSuccess,
+     ffmpeg: {
+       ...(health?.ffmpeg || {}),
+       ok: false,
+       path: resource?.path || health?.ffmpeg?.path || "",
+       error: warning,
+       resourceError: clone(resource?.error || null),
+     },
+     warnings: [...new Set([...(health?.warnings || []), warning])],
+     capabilities: {
+       ...(health?.capabilities || {}),
+       core: coreSuccess,
+       image: coreSuccess,
+       video: false,
+       ffmpeg: false,
+     },
+   };
+ }
+
+  async _inspectSam3Wheel() {
+    const filePath = String(this.sam3WheelPath || "").trim();
+    if (!filePath) {
+      throw new EnvironmentBootstrapError(
+        "CUDA 环境缺少随包 SAM3 wheel。",
+        "ENVIRONMENT_SAM3_WHEEL_UNAVAILABLE",
+      );
+    }
+    let stat;
+    try {
+      stat = await this.fs.stat(filePath);
+    } catch (error) {
+      throw new EnvironmentBootstrapError(
+        `随包 SAM3 wheel 不可用：${error.message}`,
+        "ENVIRONMENT_SAM3_WHEEL_UNAVAILABLE",
+        { filePath },
+      );
+    }
+    if (!stat.isFile?.() || !/^sam3-.+\.whl$/iu.test(path.basename(filePath))) {
+      throw new EnvironmentBootstrapError(
+        "随包 SAM3 wheel 路径无效。",
+        "ENVIRONMENT_SAM3_WHEEL_INVALID",
+        { filePath },
+      );
+    }
+    const actualHash = await this._fileHash(filePath);
+    if (this.sam3WheelHash) {
+      const expectedHash = normalizeHash(this.sam3WheelHash, "sam3WheelHash");
+      if (actualHash !== expectedHash) {
+        throw new EnvironmentBootstrapError(
+          "随包 SAM3 wheel 完整性校验失败。",
+          "ENVIRONMENT_SAM3_WHEEL_HASH_MISMATCH",
+          { filePath, expectedHash, actualHash },
+        );
+      }
+      return { path: filePath, hash: actualHash, expectedHash };
+    }
+    return { path: filePath, hash: actualHash, expectedHash: null };
+  }
+
+  async _installSam3Wheel(pythonExecutable, wheel, signal) {
+    if (!wheel?.path) {
+      throw new EnvironmentBootstrapError(
+        "CUDA 环境缺少随包 SAM3 wheel。",
+        "ENVIRONMENT_SAM3_WHEEL_UNAVAILABLE",
+      );
+    }
+    await this._step("install-sam3-wheel", () => this._run(
+      pythonExecutable,
+      ["-m", "pip", "install", "--no-deps", "--force-reinstall", wheel.path],
+      "install-sam3-wheel",
+      signal,
+    ));
   }
 
   _sourceConfig(accelerator, sourceOverrides) {
@@ -1082,6 +1494,160 @@ export class EnvironmentBootstrap {
       sourceOverrides || {},
       accelerator,
     );
+  }
+
+  async _selectSources(accelerator, sources, requirementsLockPath, signal) {
+    let lockedRequirements = [];
+    try {
+      lockedRequirements = parseLockedRequirements(await this.fs.readFile(requirementsLockPath, "utf8"));
+    } catch {
+      // The regular requirements hash/path validation reports a more useful
+      // error later; use representative package names for source diagnostics.
+    }
+    const torchRequirement = lockedRequirements.find((entry) => entry.name === "torch") || {
+      name: "torch",
+      version: "*",
+    };
+    const ordinaryRequirement = lockedRequirements.find(
+      (entry) => !["torch", "torchvision", "torchaudio"].includes(entry.name),
+    ) || { name: "pip", version: "*" };
+
+    const probeCategory = async ({ category, label, candidates, requirement }) => {
+      const normalizedCandidates = normalizeSourceCandidates(candidates)
+        .map((candidate) => normalizeSourceCandidate(candidate, {
+          category,
+          accelerator,
+          packageName: requirement.name,
+        }));
+      const diagnostics = await Promise.all(normalizedCandidates.map(async (candidate) => {
+        try {
+          const raw = await this.sourceProbe(candidate.url, {
+            category,
+            accelerator,
+            packageName: requirement.name,
+            version: requirement.version,
+            source: candidate,
+            mode: candidate.mode,
+            probeUrl: candidate.probeUrl,
+            installUrl: candidate.installUrl,
+            signal,
+            timeoutMs: Math.min(this.timeoutMs, 12_000),
+          });
+          const normalized = raw && typeof raw === "object" ? { ...raw } : {};
+          const reachable = normalized.reachable ?? normalized.success ?? false;
+          const packageAvailable = normalized.packageAvailable
+            ?? normalized.resolvable
+            ?? normalized.success
+            ?? false;
+          return {
+            url: candidate.url,
+            endpoint: normalized.endpoint || (
+              candidate.mode === TORCH_SOURCE_MODES.FIND_LINKS || candidate.mode === TORCH_SOURCE_MODES.UNSUPPORTED
+                ? `${trimSourceUrl(candidate.probeUrl)}/`
+                : sourcePackageEndpoint(candidate.probeUrl, requirement.name)
+            ),
+            probeUrl: normalized.probeUrl || candidate.probeUrl,
+            installUrl: normalized.installUrl || candidate.installUrl,
+            mode: normalized.mode || candidate.mode,
+            latencyMs: Number.isFinite(Number(normalized.latencyMs))
+              ? Number(normalized.latencyMs)
+              : Number.POSITIVE_INFINITY,
+            status: normalized.status ?? null,
+            reachable: Boolean(reachable),
+            packageAvailable: Boolean(packageAvailable),
+            usable: normalized.usable == null
+              ? Boolean(reachable && packageAvailable)
+              : Boolean(normalized.usable),
+            error: String(normalized.error || ""),
+          };
+        } catch (error) {
+          return {
+            url: candidate.url,
+            endpoint: candidate.mode === TORCH_SOURCE_MODES.FIND_LINKS || candidate.mode === TORCH_SOURCE_MODES.UNSUPPORTED
+              ? `${trimSourceUrl(candidate.probeUrl)}/`
+              : sourcePackageEndpoint(candidate.probeUrl, requirement.name),
+            probeUrl: candidate.probeUrl,
+            installUrl: candidate.installUrl,
+            mode: candidate.mode,
+            latencyMs: Number.POSITIVE_INFINITY,
+            status: null,
+            reachable: false,
+            packageAvailable: false,
+            usable: false,
+            error: error?.message || String(error),
+          };
+        }
+      }));
+      throwIfAborted(signal);
+      const usable = diagnostics
+        .filter((entry) => entry.usable)
+        .sort((left, right) => left.latencyMs - right.latencyMs);
+      if (usable.length === 0) {
+        const unreachableSources = diagnostics.filter((entry) => !entry.reachable);
+        const incompatibleSources = diagnostics.filter((entry) => entry.reachable && !entry.packageAvailable);
+        const sourceText = diagnostics
+          .map((entry) => {
+            const status = !entry.reachable
+              ? "不可达"
+              : entry.mode === TORCH_SOURCE_MODES.UNSUPPORTED
+                ? "可访问但不是 pip wheel 源"
+                : "可访问但未找到目标依赖";
+            return `${entry.url}（${status}）`;
+          })
+          .join("；");
+        const packageText = requirement.version === "*"
+          ? requirement.name
+          : `${requirement.name}==${requirement.version}`;
+        const sourceCountText = diagnostics.length === 2
+          ? "检测到的两个源"
+          : `检测到的 ${diagnostics.length} 个源`;
+        throw new EnvironmentBootstrapError(
+          `${label}不可用：${sourceCountText}均不可达或无法解析目标依赖（${packageText}）：${sourceText || "未配置"}`,
+          "ENVIRONMENT_SOURCE_UNAVAILABLE",
+          {
+            category,
+            accelerator,
+            package: packageText,
+            candidates: diagnostics,
+            unavailableSources: diagnostics.map((entry) => entry.url),
+            unreachableSources: unreachableSources.map((entry) => entry.url),
+            incompatibleSources: incompatibleSources.map((entry) => entry.url),
+          },
+        );
+      }
+      return {
+        selected: usable[0],
+        candidates: diagnostics,
+      };
+    };
+
+    const [pip, torch] = await Promise.all([
+      probeCategory({
+        category: "python",
+        label: "普通 Python 依赖下载源",
+        candidates: sources.pipIndexCandidates,
+        requirement: ordinaryRequirement,
+      }),
+      probeCategory({
+        category: accelerator === "cu130" ? "torch-cuda" : "torch-cpu",
+        label: accelerator === "cu130" ? "PyTorch CUDA 专用源" : "PyTorch CPU 专用源",
+        candidates: sources.torchIndexCandidates,
+        requirement: torchRequirement,
+      }),
+    ]);
+    return {
+      sources: {
+        ...sources,
+        pipIndexUrl: pip.selected.installUrl || pip.selected.url,
+        torchIndexUrl: torch.selected.installUrl || torch.selected.url,
+        torchInstallUrl: torch.selected.installUrl || torch.selected.url,
+        torchInstallMode: torch.selected.mode || TORCH_SOURCE_MODES.INDEX,
+      },
+      selection: {
+        python: pip,
+        torch,
+      },
+    };
   }
 
   _requirementsFor(accelerator) {
@@ -1187,6 +1753,7 @@ export class EnvironmentBootstrap {
       stagingPath: null,
       activePath: (await this._activePointer())?.absolutePath || null,
       specHash: null,
+      sourceSelection: null,
       error: null,
       steps: [],
       startedAt,
@@ -1215,6 +1782,9 @@ export class EnvironmentBootstrap {
       const requirements = this._requirementsFor(selectedAccelerator);
       const requirementsLockHash = await this._step("hash-requirements", () =>
         this._resolveHash(requirements.requirementsLockHash, requirements.requirementsLockPath, "requirementsLockHash"));
+      const sam3Wheel = selectedAccelerator === "cu130"
+        ? await this._step("inspect-sam3-wheel", () => this._inspectSam3Wheel())
+        : null;
       const ffmpeg = await this._step("inspect-ffmpeg", () => this._inspectBundledFfmpeg());
       const spec = buildEnvironmentSpec({
         appVersion: this.appVersion,
@@ -1222,6 +1792,7 @@ export class EnvironmentBootstrap {
         accelerator: selectedAccelerator,
         requirementsLockHash,
         ffmpegHash: ffmpeg.hash,
+        sam3WheelHash: sam3Wheel?.hash,
       });
       this.state.specHash = spec.specHash;
       reportProgress({ phase: "resolve-environment", percent: 10, message: "正在检查可复用的运行环境。" });
@@ -1289,6 +1860,17 @@ export class EnvironmentBootstrap {
             : "现有运行环境未通过完整性校验，正在重建缺失步骤。",
         });
       }
+
+      const selectedSources = await this._step("probe-package-sources", () =>
+        this._selectSources(selectedAccelerator, sources, requirements.requirementsLockPath, signal)
+      );
+      Object.assign(sources, selectedSources.sources);
+      this.state.sourceSelection = selectedSources.selection;
+      reportProgress({
+        phase: "probe-package-sources",
+        percent: 14,
+        message: `已选择依赖下载源：Python ${selectedSources.selection.python.selected.url}；PyTorch ${selectedSources.selection.torch.selected.url}`,
+      });
 
       stagingPath = path.join(this.stagingRoot, operationId);
       this.state.stagingPath = stagingPath;
@@ -1358,7 +1940,13 @@ export class EnvironmentBootstrap {
         throw new EnvironmentBootstrapError("requirementsPath is required", "ENVIRONMENT_REQUIREMENTS_PATH_REQUIRED");
       }
       const installArgs = ["-m", "pip", "install", "-r", requiredPath(requirements.requirementsPath, "requirementsPath"), "--index-url", sources.pipIndexUrl];
-      if (sources.torchIndexUrl) installArgs.push("--extra-index-url", sources.torchIndexUrl);
+      if (sources.torchIndexUrl) {
+        if (sources.torchInstallMode === TORCH_SOURCE_MODES.FIND_LINKS) {
+          installArgs.push("--find-links", sources.torchInstallUrl || sources.torchIndexUrl);
+        } else if (sources.torchInstallMode !== TORCH_SOURCE_MODES.UNSUPPORTED) {
+          installArgs.push("--extra-index-url", sources.torchInstallUrl || sources.torchIndexUrl);
+        }
+      }
       if (sources.extraIndexUrl) installArgs.push("--extra-index-url", sources.extraIndexUrl);
       const dependenciesReady = reusableVenv && usablePip && await this._lockedRequirementsSatisfied(
         venvPython,
@@ -1392,6 +1980,10 @@ export class EnvironmentBootstrap {
           { onStdout: streamOutput("stdout"), onStderr: streamOutput("stderr") },
         ));
         reportProgress({ phase: "dependencies-ready", percent: 86, message: "Python 与 PyTorch 依赖安装完成。" });
+      }
+      if (sam3Wheel) {
+        reportProgress({ phase: "install-sam3-wheel", percent: 88, message: "正在安装随包的 SAM3 CUDA 组件。" });
+        await this._installSam3Wheel(venvPython, sam3Wheel, signal);
       }
       reportProgress({
         phase: "resolve-ffmpeg",

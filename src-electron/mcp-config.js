@@ -40,6 +40,80 @@ function rootIdentity(value) {
   return path.win32.isAbsolute(value) ? value.replaceAll("\\", "/").toLowerCase() : value;
 }
 
+/**
+ * Move the automatically managed image-output root when file settings change.
+ * The old root is replaced only while it is still present in the user's
+ * allowlist. If it has been removed explicitly, returning the list unchanged
+ * records that choice without adding another hidden persistence field.
+ */
+export function synchronizeMcpManagedRoot({ allowedRoots = [], previousRoot = "", nextRoot = "" } = {}) {
+  const roots = Array.isArray(allowedRoots)
+    ? allowedRoots.filter((root) => typeof root === "string" && root.trim())
+    : [];
+  const previous = normalizeAbsoluteRoot(previousRoot);
+  const next = normalizeAbsoluteRoot(nextRoot);
+  if (!previous || !next) return roots.slice();
+
+  const previousKey = rootIdentity(previous);
+  const nextKey = rootIdentity(next);
+  const index = roots.findIndex((root) => {
+    const normalized = normalizeAbsoluteRoot(root);
+    return normalized && rootIdentity(normalized) === previousKey;
+  });
+  if (index < 0) return roots.slice();
+
+  const result = roots.slice();
+  const duplicateIndex = result.findIndex((root, candidateIndex) => {
+    if (candidateIndex === index) return false;
+    const normalized = normalizeAbsoluteRoot(root);
+    return normalized && rootIdentity(normalized) === nextKey;
+  });
+  if (duplicateIndex >= 0) {
+    result.splice(index, 1);
+    return result;
+  }
+  result[index] = next;
+  return result;
+}
+
+export function resolveMcpManagedImageOutputRoot(config = {}) {
+  const downloadPath = String(config?.fileManagement?.downloadPath || "").trim();
+  const imageFolderName = String(config?.fileManagement?.imageFolderName || "").trim();
+  if (!downloadPath || !imageFolderName) return "";
+
+  // Configuration values are persisted by the Electron process on Windows,
+  // but keeping the resolver host-independent makes migrations and contract
+  // tests deterministic when they inspect Windows paths from another host.
+  const pathApi = path.win32.isAbsolute(downloadPath)
+    ? path.win32
+    : path.posix.isAbsolute(downloadPath)
+      ? path.posix
+      : null;
+  if (!pathApi) return "";
+  return pathApi.normalize(pathApi.join(downloadPath, imageFolderName));
+}
+
+/**
+ * Ensure the managed image-output directory exists when it is actually part
+ * of the MCP allowlist. An explicitly removed managed root is left untouched;
+ * this keeps a user's fail-closed choice intact while still making a newly
+ * selected/default output root immediately usable by MCP.
+ */
+export function ensureMcpManagedRootDirectory(config = {}, fsImpl = fs) {
+  const managedRoot = resolveMcpManagedImageOutputRoot(config);
+  if (!managedRoot || !Array.isArray(config?.mcp?.allowedRoots)) return "";
+  const normalizedManaged = normalizeAbsoluteRoot(managedRoot);
+  if (!normalizedManaged) return "";
+  const managedKey = rootIdentity(normalizedManaged);
+  const isAllowed = config.mcp.allowedRoots.some((candidate) => {
+    const normalized = normalizeAbsoluteRoot(candidate);
+    return normalized && rootIdentity(normalized) === managedKey;
+  });
+  if (!isAllowed) return "";
+  fsImpl.mkdirSync(managedRoot, { recursive: true });
+  return managedRoot;
+}
+
 function configErrorPayload(error) {
   const code = error instanceof McpConfigError ? error.code : "MCP_CONFIG_INVALID";
   const payload = { success: false, code, error: code };

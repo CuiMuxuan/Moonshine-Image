@@ -619,7 +619,7 @@ function runAssertions() {
     file: "src/layouts/MainLayout.vue",
     description: "Automatic backend startup reuses the shared lifecycle action and syncs the actual runtime port",
     patterns: [
-      /const startBackendService = async \(options = \{\}\) => \{/,
+      /const startBackendService = async \(options = \{\}(?:, lifecycle = \{\})?\) => \{/,
       /const result = await invoke\("start-backend-service", options\);/,
       /await syncBackendRuntimePort\(actualPort\);/,
       /backendEngineStore\.setRunning\(\{/,
@@ -631,7 +631,7 @@ function runAssertions() {
     description: "Backend manager delegates manual startup to the shared lifecycle action and syncs the actual runtime port",
     patterns: [
       /const startAction = getBackendEngineAction\("start"\);/,
-      /\? await startAction\(options\)/,
+      /if \(startAction\) \{[\s\S]*result = await startAction\(options(?:, \{)?/,
       /const actualPort = Number\(result\.port \|\| backendConfig\.port\);/,
       /await syncRuntimeBackendPort\(actualPort\);/,
       /服务启动成功，端口：\$\{actualPort\}/,
