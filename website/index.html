@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#7758c4" />
+    <meta name="description" content="Moonshine-Image：在本地处理图片与视频，智能选区、蒙版编辑、模型处理，一次完成。" />
+    <title>Moonshine-Image · 让画面回到你想要的样子</title>
+    <link rel="icon" href="assets/moonshine-logo.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="site-header" data-header>
+      <a class="brand" href="#top" aria-label="Moonshine-Image 首页">
+        <span class="brand-mark"><img src="assets/moonshine-logo.png" alt="" /></span>
+        <span>Moonshine<span class="brand-dash">-</span>Image</span>
+      </a>
+      <nav class="desktop-nav" aria-label="主导航">
+        <a href="#features">功能</a>
+        <a href="#workflow">怎么用</a>
+        <a href="#models">模型</a>
+        <a href="#download">下载</a>
+      </nav>
+      <div class="header-actions">
+        <a class="header-download" href="#download">获取应用 <span aria-hidden="true">↗</span></a>
+        <button class="icon-button" type="button" data-theme-toggle aria-label="切换深色模式" title="切换深色模式"><span>◐</span></button>
+        <button class="menu-button icon-button" type="button" data-menu-toggle aria-label="打开菜单" title="打开菜单"><span>☰</span></button>
+      </div>
+      <nav class="mobile-nav" data-mobile-nav aria-label="移动端主导航">
+        <a href="#features">功能</a>
+        <a href="#workflow">怎么用</a>
+        <a href="#models">模型</a>
+        <a href="#download">下载</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero section-shell">
+        <div class="hero-copy reveal">
+          <p class="eyebrow"><span class="eyebrow-dot"></span>本地图片与视频处理</p>
+          <h1>让画面回到<br /><em>你想要的样子。</em></h1>
+          <p class="hero-lede">去掉文字、图标和水印。用自然的方式圈出不需要的部分，Moonshine-Image 会把剩下的交给合适的模型。</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#download">下载最新版本 <span aria-hidden="true">↓</span></a>
+            <a class="button button-quiet" href="#workflow">先看看怎么用 <span aria-hidden="true">→</span></a>
+          </div>
+          <div class="hero-meta"><span>Windows x64</span><i></i><span>版本 1.3.4</span><i></i><span>本地运行</span></div>
+        </div>
+        <div class="hero-visual reveal reveal-delay">
+          <div class="visual-backdrop"></div>
+          <figure class="hero-frame">
+            <img src="assets/image-processing.png" alt="Moonshine-Image 图片处理界面" />
+            <figcaption><span class="caption-pulse"></span>图片处理工作台</figcaption>
+          </figure>
+          <div class="floating-note note-one"><span class="note-icon">✦</span><span><strong>智能选区</strong><small>点一下，选中目标</small></span></div>
+          <div class="floating-note note-two"><span class="note-check">✓</span><span><strong>只创建新文件</strong><small>原始素材始终保留</small></span></div>
+        </div>
+      </section>
+
+      <section class="signal-bar section-shell reveal" aria-label="产品特性">
+        <span><b>01</b> 图片与视频</span><span><b>02</b> 手动或智能选区</span><span><b>03</b> 本地处理</span><span><b>04</b> 可撤销、可预览</span>
+      </section>
+
+      <section class="section-shell section-block" id="features">
+        <div class="section-heading reveal"><p class="eyebrow">为创作留出空间</p><h2>少一点修补，<br /><span>多一点专注。</span></h2><p>从一张图片到一段视频，你可以从最顺手的方式开始。需要的时候再加上智能选区、时间轴和更精细的控制。</p></div>
+        <div class="feature-grid">
+          <article class="feature-card feature-card-dark reveal"><span class="feature-index">01</span><div class="feature-icon">◌</div><h3>图片，一笔就够</h3><p>画笔、矩形、橡皮擦，或让 OCR 和 SAM 帮你找到文字与目标区域。选区可以叠加，也可以随时改回去。</p><a href="#image-flow">了解图片处理 <span>→</span></a></article>
+          <article class="feature-card feature-card-light reveal reveal-delay"><span class="feature-index">02</span><div class="feature-icon">▣</div><h3>视频，沿着时间轴</h3><p>在关键帧上建立蒙版，让目标自然地跟随画面。先试跑一小段，确认后再导出完整视频。</p><a href="#video-flow">了解视频处理 <span>→</span></a></article>
+          <article class="feature-card feature-card-tint reveal reveal-delay-2"><span class="feature-index">03</span><div class="feature-icon">✧</div><h3>结果，交给合适的模型</h3><p>LaMa、MAT、SLBR 各有擅长的场景。应用会告诉你当前环境可以使用什么，并保留原文件不被覆盖。</p><a href="#models">查看模型选择 <span>→</span></a></article>
+        </div>
+      </section>
+
+      <section class="workflow-section section-block" id="workflow">
+        <div class="section-shell">
+          <div class="section-heading compact reveal"><p class="eyebrow">一条共同的思路</p><h2>上传源文件，<span>做出蒙版。</span></h2><p>图片和视频的顺序不完全一样，但你始终可以在每一步停下来预览、修改，或者换一种选区方式。</p></div>
+          <div class="workflow-switcher reveal" role="tablist" aria-label="选择流程">
+            <button class="workflow-tab is-active" type="button" role="tab" aria-selected="true" data-flow="image">图片流程</button>
+            <button class="workflow-tab" type="button" role="tab" aria-selected="false" data-flow="video">视频流程</button>
+          </div>
+          <div class="workflow-layout reveal">
+            <div class="workflow-steps" data-workflow-steps>
+              <div class="workflow-step is-active"><span>01</span><div><strong>上传处理源</strong><p>选择一张或多张图片。</p></div></div>
+              <div class="workflow-step"><span>02</span><div><strong>制作或组合蒙版</strong><p>手绘、OCR、点选或框选，按你的需要组合。</p></div></div>
+              <div class="workflow-step"><span>03</span><div><strong>调用模型处理</strong><p>选择适合当前素材的处理方式。</p></div></div>
+              <div class="workflow-step"><span>04</span><div><strong>预览并导出</strong><p>确认结果，导出一份全新的文件。</p></div></div>
+            </div>
+            <div class="workflow-preview" data-workflow-preview>
+              <img src="assets/image-processing.png" alt="图片处理流程预览" />
+              <div class="preview-label"><span class="preview-line"></span><span data-preview-label>图片处理工作台</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="detail-section section-shell section-block" id="image-flow">
+        <div class="detail-media reveal"><img src="assets/image-processing.png" alt="图片处理工作台截图" loading="lazy" /><div class="media-tag">图片处理</div></div>
+        <div class="detail-copy reveal reveal-delay"><p class="eyebrow">图片</p><h2>把不需要的部分，<span>圈出来就好。</span></h2><p>选择当前图片或批量导入。你可以用画笔精确涂抹，也可以使用智能选区快速找到文字、图标和物体。处理前后随时对比，满意后再下载。</p><div class="mini-list"><div><span>✓</span><strong>手动蒙版</strong><small>画笔、矩形、橡皮擦</small></div><div><span>✦</span><strong>智能选区</strong><small>OCR、点选、框选、文本提示</small></div><div><span>↶</span><strong>放心修改</strong><small>预览、撤销、重做、再导出</small></div></div></div>
+      </section>
+
+      <section class="detail-section detail-reverse section-shell section-block" id="video-flow">
+        <div class="detail-media reveal"><img src="assets/video-processing.png" alt="视频处理时间轴截图" loading="lazy" /><div class="media-tag media-tag-blue">视频处理</div></div>
+        <div class="detail-copy reveal"><p class="eyebrow">视频</p><h2>让蒙版，<span>跟着画面走。</span></h2><p>导入视频后，在时间轴上建立蒙版区间和关键帧。需要更快时使用智能传播，需要更精细时直接调整每个关键帧。</p><div class="mini-list"><div><span>◷</span><strong>时间轴编辑</strong><small>定位、区间、关键帧</small></div><div><span>↗</span><strong>智能传播</strong><small>让目标随画面自然移动</small></div><div><span>▶</span><strong>先试跑再导出</strong><small>分段处理，失败可回退</small></div></div></div>
+      </section>
+
+      <section class="start-section section-block" id="start">
+        <div class="section-shell">
+          <div class="section-heading compact reveal"><p class="eyebrow">开始使用</p><h2>打开它，<span>就可以开始。</span></h2><p>安装包和免安装包都从同一个入口开始。第一次启动时，应用会帮你检查环境和模型。</p></div>
+          <div class="start-grid">
+            <article class="start-card reveal"><span class="start-number">A</span><h3>安装包</h3><p>适合希望从开始菜单直接打开的使用方式。</p><ol><li>下载 Windows x64 安装包</li><li>运行安装程序并选择位置</li><li>首次启动，完成环境检查</li></ol><a class="text-link" href="#download">选择安装包 <span>→</span></a></article>
+            <article class="start-card start-card-accent reveal reveal-delay"><span class="start-number">B</span><h3>免安装包</h3><p>解压到可写目录，带到另一台电脑也很方便。</p><ol><li>下载并解压压缩包</li><li>双击启动 Moonshine-Image</li><li>首次启动，完成环境检查</li></ol><a class="text-link" href="#download">选择免安装包 <span>→</span></a></article>
+          </div>
+          <div class="start-note reveal"><span>⌁</span><p>如果没有可用的模型或运行环境，应用会在开始时告诉你下一步怎么做。基础功能不会因为某个可选模型暂时不可用而消失。</p></div>
+        </div>
+      </section>
+
+      <section class="models-section section-shell section-block" id="models">
+        <div class="section-heading compact reveal"><p class="eyebrow">选择合适的方式</p><h2>每种素材，<span>都有它的节奏。</span></h2><p>你不需要记住模型名称，只要根据目标和设备选择。应用会在界面里标出可用条件。</p></div>
+        <div class="model-list reveal">
+          <div class="model-row"><div class="model-name"><span class="model-symbol symbol-purple">L</span><div><strong>LaMa</strong><small>日常图片擦除</small></div></div><span class="model-status status-ready">已支持</span><p>通用、轻巧，适合大多数图片去除任务。</p></div>
+          <div class="model-row"><div class="model-name"><span class="model-symbol symbol-cyan">M</span><div><strong>MAT</strong><small>更复杂的蒙版修复</small></div></div><span class="model-status status-conditional">需要 CUDA</span><p>适合需要更细致修复的场景，仅在兼容的 CUDA 环境下可用。</p></div>
+          <div class="model-row"><div class="model-name"><span class="model-symbol symbol-coral">S</span><div><strong>SLBR</strong><small>半透明水印与视频</small></div></div><span class="model-status status-note">指定场景</span><p>针对可见半透明水印，不适合完全遮挡的内容。</p></div>
+        </div>
+      </section>
+
+      <section class="download-section section-block" id="download">
+        <div class="section-shell download-inner reveal">
+          <div><p class="eyebrow eyebrow-light">准备好了吗</p><h2>把 Moonshine<br /><em>带回你的工作流。</em></h2><p class="download-copy">当前版本 1.3.4 · Windows x64 · 本地处理</p></div>
+          <div class="download-panel"><div class="download-panel-top"><span class="download-icon">↓</span><div><strong>Moonshine-Image</strong><span>Windows x64</span></div><span class="version-pill">1.3.4</span></div><a class="button button-download" href="https://download.moonshine.email/app/win-x64/stable/Moonshine-Image-Setup-1.3.4.exe">下载安装包 <span>↓</span></a><p class="download-fallback">需要免安装包或旧版本？<a href="https://github.com/CuiMuxuan/Moonshine-Image/releases/latest">查看所有下载</a></p></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer section-shell"><a class="brand" href="#top"><span class="brand-mark"><img src="assets/moonshine-logo.png" alt="" /></span><span>Moonshine<span class="brand-dash">-</span>Image</span></a><p>为画面留白，也为想象留白。</p><div class="footer-links"><a href="#workflow">使用说明</a><a href="#download">下载</a><a href="https://github.com/CuiMuxuan/Moonshine-Image" target="_blank" rel="noreferrer">GitHub ↗</a></div><small>© 2026 Moonshine-Image</small></footer>
+    <script src="script.js"></script>
+  </body>
+</html>
