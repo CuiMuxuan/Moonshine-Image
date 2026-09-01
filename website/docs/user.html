@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#7758c4" />
+    <meta name="description" content="Moonshine-Image 使用说明：安装、蒙版、图片与视频处理、模型选择和结果导出。" />
+    <title>使用说明 · Moonshine-Image</title>
+    <link rel="icon" href="../assets/moonshine-logo.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="docs.css" />
+  </head>
+  <body class="docs-page" data-docs-page="user">
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+    <div class="docs-shell">
+      <header class="docs-header" data-header>
+        <div class="docs-header-inner">
+          <a class="docs-brand" href="../index.html" aria-label="返回 Moonshine-Image 官网">
+            <span class="brand-mark"><img src="../assets/moonshine-logo.png" alt="" /></span>
+            <span>Moonshine<span class="brand-dash">-</span>Image <small>说明文档</small></span>
+          </a>
+          <div class="docs-header-actions">
+            <a class="docs-header-link" href="../index.html">官网</a>
+            <a class="docs-header-link" href="../index.html#download">下载</a>
+            <button class="icon-button" type="button" data-theme-toggle aria-label="切换深色模式" title="切换深色模式">
+              <span aria-hidden="true">◐</span>
+            </button>
+            <button
+              class="icon-button docs-menu-button"
+              type="button"
+              data-doc-menu
+              aria-controls="docs-sidebar"
+              aria-expanded="false"
+              aria-label="打开文档目录"
+              title="打开文档目录"
+            >
+              <span aria-hidden="true">☰</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <div class="docs-layout">
+        <aside class="docs-sidebar" id="docs-sidebar" data-doc-sidebar>
+          <div class="docs-sidebar-inner">
+            <p class="docs-sidebar-label">文档目录</p>
+            <nav class="docs-nav" aria-label="说明文档">
+              <a href="index.html">文档首页</a>
+              <div class="docs-nav-group">
+                <p>使用说明</p>
+                <a class="is-active" aria-current="page" href="user.html">开始使用</a>
+                <a href="#mental-model">统一工作逻辑</a>
+                <a href="#image">图片处理</a>
+                <a href="#video">视频处理</a>
+                <a href="#models">模型与限制</a>
+                <a href="#outputs">结果与文件</a>
+              </div>
+              <div class="docs-nav-group">
+                <p>开发者</p>
+                <a href="developer.html#stack">技术栈</a>
+                <a href="developer.html#setup">本地开发</a>
+                <a href="developer.html#architecture">架构边界</a>
+              </div>
+              <div class="docs-nav-group">
+                <p>AI / MCP</p>
+                <a href="mcp.html#channel">连接方式</a>
+                <a href="mcp.html#tools">工具清单</a>
+                <a href="mcp.html#workflow">调用流程</a>
+              </div>
+            </nav>
+          </div>
+        </aside>
+
+        <main class="docs-main" id="main-content">
+          <div class="docs-content">
+            <header class="docs-page-head">
+              <p class="docs-kicker">使用说明 / 从开始到结果</p>
+              <h1>每一步都由你决定，结果交给本地模型。</h1>
+              <p class="docs-lede">Moonshine-Image 把图片和视频的处理工具放在同一个工作逻辑里：先准备处理源，再做出蒙版，调用适合的模型，检查结果并导出一份新文件。</p>
+            </header>
+
+            <section class="docs-section" id="start" data-section>
+              <div class="section-heading">
+                <p class="section-index">01</p>
+                <h2>开始使用</h2>
+              </div>
+              <p class="section-intro">首发平台是 Windows x64。你可以选择安装包，也可以使用免安装包；两条入口在首次启动时都会检查同一套本地运行环境。</p>
+
+              <div class="choice-grid">
+                <article class="choice-card">
+                  <p class="choice-label">入口 A</p>
+                  <h3>安装包</h3>
+                  <ol>
+                    <li>下载 Windows x64 安装包并运行安装程序。</li>
+                    <li>选择安装位置，完成安装后从开始菜单或桌面启动。</li>
+                    <li>首次启动进入环境检查和模型准备。</li>
+                  </ol>
+                </article>
+                <article class="choice-card choice-card-accent">
+                  <p class="choice-label">入口 B</p>
+                  <h3>免安装包</h3>
+                  <ol>
+                    <li>下载压缩包并解压到有写入权限的目录。</li>
+                    <li>双击启动 Moonshine-Image；不需要注册系统安装项。</li>
+                    <li>首次启动进入同样的环境检查和模型准备。</li>
+                  </ol>
+                </article>
+              </div>
+
+              <h3 class="subheading">首次启动会发生什么</h3>
+              <ul class="check-list">
+                <li><strong>检查运行环境：</strong>确认 Python、FFmpeg、Torch 和本地后端是否就绪。</li>
+                <li><strong>选择环境规格：</strong>按提示选择 auto、CPU 或 CUDA；实际可用能力取决于机器和驱动。</li>
+                <li><strong>准备模型：</strong>缺少的资源进入下载或手动导入流程；模型不可用时，界面会说明原因。</li>
+                <li><strong>保护已有环境：</strong>准备失败会保留旧的 active 环境，并提供回滚路径。</li>
+                <li><strong>开始前确认：</strong>检查后端状态、模型状态和输出目录，再导入第一份素材。</li>
+              </ul>
+              <div class="doc-image-grid">
+                <figure class="docs-figure">
+                  <img src="../assets/global-settings.png" alt="Moonshine-Image 全局设置界面，包含模型和文件管理入口" loading="lazy" />
+                  <figcaption>在“全局设置”中管理模型、文件位置和 MCP 服务。</figcaption>
+                </figure>
+                <figure class="docs-figure">
+                  <img src="../assets/backend-management.png" alt="Moonshine-Image 服务管理界面，显示运行环境和后端状态" loading="lazy" />
+                  <figcaption>在“服务管理”中准备运行环境，并确认本地服务已经就绪。</figcaption>
+                </figure>
+              </div>
+              <div class="callout callout-note"><strong>两种版本使用同一套准备流程。</strong><span>如果运行环境或模型尚未就绪，请按界面提示打开“服务管理”或“模型管理”；准备完成后再返回工作台。</span></div>
+            </section>
+
+            <section class="docs-section" id="mental-model" data-section>
+              <div class="section-heading">
+                <p class="section-index">02</p>
+                <h2>统一工作逻辑：不是线性向导</h2>
+              </div>
+              <p class="section-intro">“图片”和“视频”使用不同的编辑器和时间轴，但处理本质一致。每一步都可以重复、跳过或回到前面修改。</p>
+              <div class="docs-flow docs-flow-wide" aria-label="上传处理源到导出新结果的目标链">
+                <span class="flow-node">上传处理源</span>
+                <span class="flow-arrow" aria-hidden="true">→</span>
+                <span class="flow-node">制作 / 组合蒙版</span>
+                <span class="flow-arrow" aria-hidden="true">→</span>
+                <span class="flow-node">调用模型处理</span>
+                <span class="flow-arrow" aria-hidden="true">→</span>
+                <span class="flow-node">预览 / 编辑</span>
+                <span class="flow-arrow" aria-hidden="true">→</span>
+                <span class="flow-node">导出新结果</span>
+              </div>
+              <div class="branch-grid">
+                <div class="branch-item"><span class="branch-mark">可选</span><p>智能选区和手动绘制蒙版可以二选一。</p></div>
+                <div class="branch-item"><span class="branch-mark">可叠加</span><p>OCR、SAM、手绘和擦除可以叠加到同一张最终蒙版。</p></div>
+                <div class="branch-item"><span class="branch-mark">可回退</span><p>在预览、写回、编辑、擦除、撤销 / 重做和确认之间来回调整。</p></div>
+              </div>
+            </section>
+
+            <section class="docs-section" id="image" data-section>
+              <div class="section-heading">
+                <p class="section-index">03</p>
+                <h2>图片处理</h2>
+              </div>
+              <div class="media-block">
+                <figure class="docs-figure">
+                  <img src="../assets/image-processing.png" alt="Moonshine-Image 图片处理工作台，显示画布和蒙版工具" loading="lazy" />
+                  <figcaption>图片处理工作台：在同一画布里预览原图、蒙版和模型结果。</figcaption>
+                </figure>
+              </div>
+              <div class="instruction-grid">
+                <article class="instruction-card">
+                  <span class="instruction-number">A</span>
+                  <h3>导入处理源</h3>
+                  <p>点击顶部“选择文件”导入当前图片，也可以选中多张图片或一个文件夹。拖放文件到工作区同样会触发导入。</p>
+                </article>
+                <article class="instruction-card">
+                  <span class="instruction-number">B</span>
+                  <h3>建立或组合蒙版</h3>
+                  <p>在“蒙版模式”选择手动绘制或智能选区。可使用笔刷、矩形、橡皮擦，也可从“OCR 文本智能选区”、SAM 点选 / 框选或“文本智选”开始。</p>
+                </article>
+                <article class="instruction-card">
+                  <span class="instruction-number">C</span>
+                  <h3>预览并确认蒙版</h3>
+                  <p>打开“候选蒙版”勾选结果，再用“撤回”“重做”“清空智能选区结果”继续调整；确认覆盖范围后再运行模型。</p>
+                </article>
+                <article class="instruction-card">
+                  <span class="instruction-number">D</span>
+                  <h3>调用模型并导出</h3>
+                  <p>在设置面板选择可用模型和作用范围，点击“运行模型”；用“对比原图”检查效果，最后点击“下载”导出。</p>
+                </article>
+              </div>
+
+              <h3 class="subheading">智能选区的细节</h3>
+              <div class="detail-list">
+                <div><h4>OCR</h4><p>RapidOCR 会把文字区域变成候选蒙版。默认高置信度结果直接选中，中等置信度结果保留为候选；可在“智能选区设置”里调整“直接选中阈值”“候选阈值”，也可开启“使用 SAM 增强文本蒙版”。</p></div>
+                <div><h4>SAM</h4><p>点选、框选和文本智选能力取决于当前安装的模型。界面会隐藏不可用操作；SAM2.1 可用于视频传播，标准 SAM3 可支持文本智选，SAM3.1 Multiplex 当前只用于图片文本提示。</p></div>
+              </div>
+            </section>
+
+            <section class="docs-section" id="video" data-section>
+              <div class="section-heading">
+                <p class="section-index">04</p>
+                <h2>视频处理</h2>
+              </div>
+              <div class="media-block">
+                <figure class="docs-figure">
+                  <img src="../assets/video-processing.png" alt="Moonshine-Image 视频时间轴工作台，显示预览画面和处理轨道" loading="lazy" />
+                  <figcaption>视频时间轴工作台：蒙版轨道、关键帧和预览试跑各自独立。</figcaption>
+                </figure>
+              </div>
+              <div class="video-flow" aria-label="视频处理分支流程">
+                <div class="video-flow-node"><strong>导入视频</strong><span>拆帧并建立时间轴</span></div>
+                <span class="flow-arrow" aria-hidden="true">→</span>
+                <div class="video-flow-branches">
+                  <div><strong>手动轨道</strong><span>绘制或导入蒙版轨道</span></div>
+                  <div><strong>智能传播</strong><span>SAM2.1 / SAM3 与关键帧编辑</span></div>
+                  <div><strong>水印轨道</strong><span>SLBR track plan 按活动帧执行</span></div>
+                </div>
+                <span class="flow-arrow" aria-hidden="true">→</span>
+                <div class="video-flow-node"><strong>预览 / 试跑</strong><span>确认范围和效果</span></div>
+                <span class="flow-arrow" aria-hidden="true">→</span>
+                <div class="video-flow-node"><strong>处理并导出</strong><span>WebAV 失败时回退 FFmpeg</span></div>
+              </div>
+              <ul class="check-list compact-list">
+                <li>在时间轴中定位要处理的时间段，维护 <code>currentTime</code>、处理范围和可恢复快照。</li>
+                <li>蒙版轨道可以由手绘、智能传播或 SLBR 计划提供；非活动帧会跳过相应处理。</li>
+                <li>先运行预览试跑，再处理完整区间。视频流程独立于图片批处理，不是图片队列的简单延伸。</li>
+                <li>WebAV 导出失败时使用 FFmpeg fallback；完成后合并并确认结果。</li>
+              </ul>
+            </section>
+
+            <section class="docs-section" id="models" data-section>
+              <div class="section-heading">
+                <p class="section-index">05</p>
+                <h2>模型与限制</h2>
+              </div>
+              <div class="model-table-wrap">
+                <table class="model-table">
+                  <caption class="sr-only">Moonshine-Image 模型用途与条件</caption>
+                  <thead><tr><th scope="col">模型 / 能力</th><th scope="col">适合处理</th><th scope="col">使用前提与边界</th></tr></thead>
+                  <tbody>
+                    <tr><th scope="row">LaMa</th><td>通用图像擦除</td><td>基础模型；在 MAT 不可用时可作为回退。</td></tr>
+                    <tr><th scope="row">MAT</th><td>蒙版修复</td><td>需要 CUDA；受 CC BY-NC 4.0 非商业许可限制。CPU 不可用时会提示并回退 LaMa。</td></tr>
+                    <tr><th scope="row">SLBR</th><td>可见半透明水印，图片或视频轨道</td><td>支持全图或显式局部 mask / tile 规划；不承诺恢复被完全遮挡的真实细节。</td></tr>
+                    <tr><th scope="row">SAM1 / SAM2.1 / SAM3</th><td>点、框、文本提示和视频传播</td><td>能力以当前模型 metadata 为准，不按文件名猜测；<code>sam3_1_multiplex.pt</code> 不宣传图像点选或框选。</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="callout callout-warning"><strong>看到“条件可用”时</strong><span>先查看应用中的后端、模型和运行环境状态。缺失 CUDA、权重或 provider 时，能力会被隐藏或给出回退提示，不代表所有机器都能运行全部模型。</span></div>
+            </section>
+
+            <section class="docs-section" id="outputs" data-section>
+              <div class="section-heading">
+                <p class="section-index">06</p>
+                <h2>结果与文件</h2>
+              </div>
+              <p class="section-intro">Moonshine-Image 默认把结果写到输入文件旁的 <code>Moonshine-Output</code> 目录，并创建新文件。原始文件不会被覆盖。</p>
+              <div class="facts-grid facts-grid-two">
+                <div class="fact-item"><span>处理结果</span><strong>主预览中检查，再导出新文件</strong></div>
+                <div class="fact-item"><span>批处理</span><strong>逐项报告成功 / 失败，可取消</strong></div>
+                <div class="fact-item"><span>视频导出</span><strong>分段处理，合并后确认</strong></div>
+                <div class="fact-item"><span>源文件</span><strong>只读使用，不会被覆盖</strong></div>
+              </div>
+              <p class="section-note">如果输出目录或模型状态异常，先处理应用提示，再重新运行对应任务；不要把未完成的临时文件当作最终结果。</p>
+            </section>
+          </div>
+
+          <aside class="docs-toc" aria-label="本页目录">
+            <p>本页目录</p>
+            <a href="#start" data-toc-link>开始使用</a>
+            <a href="#mental-model" data-toc-link>统一工作逻辑</a>
+            <a href="#image" data-toc-link>图片处理</a>
+            <a href="#video" data-toc-link>视频处理</a>
+            <a href="#models" data-toc-link>模型与限制</a>
+            <a href="#outputs" data-toc-link>结果与文件</a>
+          </aside>
+        </main>
+      </div>
+
+      <footer class="docs-footer">
+        <a class="docs-brand docs-brand-footer" href="../index.html" aria-label="返回 Moonshine-Image 官网">
+          <span class="brand-mark"><img src="../assets/moonshine-logo.png" alt="" /></span>
+          <span>Moonshine<span class="brand-dash">-</span>Image</span>
+        </a>
+        <p>为画面留白，也为想象留白。</p>
+        <div class="docs-footer-links">
+          <a href="../index.html">返回官网</a>
+          <a href="../index.html#download">下载应用</a>
+          <a href="https://github.com/CuiMuxuan/Moonshine-Image" target="_blank" rel="noreferrer">GitHub ↗</a>
+        </div>
+      </footer>
+    </div>
+    <script src="docs.js"></script>
+  </body>
+</html>

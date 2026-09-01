@@ -182,6 +182,8 @@ h1 em, h2 span { color: var(--purple); font-style: normal; }
 .button-download:hover { background: var(--purple-deep); }
 .download-fallback { margin: 14px 0 0; color: var(--muted); font-size: 10px; text-align: center; }
 .download-fallback a { color: var(--purple); text-decoration: underline; text-underline-offset: 2px; }
+.download-integrity { margin: 12px 0 0; color: #177b64; font-size: 10px; text-align: center; }
+body.dark .download-integrity { color: #82d5bf; }
 
 .site-footer { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 28px; min-height: 122px; color: var(--ink-soft); }
 .site-footer p { margin: 0; font-size: 12px; }

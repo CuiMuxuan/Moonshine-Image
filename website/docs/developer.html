@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#7758c4" />
+    <meta name="description" content="Moonshine-Image 开发者指南：技术栈、项目结构、本地开发、架构边界、构建与验证。" />
+    <title>开发者指南 · Moonshine-Image</title>
+    <link rel="icon" href="../assets/moonshine-logo.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="docs.css" />
+  </head>
+  <body class="docs-page" data-docs-page="developer">
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+    <div class="docs-shell">
+      <header class="docs-header" data-header>
+        <div class="docs-header-inner">
+          <a class="docs-brand" href="../index.html" aria-label="返回 Moonshine-Image 官网">
+            <span class="brand-mark"><img src="../assets/moonshine-logo.png" alt="" /></span>
+            <span>Moonshine<span class="brand-dash">-</span>Image <small>说明文档</small></span>
+          </a>
+          <div class="docs-header-actions">
+            <a class="docs-header-link" href="../index.html">官网</a>
+            <a class="docs-header-link" href="../index.html#download">下载</a>
+            <button class="icon-button" type="button" data-theme-toggle aria-label="切换深色模式" title="切换深色模式"><span aria-hidden="true">◐</span></button>
+            <button
+              class="icon-button docs-menu-button"
+              type="button"
+              data-doc-menu
+              aria-controls="docs-sidebar"
+              aria-expanded="false"
+              aria-label="打开文档目录"
+              title="打开文档目录"
+            ><span aria-hidden="true">☰</span></button>
+          </div>
+        </div>
+      </header>
+
+      <div class="docs-layout">
+        <aside class="docs-sidebar" id="docs-sidebar" data-doc-sidebar>
+          <div class="docs-sidebar-inner">
+            <p class="docs-sidebar-label">文档目录</p>
+            <nav class="docs-nav" aria-label="说明文档">
+              <a href="index.html">文档首页</a>
+              <div class="docs-nav-group">
+                <p>使用说明</p>
+                <a href="user.html#start">开始使用</a>
+                <a href="user.html#image">图片处理</a>
+                <a href="user.html#video">视频处理</a>
+                <a href="user.html#models">模型与限制</a>
+              </div>
+              <div class="docs-nav-group">
+                <p>开发者</p>
+                <a class="is-active" aria-current="page" href="developer.html">开发者指南</a>
+                <a href="#stack">技术栈</a>
+                <a href="#setup">本地开发</a>
+                <a href="#architecture">架构边界</a>
+                <a href="#map">项目地图</a>
+                <a href="#build">构建与验证</a>
+              </div>
+              <div class="docs-nav-group">
+                <p>AI / MCP</p>
+                <a href="mcp.html#channel">连接方式</a>
+                <a href="mcp.html#tools">工具清单</a>
+                <a href="mcp.html#workflow">调用流程</a>
+              </div>
+            </nav>
+          </div>
+        </aside>
+
+        <main class="docs-main" id="main-content">
+          <div class="docs-content">
+            <header class="docs-page-head">
+              <p class="docs-kicker">开发者指南 / 当前实现</p>
+              <h1>先理解边界，再进入代码。</h1>
+              <p class="docs-lede">Moonshine-Image 是一个 Electron 桌面应用：Vue 渲染层负责工作台，Electron 主进程负责本地系统与安全边界，Python / FastAPI 后端负责模型和媒体处理。</p>
+            </header>
+
+            <section class="docs-section" id="stack" data-section>
+              <div class="section-heading"><p class="section-index">01</p><h2>技术栈</h2></div>
+              <div class="stack-grid">
+                <article class="stack-card"><p>Renderer</p><h3>Vue 3 · Quasar · Vite</h3><span>图片、视频、设置与活动视图。</span></article>
+                <article class="stack-card"><p>Desktop</p><h3>Electron</h3><span>窗口、托盘、生命周期、更新、preload IPC 与 MCP。</span></article>
+                <article class="stack-card"><p>Backend</p><h3>Python · FastAPI</h3><span>OCR、SAM、图像 / 视频处理与模型管理。</span></article>
+                <article class="stack-card"><p>Media &amp; AI</p><h3>WebAV · FFmpeg · ONNX Runtime</h3><span>视频预览 / 导出、失败回退和 OCR 推理。</span></article>
+              </div>
+              <div class="facts-grid facts-grid-two">
+                <div class="fact-item"><span>Node.js</span><strong>^18 · ^20 · ^22 · ^24 · ^26 · ^28</strong></div>
+                <div class="fact-item"><span>npm</span><strong>&gt;= 6.13.4</strong></div>
+                <div class="fact-item"><span>Python 开发基线</span><strong>3.12.x</strong></div>
+                <div class="fact-item"><span>首发桌面目标</span><strong>Windows x64</strong></div>
+              </div>
+            </section>
+
+            <section class="docs-section" id="setup" data-section>
+              <div class="section-heading"><p class="section-index">02</p><h2>本地开发</h2></div>
+              <p class="section-intro">在仓库根目录安装依赖，再启动 Quasar 的 Electron 开发模式。具体 Python 环境应与项目的运行环境管理策略保持一致。</p>
+              <div class="code-block">
+                <div class="code-header"><span>PowerShell</span><button type="button" data-copy aria-label="复制本地开发命令">复制</button></div>
+                <pre><code>npm install
+npm run dev</code></pre>
+              </div>
+              <div class="callout callout-note"><strong>环境要求</strong><span>项目支持 managed 与 external Python。不要手动把 runtime manifest 复制到 <code>env</code>，也不要假设某个 CUDA / 模型 flavor 在所有开发机器上都存在。</span></div>
+
+              <h3 class="subheading">常用质量检查</h3>
+              <div class="code-block">
+                <div class="code-header"><span>PowerShell</span><button type="button" data-copy aria-label="复制质量检查命令">复制</button></div>
+                <pre><code>npm test
+npm run lint
+npm run test:contracts:mcp-ocr
+npm run test:regression:p0:full</code></pre>
+              </div>
+              <p class="section-note">测试名表示仓库内的验证范围，不等于已通过独立 Windows 机器、完整模型 / 许可矩阵或所有外部客户端的最终验收。</p>
+            </section>
+
+            <section class="docs-section" id="architecture" data-section>
+              <div class="section-heading"><p class="section-index">03</p><h2>架构与安全边界</h2></div>
+              <div class="architecture-flow" aria-label="渲染层、Electron 主进程和 Python 后端之间的架构">
+                <div class="architecture-node"><span>Renderer</span><strong>Vue / Quasar 工作台</strong><small>只通过命名 preload IPC 请求安全能力</small></div>
+                <span class="architecture-arrow" aria-hidden="true">⇄</span>
+                <div class="architecture-node architecture-node-core"><span>Electron main</span><strong>本地可信边界</strong><small>窗口、后端生命周期、secret、任务真相</small></div>
+                <span class="architecture-arrow" aria-hidden="true">⇄</span>
+                <div class="architecture-node"><span>Python backend</span><strong>FastAPI / 模型服务</strong><small>OCR、SAM、图像、视频与模型管理</small></div>
+              </div>
+              <ul class="check-list">
+                <li><strong>Electron main 拥有系统能力：</strong>窗口、Tray、退出、后端生命周期、MCP secret 和持久任务状态不归 renderer 所有。</li>
+                <li><strong>Renderer 只接收安全投影：</strong>本地路径、secret 和受控 artifact 不应绕过 preload IPC 暴露。</li>
+                <li><strong>后端是本地处理服务：</strong>媒体和模型处理位于 <code>server/moonshine_server</code>，不要把它描述成公开云 API。</li>
+                <li><strong>输出不覆盖输入：</strong>所有处理路径都应保持新文件语义，并验证输出目录和可信路径 containment。</li>
+              </ul>
+            </section>
+
+            <section class="docs-section" id="map" data-section>
+              <div class="section-heading"><p class="section-index">04</p><h2>项目地图</h2></div>
+              <div class="code-block tree-block">
+                <div class="code-header"><span>Repository</span><button type="button" data-copy aria-label="复制项目目录结构">复制</button></div>
+                <pre><code>src/                         Vue renderer
+src/pages/IndexPage.vue      图片工作台
+src/pages/VideoPage.vue      视频时间轴工作台
+src/services/                图片、SAM、视频服务封装
+src-electron/                Electron main、preload、runtime、MCP
+server/moonshine_server/     FastAPI、OCR、SAM、模型管理
+scripts/                     构建、发布、验证
+test/                        Node / Electron / contract tests
+server/tests/                Python backend tests</code></pre>
+              </div>
+              <div class="route-list">
+                <div><code>/image</code><span>图片工作台</span></div>
+                <div><code>/video</code><span>视频工作台</span></div>
+                <div><code>/activity/mcp</code><span>MCP 活动与任务视图</span></div>
+              </div>
+            </section>
+
+            <section class="docs-section" id="build" data-section>
+              <div class="section-heading"><p class="section-index">05</p><h2>构建与验证</h2></div>
+              <p class="section-intro">下面是仓库当前提供的 Windows 构建入口。它们用于生成可运行目录、安装器或 Windows 分发矩阵。</p>
+              <div class="code-block">
+                <div class="code-header"><span>PowerShell</span><button type="button" data-copy aria-label="复制构建命令">复制</button></div>
+                <pre><code>npm run build:electron:packager
+npm run build:electron:installer
+npm run package:win:matrix</code></pre>
+              </div>
+              <ol class="ordered-steps">
+                <li><span>1</span><div><strong>先验证源码</strong><p>运行与改动范围相称的测试和 lint。</p></div></li>
+                <li><span>2</span><div><strong>准备受保护资源</strong><p>生成 backend、FFmpeg、模型适配和 runtime 资源，并审计清单。</p></div></li>
+                <li><span>3</span><div><strong>构建所需形态</strong><p>日常验证优先 packager，需要安装体验时再构建 NSIS。</p></div></li>
+                <li><span>4</span><div><strong>验证产物边界</strong><p>确认 app-only、manifest、签名和包内容，再进入发布流程。</p></div></li>
+              </ol>
+              <div class="callout callout-warning"><strong>不要从构建成功外推发布结论。</strong><span>仓库内测试或本机 packager 成功不能单独证明 clean-machine 安装、更新、回滚、卸载，也不能证明 beta / canary / stable 人工验收已经完成。</span></div>
+            </section>
+
+            <section class="docs-section" id="claims" data-section>
+              <div class="section-heading"><p class="section-index">06</p><h2>实现口径</h2></div>
+              <p class="section-intro">开发文档只陈述当前源码和已验证边界。接入或二次开发时，请保留“已实现”“条件可用”“待外部验收”的区分。</p>
+              <ul class="boundary-list">
+                <li><strong>可以依赖：</strong>当前源码中的图片 / 视频工作台、模型能力 metadata、preload IPC、MCP 工具白名单和仓库测试入口。</li>
+                <li><strong>需要前置条件：</strong>CUDA、SAM3、MAT、SLBR 和真实模型运行取决于本机环境、权重与许可。</li>
+                <li><strong>尚不能对外承诺：</strong>全平台 / 全 flavor 可用、独立 clean-machine 完整验收、完整外部 OCR / MCP E2E 或所有 CUDA / SAM3 组合。</li>
+              </ul>
+            </section>
+          </div>
+
+          <aside class="docs-toc" aria-label="本页目录">
+            <p>本页目录</p>
+            <a href="#stack" data-toc-link>技术栈</a>
+            <a href="#setup" data-toc-link>本地开发</a>
+            <a href="#architecture" data-toc-link>架构边界</a>
+            <a href="#map" data-toc-link>项目地图</a>
+            <a href="#build" data-toc-link>构建与验证</a>
+            <a href="#claims" data-toc-link>实现口径</a>
+          </aside>
+        </main>
+      </div>
+
+      <footer class="docs-footer">
+        <a class="docs-brand docs-brand-footer" href="../index.html" aria-label="返回 Moonshine-Image 官网"><span class="brand-mark"><img src="../assets/moonshine-logo.png" alt="" /></span><span>Moonshine<span class="brand-dash">-</span>Image</span></a>
+        <p>为画面留白，也为想象留白。</p>
+        <div class="docs-footer-links"><a href="../index.html">返回官网</a><a href="../index.html#download">下载应用</a><a href="https://github.com/CuiMuxuan/Moonshine-Image" target="_blank" rel="noreferrer">GitHub ↗</a></div>
+      </footer>
+    </div>
+    <script src="docs.js"></script>
+  </body>
+</html>

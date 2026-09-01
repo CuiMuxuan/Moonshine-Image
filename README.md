@@ -1,6 +1,6 @@
 # Moonshine-Image
 
-[访问 Moonshine-Image 官方网站](https://cuimuxuan.github.io/Moonshine-Image/) · [下载最新版本](https://cuimuxuan.github.io/Moonshine-Image/#download)
+[访问 Moonshine-Image 官方网站](https://cuimuxuan.github.io/Moonshine-Image/) · [阅读说明文档](https://cuimuxuan.github.io/Moonshine-Image/docs/) · [下载最新版本](https://cuimuxuan.github.io/Moonshine-Image/#download)
 
 Moonshine-Image 是一个面向 Windows 的本地图片与视频处理工具，提供水印去除、蒙版修复、智能选区、OCR 自动生成候选蒙版、视频逐帧处理、模型管理、后端诊断以及 MCP 外部调用能力。
 

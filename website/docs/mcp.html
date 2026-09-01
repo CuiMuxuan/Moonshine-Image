@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#7758c4" />
+    <meta name="description" content="Moonshine-Image AI MCP 接入指南：本地连接、工具清单、确认策略、任务状态和安全边界。" />
+    <title>AI MCP 接入 · Moonshine-Image</title>
+    <link rel="icon" href="../assets/moonshine-logo.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="docs.css" />
+  </head>
+  <body class="docs-page" data-docs-page="mcp">
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+    <div class="docs-shell">
+      <header class="docs-header" data-header>
+        <div class="docs-header-inner">
+          <a class="docs-brand" href="../index.html" aria-label="返回 Moonshine-Image 官网">
+            <span class="brand-mark"><img src="../assets/moonshine-logo.png" alt="" /></span>
+            <span>Moonshine<span class="brand-dash">-</span>Image <small>说明文档</small></span>
+          </a>
+          <div class="docs-header-actions">
+            <a class="docs-header-link" href="../index.html">官网</a>
+            <a class="docs-header-link" href="../index.html#download">下载</a>
+            <button class="icon-button" type="button" data-theme-toggle aria-label="切换深色模式" title="切换深色模式"><span aria-hidden="true">◐</span></button>
+            <button
+              class="icon-button docs-menu-button"
+              type="button"
+              data-doc-menu
+              aria-controls="docs-sidebar"
+              aria-expanded="false"
+              aria-label="打开文档目录"
+              title="打开文档目录"
+            ><span aria-hidden="true">☰</span></button>
+          </div>
+        </div>
+      </header>
+
+      <div class="docs-layout">
+        <aside class="docs-sidebar" id="docs-sidebar" data-doc-sidebar>
+          <div class="docs-sidebar-inner">
+            <p class="docs-sidebar-label">文档目录</p>
+            <nav class="docs-nav" aria-label="说明文档">
+              <a href="index.html">文档首页</a>
+              <div class="docs-nav-group">
+                <p>使用说明</p>
+                <a href="user.html#start">开始使用</a>
+                <a href="user.html#image">图片处理</a>
+                <a href="user.html#video">视频处理</a>
+              </div>
+              <div class="docs-nav-group">
+                <p>开发者</p>
+                <a href="developer.html#stack">技术栈</a>
+                <a href="developer.html#setup">本地开发</a>
+                <a href="developer.html#architecture">架构边界</a>
+              </div>
+              <div class="docs-nav-group">
+                <p>AI / MCP</p>
+                <a class="is-active" aria-current="page" href="mcp.html">MCP 接入指南</a>
+                <a href="#channel">连接方式</a>
+                <a href="#configure">配置</a>
+                <a href="#permissions">确认策略</a>
+                <a href="#tools">工具清单</a>
+                <a href="#workflow">调用流程</a>
+                <a href="#states">任务状态</a>
+                <a href="#security">安全边界</a>
+              </div>
+            </nav>
+          </div>
+        </aside>
+
+        <main class="docs-main" id="main-content">
+          <div class="docs-content">
+            <header class="docs-page-head">
+              <p class="docs-kicker">AI / MCP / 本地自动化</p>
+              <h1>让 AI 调用能力，也保留人的控制权。</h1>
+              <p class="docs-lede">Moonshine-Image 通过当前 Windows 用户的私有命名管道和 stdio 代理向 MCP 客户端提供本地能力。连接不是 HTTP，处理任务也不会自动进入当前编辑器。</p>
+            </header>
+
+            <section class="docs-section" id="channel" data-section>
+              <div class="section-heading"><p class="section-index">01</p><h2>连接方式</h2></div>
+              <div class="mcp-channel" aria-label="MCP 客户端经 stdio 代理连接 Electron 应用的本地命名管道">
+                <div class="mcp-channel-node"><span>MCP Client</span><strong>AI 客户端</strong><small>启动应用提供的 stdio 配置</small></div>
+                <span class="mcp-channel-arrow" aria-hidden="true">⇄</span>
+                <div class="mcp-channel-node mcp-channel-node-proxy"><span>stdio proxy</span><strong>本地适配层</strong><small>stdout 保持 JSON-RPC-only</small></div>
+                <span class="mcp-channel-arrow" aria-hidden="true">⇄</span>
+                <div class="mcp-channel-node"><span>Private named pipe</span><strong>Electron main</strong><small>仅限当前 Windows 用户</small></div>
+              </div>
+              <div class="callout callout-warning"><strong>不是 HTTP 服务。</strong><span>不要扫描端口、拼接本地 URL，也不要尝试把命名管道当作公开网络 API。连接由桌面应用和 stdio proxy / native broker 管理。</span></div>
+            </section>
+
+            <section class="docs-section" id="configure" data-section>
+              <div class="section-heading"><p class="section-index">02</p><h2>从应用复制配置</h2></div>
+              <ol class="ordered-steps">
+                <li><span>1</span><div><strong>打开 Moonshine-Image</strong><p>确保桌面应用和本地后端处于可用状态。</p></div></li>
+                <li><span>2</span><div><strong>进入 MCP 设置</strong><p>在全局设置的 MCP 页面查看客户端配置和当前确认策略。</p></div></li>
+                <li><span>3</span><div><strong>复制应用生成的 stdio 配置</strong><p>粘贴到支持 MCP 的 AI 客户端中，再由客户端启动代理。</p></div></li>
+                <li><span>4</span><div><strong>先读取状态</strong><p>连接后先调用 <code>moonshine.status</code> 与 <code>moonshine.capabilities</code>，不要假设模型或 provider 一定可用。</p></div></li>
+              </ol>
+              <div class="callout callout-note"><strong>配置以应用界面为准。</strong><span>官网不会给出真实 executable path、pipe name、token 或 broker secret。不要手写或硬编码这些字段，也不要把应用生成的私有配置提交到仓库。</span></div>
+              <p class="section-intro">下面只展示安全的 MCP 工具调用格式，不是客户端启动配置：</p>
+              <div class="code-block">
+                <div class="code-header"><span>JSON · illustrative request</span><button type="button" data-copy aria-label="复制状态调用示例">复制</button></div>
+                <pre><code>{
+  "name": "moonshine.status",
+  "arguments": {}
+}</code></pre>
+              </div>
+            </section>
+
+            <section class="docs-section" id="permissions" data-section>
+              <div class="section-heading"><p class="section-index">03</p><h2>确认策略</h2></div>
+              <div class="permission-grid">
+                <article class="permission-card"><code>read_only</code><h3>只读</h3><p>可查询能力、模型、状态和检测结果，但不创建输出文件。适合首次接入和审计。</p></article>
+                <article class="permission-card permission-card-accent"><code>auto_approve</code><h3>自动批准</h3><p>允许处理并写入新文件；仍受工具白名单、参数校验和可信目录限制。</p></article>
+                <article class="permission-card"><code>full_access</code><h3>完整访问</h3><p>允许处理并跳过目录 containment；仍受工具白名单与参数校验限制。</p></article>
+              </div>
+              <p class="section-note">工具元数据分为 <code>read</code> 与 <code>task</code>。确认策略进一步决定处理和写入权限；具体工具资格以应用设置中的实时状态为准。任何模式都不应把 secret 暴露给第三方客户端。</p>
+            </section>
+
+            <section class="docs-section" id="tools" data-section>
+              <div class="section-heading"><p class="section-index">04</p><h2>当前工具清单</h2></div>
+              <div class="tool-table-wrap">
+                <table class="tool-table">
+                  <caption class="sr-only">Moonshine-Image MCP 工具与访问分类</caption>
+                  <thead><tr><th scope="col">工具</th><th scope="col">分类</th><th scope="col">用途</th></tr></thead>
+                  <tbody>
+                    <tr><th scope="row"><code>moonshine.status</code></th><td><span class="access-badge access-read">read</span></td><td>读取应用、后端与 MCP 状态。</td></tr>
+                    <tr><th scope="row"><code>moonshine.capabilities</code></th><td><span class="access-badge access-read">read</span></td><td>读取当前机器实际可用的能力。</td></tr>
+                    <tr><th scope="row"><code>moonshine.models.list</code></th><td><span class="access-badge access-read">read</span></td><td>列出已知模型与可用状态。</td></tr>
+                    <tr><th scope="row"><code>moonshine.ocr.detect</code></th><td><span class="access-badge access-task">task</span></td><td>检测图片中的文字候选区域。</td></tr>
+                    <tr><th scope="row"><code>moonshine.masks.generate</code></th><td><span class="access-badge access-task">task</span></td><td>用 OCR、SAM 或组合策略生成蒙版。</td></tr>
+                    <tr><th scope="row"><code>moonshine.image.process</code></th><td><span class="access-badge access-task">task</span></td><td>提交单文件图片处理任务。</td></tr>
+                    <tr><th scope="row"><code>moonshine.image.process_batch</code></th><td><span class="access-badge access-task">task</span></td><td>提交图片批处理任务组。</td></tr>
+                    <tr><th scope="row"><code>moonshine.jobs.get</code></th><td><span class="access-badge access-read">read</span></td><td>读取任务状态和安全投影。</td></tr>
+                    <tr><th scope="row"><code>moonshine.jobs.result</code></th><td><span class="access-badge access-read">read</span></td><td>读取成功任务的结果 descriptor。</td></tr>
+                    <tr><th scope="row"><code>moonshine.jobs.cancel</code></th><td><span class="access-badge access-task">task</span></td><td>取消允许取消的单个任务。</td></tr>
+                    <tr><th scope="row"><code>moonshine.job_groups.get</code></th><td><span class="access-badge access-read">read</span></td><td>读取批处理任务组状态。</td></tr>
+                    <tr><th scope="row"><code>moonshine.job_groups.cancel</code></th><td><span class="access-badge access-task">task</span></td><td>取消允许取消的任务组。</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <p class="section-note">这里列出当前稳定公开名称。每个工具的参数 schema 和可用性由正在运行的应用返回；调用前应先读取 capabilities，而不是从名称推断输入字段。</p>
+            </section>
+
+            <section class="docs-section" id="workflow" data-section>
+              <div class="section-heading"><p class="section-index">05</p><h2>一次完整的调用流程</h2></div>
+              <div class="api-sequence">
+                <div><span>1</span><code>moonshine.status</code><p>确认桌面应用、后端与桥接状态。</p></div>
+                <div><span>2</span><code>moonshine.capabilities</code><p>读取当前可用模型、OCR / SAM 和任务能力。</p></div>
+                <div><span>3</span><code>moonshine.masks.generate</code><p>从处理源生成 OCR、SAM 或组合蒙版。</p></div>
+                <div><span>4</span><code>moonshine.image.process</code><p>用选择的模型、蒙版和安全输出语义提交任务。</p></div>
+                <div><span>5</span><code>moonshine.jobs.get</code><p>轮询任务状态；尊重确认、失败和取消状态。</p></div>
+                <div><span>6</span><code>moonshine.jobs.result</code><p>成功后获取受控结果 descriptor。</p></div>
+              </div>
+
+              <h3 class="subheading">调用示例</h3>
+              <p class="section-intro">参数以运行中的工具 schema 为准。以下请求只演示 JSON-RPC 工具调用的外形：</p>
+              <div class="code-block">
+                <div class="code-header"><span>JSON · illustrative request</span><button type="button" data-copy aria-label="复制能力调用示例">复制</button></div>
+                <pre><code>{
+  "name": "moonshine.capabilities",
+  "arguments": {}
+}</code></pre>
+              </div>
+              <div class="code-block">
+                <div class="code-header"><span>JSON · illustrative request</span><button type="button" data-copy aria-label="复制任务查询示例">复制</button></div>
+                <pre><code>{
+  "name": "moonshine.jobs.get",
+  "arguments": {
+    "job_id": "&lt;job-id-returned-by-the-app&gt;"
+  }
+}</code></pre>
+              </div>
+              <div class="callout callout-note"><strong>任务与编辑器分离。</strong><span>MCP 任务不会自动修改当前编辑工作区。只有用户在应用中显式执行 “Open in editor”，结果才会被导入编辑器。</span></div>
+            </section>
+
+            <section class="docs-section" id="states" data-section>
+              <div class="section-heading"><p class="section-index">06</p><h2>任务状态</h2></div>
+              <div class="state-grid">
+                <div><code>awaiting_confirmation</code><span>等待用户确认</span></div>
+                <div><code>queued</code><span>已进入队列</span></div>
+                <div><code>running</code><span>正在执行</span></div>
+                <div><code>succeeded</code><span>已成功，可读取结果</span></div>
+                <div><code>failed</code><span>执行失败</span></div>
+                <div><code>cancelled</code><span>已取消</span></div>
+                <div><code>interrupted</code><span>被应用或服务中断</span></div>
+              </div>
+              <p class="section-note">客户端应处理所有终态，不要只等待 <code>succeeded</code>。应用重启或服务关闭可能把运行中的任务恢复为 <code>interrupted</code>，需要用户决定是否重试。</p>
+            </section>
+
+            <section class="docs-section" id="security" data-section>
+              <div class="section-heading"><p class="section-index">07</p><h2>安全与隐私边界</h2></div>
+              <ul class="security-list">
+                <li><span aria-hidden="true">01</span><div><strong>不暴露连接秘密</strong><p>token 只存在于 main / child IPC 边界，不进入 renderer、日志、公开配置或第三方客户端输出。</p></div></li>
+                <li><span aria-hidden="true">02</span><div><strong>每一层分别校验</strong><p>工具白名单、schema、trusted path containment、job ownership、输出路径和取消语义分别检查。</p></div></li>
+                <li><span aria-hidden="true">03</span><div><strong>默认 fail closed</strong><p>应用 / 服务关闭、越权目录、未授权工具、无 provider、拒绝或取消时，不应留下处理产物。</p></div></li>
+                <li><span aria-hidden="true">04</span><div><strong>源文件永不覆盖</strong><p>输出使用新文件语义；artifact 只通过受控 descriptor 暴露给 renderer 或客户端。</p></div></li>
+              </ul>
+              <div class="callout callout-warning"><strong>不要记录或分享</strong><span>真实 token、pipe name、broker secret、用户绝对路径、完整客户端启动配置。排障时使用应用提供的脱敏状态和错误信息。</span></div>
+            </section>
+          </div>
+
+          <aside class="docs-toc" aria-label="本页目录">
+            <p>本页目录</p>
+            <a href="#channel" data-toc-link>连接方式</a>
+            <a href="#configure" data-toc-link>配置</a>
+            <a href="#permissions" data-toc-link>确认策略</a>
+            <a href="#tools" data-toc-link>工具清单</a>
+            <a href="#workflow" data-toc-link>调用流程</a>
+            <a href="#states" data-toc-link>任务状态</a>
+            <a href="#security" data-toc-link>安全边界</a>
+          </aside>
+        </main>
+      </div>
+
+      <footer class="docs-footer">
+        <a class="docs-brand docs-brand-footer" href="../index.html" aria-label="返回 Moonshine-Image 官网"><span class="brand-mark"><img src="../assets/moonshine-logo.png" alt="" /></span><span>Moonshine<span class="brand-dash">-</span>Image</span></a>
+        <p>为画面留白，也为想象留白。</p>
+        <div class="docs-footer-links"><a href="../index.html">返回官网</a><a href="../index.html#download">下载应用</a><a href="https://github.com/CuiMuxuan/Moonshine-Image" target="_blank" rel="noreferrer">GitHub ↗</a></div>
+      </footer>
+    </div>
+    <script src="docs.js"></script>
+  </body>
+</html>

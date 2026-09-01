@@ -14,4 +14,6 @@ python -m http.server 4173 --directory website
 
 ## 发布
 
-`.github/workflows/deploy-pages.yml` 会将 `website/` 原样发布到 GitHub Pages。当前主下载按钮指向已经公开验证的 1.3.4 Windows x64 安装包，其他分发形式由 GitHub Releases 入口承接。发布新版本时需要同步更新首页的版本号和主下载链接。
+`.github/workflows/deploy-pages.yml` 会将 `website/` 发布到 GitHub Pages。部署前，`website/scripts/sync-release-metadata.mjs` 会校验签名的 stable 发布清单并生成同源的 `release/latest.json`；首页据此自动显示最新 stable 版本和安装器链接。稳定版发布流程成功完成后也会自动触发一次 Pages 刷新。
+
+如果远端清单暂时不可用，部署会继续使用仓库中已验证的回退元数据，主下载按钮不会因此失效。其他分发形式由 GitHub Releases 入口承接。

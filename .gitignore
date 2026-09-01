@@ -48,6 +48,8 @@ yarn-error.log*
 # local planning docs
 /docs
 docs/
+!website/docs/
+!website/docs/**
 /*-plan.md
 task_plan.md
 findings.md

@@ -7,6 +7,9 @@ on:
       - "website/**"
       - ".github/workflows/deploy-pages.yml"
   workflow_dispatch:
+  workflow_run:
+    workflows: ["Release Windows App"]
+    types: [completed]
 
 permissions:
   contents: read
@@ -19,6 +22,7 @@ concurrency:
 
 jobs:
   deploy:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -26,6 +30,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Sync signed stable release metadata
+        id: release-metadata
+        continue-on-error: true
+        run: node website/scripts/sync-release-metadata.mjs
+      - name: Use committed release metadata fallback
+        if: steps.release-metadata.outcome == 'failure'
+        run: echo "::warning::Stable release metadata sync failed; deploying the committed fallback."
       - name: Configure Pages
         uses: actions/configure-pages@v5
       - name: Upload static site
