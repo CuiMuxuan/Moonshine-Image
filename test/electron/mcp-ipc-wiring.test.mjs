@@ -276,6 +276,7 @@ test("MCP external IPC exposes bounded envelopes without tokens, pipe names, or 
   assert.deepEqual(configuration.data.args, ["resources/mcp/moonshine-mcp-proxy.mjs"]);
   assert.equal(configuration.data.jsonTemplate.includes("ELECTRON_RUN_AS_NODE"), true);
   assert.equal(configuration.data.jsonTemplate.includes("INTERNAL_TOKEN"), false);
+  assert.match(configuration.data.jsonTemplate, /"ELECTRON_RUN_AS_NODE": "1"/);
 
   assert.deepEqual(await handlers.get(MCP_IPC_CHANNELS.probeExternalProxy)({}), {
     success: true,
@@ -329,4 +330,30 @@ test("MCP external IPC exposes bounded envelopes without tokens, pipe names, or 
     success: true,
     data: { available: false, protocolVersion: null, command: null, args: [], jsonTemplate: null },
   });
+});
+
+test("MCP client configuration always prevents GUI startup when provider env is missing", async () => {
+  const handlers = new Map();
+  registerMcpIpc({
+    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
+    bridge: { descriptor: () => null, getActivity: () => [] },
+    external: {
+      getClientConfiguration: () => ({
+        available: true,
+        protocolVersion: "2025-11-25",
+        command: "C:/Program Files/Moonshine Image/Moonshine-Image.exe",
+        args: ["C:/Program Files/Moonshine Image/resources/mcp/moonshine-mcp-proxy.mjs"],
+      }),
+    },
+  });
+  const result = await handlers.get(MCP_IPC_CHANNELS.getClientConfiguration)({});
+  assert.equal(result.success, true);
+  assert.match(result.data.jsonTemplate, /"ELECTRON_RUN_AS_NODE": "1"/);
+});
+
+test("Electron main guards against GUI startup for a proxy invocation without headless mode", async () => {
+  const source = await readFile(path.join(root, "src-electron", "electron-main.js"), "utf8");
+  assert.match(source, /externalProxyInvocation/);
+  assert.match(source, /MCP_PROXY_REQUIRES_ELECTRON_RUN_AS_NODE/);
+  assert.match(source, /app\.exit\(78\)/);
 });

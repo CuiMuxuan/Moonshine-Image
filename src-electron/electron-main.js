@@ -167,6 +167,18 @@ import {
   isSupportedPythonVersion,
   parseImportProbeResult,
 } from "./python-runtime.js";
+
+// A harness may start the packaged executable once per conversation. The
+// external proxy must run through Electron's headless Node mode; without the
+// flag Electron would initialize the desktop application for every session.
+const externalProxyInvocation = process.argv.slice(1).some((argument) =>
+  /(?:^|[\\/])moonshine-mcp-proxy\.mjs$/i.test(String(argument)),
+);
+if (externalProxyInvocation && process.env.ELECTRON_RUN_AS_NODE !== "1") {
+  process.stderr.write("MCP_PROXY_REQUIRES_ELECTRON_RUN_AS_NODE\n");
+  app.exit(78);
+}
+
 const execAsync = promisify(exec);
 const APP_IDENTITY = resolveAppEdition(app.getVersion());
 const APP_DISPLAY_NAME = APP_IDENTITY.productName;

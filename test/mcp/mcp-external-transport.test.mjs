@@ -2,12 +2,21 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  createMcpExternalClientConfiguration,
   createMcpNamedPipeServer,
   getMcpExternalPrivatePipeName,
   McpExternalPipeClient,
   normalizeMcpClientInfo,
 } from "../../src-electron/mcp-external-pipe.js";
 import { createMcpExternalProxyServer } from "../../src-electron/mcp-external-proxy.mjs";
+
+test("external client configuration pins Electron to headless Node mode", () => {
+  const configuration = createMcpExternalClientConfiguration({
+    proxyPath: "C:\\Program Files\\Moonshine Image\\resources\\mcp\\moonshine-mcp-proxy.mjs",
+    executablePath: "C:\\Program Files\\Moonshine Image\\Moonshine-Image.exe",
+  });
+  assert.deepEqual(configuration.env, { ELECTRON_RUN_AS_NODE: "1" });
+});
 
 test("external client metadata is bounded and strips control characters", () => {
   const value = normalizeMcpClientInfo({

@@ -147,8 +147,11 @@ function projectClientConfiguration(value) {
     return { available: false, protocolVersion: null, command: null, args: [], jsonTemplate: null };
   }
   const protocolVersion = safeText(input.protocolVersion ?? input.protocol_version, 64);
-  const server = { command, args };
-  if (input.env?.ELECTRON_RUN_AS_NODE === "1") server.env = { ELECTRON_RUN_AS_NODE: "1" };
+  // The packaged Electron executable must run in headless Node mode when a
+  // harness starts the stdio proxy. Always project this environment variable
+  // so stale/partial provider data cannot launch the desktop window on every
+  // harness session switch.
+  const server = { command, args, env: { ELECTRON_RUN_AS_NODE: "1" } };
   return {
     available: true,
     protocolVersion,

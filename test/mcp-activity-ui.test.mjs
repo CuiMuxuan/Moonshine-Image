@@ -89,6 +89,9 @@ test("MCP settings explains and presents the policy controls consistently", () =
   assert.match(settingsPanelSource, /工具权限/);
   assert.match(settingsPanelSource, /目录权限/);
   assert.match(settingsPanelSource, /确认策略/);
+  assert.match(settingsPanelSource, /:disable="toolSelectDisabled"/);
+  assert.match(settingsPanelSource, /const toolSelectDisabled = computed\(\(\) =>/);
+  assert.doesNotMatch(settingsPanelSource, /label="选择工具白名单"[\s\S]*?:disable="controlsDisabled"/);
   assert.match(settingsPanelSource, /MCP 服务设置仅在 Electron 应用中可用/);
  assert.match(settingsPanelSource, /MCP 主进程桥接不可用/);
   assert.match(settingsPanelSource, /electronCapabilityMessage/);

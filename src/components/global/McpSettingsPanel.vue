@@ -253,7 +253,7 @@
           map-options
           label="选择工具白名单"
           :options="toolOptions"
-          :disable="controlsDisabled"
+          :disable="toolSelectDisabled"
           @update:model-value="updateAllowedTools"
         >
           <template #option="scope">
@@ -458,6 +458,11 @@ const electronCapabilityMessage = computed(() =>
 );
 const controlsDisabled = computed(() =>
   !electronMcpAvailable.value || mcpLoading.value || mcpSaving.value || mcpRootLoading.value || Boolean(lifecycleIntent.value)
+);
+// Keep the tool menu interactive while an autosave is in flight so users can
+// select or remove several tools without the popup closing after each change.
+const toolSelectDisabled = computed(() =>
+  !electronMcpAvailable.value || mcpLoading.value || mcpRootLoading.value || Boolean(lifecycleIntent.value)
 );
 const lifecycleControlsDisabled = computed(() =>
   !electronMcpAvailable.value || mcpLoading.value || mcpSaving.value || Boolean(lifecycleIntent.value)
