@@ -9,6 +9,8 @@ import {
   auditPackagedRuntimeZip,
 } from "./audit-release-runtime.mjs";
 import { buildOfflineBundle } from "./build-offline-bundle-win.mjs";
+import { resolveWindowsPackagingLayout } from "./packaging-layout.mjs";
+import { resolveAppEdition } from "../src-electron/updater/edition.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,11 +19,14 @@ const packageJson = JSON.parse(
   fs.readFileSync(path.join(repoRoot, "package.json"), "utf8")
 );
 const version = packageJson.version;
+const appEdition = resolveAppEdition(version);
+const packagingLayout = resolveWindowsPackagingLayout({
+  repoRoot,
+  productName: appEdition.productName,
+  version,
+});
 const releaseRoot = path.join(repoRoot, "dist", "releases", `v${version}`);
-const packagedCandidates = [
-  path.join(repoRoot, "dist", "electron", "Packaged", "Moonshine-Image-win32-x64"),
-  path.join(repoRoot, "dist", "electron", "packaged", "Moonshine-Image-win32-x64"),
-];
+const packagedCandidates = [packagingLayout.portableAppDir];
 const DEFAULT_RUNTIME_FLAVORS = ["cpu", "cu130"];
 // Historical regression marker: const runtimeFlavors = ["cpu", "cu130"];
 const DEFAULT_MODEL_BUNDLES = ["bundled-models"];
@@ -170,8 +175,7 @@ function resolvePackagedDir() {
 function findNsisInstaller() {
   const candidates = [
     process.env.MOONSHINE_NSIS_INSTALLER,
-    path.join(repoRoot, "dist", "electron", "Packaged", `Moonshine-Image-Setup-${version}.exe`),
-    path.join(repoRoot, "dist", "electron", "packaged", `Moonshine-Image-Setup-${version}.exe`),
+    packagingLayout.installerPath,
   ]
     .map((candidate) => String(candidate || "").trim())
     .filter(Boolean)
@@ -275,7 +279,7 @@ function createMatrixEnv(runtimeFlavor, modelBundle) {
 
 async function buildOne(runtimeFlavor, modelBundle) {
   const bundleLabel = modelBundle === "bundled-models" ? "full" : modelBundle;
-  const artifactName = `Moonshine-Image-v${version}-win-x64-${runtimeFlavor}-${bundleLabel}.zip`;
+  const artifactName = `${appEdition.productName}-v${version}-win-x64-${runtimeFlavor}-${bundleLabel}.zip`;
   const zipPath = path.join(releaseRoot, artifactName);
   const env = createMatrixEnv(runtimeFlavor, modelBundle);
 

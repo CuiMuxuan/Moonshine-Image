@@ -1,12 +1,12 @@
 # Moonshine-Image 项目软件基线
 
-> 本文件是当前项目事实、实现边界和发布口径的唯一基线。它从 2026-08-30 的根规划记录提炼而来；阶段过程、实验细节和原始证据仍保存在被忽略的 `docs/` 目录中。
+> 本文件记录当前项目事实、实现边界、发布口径和验收状态。稳定的产品介绍与开发导航见 `PROJECT_CONTEXT.md`；阶段过程、实验细节和原始证据仍保存在被忽略的 `docs/` 目录中。
 
 ## 1. 项目定位与版本
 
 Moonshine-Image 是面向本地图片与视频处理的 Electron 桌面应用，提供文字/图标/半透明水印去除、蒙版编辑、OCR 智能选区、SAM 分割、视频时间轴处理，以及受策略控制的本地 MCP 自动化接口。
 
-- 当前产品版本：`1.3.4`。
+- 当前产品版本：`1.3.5`。
 - 首发平台：Windows x64。
 - 默认输出：输入文件旁的 `Moonshine-Output`，只创建新文件，不覆盖原文件。
 - 官网必须把“已实现”“条件可用”“待外部验收”分开，不以内部计划或本机证据宣传未验收能力。
@@ -60,7 +60,7 @@ npm.cmd run build:electron:installer:local
 5. 对 CUDA flavor 的本地 SAM3 wheel 做 SHA-256 校验并以 `--no-deps` 安装；CPU flavor 跳过 CUDA wheel。
 6. 按发布策略发布 immutable 对象和渠道指针，并做公网校验。
 
-app-only NSIS 只包含应用与 FFmpeg；首次启动创建受管 Python 环境。完整 CPU/cu130 离线包是 NSIS 与 sibling offline payload 的组合，不把 runtime/model 直接嵌入 NSIS。
+NSIS 应用包包含 Electron 应用、受保护的 backend/FFmpeg/integrity 资源，以及 CUDA flavor 按需携带的本地 SAM3 wheel；Python/Torch 运行环境和模型权重仍在首次启动或离线 payload 流程中准备。完整 CPU/cu130 离线包是 NSIS 与 sibling offline payload 的组合。
 
 ## 4. 技术栈与边界
 
@@ -146,6 +146,7 @@ SAM 批量接口为 `POST /api/v1/moonshine/sam/predict-batch`：单图可提交
 - 视频：`src/pages/VideoPage.vue`、`src/services/VideoProcessingService.js`、CanvasPlayer/timeline、后端 video batch/temporal enhancement。
 - 模型：`server/moonshine_server/model_manager.py`、LaMa/MAT 模块、`moonshine/slbr_runner.py`、SAM prediction service 与 metadata 能力矩阵。
 - 构建发布：`scripts/prepare-electron-resources.mjs`、`quasar.config.js`、`scripts/build-electron-installer-local.mjs`、`scripts/package-win-matrix.mjs`、`scripts/release/*`。
+- Windows 产物路径和目录命名以 `scripts/packaging-layout.mjs` 为唯一机器可读来源；`win-unpacked` 仅为安装器中间目录，免安装目录由产品身份、平台和架构派生。
 - MCP：`src-electron/mcp/*`、`mcp-stdio-server.mjs`、native broker、内部 bridge/JobStore/activity/cancel provider。
 
 ## 11. 验证状态与官网口径
@@ -160,3 +161,4 @@ SAM 批量接口为 `POST /api/v1/moonshine/sam/predict-batch`：单图可提交
 - docs 文件状态和官网引用建议：`docs/DOCUMENTATION_CATALOG.md`。
 - 任何实现、发布或验收状态变化，先更新本文件，再在 `docs/evidence/`、`docs/reviews/` 或对应执行计划中补充证据。
 - 根目录 `progress.md`、`task_plan.md`、`findings.md` 仅保留指针和未关闭验收门，不再复制本基线内容。
+- `AGENTS.md` 只保留常驻开发约束与条件路由；详细 Windows 打包/发布操作保存在仓库内、Git 忽略的项目级 Codex skill，不进入远程仓库。

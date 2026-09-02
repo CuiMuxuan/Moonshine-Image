@@ -63,3 +63,6 @@ progress.md
 # Local browser and agent tool state
 .playwright-cli/
 .workbuddy-ai/
+
+# Project-local Codex skills contain private operational instructions.
+/.codex/skills/

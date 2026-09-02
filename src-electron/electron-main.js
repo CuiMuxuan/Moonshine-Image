@@ -262,6 +262,7 @@ function createSupervisorFailure(input = {}) {
     stdout: input.stdoutTail,
     stderr: input.stderrTail,
     attempts: input.attempts,
+    healthProbe: input.healthProbe,
   });
 }
 
@@ -1534,6 +1535,7 @@ function createBackendOutputSender(target, stage) {
 
 async function probeBackendHealth(port, options = {}) {
   const signal = options.signal;
+  const url = `http://${BACKEND_PORT_HOST}:${port}/api/v1/health?_=${Date.now()}`;
   const controller = new AbortController();
   const onAbort = () => controller.abort(signal?.reason);
   if (signal?.aborted) {
@@ -1541,25 +1543,56 @@ async function probeBackendHealth(port, options = {}) {
   } else {
     signal?.addEventListener("abort", onAbort, { once: true });
   }
-  const timeout = setTimeout(() => controller.abort(new Error("Health probe timed out.")), 1500);
+  let timedOut = false;
+  const timeoutError = Object.assign(new Error("Health probe timed out."), {
+    code: "HEALTH_PROBE_TIMEOUT",
+    url,
+  });
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort(timeoutError);
+  }, 1500);
   timeout.unref?.();
 
   try {
-    const response = await net.fetch(
-      `http://${BACKEND_PORT_HOST}:${port}/api/v1/health?_=${Date.now()}`,
-      {
-        cache: "no-store",
-        headers: {
-          Accept: "application/json",
-          "Cache-Control": "no-cache, no-store, must-revalidate",
-          Pragma: "no-cache",
-        },
-        signal: controller.signal,
-      }
-    );
-    if (!response.ok) return false;
-    const body = await response.json();
-    return body?.status === "ok";
+    const response = await net.fetch(url, {
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        Pragma: "no-cache",
+      },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw Object.assign(
+        new Error(`Health endpoint returned HTTP ${response.status}.`),
+        { code: "HEALTH_HTTP_ERROR", status: response.status, url },
+      );
+    }
+    let body;
+    try {
+      body = await response.json();
+    } catch (error) {
+      throw Object.assign(new Error("Health endpoint returned invalid JSON."), {
+        code: "HEALTH_INVALID_JSON",
+        url,
+        cause: error,
+      });
+    }
+    if (body?.status !== "ok") {
+      throw Object.assign(new Error("Health endpoint did not report status ok."), {
+        code: "HEALTH_NOT_READY",
+        url,
+      });
+    }
+    return true;
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    if (!normalized.code) normalized.code = timedOut ? "HEALTH_PROBE_TIMEOUT" : "HEALTH_PROBE_FAILED";
+    if (!normalized.url) normalized.url = url;
+    throw normalized;
   } finally {
     clearTimeout(timeout);
     signal?.removeEventListener("abort", onAbort);
@@ -1607,7 +1640,8 @@ const backendSupervisor = new BackendProcessSupervisor({
   terminateProcess: terminateBackendProcessTree,
   createFailure: createSupervisorFailure,
   decodeOutput: decodeProcessOutput,
-  readinessTimeoutMs: 120000,
+  readinessTimeoutMs: 360000,
+  readinessDiagnosticIntervalMs: 120000,
   pollIntervalMs: 500,
   onOutput: (payload) => {
     const output = createBackendOutputPayload(payload.message, payload.type, payload);

@@ -3,6 +3,7 @@
 
 import { defineConfig } from "#q-app/wrappers";
 import { prepareElectronResources } from "./scripts/prepare-electron-resources.mjs";
+import { WINDOWS_PACKAGING_LAYOUT } from "./scripts/packaging-layout.mjs";
 import {
   buildAppUpdateFeedUrl,
 } from "./src-electron/updater/update-channel.js";
@@ -280,7 +281,7 @@ export default defineConfig((ctx) => {
         executableName: appEdition.executableName,
         icon: "src-electron/icons/icon.ico",
         dir: ".",
-        out: "dist/electron/packaged",
+        out: WINDOWS_PACKAGING_LAYOUT.artifactRoot,
         overwrite: true,
         asar: true,
         ...(electronZipDir ? { electronZipDir } : { download: electronDownloadOptions }),
@@ -329,6 +330,9 @@ export default defineConfig((ctx) => {
         // Reuse the Electron distribution installed by npm. This keeps Builder
         // aligned with the lockfile and avoids a second GitHub ZIP download.
         electronDist: "node_modules/electron/dist",
+        directories: {
+          output: WINDOWS_PACKAGING_LAYOUT.artifactRoot,
+        },
 
         // Application metadata
         appId: appEdition.appId,

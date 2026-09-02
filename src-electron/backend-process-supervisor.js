@@ -22,6 +22,49 @@ function createOutputStreamState() {
   };
 }
 
+function serializeProbeError(error) {
+  if (!error) return null;
+  return {
+    name: error.name || "Error",
+    message: String(error.message || error),
+    code: error.code || null,
+    status: Number.isInteger(error.status) ? error.status : null,
+    url: error.url || null,
+  };
+}
+
+function createHealthProbeSnapshot(record) {
+  if (!record) return null;
+  return {
+    port: record.port ?? null,
+    requestedPort: record.requestedPort ?? null,
+    attempts: record.probeAttempts || 0,
+    inFlight: record.probeInFlight === true,
+    lastProbeStartedAt: record.lastProbeStartedAtMs
+      ? new Date(record.lastProbeStartedAtMs).toISOString()
+      : null,
+    lastProbeCompletedAt: record.lastProbeCompletedAtMs
+      ? new Date(record.lastProbeCompletedAtMs).toISOString()
+      : null,
+    lastError: serializeProbeError(record.lastProbeError),
+  };
+}
+
+function formatReadinessDiagnosticMessage(diagnostic, elapsedMs, final = false) {
+  const probe = diagnostic?.healthProbe || {};
+  const port = probe.port ?? "unknown";
+  const attempts = probe.attempts ?? 0;
+  const lastError = probe.lastError;
+  const elapsedMinutes = Math.max(1, Math.round(Number(elapsedMs || 0) / 60000));
+  const suffix = lastError?.message
+    ? ` Last health probe error: ${lastError.message}${lastError.code ? ` (${lastError.code})` : ""}.`
+    : " No health probe completed successfully.";
+  if (final) {
+    return `Backend service startup failed after ${elapsedMinutes} minutes (port ${port}, ${attempts} health probe attempts).${suffix} Check the startup log, verify the backend port and dependencies, then retry.`;
+  }
+  return `Backend service is still starting after ${elapsedMinutes} minutes (port ${port}, ${attempts} health probe attempts).${suffix}`;
+}
+
 function defaultFailure(input = {}) {
   const diagnostic = {
     id: input.id || `startup-${Date.now()}`,
@@ -38,6 +81,7 @@ function defaultFailure(input = {}) {
     stdoutTail: input.stdoutTail || "",
     stderrTail: input.stderrTail || "",
     attempts: input.attempts || [],
+    healthProbe: input.healthProbe || null,
     timestamp: new Date().toISOString(),
   };
   return {
@@ -75,7 +119,8 @@ export class BackendProcessSupervisor {
     this.sleep = options.sleep || defaultSleep;
     this.setTimer = options.setTimeoutImpl || setTimeout;
     this.clearTimer = options.clearTimeoutImpl || clearTimeout;
-    this.readinessTimeoutMs = options.readinessTimeoutMs ?? 120000;
+    this.readinessTimeoutMs = options.readinessTimeoutMs ?? 360000;
+    this.readinessDiagnosticIntervalMs = options.readinessDiagnosticIntervalMs ?? 120000;
     this.pollIntervalMs = options.pollIntervalMs ?? 500;
     this.outputTailLimit = options.outputTailLimit ?? DEFAULT_OUTPUT_TAIL_LIMIT;
 
@@ -110,6 +155,7 @@ export class BackendProcessSupervisor {
       error: this.lastFailure?.error || null,
       recoveryHint: this.lastFailure?.recoveryHint || null,
       diagnostic: this.lastFailure?.diagnostic || this.lastError || null,
+      healthProbe: createHealthProbeSnapshot(record),
     };
   }
 
@@ -196,6 +242,11 @@ export class BackendProcessSupervisor {
       settleClose: null,
       closePromise: null,
       terminationAttempts: [],
+      probeAttempts: 0,
+      probeInFlight: false,
+      lastProbeError: null,
+      lastProbeStartedAtMs: null,
+      lastProbeCompletedAtMs: null,
     };
     record.startupPromise = new Promise((resolve) => {
       record.settleStartup = resolve;
@@ -244,6 +295,12 @@ export class BackendProcessSupervisor {
     }
 
     if (outcome.kind === "timeout" && this.current === record) {
+      if (record.probeInFlight) {
+        record.lastProbeError = Object.assign(
+          new Error("The last health probe did not complete before startup timed out."),
+          { code: "HEALTH_PROBE_TIMEOUT" },
+        );
+      }
       record.expectedStop = true;
       await this._terminateRecord(record);
       if (record.stopRequested) return this._cancelledStart(record);
@@ -251,13 +308,26 @@ export class BackendProcessSupervisor {
         code: "BACKEND_START_TIMEOUT",
         reason: "timeout",
         timedOut: true,
-        error: "Backend service did not become ready in time.",
-        recoveryHint: "Check the startup log, model files, and security software, then retry.",
+        error: "Backend service failed to become ready after 6 minutes.",
+        recoveryHint:
+          "Check the startup log and the health-check port, verify the backend dependencies and model files, then retry. If the issue persists, check firewall or security software rules for local loopback access.",
       });
       this.lastError = failure.diagnostic;
       this.lastFailure = failure;
       if (this.current === record && record.closed) this.current = null;
       this.state = "failed";
+      this.onOutput({
+        type: "error",
+        stream: "lifecycle",
+        stage: "backend-start",
+        timestamp: new Date().toISOString(),
+        diagnosticId: failure.diagnostic?.id || null,
+        message: formatReadinessDiagnosticMessage(
+          failure.diagnostic,
+          this.readinessTimeoutMs,
+          true,
+        ),
+      });
       this._emitState(failure.diagnostic);
       return failure;
     }
@@ -289,6 +359,7 @@ export class BackendProcessSupervisor {
   async _waitUntilReady(record) {
     const signal = record.abortController.signal;
     let timeoutTimer;
+    const diagnosticTimers = [];
     let removeAbortListener = () => {};
     const cancelled = new Promise((resolve) => {
       const onAbort = () => resolve({ kind: "cancelled" });
@@ -300,23 +371,52 @@ export class BackendProcessSupervisor {
       removeAbortListener = () => signal.removeEventListener("abort", onAbort);
     });
     const timedOut = new Promise((resolve) => {
+      const diagnosticInterval = Math.max(1, Number(this.readinessDiagnosticIntervalMs) || 120000);
+      const totalTimeout = Math.max(diagnosticInterval, Number(this.readinessTimeoutMs) || 360000);
+      for (let elapsedMs = diagnosticInterval; elapsedMs < totalTimeout; elapsedMs += diagnosticInterval) {
+        const timer = this.setTimer(() => {
+          if (signal.aborted || this.current !== record) return;
+          const diagnostic = { healthProbe: createHealthProbeSnapshot(record) };
+          this.onOutput({
+            type: "warning",
+            stream: "lifecycle",
+            stage: "backend-start",
+            timestamp: new Date().toISOString(),
+            diagnosticId: diagnostic?.id || null,
+            message: formatReadinessDiagnosticMessage(diagnostic, elapsedMs),
+          });
+        }, elapsedMs);
+        timer?.unref?.();
+        diagnosticTimers.push(timer);
+      }
       timeoutTimer = this.setTimer(
         () => resolve({ kind: "timeout" }),
-        this.readinessTimeoutMs,
+        totalTimeout,
       );
       timeoutTimer?.unref?.();
     });
     const polling = (async () => {
       while (!signal.aborted && this.current === record) {
+        record.probeAttempts += 1;
+        record.probeInFlight = true;
+        record.lastProbeStartedAtMs = this.now();
         try {
           const ready = await this.probeReady(record.port, {
             signal,
             generation: record.generation,
           });
+          record.lastProbeCompletedAtMs = this.now();
+          record.probeInFlight = false;
           if (ready) return { kind: "ready" };
+          record.lastProbeError = Object.assign(
+            new Error("Health endpoint did not report status ok."),
+            { code: "HEALTH_NOT_READY" },
+          );
         } catch (error) {
           if (signal.aborted) return { kind: "cancelled" };
           record.lastProbeError = error;
+          record.lastProbeCompletedAtMs = this.now();
+          record.probeInFlight = false;
         }
         if (signal.aborted || this.current !== record) return { kind: "cancelled" };
         await this.sleep(this.pollIntervalMs);
@@ -328,6 +428,7 @@ export class BackendProcessSupervisor {
       return await Promise.race([polling, cancelled, timedOut]);
     } finally {
       this.clearTimer(timeoutTimer);
+      for (const timer of diagnosticTimers) this.clearTimer(timer);
       removeAbortListener();
     }
   }
@@ -718,6 +819,7 @@ export class BackendProcessSupervisor {
       stdoutTail: collectTail(record.stdoutTail, "stdoutTail"),
       stderrTail: collectTail(record.stderrTail, "stderrTail"),
       attempts: record.terminationAttempts,
+      healthProbe: createHealthProbeSnapshot(record),
       error: overrides.error,
       recoveryHint:
         overrides.recoveryHint || "Open the startup log and review the final error output.",

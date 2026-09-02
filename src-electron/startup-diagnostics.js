@@ -212,6 +212,7 @@ export function createDiagnostic(options = {}) {
     stdoutTail: truncateUtf8Tail(stdout),
     stderrTail: truncateUtf8Tail(stderr),
     attempts: options.attempts ?? inherited.attempts ?? [],
+    healthProbe: options.healthProbe ?? inherited.healthProbe ?? null,
     timestamp: normalizeTimestamp(options.timestamp ?? inherited.timestamp),
     logPath: options.logPath ?? inherited.logPath ?? null,
   });
@@ -244,6 +245,7 @@ export function normalizeStartupFailure(error, options = {}) {
     stdout: options.stdout,
     stderr: options.stderr,
     attempts: options.attempts,
+    healthProbe: options.healthProbe,
     logPath: options.logPath,
   });
   const message =

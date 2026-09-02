@@ -187,12 +187,15 @@ test("backend output is decoded and classified by complete lines across chunks",
 test("the total startup timeout wins even when a readiness probe hangs", async () => {
   const child = new FakeChild();
   const fakeTimers = createFakeTimers();
+  const output = [];
   const neverReady = new Promise(() => {});
   const supervisor = new BackendProcessSupervisor({
     spawnImpl: () => child,
     probeReady: async () => await neverReady,
     terminateProcess: async (target) => target.kill("SIGTERM"),
-    readinessTimeoutMs: 120000,
+    readinessTimeoutMs: 360000,
+    readinessDiagnosticIntervalMs: 120000,
+    onOutput: (event) => output.push(event),
     setTimeoutImpl: (callback, delay) => fakeTimers.setTimer(callback, delay),
     clearTimeoutImpl: (timer) => fakeTimers.clearTimer(timer),
   });
@@ -200,11 +203,23 @@ test("the total startup timeout wins even when a readiness probe hangs", async (
   const starting = supervisor.start({ command: "python", port: 8081 });
   await flushMicrotasks();
   assert.equal(fakeTimers.runNext().delay, 120000);
+  assert.equal(fakeTimers.runNext().delay, 240000);
+  assert.equal(fakeTimers.runNext().delay, 360000);
   const result = await starting;
 
   assert.equal(result.success, false);
   assert.equal(result.code, "BACKEND_START_TIMEOUT");
   assert.equal(result.diagnostic.timedOut, true);
+  assert.equal(result.diagnostic.healthProbe.port, 8081);
+  assert.equal(result.diagnostic.healthProbe.requestedPort, null);
+  assert.equal(result.diagnostic.healthProbe.attempts, 1);
+  assert.equal(result.diagnostic.healthProbe.lastError.code, "HEALTH_PROBE_TIMEOUT");
+  const lifecycleOutput = output.filter((event) => event.stream === "lifecycle");
+  assert.equal(lifecycleOutput.length, 3);
+  assert.match(lifecycleOutput[0].message, /still starting after 2 minutes/);
+  assert.match(lifecycleOutput[1].message, /still starting after 4 minutes/);
+  assert.match(lifecycleOutput[2].message, /failed after 6 minutes/);
+  assert.match(lifecycleOutput[2].message, /port 8081/);
   assert.equal(child.killed, true);
   assert.equal(supervisor.getStatus().state, "failed");
 });
