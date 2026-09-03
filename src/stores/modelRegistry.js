@@ -3,6 +3,11 @@ import { computed, ref } from "vue";
 
 import ModelRegistryService from "src/services/ModelRegistryService";
 import { useConfigStore } from "src/stores/config";
+import {
+  getFailedModelDownloadDisplayMessage,
+  isRemoteUnreachableError,
+  REMOTE_UNREACHABLE_ERROR_KIND,
+} from "src/utils/modelDownloadErrors";
 
 const POLL_INTERVAL_MS = 900;
 const TERMINAL_TASK_STATUSES = new Set(["completed", "failed"]);
@@ -227,7 +232,14 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
       if (TERMINAL_TASK_STATUSES.has(task?.status) || task?.done) {
         clearPollTimer(taskId);
         if (task?.status !== "completed") {
-          throw new Error(task?.error || task?.message || "模型下载失败");
+          const failure = new Error(
+            getFailedModelDownloadDisplayMessage(task, "模型下载失败")
+          );
+          failure.errorKind = task?.errorKind || (
+            isRemoteUnreachableError(task) ? REMOTE_UNREACHABLE_ERROR_KIND : ""
+          );
+          failure.originalError = String(task?.error || "").trim();
+          throw failure;
         }
         return task;
       }
@@ -368,6 +380,8 @@ export const useModelRegistryStore = defineStore("modelRegistry", () => {
         stage: "failed",
         message: preparationError.message || "模型准备失败。",
         error: preparationError.message || "模型准备失败。",
+        errorKind: preparationError.errorKind || "",
+        originalError: preparationError.originalError || "",
         loaded: false,
         runtimeReady: false,
         ready: false,

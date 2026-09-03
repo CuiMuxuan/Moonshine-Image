@@ -189,6 +189,13 @@ export const useMcpActivityStore = defineStore("mcpActivity", () => {
   const actionLoadingIds = ref([]);
   const error = ref("");
   const externalError = ref("");
+  // Policy saves restart the external transport. During that short handoff
+  // getMcpClientSessions() can legitimately return an empty snapshot even
+  // though the harness reconnects immediately afterwards. Keep the last
+  // visible sessions until an empty result has remained stable for a brief
+  // grace period so the settings panel never flashes a false empty state.
+  let externalRefreshEpoch = 0;
+  let pendingEmptySessionsTimer = null;
   const hasActivity = computed(() => activities.value.length > 0);
   const pendingApprovals = computed(() => approvals.value.filter((approval) => approval.status === "pending"));
   const hasExternalApi = computed(() => hasElectronMcpExternalApi(getApi()));
@@ -208,8 +215,13 @@ export const useMcpActivityStore = defineStore("mcpActivity", () => {
 
   const refreshExternal = async () => {
     const api = getApi();
+    const refreshEpoch = ++externalRefreshEpoch;
     if (!hasElectronMcpExternalApi(api)) {
       clientConfiguration.value = safeClientConfiguration(null);
+      if (pendingEmptySessionsTimer) {
+        clearTimeout(pendingEmptySessionsTimer);
+        pendingEmptySessionsTimer = null;
+      }
       clientSessions.value = [];
       approvals.value = [];
       externalError.value = "";
@@ -227,8 +239,21 @@ export const useMcpActivityStore = defineStore("mcpActivity", () => {
         externalError.value = "读取外部 MCP 连接状态失败，请稍后重试。";
         return { success: false, code: "MCP_EXTERNAL_STATE_READ_FAILED" };
       }
+      if (refreshEpoch !== externalRefreshEpoch) return { success: false, code: "MCP_EXTERNAL_STATE_STALE" };
       clientConfiguration.value = safeClientConfiguration(configurationResult.data);
-      clientSessions.value = (Array.isArray(sessionsResult.data) ? sessionsResult.data : []).map(safeSession).filter(Boolean);
+      const nextSessions = (Array.isArray(sessionsResult.data) ? sessionsResult.data : []).map(safeSession).filter(Boolean);
+      if (pendingEmptySessionsTimer) {
+        clearTimeout(pendingEmptySessionsTimer);
+        pendingEmptySessionsTimer = null;
+      }
+      if (nextSessions.length || !clientSessions.value.length) {
+        clientSessions.value = nextSessions;
+      } else {
+        pendingEmptySessionsTimer = setTimeout(() => {
+          pendingEmptySessionsTimer = null;
+          if (refreshEpoch === externalRefreshEpoch) clientSessions.value = [];
+        }, 650);
+      }
       approvals.value = (Array.isArray(approvalsResult.data) ? approvalsResult.data : []).map(safeApproval).filter(Boolean);
       return { success: true };
     } catch {

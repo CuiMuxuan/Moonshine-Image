@@ -140,6 +140,16 @@ test("dispatcher exposes one stable complete tool definition surface", () => {
   assert.equal(TOOL_DEFINITIONS.every((definition) => definition.inputSchema?.type === "object"), true);
 });
 
+test("SAM mask tool description documents the vision fallback contract", () => {
+  const definition = TOOL_DEFINITIONS.find((item) => item.name === "moonshine.masks.generate");
+  assert.ok(definition);
+  assert.match(definition.description, /vision-capable harness/i);
+  assert.match(definition.description, /no expected target/i);
+  assert.match(definition.description, /point or box prompt/i);
+  assert.match(definition.description, /without vision/i);
+  assert.match(definition.description, /successful mask artifact/i);
+});
+
 test("read-only policy rejects output and cancellation writes but allows capability reads", async () => {
   const dispatcher = createMcpApplicationDispatcher();
   const policy = { id: "pol_abcdefgh", confirmationMode: "read_only" };
@@ -385,5 +395,12 @@ test("Electron main injects the dispatcher and trusted path resolver without aut
   assert.match(source, /createMcpApplicationDispatcher\(\{ request: requestMcpBackend \}\)/);
   assert.match(source, /createMcpBridge\(\{[\s\S]*dispatch:[\s\S]*mcpApplicationDispatcher\.dispatch[\s\S]*resolvePath: resolveMcpTrustedPath/);
   assert.match(source, /if \(!Number\.isInteger\(port\)[\s\S]*return \{ ok: false, status: 503/);
+  assert.match(source, /function normalizeMcpSamPoints\(points\)/);
+  assert.match(source, /points: promptPoints/);
+  assert.match(source, /const effectiveBoxes = boxes\.length \? boxes : \(promptPoints\.length \? \[null\] : \[\]\)/);
+  assert.match(source, /const usesLegacyInpaintApi = modelId === "lama" \|\| modelId === "mat"/);
+  assert.match(source, /path: "\/api\/v1\/model"/);
+  assert.match(source, /const requestPath = usesLegacyInpaintApi \? "\/api\/v1\/batch_inpaint"/);
+  assert.match(source, /"\/api\/v1\/moonshine\/image\/process"/);
   assert.doesNotMatch(source, /mcpBridge\.start\(/);
 });

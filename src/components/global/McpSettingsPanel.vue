@@ -443,6 +443,10 @@ const clientAiPrompt = computed(() => {
     "```",
     command ? `对应启动命令（用于核对）：${command}` : "",
     "完成后重新加载或重连 MCP 配置，然后依次执行 initialize、工具列表发现、moonshine.status；如果工具可用，再执行 moonshine.capabilities。请报告配置文件位置（可隐藏敏感路径）、重载/重连结果、initialize 结果、发现到的工具名称以及状态检查结果。",
+    "处理图片目标时，先调用 moonshine.status、moonshine.capabilities 和 moonshine.models.list 确认服务、能力与模型；随后优先调用 moonshine.ocr.detect 或 moonshine.masks.generate(mode=\"ocr_sam\")，使用 moonshine.jobs.get 轮询任务，并在需要时调用 moonshine.jobs.result 查看公开的 candidates 与 artifacts。",
+    "如果用户明确确认目标存在，但 OCR、SAM 或 ocr_sam 没有返回预期目标（结果为空或明显不匹配），先检查你自身是否具备图像输入和视觉推理能力。具备视觉能力时，查看受信任的原图并估计目标的紧致区域；优先将估计区域转换为 moonshine.masks.generate(mode=\"sam\", prompt={box:{x,y,width,height}}) 的框提示，也可在工具契约明确支持时使用带 label 的前景点提示。说明这是基于视觉推理的估计，并标注不确定性。",
+    "不得伪造坐标、蒙版、候选或成功结果；无法可靠定位时先请求用户提供点选或框选信息。只有在蒙版任务成功、存在有效 candidate 且返回了 mask artifact 后，才能调用 moonshine.image.process；处理任务同样必须用 moonshine.jobs.get 轮询，并用 moonshine.jobs.result 确认最终 artifact。",
+    "如果当前 harness 不具备视觉推理能力，必须明确告诉用户：当前 harness 不具备视觉推理能力，无法根据图片内容定位目标。请提供目标的点选或框选位置。整个流程继续遵守 MCP 的 workspace_id、允许目录、工具权限、确认策略和任务安全边界，不绕过任何限制。",
   ].filter(Boolean).join("\n\n");
 });
 const clientConfigurationHint = computed(() => {

@@ -34,7 +34,18 @@ test("completed model tasks emit one green terminal line with their display name
   assert.match(source, /completedModelDownloadTaskIds\.add\(taskId\)/);
   assert.match(source, /modelRegistryStore\.models\.find\(\(item\) => item\.id === modelId\)/);
   assert.match(source, /addTerminalLog\(`模型\$\{displayName\}下载成功。`, "success"\)/);
-  assert.match(source, /task\?\.status === "completed" && task\.done/);
+  assert.match(source, /task\.status === "completed"/);
+  assert.match(source, /reportFailedModelDownload\(task\)/);
+});
+
+test("failed remote model downloads emit a user hint and the original error", () => {
+  assert.match(source, /const reportFailedModelDownload = \(task = \{\}\) =>/);
+  assert.match(source, /getFailedModelDownloadDisplayMessage\(task, "模型下载失败。"\)/);
+  assert.match(source, /addTerminalLog\(`模型\$\{displayName\}下载失败：\$\{userMessage\}`, "error"\)/);
+  assert.match(source, /addTerminalLog\(`原始错误：\$\{originalError\}`, "error"\)/);
+  assert.match(source, /isRemoteUnreachableError\(task\)/);
+  assert.match(source, /isBackendModelDownloadFailureLog\(rawText\)/);
+  assert.match(source, /Model download task failed:/);
 });
 
 test("model task polling remains a collapsed summary rather than a completion source", () => {
@@ -47,5 +58,7 @@ test("model task polling remains a collapsed summary rather than a completion so
   );
 
   assert.match(terminalLogHandler, /updateModelTaskPollSummary\(modelTaskPoll\)/);
+  assert.match(terminalLogHandler, /isBackendModelDownloadFailureLog\(rawText\)/);
   assert.doesNotMatch(terminalLogHandler, /reportCompletedModelDownload\(/);
+  assert.doesNotMatch(terminalLogHandler, /reportFailedModelDownload\(/);
 });

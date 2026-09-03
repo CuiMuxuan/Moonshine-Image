@@ -852,6 +852,11 @@ import {
   mapEnvironmentFailureToItems,
   resolveEnvironmentItemGroupState,
 } from "src/utils/backendEnvironmentStatus";
+import {
+  getFailedModelDownloadDisplayMessage,
+  getModelDownloadOriginalError,
+  isRemoteUnreachableError,
+} from "src/utils/modelDownloadErrors";
 
 // Props
 const props = defineProps({
@@ -1703,6 +1708,9 @@ const parseModelTaskPollLog = (message = "") => {
   };
 };
 
+const isBackendModelDownloadFailureLog = (message = "") =>
+  /Model download task failed:/i.test(normalizeBackendLogPayload(message));
+
 const parseVideoBatchStartLog = (message = "") => {
   const match = normalizeBackendLogPayload(message).match(
     /^\[(batch_[^\]]+)\]\s+start\s+video\s+batch:\s*(\d+)\s*frame\(s\),\s*model=([^,\s]+),\s*batch=(\d+)\/(\d+)/i
@@ -2117,14 +2125,33 @@ const queueTerminalLog = (message, type = "info") => {
   scheduleTerminalLogFlush();
 };
 
+const getModelDownloadDisplayName = (task = {}) => {
+  const modelId = String(task.modelId || "").trim();
+  const model = modelRegistryStore.models.find((item) => item.id === modelId);
+  return String(model?.label || modelId || "模型").trim() || "模型";
+};
+
 const reportCompletedModelDownload = (task = {}) => {
   const taskId = String(task.id || "").trim();
   if (!taskId || completedModelDownloadTaskIds.has(taskId)) return;
   completedModelDownloadTaskIds.add(taskId);
-  const modelId = String(task.modelId || "").trim();
-  const model = modelRegistryStore.models.find((item) => item.id === modelId);
-  const displayName = String(model?.label || modelId || "模型").trim() || "模型";
+  const displayName = getModelDownloadDisplayName(task);
   addTerminalLog(`模型${displayName}下载成功。`, "success");
+};
+
+const reportFailedModelDownload = (task = {}) => {
+  const taskId = String(task.id || "").trim();
+  if (!taskId || completedModelDownloadTaskIds.has(taskId)) return;
+  completedModelDownloadTaskIds.add(taskId);
+  const displayName = getModelDownloadDisplayName(task);
+  const userMessage = getFailedModelDownloadDisplayMessage(task, "模型下载失败。");
+  addTerminalLog(`模型${displayName}下载失败：${userMessage}`, "error");
+  if (isRemoteUnreachableError(task)) {
+    const originalError = getModelDownloadOriginalError(task);
+    if (originalError && originalError !== userMessage) {
+      addTerminalLog(`原始错误：${originalError}`, "error");
+    }
+  }
 };
 
 // IPC 监听器处理后端输出
@@ -2285,11 +2312,19 @@ watch(
     modelId: task?.modelId,
     status: task?.status,
     done: task?.done,
+    error: task?.error,
+    message: task?.message,
+    errorKind: task?.errorKind,
   })),
   (tasks) => {
     tasks.forEach((task) => {
-      if (task?.status === "completed" && task.done) {
+      if (!task?.done) return;
+      if (task.status === "completed") {
         reportCompletedModelDownload(task);
+        return;
+      }
+      if (task.status === "failed") {
+        reportFailedModelDownload(task);
       }
     });
   },
@@ -2309,6 +2344,9 @@ const addTerminalLog = (message, type = "info") => {
     updateModelTaskPollSummary(modelTaskPoll);
     trimTerminalOutput();
     scrollTerminalToBottom();
+    return;
+  }
+  if (isBackendModelDownloadFailureLog(rawText)) {
     return;
   }
 
@@ -3514,11 +3552,13 @@ const startService = async () => {
         const modelFailure = {
           success: false,
           code: error?.code || "DEFAULT_MODEL_PREPARATION_FAILED",
-          error: error?.message || "默认模型校验或加载失败",
+          error: getFailedModelDownloadDisplayMessage(error, error?.message || "默认模型校验或加载失败"),
           processRunning: true,
         };
         backendEngineStore.setFailed(modelFailure);
-        addTerminalLog(`默认模型准备失败：${modelFailure.error}`, "error");
+        if (!isRemoteUnreachableError(error)) {
+          addTerminalLog(`默认模型准备失败：${modelFailure.error}`, "error");
+        }
         return modelFailure;
       }
     }

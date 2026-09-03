@@ -125,6 +125,14 @@ test("MCP settings explains and presents the policy controls consistently", () =
   assert.match(settingsPanelSource, /copyClientAiPrompt/);
   assert.match(settingsPanelSource, /moonshine\.status/);
   assert.match(settingsPanelSource, /moonshine\.capabilities/);
+  assert.match(settingsPanelSource, /moonshine\.masks\.generate/);
+  assert.match(settingsPanelSource, /视觉推理/);
+  assert.match(settingsPanelSource, /不具备视觉推理能力/);
+  assert.match(settingsPanelSource, /moonshine\.image\.process/);
+  assert.match(settingsPanelSource, /moonshine\.jobs\.get/);
+  assert.match(settingsPanelSource, /moonshine\.jobs\.result/);
+  assert.match(settingsPanelSource, /不得伪造坐标/);
+  assert.match(settingsPanelSource, /请求用户提供点选或框选信息/);
   assert.match(settingsPanelSource, /probeExternalProxy/);
   assert.match(settingsPanelSource, /disconnectClientSession/);
   assert.match(activityPanelSource, /待处理审批/);
@@ -138,4 +146,8 @@ test("MCP settings explains and presents the policy controls consistently", () =
   assert.match(storeSource, /STATUS_PATTERN/);
   assert.match(storeSource, /ERROR_CODE_PATTERN/);
   assert.match(storeSource, /MCP_ACTIVITY_READ_FAILED/);
+  assert.match(storeSource, /externalRefreshEpoch/);
+  assert.match(storeSource, /pendingEmptySessionsTimer/);
+  assert.match(storeSource, /MCP_EXTERNAL_STATE_STALE/);
+  assert.match(storeSource, /650/);
 });

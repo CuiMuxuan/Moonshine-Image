@@ -14,11 +14,16 @@ SERVER_ROOT = Path(__file__).resolve().parents[1]
 if str(SERVER_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVER_ROOT))
 
+from urllib.error import HTTPError, URLError
+
 from moonshine_server.moonshine.model_registry import (
     ModelDownloadTask,
     ModelDownloadTaskManager,
     RAPIDOCR_MODEL_MANIFEST,
+    REMOTE_UNREACHABLE_ERROR_KIND,
+    REMOTE_UNREACHABLE_USER_MESSAGE,
     _device_compatible,
+    _is_remote_unreachable_error,
     _sam_model_capability_metadata,
     build_model_status,
     get_model_manifest_metadata,
@@ -233,6 +238,111 @@ class SignedModelManifestTests(unittest.TestCase):
             manager._tasks[task.id] = task
             with self.assertRaisesRegex(ValueError, "大小校验失败"):
                 manager._download_model_files(task.id, manifest, Path(root))
+
+    def test_download_manager_maps_connection_timeout_to_user_message(self):
+        original_error = URLError(
+            "<urlopen error [WinError 10060] 由于连接方在一段时间后没有正确答复或连接的主机没有反应，连接尝试失败。>"
+        )
+        manifest = {
+            "id": "ocr-timeout",
+            "downloadable": True,
+            "sourceLinks": [{"url": "https://example.invalid/det.onnx"}],
+            "files": [{"path": "ocr/det.onnx", "size": 3}],
+        }
+
+        def fake_urlopen(_request, timeout=30):
+            del timeout
+            raise original_error
+
+        with tempfile.TemporaryDirectory(prefix="moonshine-ocr-timeout-") as root, mock.patch(
+            "moonshine_server.moonshine.model_registry.urlopen", side_effect=fake_urlopen
+        ):
+            manager = ModelDownloadTaskManager()
+            task = ModelDownloadTask(
+                id="ocr-timeout-task",
+                model_id="ocr-timeout",
+                manifest_item=manifest,
+            )
+            manager._tasks[task.id] = task
+            manager._run_download_task(task.id, Path(root))
+
+        self.assertEqual(task.status, "failed")
+        self.assertEqual(task.message, REMOTE_UNREACHABLE_USER_MESSAGE)
+        self.assertEqual(task.error_kind, REMOTE_UNREACHABLE_ERROR_KIND)
+        self.assertIn("urlopen error", task.error)
+        self.assertIn("10060", task.error)
+        self.assertEqual(
+            task.to_dict()["errorKind"],
+            REMOTE_UNREACHABLE_ERROR_KIND,
+        )
+
+    def test_download_manager_keeps_checksum_failures_as_download_errors(self):
+        contents = b"det"
+        manifest = {
+            "id": "ocr-size-task-status",
+            "downloadable": True,
+            "sourceLinks": [],
+            "files": [
+                {
+                    "path": "ocr/det.onnx",
+                    "size": len(contents) + 1,
+                    "sha256": __import__("hashlib").sha256(contents).hexdigest(),
+                    "sourceLinks": [{"url": "https://example.invalid/det.onnx"}],
+                },
+            ],
+        }
+
+        class FakeResponse:
+            headers = {"Content-Length": str(len(contents))}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, size=-1):
+                del size
+                value = getattr(self, "value", contents)
+                self.value = b""
+                return value
+
+        def fake_urlopen(_request, timeout=30):
+            del timeout
+            return FakeResponse()
+
+        with tempfile.TemporaryDirectory(prefix="moonshine-ocr-size-status-") as root, mock.patch(
+            "moonshine_server.moonshine.model_registry.urlopen", side_effect=fake_urlopen
+        ):
+            manager = ModelDownloadTaskManager()
+            task = ModelDownloadTask(
+                id="ocr-size-status-task",
+                model_id="ocr-size-task-status",
+                manifest_item=manifest,
+            )
+            manager._tasks[task.id] = task
+            manager._run_download_task(task.id, Path(root))
+
+        self.assertEqual(task.status, "failed")
+        self.assertEqual(task.message, "模型下载失败。")
+        self.assertEqual(task.error_kind, "")
+        self.assertIn("大小校验失败", task.error)
+        self.assertNotEqual(task.message, REMOTE_UNREACHABLE_USER_MESSAGE)
+
+    def test_http_errors_are_not_classified_as_remote_unreachable(self):
+        http_error = HTTPError(
+            "https://example.invalid/det.onnx",
+            404,
+            "Not Found",
+            hdrs=None,
+            fp=None,
+        )
+        self.assertFalse(_is_remote_unreachable_error(http_error))
+        self.assertTrue(
+            _is_remote_unreachable_error(
+                URLError("<urlopen error [WinError 10060] connection timed out>")
+            )
+        )
 
     def test_model_manager_initializes_mat_on_cpu_without_cuda(self):
         manager = ModelManager.__new__(ModelManager)

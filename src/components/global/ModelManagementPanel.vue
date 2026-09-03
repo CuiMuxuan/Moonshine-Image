@@ -748,6 +748,7 @@ import { ConfigManager } from "src/config/ConfigManager";
 import { loadSam3Lexicon, saveSam3Lexicon } from "src/services/SamLexiconService";
 import { useConfigStore } from "src/stores/config";
 import { useModelRegistryStore } from "src/stores/modelRegistry";
+import { getFailedModelDownloadDisplayMessage } from "src/utils/modelDownloadErrors";
 
 const props = defineProps({
   backendRunning: {
@@ -1314,7 +1315,7 @@ const downloadModel = async (model) => {
   } catch (error) {
     $q.notify({
       type: "negative",
-      message: error.message || "模型下载失败",
+      message: getFailedModelDownloadDisplayMessage(error, error.message || "模型下载失败"),
       position: "top",
     });
   }
@@ -1349,7 +1350,9 @@ const getTaskProgress = (modelId) => {
 const getTaskMessage = (modelId) => {
   const task = getTask(modelId);
   if (!task) return "";
-  if (task.status === "failed") return task.error || task.message || "下载失败";
+  if (task.status === "failed") {
+    return getFailedModelDownloadDisplayMessage(task, "下载失败");
+  }
   if (task.status === "completed") return task.message || "下载完成";
   if (task.status === "running") return "正在下载模型...";
   return task.message || "";
@@ -1398,8 +1401,10 @@ const getPreparationMessage = (modelId) => {
   const preparation = getPreparation(modelId);
   if (!preparation) return "";
   const stage = getPreparationStage(modelId);
-  const base = preparation.message || preparation.error || preparationStageLabels[stage] || "";
   const progress = getPreparationProgress(modelId);
+  const base = stage === "failed"
+    ? getFailedModelDownloadDisplayMessage(preparation, preparationStageLabels.failed)
+    : (preparation.message || preparation.error || preparationStageLabels[stage] || "");
   return stage === "downloading" && progress > 0
     ? `${base}（${Math.round(progress * 100)}%）`
     : base;

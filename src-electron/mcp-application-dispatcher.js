@@ -72,7 +72,7 @@ export const TOOL_DEFINITIONS = Object.freeze([
     type: "object", required: ["input_path"], additionalProperties: false,
     properties: { input_path: { type: "string", minLength: 1, maxLength: 4096 }, model_id: modelSchema, language: { type: "string", minLength: 2, maxLength: 32 }, idempotency_key: { type: "string", minLength: 1, maxLength: 160 } },
   })),
-  taskDefinition("moonshine.masks.generate", "Generate OCR, SAM, or OCR-assisted SAM smart-selection masks.", Object.freeze({
+  taskDefinition("moonshine.masks.generate", "Generate OCR, SAM, or OCR-assisted SAM smart-selection masks. If OCR/SAM returns no expected target but the user confirms it exists, a vision-capable harness may inspect the trusted image and provide a non-fabricated point or box prompt for SAM; a harness without vision must tell the user it cannot localize the target. Only use a successful mask artifact for image processing.", Object.freeze({
     type: "object", required: ["input_path", "mode"], additionalProperties: false,
     properties: { input_path: { type: "string", minLength: 1, maxLength: 4096 }, mode: { type: "string", enum: ["ocr", "sam", "ocr_sam"] }, model_id: modelSchema, sam_model_id: modelSchema, prompt: { type: "object", maxProperties: 16 }, idempotency_key: { type: "string", minLength: 1, maxLength: 160 } },
   })),

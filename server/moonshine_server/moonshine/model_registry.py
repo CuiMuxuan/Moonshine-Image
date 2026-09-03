@@ -2,12 +2,14 @@ import hashlib
 import json
 import os
 import re
+import socket
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -19,6 +21,19 @@ except ImportError:  # Lightweight release/export tools do not need the full bac
     logger = logging.getLogger(__name__)
 
 from moonshine_server.disk_space import DEFAULT_DISK_SPACE_SAFETY_BYTES, ensure_disk_space
+
+REMOTE_UNREACHABLE_USER_MESSAGE = (
+    "无法连接到远程的下载源，建议稍后重试或手动下载。"
+)
+REMOTE_UNREACHABLE_ERROR_KIND = "remote_unreachable"
+REMOTE_UNREACHABLE_PATTERN = re.compile(
+    r"urlopen\s+error|winerror\s+10060|winerror\s+10061|winerror\s+10065|"
+    r"timed?\s*out|getaddrinfo failed|failed to establish|connection refused|"
+    r"connection reset|name or service not known|temporary failure in name resolution|"
+    r"network is unreachable|no route to host|econnrefused|etimedout|enotfound|"
+    r"由于连接方在一段时间后",
+    re.IGNORECASE,
+)
 
 
 MODEL_CAPABILITY_KEYS = (
@@ -1453,6 +1468,16 @@ def get_model_manifest(model_id: str) -> Optional[dict]:
     )
 
 
+def _is_remote_unreachable_error(error: BaseException) -> bool:
+    if isinstance(error, HTTPError):
+        return False
+    if isinstance(error, (URLError, TimeoutError, socket.timeout, ConnectionError)):
+        return True
+    if isinstance(error, OSError) and getattr(error, "winerror", None) in {10060, 10061, 10065}:
+        return True
+    return bool(REMOTE_UNREACHABLE_PATTERN.search(str(error) or ""))
+
+
 @dataclass
 class ModelDownloadTask:
     id: str
@@ -1463,6 +1488,7 @@ class ModelDownloadTask:
     total_bytes: Optional[int] = None
     message: str = ""
     error: str = ""
+    error_kind: str = ""
     created_at: float = field(default_factory=_now)
     updated_at: float = field(default_factory=_now)
     completed_at: Optional[float] = None
@@ -1480,6 +1506,7 @@ class ModelDownloadTask:
             "totalBytes": self.total_bytes,
             "message": self.message,
             "error": self.error,
+            "errorKind": self.error_kind,
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
             "completedAt": self.completed_at,
@@ -1599,12 +1626,21 @@ class ModelDownloadTaskManager:
                 message="模型已下载并校验完成。",
             )
         except Exception as error:
-            logger.exception(f"Model download task failed: {task.model_id}")
+            original_error = str(error)
+            remote_unreachable = _is_remote_unreachable_error(error)
+            logger.error(
+                f"Model download task failed: {task.model_id}: {original_error}"
+            )
             self._patch_task(
                 task_id,
                 status="failed",
-                error=str(error),
-                message="模型下载失败。",
+                error=original_error,
+                error_kind=REMOTE_UNREACHABLE_ERROR_KIND if remote_unreachable else "",
+                message=(
+                    REMOTE_UNREACHABLE_USER_MESSAGE
+                    if remote_unreachable
+                    else "模型下载失败。"
+                ),
             )
 
     def _download_model_files(self, task_id: str, manifest_item: dict, model_dir: Path):

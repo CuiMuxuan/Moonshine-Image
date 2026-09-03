@@ -24,12 +24,12 @@ test("Windows packaging layout keeps builder and portable directories distinct",
 
 test("portable archive names are versioned and edition-aware", () => {
   assert.equal(
-    getPortableZipName({ productName: "Moonshine-Image", version: "1.3.5" }),
-    "Moonshine-Image-Portable-1.3.5-win-x64.zip"
+    getPortableZipName({ productName: "Moonshine-Image", version: "1.3.6" }),
+    "Moonshine-Image-Portable-1.3.6-win-x64.zip"
   );
   assert.equal(
-    getPortableZipName({ productName: "Moonshine-Image-Test", version: "1.3.5-test.1" }),
-    "Moonshine-Image-Test-Portable-1.3.5-test.1-win-x64.zip"
+    getPortableZipName({ productName: "Moonshine-Image-Test", version: "1.3.6-test.1" }),
+    "Moonshine-Image-Test-Portable-1.3.6-test.1-win-x64.zip"
   );
 });
 
@@ -38,7 +38,7 @@ test("resolved layout uses one canonical artifact root", () => {
   const layout = resolveWindowsPackagingLayout({
     repoRoot,
     productName: "Moonshine-Image",
-    version: "1.3.5",
+    version: "1.3.6",
   });
 
   assert.equal(
@@ -52,7 +52,7 @@ test("resolved layout uses one canonical artifact root", () => {
   );
   assert.equal(
     layout.installerPath,
-    path.join(layout.artifactRoot, "Moonshine-Image-Setup-1.3.5.exe")
+    path.join(layout.artifactRoot, "Moonshine-Image-Setup-1.3.6.exe")
   );
 });
 

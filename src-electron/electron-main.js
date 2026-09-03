@@ -1051,6 +1051,24 @@ function normalizeMcpOcrCandidate(region, index) {
   };
 }
 
+function normalizeMcpSamPoints(points) {
+  if (!Array.isArray(points)) return [];
+  return points.map((point) => ({
+    x: Number(point?.x),
+    y: Number(point?.y),
+    label: Number(point?.label ?? 1) === 0 ? 0 : 1,
+  }));
+}
+
+function isValidMcpSamBox(box) {
+  return Boolean(box)
+    && [box.x, box.y, box.width, box.height].every((value) => Number.isFinite(Number(value)))
+    && Number(box.x) >= 0
+    && Number(box.y) >= 0
+    && Number(box.width) > 0
+    && Number(box.height) > 0;
+}
+
 function writeMcpArtifact(inputPath, jobId, bytes, mimeType, extension, suffix, { record = null, policy = null, tool = null } = {}) {
   if (record) assertMcpTaskPolicy(record, policy, tool);
   const outputDirectory = safeMcpOutputDirectory(inputPath, { jobId, policy });
@@ -1114,6 +1132,15 @@ async function runMcpLocalTask(record, { tool, params, policy, inputPath, inputB
       const prompt = params.prompt && typeof params.prompt === "object" ? params.prompt : {};
       const polygon = Array.isArray(prompt.polygon) ? prompt.polygon : [];
       const promptBox = prompt.box && typeof prompt.box === "object" ? prompt.box : null;
+      const promptPoints = normalizeMcpSamPoints(prompt.points);
+      const rawPromptPoints = Array.isArray(prompt.points) ? prompt.points : [];
+      if (rawPromptPoints.length > 64 || promptPoints.some((point) => (
+        !Number.isFinite(point.x) || !Number.isFinite(point.y) || point.x < 0 || point.y < 0
+      ))) {
+        const error = new Error("SAM mask generation received an invalid point prompt.");
+        error.code = "SAM_UNAVAILABLE";
+        throw error;
+      }
       const boxFromPolygon = polygon.length === 4
         ? {
             x: Math.min(...polygon.map((point) => Number(point?.[0] || 0))),
@@ -1160,18 +1187,19 @@ async function runMcpLocalTask(record, { tool, params, policy, inputPath, inputB
       let regions = [];
       if (mode === "ocr_sam") regions = await requestOcr();
       const boxes = mode === "ocr_sam"
-        ? regions.slice(0, 64).map((region) => region?.bbox).filter((value) => value && Number(value.width) > 0 && Number(value.height) > 0)
-        : [initialBox];
-      if (!boxes.length || boxes.some((value) => !value || Number(value.width) <= 0 || Number(value.height) <= 0)) {
-        const error = new Error("SAM mask generation requires a valid box prompt.");
+        ? regions.slice(0, 64).map((region) => region?.bbox).filter(isValidMcpSamBox)
+        : isValidMcpSamBox(initialBox) ? [initialBox] : [null];
+      const effectiveBoxes = boxes.length ? boxes : (promptPoints.length ? [null] : []);
+      if (!effectiveBoxes.length) {
+        const error = new Error("SAM mask generation requires a valid point or box prompt.");
         error.code = "SAM_UNAVAILABLE";
         throw error;
       }
       const candidates = [];
       const artifacts = [];
-      for (let boxIndex = 0; boxIndex < boxes.length; boxIndex += 1) {
+      for (let boxIndex = 0; boxIndex < effectiveBoxes.length; boxIndex += 1) {
         assertMcpTaskActive(record);
-        const box = boxes[boxIndex];
+        const box = effectiveBoxes[boxIndex];
         const response = await requestMcpBackend({
           method: "POST",
           path: "/api/v1/moonshine/sam/predict",
@@ -1179,8 +1207,8 @@ async function runMcpLocalTask(record, { tool, params, policy, inputPath, inputB
             image: inputBytes.toString("base64"),
             image_type: "base64",
             model_id: params.sam_model_id || (mode === "ocr_sam" ? "sam_vit_b" : params.model_id || "sam_vit_b"),
-            points: [],
-            box,
+            points: promptPoints,
+            ...(box ? { box } : {}),
             multimask_output: true,
           },
           signal,
@@ -1223,6 +1251,23 @@ async function runMcpLocalTask(record, { tool, params, policy, inputPath, inputB
     if (tool === "moonshine.image.process" || tool === "moonshine.image.process_batch") {
       const items = Array.isArray(params.items) ? params.items : params.item ? [params.item] : [];
       const modelId = params.model_id || globalConfig?.general?.defaultModel || "lama";
+      const usesLegacyInpaintApi = modelId === "lama" || modelId === "mat";
+      let legacyModelReady = false;
+      const ensureLegacyInpaintModel = async () => {
+        if (!usesLegacyInpaintApi || legacyModelReady) return;
+        const switchResponse = await requestMcpBackend({
+          method: "POST",
+          path: "/api/v1/model",
+          body: { name: modelId },
+          signal,
+        });
+        if (!switchResponse.ok) {
+          const error = new Error(switchResponse.body?.detail || `Unable to activate Moonshine model: ${modelId}`);
+          error.code = switchResponse.status === 422 ? "UNSUPPORTED_TOOL_OR_MODEL" : "BACKEND_CAPABILITY_UNAVAILABLE";
+          throw error;
+        }
+        legacyModelReady = true;
+      };
       const results = [];
       const artifacts = [];
       for (const item of items) {
@@ -1233,24 +1278,37 @@ async function runMcpLocalTask(record, { tool, params, policy, inputPath, inputB
           results.push({ success: false, id: item?.id || null, error: "PATH_NOT_ALLOWED" });
           continue;
         }
+        await ensureLegacyInpaintModel();
         const sourceBytes = fs.readFileSync(sourcePath);
         const maskBytes = fs.readFileSync(maskPath);
+        const requestPath = usesLegacyInpaintApi ? "/api/v1/batch_inpaint" : "/api/v1/moonshine/image/process";
+        const requestBody = usesLegacyInpaintApi
+          ? {
+              data: [{ id: item.id, image: sourceBytes.toString("base64"), mask: maskBytes.toString("base64") }],
+              inpaint: { color_stabilization: "auto" },
+              image_type: "base64",
+              mask_type: "base64",
+              response_type: "base64",
+              output_format: "auto",
+              output_quality: 95,
+            }
+          : {
+              model_id: modelId,
+              data: [{ id: item.id, image: sourceBytes.toString("base64"), mask: maskBytes.toString("base64"), apply_scope: "mask" }],
+              image_type: "base64",
+              mask_type: "base64",
+              apply_scope: "mask",
+              response_type: "base64",
+              output_format: "auto",
+              output_quality: 95,
+            };
         const response = await requestMcpBackend({
           method: "POST",
-          path: "/api/v1/moonshine/image/process",
-          body: {
-            model_id: modelId,
-            data: [{ id: item.id, image: sourceBytes.toString("base64"), mask: maskBytes.toString("base64"), apply_scope: "mask" }],
-            image_type: "base64",
-            mask_type: "base64",
-            apply_scope: "mask",
-            response_type: "base64",
-            output_format: "auto",
-            output_quality: 95,
-          },
+          path: requestPath,
+          body: requestBody,
           signal,
         });
-        const result = response.body?.results?.[0];
+        const result = response.body?.results?.find((entry) => entry?.id === item.id) || response.body?.results?.[0];
         const bytes = decodeDataUrl(result?.result);
         if (!response.ok || !result?.success || !bytes) {
           results.push({ success: false, id: item?.id || null, error_code: "BACKEND_CAPABILITY_UNAVAILABLE" });
