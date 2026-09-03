@@ -499,6 +499,7 @@ const handleFilesUpdate = (newFiles) => {
 
 .toolbar-button-wrap {
   min-width: 104px;
+  justify-content: center;
 }
 
 .toolbar-button-wrap:has(.mask-mode-toggle) {

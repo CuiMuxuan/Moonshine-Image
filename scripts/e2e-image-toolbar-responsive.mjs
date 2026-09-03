@@ -204,7 +204,9 @@ async function collectToolbarMetrics(page) {
     const maskButtons = Array.from(
       document.querySelectorAll(".mask-mode-button-target")
     ).map((target) => {
-      const label = Array.from(target.querySelectorAll(".q-btn__content span"))
+      const label = Array.from(
+        target.querySelectorAll(".q-btn__content > span:not(.q-icon)")
+      )
         .map((node) => node.textContent.trim())
         .filter(Boolean)
         .join(" ");
@@ -222,7 +224,9 @@ async function collectToolbarMetrics(page) {
       };
     });
     const labels = Array.from(
-      document.querySelectorAll(".image-processing-toolbar .q-btn__content span")
+      document.querySelectorAll(
+        ".image-processing-toolbar .q-btn__content > span:not(.q-icon)"
+      )
     )
       .map((node) => node.textContent.trim())
       .filter(Boolean);
