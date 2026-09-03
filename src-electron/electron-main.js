@@ -3332,6 +3332,14 @@ function getDefaultBackendProjectPath() {
   return path.join(path.dirname(app.getAppPath()), PACKAGED_BACKEND_PROJECT_DIR);
 }
 
+function isHistoricalPackagedBackendPath(projectPath) {
+  const normalizedPath = path.normalize(String(projectPath || ""));
+  return [
+    /[\\/]dist[\\/]electron[\\/]packaged[\\/]win-unpacked[\\/]resources[\\/]backend[\\/]server$/i,
+    /[\\/]Moonshine-Image-win32-x64[\\/]resources[\\/]backend[\\/]server$/i,
+  ].some((pattern) => pattern.test(normalizedPath));
+}
+
 function normalizeStoredBackendProjectPath(projectPath) {
   const normalizedInput = String(projectPath || "").trim();
   if (!app.isPackaged) {
@@ -3346,7 +3354,11 @@ function normalizeStoredBackendProjectPath(projectPath) {
   }
 
   const normalizedPath = path.normalize(normalizedInput);
-  if (normalizedPath === legacyPath || normalizedPath === runtimePath) {
+  if (
+    normalizedPath === legacyPath ||
+    normalizedPath === runtimePath ||
+    isHistoricalPackagedBackendPath(normalizedPath)
+  ) {
     return packagedPath;
   }
 

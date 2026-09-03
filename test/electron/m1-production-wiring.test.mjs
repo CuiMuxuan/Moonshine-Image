@@ -55,3 +55,10 @@ test("M1 Electron backend launch injects persistent storage and OCR model paths"
   assert.match(launchBackend, /MOONSHINE_PERSISTENT_JOBS_ENABLED:\s*"1"/);
   assert.doesNotMatch(launchBackend, /ipcRenderer|webContents\.send/);
 });
+
+test("packaged startup migrates historical backend paths to the current resources root", () => {
+  assert.match(electronSource, /function isHistoricalPackagedBackendPath\(projectPath\)/);
+  assert.ok(electronSource.includes("/[\\\\/]dist[\\\\/]electron[\\\\/]packaged[\\\\/]win-unpacked[\\\\/]resources[\\\\/]backend[\\\\/]server$/i"));
+  assert.ok(electronSource.includes("/[\\\\/]Moonshine-Image-win32-x64[\\\\/]resources[\\\\/]backend[\\\\/]server$/i"));
+  assert.match(electronSource, /isHistoricalPackagedBackendPath\(normalizedPath\)/);
+});
