@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#7758c4" />
     <meta name="description" content="Moonshine-Image 使用说明：安装、蒙版、图片与视频处理、模型选择和结果导出。" />
     <title>使用说明 · Moonshine-Image</title>
-    <link rel="icon" href="../assets/moonshine-logo.png" />
+    <link rel="icon" href="../favicon.ico" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -21,7 +21,7 @@
       <header class="docs-header" data-header>
         <div class="docs-header-inner">
           <a class="docs-brand" href="../index.html" aria-label="返回 Moonshine-Image 官网">
-            <span class="brand-mark"><img src="../assets/moonshine-logo.png" alt="" /></span>
+            <span class="brand-mark"><img src="../assets/moonshine-app-icon.png" alt="" /></span>
             <span>Moonshine<span class="brand-dash">-</span>Image <small>说明文档</small></span>
           </a>
           <div class="docs-header-actions">
@@ -56,7 +56,11 @@
                 <a class="is-active" aria-current="page" href="user.html">开始使用</a>
                 <a href="#mental-model">统一工作逻辑</a>
                 <a href="#image">图片处理</a>
+                <a href="#image-manual-mask" data-level="3">手动绘制蒙版</a>
+                <a href="#image-smart-selection" data-level="3">智能选区候选列表</a>
                 <a href="#video">视频处理</a>
+                <a href="#video-fullscreen-toolbar" data-level="3">全屏工具栏</a>
+                <a href="#video-mask-logic" data-level="3">视频蒙版处理逻辑</a>
                 <a href="#models">模型与限制</a>
                 <a href="#outputs">结果与文件</a>
               </div>
@@ -114,7 +118,7 @@
 
               <h3 class="subheading">首次启动会发生什么</h3>
               <ul class="check-list">
-                <li><strong>检查运行环境：</strong>确认 Python、FFmpeg、Torch 和本地后端是否就绪。</li>
+                <li><strong>检查运行环境：</strong>确认本地服务、模型和视频处理组件是否就绪。</li>
                 <li><strong>选择环境规格：</strong>按提示选择 auto、CPU 或 CUDA；实际可用能力取决于机器和驱动。</li>
                 <li><strong>准备模型：</strong>缺少的资源进入下载或手动导入流程；模型不可用时，界面会说明原因。</li>
                 <li><strong>保护已有环境：</strong>准备失败会保留旧的 active 环境，并提供回滚路径。</li>
@@ -191,11 +195,84 @@
                 </article>
               </div>
 
-              <h3 class="subheading">智能选区的细节</h3>
-              <div class="detail-list">
-                <div><h4>OCR</h4><p>RapidOCR 会把文字区域变成候选蒙版。默认高置信度结果直接选中，中等置信度结果保留为候选；可在“智能选区设置”里调整“直接选中阈值”“候选阈值”，也可开启“使用 SAM 增强文本蒙版”。</p></div>
-                <div><h4>SAM</h4><p>点选、框选和文本智选能力取决于当前安装的模型。界面会隐藏不可用操作；SAM2.1 可用于视频传播，标准 SAM3 可支持文本智选，SAM3.1 Multiplex 当前只用于图片文本提示。</p></div>
+              <h3 class="subheading doc-anchor" id="image-manual-mask">手动绘制蒙版：按钮、模式与快捷键</h3>
+              <p class="section-intro">手动蒙版只决定“哪里需要处理”，不会在绘制时直接修改原图。选择图片后，在图片处理工具栏的“蒙版模式”中切换到“手动”，画布上会出现可拖动的绘制工具栏。</p>
+
+              <ol class="operation-steps" aria-label="手动绘制蒙版操作步骤">
+                <li><span>1</span><div><strong>进入手动模式</strong><p>点击图片处理工具栏中的“手动”。按钮高亮后，绘制工具栏会浮在图片上方；如果工具栏中的绘制开关是红色关闭状态，再点击一次将它开启。</p></div></li>
+                <li><span>2</span><div><strong>选择绘制方式</strong><p>按目标形状选择“绘制”“矩形”或“擦除”。当前模式按钮会高亮，但三种模式始终编辑同一张蒙版。</p></div></li>
+                <li><span>3</span><div><strong>调整与检查</strong><p>在“画笔设置”里调整颜色、大小和透明度；用撤回、重做、清空、重置视图或“按住隐藏蒙版”检查边缘。</p></div></li>
+                <li><span>4</span><div><strong>运行处理</strong><p>确认蒙版覆盖目标后点击“运行”。如需再修正，可以返回手动模式继续画，也可以切到智能选区叠加候选。</p></div></li>
+              </ol>
+
+              <div class="mask-mode-guide" aria-label="图片蒙版模式切换说明">
+                <div class="mask-mode-switch" aria-hidden="true">
+                  <span>关闭</span><span class="is-active">手动</span><span>智能</span>
+                </div>
+                <div class="mask-mode-copy">
+                  <div><strong>关闭</strong><p>停止蒙版编辑，让鼠标用于查看画面；它不等于“清空”，已有蒙版仍可在重新进入编辑模式后继续使用。</p></div>
+                  <div><strong>手动</strong><p>显示画笔工具栏。只有绘制开关开启时，拖动鼠标才会写入或擦除蒙版。</p></div>
+                  <div><strong>智能</strong><p>显示 OCR / SAM 工具栏，画布改为点选、框选、文本智选或智能结果擦除交互；可用动作由当前模型决定。</p></div>
+                </div>
               </div>
+
+              <div class="mode-card-grid">
+                <article class="mode-card"><span class="mode-icon">●</span><h4>绘制</h4><p>鼠标显示圆形笔刷范围。按住并拖动会连续增加蒙版，适合不规则边缘和局部补画。</p><small>常驻快捷键：1</small></article>
+                <article class="mode-card"><span class="mode-icon mode-icon-square">□</span><h4>矩形</h4><p>鼠标变为十字定位线。按住一个角并拖到对角，松开后一次添加矩形蒙版。</p><small>常驻快捷键：2</small></article>
+                <article class="mode-card"><span class="mode-icon mode-icon-erase">−</span><h4>擦除</h4><p>拖动会从现有蒙版中减去区域，只修改蒙版，不会擦掉源图片像素。</p><small>常驻快捷键：3</small></article>
+                <article class="mode-card mode-card-toggle"><span class="toggle-demo"><i></i>开启绘制</span><h4>绘制开关</h4><p>绿色为开启、红色为关闭。关闭后保留当前工具和蒙版，但画布不再接收绘制动作，便于查看或移动视图。</p><small>快捷键：Ctrl + Space</small></article>
+              </div>
+
+              <h4 class="minor-heading" id="image-shortcuts">默认快捷键</h4>
+              <div class="model-table-wrap shortcut-table-wrap">
+                <table class="model-table shortcut-table">
+                  <caption class="sr-only">图片手动蒙版与图片工具栏默认快捷键</caption>
+                  <thead><tr><th scope="col">快捷键</th><th scope="col">作用</th><th scope="col">使用方式</th></tr></thead>
+                  <tbody>
+                    <tr><th scope="row"><kbd>Ctrl</kbd> + <kbd>Z</kbd></th><td>撤销绘制</td><td>撤销当前蒙版最近一次绘制动作。</td></tr>
+                    <tr><th scope="row"><kbd>Ctrl</kbd> + <kbd>X</kbd></th><td>重置视图</td><td>恢复当前绘制视图的默认缩放与位置，不会清空蒙版。</td></tr>
+                    <tr><th scope="row"><kbd>Ctrl</kbd> + <kbd>Space</kbd></th><td>开关绘制</td><td>在开启和关闭绘制之间切换。</td></tr>
+                    <tr><th scope="row"><kbd>1</kbd> / <kbd>2</kbd> / <kbd>3</kbd></th><td>常驻工具</td><td>依次切换到画笔、矩形、橡皮，切换后保持该模式。</td></tr>
+                    <tr><th scope="row"><kbd>Ctrl</kbd> + <kbd>-</kbd></th><td>减小画笔 / 橡皮</td><td>减小当前画笔或橡皮的尺寸。</td></tr>
+                    <tr><th scope="row"><kbd>Ctrl</kbd> + <kbd>+</kbd></th><td>增大画笔 / 橡皮</td><td>增大当前画笔或橡皮的尺寸。</td></tr>
+                    <tr><th scope="row"><kbd>1</kbd> + <kbd>Q</kbd></th><td>临时画笔</td><td>按住时临时使用画笔，松开后恢复原来的模式。</td></tr>
+                    <tr><th scope="row"><kbd>2</kbd> + <kbd>Q</kbd></th><td>临时矩形</td><td>按住时临时使用矩形，松开后恢复原来的模式。</td></tr>
+                    <tr><th scope="row"><kbd>3</kbd> + <kbd>E</kbd></th><td>临时橡皮</td><td>按住时临时使用橡皮，松开后恢复原来的模式。</td></tr>
+                    <tr><th scope="row"><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Z</kbd></th><td>撤销图片处理</td><td>撤销当前图片最近一次模型处理结果，不等同于撤销一笔蒙版。</td></tr>
+                    <tr><th scope="row"><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>X</kbd></th><td>按住对比原图</td><td>按住显示原图，松开恢复处理结果。</td></tr>
+                    <tr><th scope="row"><kbd>Ctrl</kbd> + <kbd>A</kbd></th><td>全选图片</td><td>全选当前图片列表中的图片。</td></tr>
+                    <tr><th scope="row"><kbd>ArrowUp</kbd></th><td>上一张图片</td><td>切换到图片列表中的上一张图片。</td></tr>
+                    <tr><th scope="row"><kbd>ArrowDown</kbd></th><td>下一张图片</td><td>切换到图片列表中的下一张图片。</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="callout callout-note"><strong>快捷键可以修改。</strong><span>上表是默认配置。快捷键仅在对应页面、工具已经挂载且焦点不在输入框时生效；如果你在“全局设置”中改过按键，请以应用内显示为准。</span></div>
+
+              <h3 class="subheading doc-anchor" id="image-smart-selection">SAM / OCR 智能选区候选列表</h3>
+              <p class="section-intro">智能选区不会强迫你接受单一结果。OCR、点选、框选和文本智选会产生一项或多项候选；你可以先预览、组合和修整，再让当前启用的区域参与模型处理。</p>
+
+              <div class="candidate-demo" aria-label="候选蒙版列表示意">
+                <div class="candidate-demo-head"><strong>候选蒙版</strong><span>3 个候选 · 示意</span></div>
+                <div class="candidate-demo-item is-enabled"><span class="candidate-check">✓</span><span class="candidate-swatch swatch-purple"></span><div><strong>文本候选 1</strong><small>96% · OCR</small></div><span class="candidate-action">启用</span></div>
+                <div class="candidate-demo-item"><span class="candidate-check"></span><span class="candidate-swatch swatch-cyan"></span><div><strong>文本候选 2</strong><small>82% · OCR</small></div><span class="candidate-action">停用</span></div>
+                <div class="candidate-demo-item is-enabled"><span class="candidate-check">✓</span><span class="candidate-swatch swatch-coral"></span><div><strong>框选候选 1</strong><small>91% · SAM</small></div><span class="candidate-action">启用</span></div>
+              </div>
+
+              <div class="candidate-state-grid">
+                <article><span>01</span><h4>未就绪</h4><p>没有图片、后端未就绪或未安装兼容模型时，相应按钮会禁用，并显示缺少的条件。候选按钮显示“暂无候选蒙版”。</p></article>
+                <article><span>02</span><h4>等待选择</h4><p>SAM 会提示单击点选、拖拽框选或输入文本；OCR 可直接检索当前图片或已选图片。模型不支持的动作不会作为可用操作出现。</p></article>
+                <article><span>03</span><h4>分析中</h4><p>按钮进入加载状态，批量检索会显示进度与逐项结果。计算期间部分操作暂时锁定；可见“取消”按钮时可以终止当前任务。</p></article>
+                <article><span>04</span><h4>已有候选</h4><p>状态区显示候选数量。列表中每项带名称、置信分数和启用状态，部分来源还会附带生成时间或来源；每项都可以预览、调整样式或删除。</p></article>
+                <article><span>05</span><h4>失败或取消</h4><p>分析失败时会显示错误提示，不会用失败结果覆盖已有候选；取消操作会结束本次请求，未完成的结果不会写回。修正条件后可以重新检索。</p></article>
+              </div>
+
+              <div class="detail-list candidate-detail-list">
+                <div><h4>勾选、停用与删除</h4><p>勾选的候选会叠加到当前可见蒙版；多个候选可以同时启用。取消勾选只会暂时停用并从合成结果中排除，候选仍留在列表中；点击删除才会移除该项。</p></div>
+                <div><h4>悬停预览与样式</h4><p>把鼠标移到候选项上，会在画布中预览对应区域。颜色和透明度用于区分重叠候选；使用 LaMa 且候选类型支持时，还可以调整扩边像素以覆盖目标边缘。</p></div>
+                <div><h4>OCR 的两级阈值</h4><p>默认候选阈值为 0.60，自动选中阈值为 0.80。置信度<strong>严格高于候选阈值</strong>才会进入候选列表；其中<strong>严格高于自动选中阈值</strong>的结果会预先启用，介于两者之间的结果保留给你勾选。等于阈值时不会触发对应动作。开启“使用 SAM 增强文本蒙版”后，兼容的 SAM 模型会进一步贴合文字轮廓。</p></div>
+                <div><h4>进入最终处理</h4><p>运行模型时，画布上当前启用并合成的蒙版区域才参与处理。你也可以切回手动模式继续补画或擦除，不必在手绘和智能选区之间二选一。</p></div>
+              </div>
+              <div class="callout callout-warning"><strong>没有候选不一定是故障。</strong><span>如果分析完成但列表仍为空，先确认目标是否清晰、OCR 阈值是否过高、提示词是否准确；若界面显示模型或组件未就绪，则先到模型管理或服务管理完成准备。</span></div>
             </section>
 
             <section class="docs-section" id="video" data-section>
@@ -209,24 +286,80 @@
                   <figcaption>视频时间轴工作台：蒙版轨道、关键帧和预览试跑各自独立。</figcaption>
                 </figure>
               </div>
-              <div class="video-flow" aria-label="视频处理分支流程">
-                <div class="video-flow-node"><strong>导入视频</strong><span>拆帧并建立时间轴</span></div>
-                <span class="flow-arrow" aria-hidden="true">→</span>
-                <div class="video-flow-branches">
-                  <div><strong>手动轨道</strong><span>绘制或导入蒙版轨道</span></div>
-                  <div><strong>智能传播</strong><span>SAM2.1 / SAM3 与关键帧编辑</span></div>
-                  <div><strong>水印轨道</strong><span>SLBR track plan 按活动帧执行</span></div>
+
+              <h3 class="subheading doc-anchor" id="video-fullscreen-toolbar">全屏后的工具栏绘制逻辑</h3>
+              <p class="section-intro">全屏把预览画面扩展到整个窗口，编辑工具作为浮层覆盖在画面上，不会烘焙进视频。下图是两种状态的对比示意；实际使用时会根据当前选中的轨道只显示“普通蒙版”或“智能选区”其中一套。</p>
+
+              <figure class="fullscreen-toolbar-figure">
+                <div class="fullscreen-toolbar-demo" role="img" aria-label="视频全屏预览中的退出按钮、可拖动蒙版工具栏和底部播放控制示意">
+                  <div class="fullscreen-demo-exit">退出全屏</div>
+                  <div class="fullscreen-demo-mode-note">两种状态对比 · 实际只显示当前轨道工具</div>
+                  <div class="fullscreen-demo-subject"><span></span></div>
+                  <div class="fullscreen-demo-toolbar">
+                    <div class="fullscreen-demo-handle">普通蒙版 · 拖动区域</div>
+                    <div class="fullscreen-demo-tools"><b class="tool-on">开</b><b>画笔</b><b>矩形</b><b>橡皮</b><i></i><b>设置</b><b>撤销</b><b>清空</b><b>重置</b><b>隐藏</b></div>
+                  </div>
+                  <div class="fullscreen-demo-smart">
+                    <div class="fullscreen-demo-handle">智能选区 · 拖动区域</div>
+                    <div class="fullscreen-demo-tools"><b>设置</b><b>点 / 框</b><b>候选</b><i></i><b>清空</b><b>运行</b><b>重置</b><b>隐藏</b></div>
+                  </div>
+                  <div class="fullscreen-demo-bottom"><b>▶</b><span><i></i></span><small>00:12 / 01:28</small><b>工具</b></div>
                 </div>
-                <span class="flow-arrow" aria-hidden="true">→</span>
-                <div class="video-flow-node"><strong>预览 / 试跑</strong><span>确认范围和效果</span></div>
-                <span class="flow-arrow" aria-hidden="true">→</span>
-                <div class="video-flow-node"><strong>处理并导出</strong><span>WebAV 失败时回退 FFmpeg</span></div>
+                <figcaption>全屏布局示意：顶部中央的感应区显示退出入口；中间是可拖动的蒙版工具栏；底部是播放、进度和工具栏显隐控制。普通与智能工具栏仅用于对比示意，实际不会同时出现。</figcaption>
+              </figure>
+
+              <div class="toolbar-logic-grid">
+                <article><span>轨道决定工具</span><h4>普通蒙版工具栏</h4><p>选中可编辑的普通蒙版轨道后，可使用绘制开关、画笔、矩形、橡皮、画笔设置、撤回、重做、清空、重置视图和按住隐藏蒙版。</p></article>
+                <article><span>轨道决定工具</span><h4>智能选区工具栏</h4><p>选中智能选区轨道后，工具栏改为模型设置、点选 / 框选、候选列表、清空结果、运行传播、重置视图和按住隐藏全部蒙版。</p></article>
+                <article><span>位置规则</span><h4>可拖动但不会跑出画面</h4><p>按住工具栏上沿的“拖动区域”移动。应用会把位置限制在全屏预览边界内；设置或候选面板从工具栏附近展开，空间不足时可在面板中滚动。</p></article>
+                <article><span>显隐规则</span><h4>观看时让出画面</h4><p>鼠标移到全屏预览的<strong>顶部中央感应区</strong>时显示“退出全屏”；移到<strong>底部感应区</strong>时显示播放、进度和“显示 / 隐藏绘制工具”按钮。绘制开关只控制画布是否接收绘制操作，不控制工具栏显隐。进入全屏时，智能轨道默认显示智能工具；普通轨道只有在绘制开关已开启时默认显示，关闭时仍可用底部按钮手动显示工具栏，之后也可以随时收起。</p></article>
               </div>
+
+              <h3 class="subheading doc-anchor" id="video-mask-logic">视频蒙版：创建、传播与合成</h3>
+              <p class="section-intro">视频不是给一张静态蒙版套上整段素材。每一条蒙版轨道都回答两个问题：它覆盖视频的哪一段，以及在当前帧上覆盖哪里。普通蒙版与智能选区蒙版只是两种不同的蒙版来源，最终会进入同一套视频处理流程。</p>
+
+              <div class="mask-creation-flow" aria-label="视频蒙版创建流程">
+                <div><span>1</span><strong>导入视频</strong><small>预览画面和时间轴就绪</small></div><i>→</i>
+                <div><span>2A</span><strong>新建普通蒙版</strong><small>选轨道后手绘或导入</small></div><em>或</em>
+                <div><span>2B</span><strong>新建智能选区轨道</strong><small>先得到一条空的 SAM 轨道</small></div><i>→</i>
+                <div><span>3</span><strong>限定并检查</strong><small>时间范围、对象、关键帧或局部修正</small></div><i>→</i>
+                <div><span>4</span><strong>预览后处理</strong><small>试跑小段，再导出完整结果</small></div>
+              </div>
+
+              <div class="model-table-wrap mask-compare-wrap">
+                <table class="model-table mask-compare-table">
+                  <caption class="sr-only">视频普通蒙版与智能选区蒙版对比</caption>
+                  <thead><tr><th scope="col">对比项</th><th scope="col">普通蒙版</th><th scope="col">智能选区蒙版</th></tr></thead>
+                  <tbody>
+                    <tr><th scope="row">怎样创建</th><td>在蒙版列表中新建蒙版并选中轨道，再用画笔、矩形、橡皮绘制基础区域，也可使用已有蒙版素材。</td><td>点击智能选区入口，新建一条空的 SAM 智能选区轨道；在预览帧上单击点选、拖拽框选，或在兼容模型中输入文本目标。</td></tr>
+                    <tr><th scope="row">怎样覆盖时间</th><td>设置开始时间和结束时间；只有轨道活动区间内的帧使用该蒙版。</td><td>运行智能选区后，把目标从提示帧向视频前后传播。轨道默认覆盖完整视频，范围不使用普通蒙版的时间编辑方式。</td></tr>
+                    <tr><th scope="row">怎样随画面变化</th><td>在需要的位置添加关键帧，调整蒙版的位置、缩放或形状；相邻关键帧之间由时间轴呈现连续变化。</td><td>模型为每个传播到的帧生成目标蒙版。它不是普通关键帧轨道，不能用同一套范围和关键帧字段直接编辑。</td></tr>
+                    <tr><th scope="row">怎样修正</th><td>直接在对应时间点补画、擦除或调整关键帧；撤销仅针对当前选中轨道的最近绘制。</td><td>候选对象可逐项启用、隐藏、扩边或删除，也可清空后重新点选 / 框选并传播；局部缺口可另用普通蒙版轨道补充。</td></tr>
+                    <tr><th scope="row">适合场景</th><td>固定区域、短区间、轮廓变化可控，或需要逐帧精细修正的目标。</td><td>目标会移动、变形或跨越较长时间，希望模型自动跟随的场景。</td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <h4 class="minor-heading" id="video-normal-mask">普通蒙版的具体操作</h4>
+              <ol class="operation-steps operation-steps-compact">
+                <li><span>1</span><div><strong>先创建并选中轨道</strong><p>没有可编辑轨道时，全屏工具按钮会提示“请先新建蒙版”。创建后在左侧列表选中它，右侧会出现“画笔与蒙版”“蒙版范围编辑”和“关键帧编辑”。</p></div></li>
+                <li><span>2</span><div><strong>画出基础蒙版</strong><p>在预览画面开启绘制，选择画笔、矩形或橡皮。基础蒙版定义要处理的区域，设置开始 / 结束时间定义它在哪一段生效。</p></div></li>
+                <li><span>3</span><div><strong>用关键帧跟随变化</strong><p>把播放头移到目标发生变化的位置，点击“在当前时间添加关键帧”，再调整位置、缩放或形状。需要时重复添加，而不是假设整段画面完全相同。</p></div></li>
+              </ol>
+
+              <h4 class="minor-heading" id="video-smart-mask">智能选区蒙版的具体操作</h4>
+              <ol class="operation-steps operation-steps-compact">
+                <li><span>1</span><div><strong>创建空的智能轨道</strong><p>在蒙版列表点击智能选区入口。应用先创建并选中一条空轨道，此时还没有任何候选对象或逐帧蒙版。</p></div></li>
+                <li><span>2</span><div><strong>在代表性画面给出提示</strong><p>把播放头停在目标清晰的一帧。单击目标进行点选，拖拽包围目标进行框选；若当前模型支持，也可用文本智选描述目标。</p></div></li>
+                <li><span>3</span><div><strong>运行智能选区</strong><p>点击“运行智能选区”。应用会从提示帧向前后传播并显示进度，完成后把逐帧结果写入当前智能轨道。</p></div></li>
+                <li><span>4</span><div><strong>管理候选对象</strong><p>“候选蒙版列表”中每个对象会标明已启用 / 已隐藏以及点选或框选来源。可以逐项开关、为 LaMa 调整扩边、删除，或清空整条轨道后重新传播。</p></div></li>
+              </ol>
+
               <ul class="check-list compact-list">
-                <li>在时间轴中定位要处理的时间段，维护 <code>currentTime</code>、处理范围和可恢复快照。</li>
-                <li>蒙版轨道可以由手绘、智能传播或 SLBR 计划提供；非活动帧会跳过相应处理。</li>
-                <li>先运行预览试跑，再处理完整区间。视频流程独立于图片批处理，不是图片队列的简单延伸。</li>
-                <li>WebAV 导出失败时使用 FFmpeg fallback；完成后合并并确认结果。</li>
+                <li><strong>当前帧合成：</strong>普通轨道只在自己的活动区间生效；智能轨道只使用已启用对象的传播结果。多条有效轨道可以共同组成当前帧的处理蒙版。</li>
+                <li><strong>局部修正：</strong>智能传播适合快速跟随，普通蒙版和关键帧适合精修。两者可以并存，不需要为了补一个缺口重做整条智能轨道。</li>
+                <li><strong>先试跑：</strong>先选一小段运行预览，检查蒙版有没有漂移、漏选或多选，再处理完整区间。</li>
+                <li><strong>导出结果：</strong>处理结果会作为新文件输出；导出完成后打开新文件确认画面、声音和时长，再分享或继续编辑。</li>
               </ul>
             </section>
 
@@ -242,8 +375,8 @@
                   <tbody>
                     <tr><th scope="row">LaMa</th><td>通用图像擦除</td><td>基础模型；在 MAT 不可用时可作为回退。</td></tr>
                     <tr><th scope="row">MAT</th><td>蒙版修复</td><td>需要 CUDA；受 CC BY-NC 4.0 非商业许可限制。CPU 不可用时会提示并回退 LaMa。</td></tr>
-                    <tr><th scope="row">SLBR</th><td>可见半透明水印，图片或视频轨道</td><td>支持全图或显式局部 mask / tile 规划；不承诺恢复被完全遮挡的真实细节。</td></tr>
-                    <tr><th scope="row">SAM1 / SAM2.1 / SAM3</th><td>点、框、文本提示和视频传播</td><td>能力以当前模型 metadata 为准，不按文件名猜测；<code>sam3_1_multiplex.pt</code> 不宣传图像点选或框选。</td></tr>
+                    <tr><th scope="row">SLBR</th><td>可见半透明水印，图片或视频轨道</td><td>可按整张画面或指定区域处理；如果水印完全遮挡了细节，模型不能保证还原真实内容。</td></tr>
+                    <tr><th scope="row">SAM1 / SAM2.1 / SAM3</th><td>点、框、文本提示和视频传播</td><td>不同模型支持的操作不同，应用会只显示当前模型可用的按钮和提示。</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -271,7 +404,11 @@
             <a href="#start" data-toc-link>开始使用</a>
             <a href="#mental-model" data-toc-link>统一工作逻辑</a>
             <a href="#image" data-toc-link>图片处理</a>
+            <a href="#image-manual-mask" data-toc-link data-level="3">手动绘制蒙版</a>
+            <a href="#image-smart-selection" data-toc-link data-level="3">智能选区候选列表</a>
             <a href="#video" data-toc-link>视频处理</a>
+            <a href="#video-fullscreen-toolbar" data-toc-link data-level="3">全屏工具栏</a>
+            <a href="#video-mask-logic" data-toc-link data-level="3">视频蒙版逻辑</a>
             <a href="#models" data-toc-link>模型与限制</a>
             <a href="#outputs" data-toc-link>结果与文件</a>
           </aside>
@@ -280,7 +417,7 @@
 
       <footer class="docs-footer">
         <a class="docs-brand docs-brand-footer" href="../index.html" aria-label="返回 Moonshine-Image 官网">
-          <span class="brand-mark"><img src="../assets/moonshine-logo.png" alt="" /></span>
+          <span class="brand-mark"><img src="../assets/moonshine-app-icon.png" alt="" /></span>
           <span>Moonshine<span class="brand-dash">-</span>Image</span>
         </a>
         <p>为画面留白，也为想象留白。</p>
