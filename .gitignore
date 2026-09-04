@@ -66,3 +66,8 @@ progress.md
 
 # Project-local Codex skills contain private operational instructions.
 /.codex/skills/
+
+# Project-local agent instructions and evolving planning/context records.
+/AGENTS.md
+/PROJECT_CONTEXT.md
+/PROJECT_BASELINE.md
