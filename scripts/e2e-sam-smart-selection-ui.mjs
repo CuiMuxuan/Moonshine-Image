@@ -74,10 +74,17 @@ function assert(condition, message) {
   }
 }
 
+const allowedCommands = new Set(["npm", "npm.cmd"]);
+
 function resolveSpawnCommand(command, args = []) {
   if (isWindows && /\.cmd$/i.test(command)) {
+    const comSpec = process.env.ComSpec;
+    const trustedComSpec =
+      typeof comSpec === "string" && path.isAbsolute(comSpec) && /cmd\.exe$/i.test(comSpec)
+        ? comSpec
+        : "cmd.exe";
     return {
-      command: process.env.ComSpec || "cmd.exe",
+      command: trustedComSpec,
       args: ["/d", "/s", "/c", command, ...args],
     };
   }
@@ -85,6 +92,7 @@ function resolveSpawnCommand(command, args = []) {
 }
 
 function runCommand({ label, command, args = [] }) {
+  assert(allowedCommands.has(command), `Refusing to run unrecognized command: ${command}`);
   console.log(`\n=== ${label} ===`);
   const spawnRequest = resolveSpawnCommand(command, args);
   const result = spawnSync(spawnRequest.command, spawnRequest.args, {
