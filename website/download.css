@@ -1,0 +1,145 @@
+.download-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  max-width: 900px;
+  margin: auto;
+}
+.download-option {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 32px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.download-option.recommended {
+  border-color: var(--accent);
+}
+.option-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 24px;
+}
+.option-heading > svg {
+  width: 28px;
+  height: 28px;
+  color: var(--accent);
+}
+.recommended .option-heading span {
+  color: var(--accent);
+}
+.download-option h3 {
+  font-size: 24px;
+}
+.download-option > p {
+  font-size: 13px;
+  color: var(--soft);
+}
+.download-option ul {
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 2.2;
+  color: var(--soft);
+  margin: 24px 0;
+}
+.download-option li::marker {
+  color: var(--accent);
+}
+.download-grid .download-option a.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 12px;
+  margin-top: auto;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  text-decoration: none;
+  transition: border-color 160ms ease;
+  width: 100%;
+  padding-inline: 12px;
+}
+.download-version {
+  font-size: 11px;
+  margin-left: auto;
+  font-weight: 400;
+}
+.download-option .download-integrity {
+  font-size: 11px;
+  text-align: center;
+  margin: 12px 0 0;
+  color: var(--muted);
+}
+
+.download-grid .download-option a.button-primary {
+  background: #7758c4;
+  color: #fff;
+}
+.download-grid .download-option a.button-primary:hover {
+  background: #4e347e;
+}
+.download-grid .download-option a.button-secondary {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--ink);
+}
+.download-grid .download-option a.button-secondary:hover {
+  border-color: var(--accent);
+}
+.download-grid .download-option h3 {
+  margin: 0 0 12px;
+  line-height: 1.5;
+  font-size: 24px;
+}
+.download-grid .download-option li {
+  font-size: 13px;
+  line-height: 2.2;
+  margin: 0;
+}
+.download-grid .download-option > p:not(.download-integrity) {
+  margin: 0 0 13px;
+  line-height: 1.65;
+}
+.download-grid svg {
+  width: 19px;
+  height: 19px;
+  flex-shrink: 0;
+}
+.download-grid .option-heading > svg {
+  width: 28px;
+  height: 28px;
+}
+.docs-page .download-grid {
+  --surface: var(--docs-surface);
+  --ink: var(--docs-ink);
+  --line: var(--docs-line);
+  --accent: var(--docs-purple);
+  --soft: var(--docs-ink-soft);
+  --muted: var(--docs-muted);
+  margin-block: 24px 32px;
+}
+@media (max-width: 800px) {
+  .download-option {
+    padding: 24px;
+  }
+  .download-grid .download-option h3 {
+    font-size: 21px;
+  }
+  .download-option .button {
+    font-size: 12px;
+  }
+}
+@media (max-width: 620px) {
+  .download-grid {
+    grid-template-columns: 1fr;
+  }
+}

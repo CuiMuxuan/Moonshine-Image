@@ -10,12 +10,7 @@
     />
     <title>说明文档 · Moonshine-Image</title>
     <link rel="icon" href="../favicon.ico" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap"
-      rel="stylesheet"
-    />
+    <script src="../assets/lucide.min.js" defer></script>
     <link rel="stylesheet" href="docs.css" />
   </head>
   <body class="docs-page" data-docs-page="index">
@@ -23,14 +18,29 @@
     <div class="docs-shell">
       <header class="docs-header" data-header>
         <div class="docs-header-inner">
-          <a class="docs-brand" href="../index.html" aria-label="返回 Moonshine-Image 官网">
-            <span class="brand-mark"><img src="../assets/moonshine-app-icon.png" alt="" /></span>
-            <span>Moonshine<span class="brand-dash">-</span>Image <small>说明文档</small></span>
+          <a
+            class="docs-brand"
+            href="../index.html"
+            aria-label="返回 Moonshine-Image 官网"
+          >
+            <span class="brand-mark"
+              ><img src="../assets/moonshine-app-icon.png" alt=""
+            /></span>
+            <span
+              >Moonshine<span class="brand-dash">-</span>Image
+              <small>说明文档</small></span
+            >
           </a>
           <div class="docs-header-actions">
             <a class="docs-header-link" href="../index.html">官网</a>
             <a class="docs-header-link" href="../index.html#download">下载</a>
-            <button class="icon-button" type="button" data-theme-toggle aria-label="切换深色模式" title="切换深色模式">
+            <button
+              class="icon-button"
+              type="button"
+              data-theme-toggle
+              aria-label="切换深色模式"
+              title="切换深色模式"
+            >
               <span aria-hidden="true">◐</span>
             </button>
             <button
@@ -53,17 +63,27 @@
           <div class="docs-sidebar-inner">
             <p class="docs-sidebar-label">文档目录</p>
             <nav class="docs-nav" aria-label="说明文档">
-              <a class="is-active" aria-current="page" href="index.html">文档首页</a>
+              <a class="is-active" aria-current="page" href="index.html"
+                >文档首页</a
+              >
               <div class="docs-nav-group">
                 <p>使用说明</p>
                 <a href="user.html#start">开始使用</a>
                 <a href="user.html#mental-model">统一工作逻辑</a>
                 <a href="user.html#image">图片处理</a>
-                <a href="user.html#image-manual-mask" data-level="3">手动绘制蒙版</a>
-                <a href="user.html#image-smart-selection" data-level="3">智能选区候选列表</a>
+                <a href="user.html#image-manual-mask" data-level="3"
+                  >手动绘制蒙版</a
+                >
+                <a href="user.html#image-smart-selection" data-level="3"
+                  >智能选区候选列表</a
+                >
                 <a href="user.html#video">视频处理</a>
-                <a href="user.html#video-fullscreen-toolbar" data-level="3">全屏工具栏</a>
-                <a href="user.html#video-mask-logic" data-level="3">视频蒙版处理逻辑</a>
+                <a href="user.html#video-fullscreen-toolbar" data-level="3"
+                  >全屏工具栏</a
+                >
+                <a href="user.html#video-mask-logic" data-level="3"
+                  >视频蒙版处理逻辑</a
+                >
                 <a href="user.html#models">模型与限制</a>
               </div>
               <div class="docs-nav-group">
@@ -88,9 +108,10 @@
           <div class="docs-content">
             <header class="docs-page-head">
               <p class="docs-kicker">Moonshine-Image / 说明文档</p>
-              <h1>从第一次打开，到把结果交给你的工作流。</h1>
+              <h1>说明文档</h1>
               <p class="docs-lede">
-                这里是 Moonshine-Image 的使用说明书。你可以按角色进入对应章节：先了解如何处理图片和视频，或直接查看开发接口与 AI MCP 接入方式。
+                安装与使用、模型与环境、开发与 MCP
+                接入。找到当前任务需要的说明，继续你的工作。
               </p>
             </header>
 
@@ -100,23 +121,46 @@
                 <h2>选择你的阅读入口</h2>
               </div>
               <div class="reader-grid">
-                <article class="reader-card reader-card-primary">
+                <article class="reader-card">
+                  <span class="reader-card-icon"
+                    ><i data-lucide="image"></i
+                  ></span>
                   <p class="reader-label">给使用者</p>
-                  <h3>把画面处理成你要的样子</h3>
-                  <p>从安装、首次启动开始，了解图片与视频中如何创建蒙版、选择模型、预览并导出新文件。</p>
-                  <a class="docs-text-link" href="user.html">阅读使用说明 <span aria-hidden="true">→</span></a>
+                  <h3>使用指南</h3>
+                  <p>
+                    从安装、首次启动开始，了解图片与视频中如何创建蒙版、选择模型、预览并导出新文件。
+                  </p>
+                  <a class="docs-text-link" href="user.html"
+                    >阅读使用说明 <span aria-hidden="true">→</span></a
+                  >
                 </article>
                 <article class="reader-card">
+                  <span class="reader-card-icon"
+                    ><i data-lucide="code-2"></i
+                  ></span>
                   <p class="reader-label">给开发者</p>
-                  <h3>理解项目如何组成</h3>
-                  <p>查看前端、Electron、FastAPI 后端的职责边界，以及本地运行、构建和验证时可以依赖的命令。</p>
-                  <a class="docs-text-link" href="developer.html">阅读开发者指南 <span aria-hidden="true">→</span></a>
+                  <h3>开发者指南</h3>
+                  <p>
+                    查看前端、Electron、FastAPI
+                    后端的职责边界，以及本地运行、构建和验证时可以依赖的命令。
+                  </p>
+                  <a class="docs-text-link" href="developer.html"
+                    >阅读开发者指南 <span aria-hidden="true">→</span></a
+                  >
                 </article>
                 <article class="reader-card">
+                  <span class="reader-card-icon"
+                    ><i data-lucide="plug"></i
+                  ></span>
                   <p class="reader-label">给 AI / MCP 接入</p>
-                  <h3>让自动化调用保持可控</h3>
-                  <p>了解 stdio 与本地命名管道、工具白名单、确认策略、任务状态和结果获取方式。</p>
-                  <a class="docs-text-link" href="mcp.html">阅读 MCP 指南 <span aria-hidden="true">→</span></a>
+                  <h3>MCP 接入</h3>
+                  <p>
+                    了解 stdio
+                    与本地命名管道、工具白名单、确认策略、任务状态和结果获取方式。
+                  </p>
+                  <a class="docs-text-link" href="mcp.html"
+                    >阅读 MCP 指南 <span aria-hidden="true">→</span></a
+                  >
                 </article>
               </div>
             </section>
@@ -126,35 +170,68 @@
                 <p class="section-index">02</p>
                 <h2>先记住这一条工作逻辑</h2>
               </div>
-              <p class="section-intro">图片和视频的具体操作不同，但最终都围绕同一条目标链。每一段都可以按素材和任务自由选择、重复或跳过。</p>
-              <div class="docs-flow" aria-label="上传处理源、制作或组合蒙版、调用模型处理、预览编辑、导出新结果">
-                <span class="flow-node">上传处理源</span>
-                <span class="flow-arrow" aria-hidden="true">→</span>
-                <span class="flow-node">制作 / 组合蒙版</span>
-                <span class="flow-arrow" aria-hidden="true">→</span>
-                <span class="flow-node">调用模型处理</span>
-                <span class="flow-arrow" aria-hidden="true">→</span>
-                <span class="flow-node">预览 / 编辑</span>
-                <span class="flow-arrow" aria-hidden="true">→</span>
-                <span class="flow-node">导出新结果</span>
+              <p class="section-intro">
+                图片和视频的具体操作不同，但最终都围绕同一条目标链。每一段都可以按素材和任务自由选择、重复或跳过。
+              </p>
+              <div
+                class="doc-mask-flow"
+                aria-label="手绘与智能选区汇合为可编辑蒙版"
+              >
+                <div class="doc-mask-sources">
+                  <span><i data-lucide="paintbrush"></i>手绘 / 擦除</span
+                  ><span><i data-lucide="scan"></i>OCR / SAM 选区</span>
+                </div>
+                <i data-lucide="arrow-right"></i>
+                <div>
+                  <strong>组合蒙版</strong><span>预览 · 编辑 · 撤销</span>
+                </div>
+                <i data-lucide="arrow-right"></i>
+                <div>
+                  <strong>模型处理</strong><span>检查结果 · 导出新文件</span>
+                </div>
               </div>
               <div class="callout callout-note">
                 <strong>这不是固定的线性向导。</strong>
-                <span>“智能选区”和“手动绘制蒙版”可以二选一，也可以叠加；OCR、SAM、手绘和擦除都会产生或修改同一张最终蒙版。</span>
+                <span
+                  >“智能选区”和“手动绘制蒙版”可以二选一，也可以叠加；OCR、SAM、手绘和擦除都会产生或修改同一张最终蒙版。</span
+                >
               </div>
             </section>
 
             <section class="docs-section" id="facts" data-section>
               <div class="section-heading">
                 <p class="section-index">03</p>
-                <h2>当前版本与使用边界</h2>
+                <h2>运行要求与使用边界</h2>
               </div>
               <div class="facts-grid">
-                <div class="fact-item"><span>当前产品基线</span><strong>1.3.4 · Windows x64</strong></div>
-                <div class="fact-item"><span>处理位置</span><strong>本地运行，原文件不覆盖</strong></div>
-                <div class="fact-item"><span>默认输出</span><strong>输入文件旁的 Moonshine-Output</strong></div>
+                <div class="fact-item">
+                  <span>支持平台</span><strong>Windows x64</strong>
+                </div>
+                <div class="fact-item">
+                  <span>处理位置</span><strong>本地运行，原文件不覆盖</strong>
+                </div>
+                <div class="fact-item">
+                  <span>默认输出</span
+                  ><strong>输入文件旁的 Moonshine-Output</strong>
+                </div>
               </div>
-              <p class="section-note">模型、运行环境和部分加速能力取决于当前机器与已安装资源。应用会在能力不可用时说明原因，基础功能不会因为可选模型缺失而消失。</p>
+              <p class="section-note">
+                模型、运行环境和部分加速能力取决于当前机器与已安装资源。应用会在能力不可用时说明原因，基础功能不会因为可选模型缺失而消失。
+              </p>
+              <div class="doc-shortcuts">
+                <a href="user.html#start"
+                  ><span>安装与首次启动</span
+                  ><i data-lucide="arrow-up-right"></i
+                ></a>
+                <a href="user.html#models"
+                  ><span>模型要求与许可</span
+                  ><i data-lucide="arrow-up-right"></i
+                ></a>
+                <a href="../index.html#download"
+                  ><span>当前稳定版下载</span
+                  ><i data-lucide="arrow-up-right"></i
+                ></a>
+              </div>
             </section>
           </div>
 
@@ -162,24 +239,35 @@
             <p>本页目录</p>
             <a href="#read-path" data-toc-link>阅读入口</a>
             <a href="#mental-model" data-toc-link>统一工作逻辑</a>
-            <a href="#facts" data-toc-link>版本与边界</a>
+            <a href="#facts" data-toc-link>运行要求</a>
           </aside>
         </main>
       </div>
 
       <footer class="docs-footer">
-        <a class="docs-brand docs-brand-footer" href="../index.html" aria-label="返回 Moonshine-Image 官网">
-          <span class="brand-mark"><img src="../assets/moonshine-app-icon.png" alt="" /></span>
+        <a
+          class="docs-brand docs-brand-footer"
+          href="../index.html"
+          aria-label="返回 Moonshine-Image 官网"
+        >
+          <span class="brand-mark"
+            ><img src="../assets/moonshine-app-icon.png" alt=""
+          /></span>
           <span>Moonshine<span class="brand-dash">-</span>Image</span>
         </a>
         <p>为画面留白，也为想象留白。</p>
         <div class="docs-footer-links">
           <a href="../index.html">返回官网</a>
           <a href="../index.html#download">下载应用</a>
-          <a href="https://github.com/CuiMuxuan/Moonshine-Image" target="_blank" rel="noreferrer">GitHub ↗</a>
+          <a
+            href="https://github.com/CuiMuxuan/Moonshine-Image"
+            target="_blank"
+            rel="noreferrer"
+            >GitHub ↗</a
+          >
         </div>
       </footer>
     </div>
-    <script src="docs.js"></script>
+    <script src="docs.js" defer></script>
   </body>
 </html>

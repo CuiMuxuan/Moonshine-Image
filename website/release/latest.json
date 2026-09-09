@@ -1,43 +1,43 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-09-01T17:31:33.372Z",
+  "generatedAt": "2026-09-09T20:08:33.169Z",
   "source": "https://download.moonshine.email/manifests/stable/latest.json",
-  "version": "1.3.4",
+  "version": "1.3.8",
   "channel": "stable",
   "platform": "win32",
   "arch": "x64",
-  "sequence": 1788039429,
-  "publishedAt": "2026-08-29T21:37:09.809Z",
-  "expiresAt": "2026-09-28T21:37:09.810Z",
-  "installerUrl": "https://download.moonshine.email/app/win-x64/stable/Moonshine-Image-Setup-1.3.4.exe",
-  "installerPath": "app/win-x64/stable/Moonshine-Image-Setup-1.3.4.exe",
-  "installerSha256": "9fd207e9255abb311dfa07c3c429824685d67e4e7a867231a73ba2f778184b94",
-  "payloadSha256": "a70e8093c5301c165099deba816233dc438a9e3efb3b8143a92a8c71fb13d0cf",
+  "sequence": 1788802416,
+  "publishedAt": "2026-09-07T17:42:07.896Z",
+  "expiresAt": "2026-10-07T17:42:07.896Z",
+  "installerUrl": "https://download.moonshine.email/app/win-x64/stable/Moonshine-Image-Setup-1.3.8.exe",
+  "installerPath": "app/win-x64/stable/Moonshine-Image-Setup-1.3.8.exe",
+  "installerSha256": "954f55617fd7c340b747946daf904724596f2982225b7fba63d5e7dc3e832075",
+  "payloadSha256": "8b1dd5cb597cc74c970c7dfd62f234fa349d5fb1b86aec470b9fbb9ecb002e24",
   "payload": {
     "schemaVersion": 1,
     "edition": "official",
     "productName": "Moonshine-Image",
     "appId": "com.moonshine.image",
     "channel": "stable",
-    "sequence": 1788039429,
-    "appVersion": "1.3.4",
+    "sequence": 1788802416,
+    "appVersion": "1.3.8",
     "platform": "win32",
     "arch": "x64",
-    "publishedAt": "2026-08-29T21:37:09.809Z",
-    "expiresAt": "2026-09-28T21:37:09.810Z",
+    "publishedAt": "2026-09-07T17:42:07.896Z",
+    "expiresAt": "2026-10-07T17:42:07.896Z",
     "app": {
       "latestYmlPath": "app/win-x64/stable/latest.yml",
-      "latestYmlSha256": "61dc5144a6f5089499c8aa31dbe5e8be010720db7504fbc08dd8211ade7b12fb",
-      "installerPath": "app/win-x64/stable/Moonshine-Image-Setup-1.3.4.exe",
-      "installerSha256": "9fd207e9255abb311dfa07c3c429824685d67e4e7a867231a73ba2f778184b94",
-      "installerSha512": "qfaIGwpKRX8BQoR5f1DTykgfxLe+w3MYOQbrcyGF5ISYzGwx3pwDWCkq1NHWOn0OzjxrrJ2C+6QYG3Zp9YjB8A==",
-      "blockmapPath": "app/win-x64/stable/Moonshine-Image-Setup-1.3.4.exe.blockmap",
-      "blockmapSha256": "05d1ff99a5367668fd3021c4a9971ecd22afa0c547b78bedf1a0eb049a29e134"
+      "latestYmlSha256": "1a2c0843484bd90d510dfa99acfc8f55ca8bcf1de213d2d8343860cf897faa27",
+      "installerPath": "app/win-x64/stable/Moonshine-Image-Setup-1.3.8.exe",
+      "installerSha256": "954f55617fd7c340b747946daf904724596f2982225b7fba63d5e7dc3e832075",
+      "installerSha512": "qMX5NodM3yrxQrkULGyJBVxo6qdpSzh8/Z/+g3XrAToOdxqLSLzZjj3nue6PuE/dOM7d3b04c8cXPBmJ/L1XBA==",
+      "blockmapPath": "app/win-x64/stable/Moonshine-Image-Setup-1.3.8.exe.blockmap",
+      "blockmapSha256": "54b715a75fb8082b4bd751252afda48f2ba67960f0f127a677f5cf1891587da6"
     }
   },
   "signature": {
     "algorithm": "Ed25519",
     "keyId": "moonshine-app-manifest-v1",
-    "value": "waZc+7w9oyNBjqj8gkiwZUyXRAwsFxZklhw5LNbcK3Bp9EdOGFTtQM7QMFZEwfOEOVaeIRuGHmwPhdLxMo+cCA=="
+    "value": "WljN/gZZo4NCmuuU9nD1DJFNc4ttQLwWjRx+5Lxycw+dDMckY33G63FPY/olzNubTggNx4KnVkrUJmWKqKqfDQ=="
   }
 }
